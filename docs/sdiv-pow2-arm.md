@@ -77,3 +77,12 @@ fragment. The `uVar / 2` forms beside them predate the arm (Ghidra's own unsigne
 ## Measured (round w3 vs w2b, 2026-08-27)
 
 WGSS 0.5450 -> 0.5479 (+348.4 insn-sim, +0.00284); EXACT 840 -> 841 (0x36954 MISMATCH -> EXACT); 0 lost, SAME_SHAPE 78 held, no COMPILE_FAIL change; 25 TUs moved, 25 up / 0 down: 21 of the 22 game functions (0x2d520 flat: its folded `(char)(x * 0x4d >> 8)` shift did not render, 3 sites left) plus 4 library-zone SBB sites (0x65a68 0x69fb0 0x6ac50 0x6ef5a); largest 0x36954 +0.600, 0x24278 +0.433 (0.192 -> 0.625), 0x28008 +0.333, 0x2fcfc +0.280, 0x3eaa4 +0.242, 0x3fa04 +0.226; game memcpy/memset/memcmp unchanged.
+
+## Residual: 0x2d520 (3 sites, flat)
+
+`cVar3 = (char)(*(uint1 *)p * 0x4d >> 8) + (char)(*(uint1 *)(p + 1) * 0x97 >> 8) + (char)(*(uint1
+*)(p + 2) * 0x1c >> 8)` — three products each divided by 256 (luminance weights), `SBB` + `SAR 8`
+per term in the bytes. The folded `INT_RIGHT` is consumed by a `SUBPIECE` to `char` before the
+add, and the shift does not reach the arm's hook (the narrowing wrapper renders the chain itself,
+or the shift's pc is not the `SAR`'s); expected print `(char)((int4)(x * 0x4d) / 0x100)`. Flat
+today — a separate small pass.
