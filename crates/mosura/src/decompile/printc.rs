@@ -601,7 +601,11 @@ struct PrintC<'a> {
     /// retyped `break` by scopeBreak). Without the suppression the cut edge ALSO flushes as a
     /// stray top-level `break;` before the switch — the E1000 family of
     /// docs/compilable-c-remediation.md Phase 6.
-    switch_exit_suppress: std::collections::HashSet<BlockId>,
+    /// (node, target) pairs: a goto record on the switch HEAD's node chain whose target is
+    /// represented by a `case N: break;`/`goto` or `default:` arm — suppressed only THERE. A case
+    /// body's own goto to the same exit block still prints (Ghidra `emitBlockGoto` after the case's
+    /// body, `break` once `scopeBreak` typed it): keying by block alone swallowed 0x614fc's case 2.
+    switch_exit_suppress: std::collections::HashSet<(usize, BlockId)>,
     /// [`EmitChoices::shift_mask`] == `Hardware`: elide the lifter's own shift-count mask
     /// (`x << (c & 0x1f)` renders `x << c` where the AND is provably the hardware's — see
     /// `shift_bin`). Default false = the reference rendering.
@@ -3145,8 +3149,8 @@ impl<'a> PrintC<'a> {
         let Some(records) = s.node_gotos.get(&idx) else { return };
         let pad = "  ".repeat(indent);
         for r in records {
-            if self.switch_exit_suppress.contains(&r.target) {
-                continue; // represented as the enclosing switch's `case N: break;`
+            if self.switch_exit_suppress.contains(&(idx, r.target)) {
+                continue; // the head's cut edge, represented as the enclosing switch's `case N: break;`
             }
             // Ghidra's `emitGotoStatement` (printc.cc:2303): `break` for `f_break_goto` (scopeBreak
             // reclassified a loop-exit goto), else `goto LABEL`.
@@ -3259,6 +3263,17 @@ impl<'a> PrintC<'a> {
                 let idx0 = idx;
                 let scope_exit = self.next_flow_after(s, idx);
                 let head = exit_basic(s, comps[0]);
+                // the head's node chain: its basic node up to (excluding) the switch node — the nodes
+                // whose goto records the `case N:`/`default:` arms below represent
+                let head_chain: Vec<usize> = {
+                    let mut v = Vec::new();
+                    let mut chain = s.blocks.iter().position(|fb| head.is_some_and(|h| fb.kind == FlowKind::Basic(h)));
+                    while let Some(node) = chain {
+                        v.push(node);
+                        chain = s.blocks[node].parent.filter(|&p| p != node && p != idx0);
+                    }
+                    v
+                };
                 let head_pc = head.and_then(|b| {
                     self.f.block(b).ops.iter().rev().copied().find(|&op| self.f.op(op).code() == OpCode::Branchind).map(|op| self.f.op(op).seqnum.pc.offset)
                 });
@@ -3339,7 +3354,9 @@ impl<'a> PrintC<'a> {
                                         // the cut edge's own goto record is represented at the
                                         // `case N:` below (as `break;` or `goto LAB;`) —
                                         // suppress its out-of-place flush after the head
-                                        self.switch_exit_suppress.insert(b);
+                                        for &n in &head_chain {
+                                            self.switch_exit_suppress.insert((n, b));
+                                        }
                                     }
                                 }
                             }
@@ -3360,24 +3377,21 @@ impl<'a> PrintC<'a> {
                         .iter()
                         .filter_map(|&c| entry_basic(s, c))
                         .collect();
-                    let mut chain = s
-                        .blocks
-                        .iter()
-                        .position(|fb| head.is_some_and(|h| fb.kind == FlowKind::Basic(h)));
-                    while let Some(node) = chain {
+                    for &node in &head_chain {
                         if let Some(recs) = s.node_gotos.get(&node) {
                             for r in recs.clone() {
-                                if self.switch_exit_suppress.contains(&r.target)
+                                if self.switch_exit_suppress.contains(&(node, r.target))
                                     || case_blocks.contains(&r.target)
                                     || default_cuts.contains(&r.target)
                                 {
                                     continue;
                                 }
                                 default_cuts.push(r.target);
-                                self.switch_exit_suppress.insert(r.target);
+                                for &n in &head_chain {
+                                    self.switch_exit_suppress.insert((n, r.target));
+                                }
                             }
                         }
-                        chain = s.blocks[node].parent.filter(|&p| p != node && p != idx0);
                     }
                 }
                 // emit the switch-head block's statements (AFTER the exit-suppression above is computed — the head's own cut-edge record flushes here and must see it) (Ghidra `emitBlockSwitch`:

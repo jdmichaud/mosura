@@ -346,6 +346,15 @@ prints `break;` too — its block has one out-edge, to the shared `return 0` blo
 case 1 — value-identical (the switch tail is `return 0` as well) and byte-identical (flat);
 Ghidra would chain that edge as a fallthrough in `ruleCaseFallthru`, which mosura's
 `rule_case_fallthru` did not mark here — a structuring item, not the printer's rule.
+**Follow-up (fable-b's hold, 0x614fc):** the rule exposed a latent printer gap. A case body whose
+own goto edge (cut by `rule_block_goto`, so the block has no out-edge and is not an "exit") targets
+a block that is ALSO the landing of a direct head→exit table entry printed nothing: the switch's
+exit suppression (`switch_exit_suppress`) was a set of target BLOCKS, meant for the head's own cut
+records that the `case N: break;`/`default:` arms represent, but `emit_structured` applied it to
+every node's records with that target — case 2's `break` (scopeBreak-typed goto to 0x616a7) was
+swallowed and the C ran case 4 after case 2; the old unconditional `break;` had masked it. Ghidra
+prints a case's goto after its body (`emitBlockGoto`, unless the target is the next printed case)
+— so the suppression is keyed by (node, target) over the head's node chain only.
 
 ## CORRECTION — most of the "64-bit problem" is not 64-bit arithmetic
 
