@@ -293,6 +293,8 @@ struct RepMovs {
     src: Option<VarnodeId>,
     set_val: Option<VarnodeId>,
     size: RepSize,
+    /// `memcmp` (a lifted `REPE CMPS`): the -1/0/1 result varnode the call assigns.
+    cmp_result: Option<VarnodeId>,
 }
 
 /// One lifted rep-string loop, as the recognizer sees it (all ops at one pc).
@@ -379,6 +381,70 @@ fn rep_post_loop_dead(f: &Funcdata, phis: &[VarnodeId], pc: u64) -> bool {
         }
     }
     true
+}
+
+/// Whether a varnode derives from `root` through only `INT_ZEXT` / `INT_NOTEQUAL(x, 0)` — the shape
+/// of Watcom's memcmp result `1 - zext(CF) - zext(CF != 0)` (the two `SBB`s), with `CF` = `root`.
+fn derives_via_zext_ne(f: &Funcdata, v: VarnodeId, root: VarnodeId, depth: u32) -> bool {
+    if v == root {
+        return true;
+    }
+    if depth == 0 {
+        return false;
+    }
+    let Some(d) = f.vn(v).def else { return false };
+    let o = f.op(d);
+    match o.code() {
+        OpCode::IntZext | OpCode::Copy => o.input(0).is_some_and(|x| derives_via_zext_ne(f, x, root, depth - 1)),
+        OpCode::IntNotequal => {
+            o.input(1).is_some_and(|k| f.vn(k).is_constant() && f.vn(k).constant_value() == 0)
+                && o.input(0).is_some_and(|x| derives_via_zext_ne(f, x, root, depth - 1))
+        }
+        _ => false,
+    }
+}
+
+/// The ops of the memcmp result chain rooted at `r1 = INT_SUB(INT_SUB(#1, zext(cf)), zext(cf != 0))`,
+/// collected for suppression (returns None if `r1` is not that shape over `cf_exit`).
+fn rep_cmp_chain(f: &Funcdata, r1: VarnodeId, cf_exit: VarnodeId) -> Option<Vec<OpId>> {
+    let d = f.vn(r1).def?;
+    let o = f.op(d);
+    if o.code() != OpCode::IntSub {
+        return None;
+    }
+    let (s1, y) = (o.input(0)?, o.input(1)?);
+    let sd = f.vn(s1).def?;
+    let so = f.op(sd);
+    if so.code() != OpCode::IntSub
+        || !so.input(0).is_some_and(|k| f.vn(k).is_constant() && f.vn(k).constant_value() == 1)
+    {
+        return None;
+    }
+    let x = so.input(1)?;
+    if !derives_via_zext_ne(f, x, cf_exit, 4) || !derives_via_zext_ne(f, y, cf_exit, 4) {
+        return None;
+    }
+    // collect every op between cf_exit and r1
+    let mut ops = vec![d, sd];
+    let mut stack = vec![x, y];
+    while let Some(v) = stack.pop() {
+        if v == cf_exit {
+            continue;
+        }
+        if let Some(vd) = f.vn(v).def {
+            if !ops.contains(&vd) {
+                ops.push(vd);
+                for i in 0..f.op(vd).num_inputs() {
+                    if let Some(iv) = f.op(vd).input(i) {
+                        if !f.vn(iv).is_constant() {
+                            stack.push(iv);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Some(ops)
 }
 
 /// The basic blocks under a structured node (its `Basic` leaves), recursively.
@@ -3031,6 +3097,11 @@ impl<'a> PrintC<'a> {
             RepSize::Split(a, b) => format!("{} * 4 + {}", self.render_var(a).0, self.render_var(b).0),
         };
         let stmt = match (info.src, info.set_val) {
+            (Some(src), _) if info.cmp_result.is_some() => {
+                let src = self.render_var(src).0;
+                let r = self.lvalue_of(info.cmp_result.unwrap());
+                format!("{r} = memcmp({dst}, {src}, {size})")
+            }
             (Some(src), _) => {
                 let src = self.render_var(src).0;
                 format!("memcpy({dst}, {src}, {size})")
@@ -3053,6 +3124,24 @@ impl<'a> PrintC<'a> {
             && self.try_emit_rep_movs(s, idx, indent, out)
         {
             return;
+        }
+        // A node whose every live op belongs to a collapsed string-op's skip set (the pair's byte
+        // loop, memcmp's `if (!zf) r = …` result block) emits nothing: the call covers it.
+        if !self.rep_skip.is_empty() {
+            let mut basics = Vec::new();
+            collect_basics(s, idx, &mut basics);
+            let mut any = false;
+            let all_skip = basics.iter().all(|&b| {
+                self.f.block(b).ops.iter().all(|&op| {
+                    let o = self.f.op(op);
+                    if o.is_dead() { return true; }
+                    any = true;
+                    self.rep_skip.contains(&o.seqnum.pc.offset)
+                })
+            });
+            if any && all_skip {
+                return;
+            }
         }
         match kind {
             FlowKind::Basic(bid) => self.emit_basic(bid, indent, out),
@@ -5435,7 +5524,7 @@ fn print_c_inner(
             if !witnessed {
                 continue;
             }
-            p.rep_movs.insert(l1.pc, RepMovs { dst: l1.dst_entry, src: l1.src_entry, set_val, size });
+            p.rep_movs.insert(l1.pc, RepMovs { dst: l1.dst_entry, src: l1.src_entry, set_val, size, cmp_result: None });
             if let Some(l2) = l2 {
                 p.rep_skip.insert(l2.pc);
             }
@@ -5448,6 +5537,129 @@ fn print_c_inner(
             }
             if let Some(l2) = l2 {
                 entries.push((l2.count_phi, l2.count_entry));
+            }
+            for (phi, entry) in entries {
+                let Some(pd) = f.vn(phi).def else { continue };
+                let raw = f.op(pd).inrefs.iter().copied().find(|&i| strip_copies(f, i) == strip_copies(f, entry) || i == entry);
+                let Some(raw) = raw else { continue };
+                if let Some(cd) = f.vn(raw).def {
+                    let only_phi = f.vn(raw).descend.iter().all(|&u| u == pd || f.op(u).is_dead());
+                    if f.op(cd).code() == OpCode::Copy && only_phi {
+                        p.suppressed.insert(cd);
+                    }
+                }
+            }
+        }
+        // memcmp: a lifted `REPE CMPS` — at one pc, LOAD a / LOAD b, `INT_LESS(a,b)` (CF) and
+        // `INT_EQUAL(a,b)` (ZF, the loop condition); after the loop Watcom's intrinsic materializes
+        // `r = ZF ? 0 : (CF ? -1 : 1)` as `XOR EAX,EAX; …; JZ; SBB EAX,EAX; SBB EAX,-1`, which
+        // Ghidra prints `r = 0; … if (!zf) r = 1 - cf - (cf != 0);`. Render `r = memcmp(a, b, n);`
+        // at the loop and skip the if-node (docs/rep-string-intrinsic-arm.md V2).
+        for op in f.op_ids() {
+            let o = f.op(op);
+            if o.is_dead() || o.code() != OpCode::IntEqual {
+                continue;
+            }
+            let pc = o.seqnum.pc.offset;
+            let (Some(la), Some(lb), Some(zf)) = (o.input(0), o.input(1), o.output) else { continue };
+            let load_of = |v: VarnodeId| -> Option<(VarnodeId, u32)> {
+                let d = f.vn(v).def?;
+                let lo = f.op(d);
+                (lo.code() == OpCode::Load && lo.seqnum.pc.offset == pc).then(|| (lo.input(1).unwrap(), f.vn(v).size))
+            };
+            let (Some((a_phi, elem)), Some((b_phi, _))) = (load_of(la), load_of(lb)) else { continue };
+            // the CF compare on the same two loads at this pc
+            let cf = f.op_ids().find_map(|c| {
+                let co = f.op(c);
+                (!co.is_dead() && co.code() == OpCode::IntLess && co.seqnum.pc.offset == pc
+                    && co.input(0) == Some(la) && co.input(1) == Some(lb)).then(|| co.output).flatten()
+            });
+            let Some(cf) = cf else { continue };
+            let (Some(a_entry), Some(b_entry)) = (rep_loop_entry(f, a_phi, pc), rep_loop_entry(f, b_phi, pc)) else { continue };
+            let Some((count_phi, count_entry)) = rep_count(f, pc) else { continue };
+            // exit phis (not at the loop pc) merging the loop's flag phi with the compare result
+            let exit_phi = |flag: VarnodeId| -> Option<VarnodeId> {
+                f.op_ids().find_map(|m| {
+                    let mo = f.op(m);
+                    (!mo.is_dead() && mo.code() == OpCode::Multiequal && mo.seqnum.pc.offset != pc
+                        && mo.inrefs.contains(&flag)).then(|| mo.output).flatten()
+                })
+            };
+            let (Some(cf_exit), Some(zf_exit)) = (exit_phi(cf), exit_phi(zf)) else { continue };
+            // the result phi: MULTIEQUAL(0, r1) with r1 the SBB chain over cf_exit
+            let mut found: Option<(VarnodeId, Vec<OpId>, OpId)> = None;
+            for m in f.op_ids() {
+                let mo = f.op(m);
+                if mo.is_dead() || mo.code() != OpCode::Multiequal || mo.num_inputs() != 2 {
+                    continue;
+                }
+                let (Some(i0), Some(i1), Some(out)) = (mo.input(0), mo.input(1), mo.output) else { continue };
+                for (zero, r1) in [(i0, i1), (i1, i0)] {
+                    let z = strip_copies(f, zero);
+                    if !(f.vn(z).is_constant() && f.vn(z).constant_value() == 0) {
+                        continue;
+                    }
+                    if let Some(chain) = rep_cmp_chain(f, r1, cf_exit) {
+                        // the zero COPY feeding the phi (to suppress)
+                        if let Some(zd) = f.vn(zero).def {
+                            found = Some((out, chain, zd));
+                        }
+                        break;
+                    }
+                }
+                if found.is_some() {
+                    break;
+                }
+            }
+            let Some((result, chain, zero_copy)) = found else { continue };
+            // the `if (!zf)` branch on the exit flag
+            let Some(cbr) = f.vn(zf_exit).descend.iter().copied().find(|&u| !f.op(u).is_dead() && f.op(u).code() == OpCode::Cbranch) else { continue };
+            // safety: the flags feed only this structure; the pointers are dead after the loop
+            let uses_ok = f.vn(zf_exit).descend.iter().all(|&u| f.op(u).is_dead() || u == cbr)
+                && f.vn(cf_exit).descend.iter().all(|&u| f.op(u).is_dead() || chain.contains(&u));
+            if !uses_ok {
+                continue;
+            }
+            let ptr_dead = [a_phi, b_phi].iter().all(|&ph| {
+                f.vn(ph).descend.iter().all(|&u| {
+                    let uo = f.op(u);
+                    uo.is_dead() || uo.seqnum.pc.offset == pc
+                        || (uo.code() == OpCode::Multiequal && uo.output.is_some_and(|x| f.vn(x).descend.iter().all(|&w| f.op(w).is_dead())))
+                })
+            });
+            if !ptr_dead {
+                continue;
+            }
+            p.report.rep_movs_candidates.push((pc, elem));
+            if !p.recovered.string_op_sites.contains(&pc) {
+                continue;
+            }
+            let size = match strip_copies(f, count_entry) {
+                c if f.vn(c).is_constant() => RepSize::Const(f.vn(c).constant_value() * elem as u64),
+                c if elem == 1 => RepSize::Var(c),
+                c => RepSize::Split(c, c),
+            };
+            p.rep_movs.insert(pc, RepMovs { dst: a_entry, src: Some(b_entry), set_val: None, size, cmp_result: Some(result) });
+            p.rep_skip.insert(f.op(cbr).seqnum.pc.offset);
+            for &c in &chain {
+                p.rep_skip.insert(f.op(c).seqnum.pc.offset);
+                p.suppressed.insert(c);
+            }
+            // pre-loop inits: the result's zero, the flag phis' entries, the pointer/count entries
+            if f.op(zero_copy).code() == OpCode::Copy {
+                p.suppressed.insert(zero_copy);
+            }
+            let mut entries = vec![(a_phi, a_entry), (b_phi, b_entry), (count_phi, count_entry)];
+            for flag in [cf, zf] {
+                // the loop flag phi is the MULTIEQUAL at pc whose inrefs contain the compare result
+                if let Some(fp) = f.op_ids().find(|&m| { let mo = f.op(m); !mo.is_dead() && mo.code() == OpCode::Multiequal && mo.seqnum.pc.offset == pc && mo.inrefs.contains(&flag) }) {
+                    if let Some(fo) = f.op(fp).output {
+                        let other = f.op(fp).inrefs.iter().copied().find(|&i| i != flag);
+                        if let Some(e) = other {
+                            entries.push((fo, e));
+                        }
+                    }
+                }
             }
             for (phi, entry) in entries {
                 let Some(pd) = f.vn(phi).def else { continue };

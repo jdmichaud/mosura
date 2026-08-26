@@ -643,7 +643,7 @@ pub fn string_ops_from_evidence(
     let mut out = std::collections::HashSet::new();
     for &(pc, _sz) in cands {
         let Some(insn) = insns.iter().find(|x| x.addr == pc) else { continue };
-        if insn.bytes.len() >= 2 && matches!(insn.bytes[0], 0xF2 | 0xF3) && matches!(insn.bytes[1], 0xA4 | 0xA5 | 0xAA | 0xAB)
+        if insn.bytes.len() >= 2 && matches!(insn.bytes[0], 0xF2 | 0xF3) && matches!(insn.bytes[1], 0xA4 | 0xA5 | 0xA6 | 0xA7 | 0xAA | 0xAB)
         {
             out.insert(pc);
         }

@@ -1,0 +1,8 @@
+<!-- Watcom 10.0a memcmp intrinsic template (docs/rep-string-intrinsic-arm.md, V2): push esi;push edi;
+     esi=[esp+0xc] edi=[esp+0x10] ecx=[esp+0x14]; xor eax,eax; repe cmpsb; jz L; sbb eax,eax;
+     sbb eax,-1; L: pop edi;pop esi;ret. Result -1/0/1 in EAX = memcmp(a, b, n). -->
+<binaryimage arch="x86:LE:32:default:watcom">
+  <bytechunk space="ram" offset="0x6000" readonly="true">
+56578b74240c8b7c24108b4c241431c0f3a6740519c083d8ff5f5ec3
+  </bytechunk>
+</binaryimage>

@@ -108,4 +108,23 @@ down, +987 insn-sim; 9 verdict flips, all upward (MISMATCH→EXACT 0x11b44 0x225
   (→EXACT 0x11b44 0x225e0 0x2a0ec 0x2b184 0x34540 0x6f8f4; →SAME_SHAPE 0x31e2c 0x32168 0x3242c
   0x49450); 86 movers, 84 up / 2 down — the 2 downs (0x6f94c −0.003, 0x626c0 −0.002) are
   library-zone, verdict-unchanged, value-identical noise.** Full suite green.
+- **V2 `memcmp` (built 2026-08-26, round-trip POC first):** hand-editing `0x11a50`'s TU to
+  `iVar1 = memcmp(param_1, (uint1 *)0x8efc4, iVar2)` under `#pragma intrinsic(memcmp)` took the
+  function MISMATCH → **EXACT** (0 divergent rows; was 32) — Watcom's template `XOR EAX,EAX; REPE
+  CMPSB; JZ L; SBB EAX,EAX; SBB EAX,-1; L:` (a −1/0/1 result) reproduced byte-for-byte. The lifted
+  shape (fixture `x86_repe_cmpsb.xml`): at the CMPS pc, `LOAD a`/`LOAD b`, `INT_LESS(a,b)` = CF and
+  `INT_EQUAL(a,b)` = ZF (the loop condition); after the loop, EXIT phis of both flags, a `CBRANCH`
+  on ZF (the `if (!bVar3)`), and the result chain `r1 = 1 - zext(CF) - zext(CF != 0)` merged with a
+  `0` in the result phi. Recognizer: find that structure, check the flags feed only it and the
+  pointers are dead after the loop, then render `r = memcmp(a, b, n);` at the loop node and skip
+  every node whose live ops all sit at the if-node's pcs (`rep_skip`); suppress the chain ops and
+  the pre-loop `r = 0; cf = 0; zf = 1;` phi-entry COPYs. Witness: `F3 A6` (REPE CMPSB; A7 = CMPSD).
+  Prelude: `int memcmp(const void *, const void *, unsigned)` + the pragma. Ceiling (fable-b, from
+  the bytes): 12 REPZ CMPSB sites in game code + 8 in the Miles region. **Measured (stringops3 vs
+  stringops2): 12 game `memcmp` calls recognized in 11 functions (0x11a50 0x137b8 0x13ad8 0x1f734
+  0x1f7b8 0x2be6c 0x324d0 0x32a3c 0x32d64 0x3318c 0x332c4) + 10 library; WGSS 0.5364 → 0.5424
+  (+0.00607, +743 insn-sim); EXACT 834 → 837 (0x11a50, 0x32a3c, 0x32d64 → EXACT; 0x32d64 is the #3
+  game-loss function, 315 insns, 0.279 → 1.000); 19 moved, 19 up, 0 down, no sim-downs.**
+  V3 candidate (fable-b's round-trip POC at 0x16118): `strlen` via `REPNE SCASB` — Watcom re-emits
+  `SUB ECX,ECX; DEC ECX; XOR EAX,EAX; REPNE SCASB; NOT ECX; DEC ECX` from `strlen()` under the pragma.
 - Later: `memset` pairs need only the same recognizer (no game sites use REP STOS; libraries do).

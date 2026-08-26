@@ -71,3 +71,27 @@ fn rep_movs_pair_renders_one_memcpy() {
     assert_eq!(c.matches("memcpy(").count(), 1, "the pair collapses to ONE memcpy:\n{c}");
     assert!(!c.contains("while") && !c.contains("for ("), "no loops remain:\n{c}");
 }
+
+#[test]
+fn repe_cmpsb_renders_memcmp_result() {
+    let path = paths::oracle_fixtures_dir().join("x86_repe_cmpsb.xml");
+    let dt = datatest::parse_file(&path).unwrap();
+    let lang_id = dt.arch.rfind(':').map_or(dt.arch.as_str(), |i| &dt.arch[..i]);
+    let (spec, ctx) = mosura::lang::load_cached(lang_id).expect("x86 SLEIGH tables load");
+    let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
+    let entry = dt.chunks[0].offset;
+    let mut f = build::raw_funcdata_flow_image_arch(spec, "func", &image, entry, ctx, &dt.arch);
+    pipeline::decompile(&mut f);
+    let mut choices = EmitChoices::default();
+    choices.set("string-ops", "intrinsic").unwrap();
+    let (_, report) = print_c_report(&f, &choices);
+    assert_eq!(report.rep_movs_candidates.len(), 1, "the REPE CMPSB loop is a candidate: {:?}", report.rep_movs_candidates);
+    let insns = normalize("x86:LE:32:default", &dt.chunks[0].bytes, entry, &NoReloc).unwrap_or_default();
+    let sites = mosura::recompile::buildconfig::string_ops_from_evidence(&report.rep_movs_candidates, &insns);
+    assert_eq!(sites.len(), 1, "F3 A6 is witnessed");
+    let recovered = RecoveredChoices { string_op_sites: sites, ..Default::default() };
+    let c = print_c_recovered(&f, &choices, &recovered);
+    eprintln!("=== MEMCMP C ===\n{c}");
+    assert!(c.contains("= memcmp(param_1, param_2, param_3);"), "renders the result assignment:\n{c}");
+    assert!(!c.contains("do {") && !c.contains("while") && !c.contains("bVar"), "loop, flags and the if-block are gone:\n{c}");
+}

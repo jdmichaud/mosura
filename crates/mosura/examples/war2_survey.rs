@@ -66,7 +66,8 @@ void __int3(void);
    back to REP MOVS -- recovering the bytes. Plain prototypes; -oi makes them intrinsic. */
 void *memcpy(void *, const void *, unsigned);
 void *memset(void *, int, unsigned);
-#pragma intrinsic(memcpy,memset);
+int memcmp(const void *, const void *, unsigned);
+#pragma intrinsic(memcpy,memset,memcmp);
 typedef unsigned char undefined; typedef unsigned char undefined1; typedef unsigned short undefined2;
 typedef unsigned int undefined4; typedef unsigned char byte;
 /* Integer widths the target CANNOT hold (Watcom 10.0a x86-32 has no 64-bit integer type).
