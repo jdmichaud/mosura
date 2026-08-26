@@ -61,13 +61,14 @@ const PRELUDE: &str = "\
    idiom and app_fatal's body. parm []/modify exact [] = touches nothing. */
 void __int3(void);
 #pragma aux __int3 = 0xcc parm [] modify exact [];
-/* memcpy/memset intrinsics (the string-ops=intrinsic emission arm): a witnessed REP MOVS/STOS
+/* memcpy/memset/memcmp/strlen intrinsics (the string-ops=intrinsic emission arm): a witnessed REP MOVS/STOS/CMPS/SCAS
    renders as the library call the source wrote, and Watcom's -oi (via -ox in -onatx) re-inlines it
    back to REP MOVS -- recovering the bytes. Plain prototypes; -oi makes them intrinsic. */
 void *memcpy(void *, const void *, unsigned);
 void *memset(void *, int, unsigned);
 int memcmp(const void *, const void *, unsigned);
-#pragma intrinsic(memcpy,memset,memcmp);
+unsigned strlen(const char *);
+#pragma intrinsic(memcpy,memset,memcmp,strlen);
 typedef unsigned char undefined; typedef unsigned char undefined1; typedef unsigned short undefined2;
 typedef unsigned int undefined4; typedef unsigned char byte;
 /* Integer widths the target CANNOT hold (Watcom 10.0a x86-32 has no 64-bit integer type).

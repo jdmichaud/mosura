@@ -1,0 +1,9 @@
+<!-- Watcom 10.0a's strlen() intrinsic template (fable-b's round-trip POC at WAR2 0x16118):
+     push edi; mov edi,[esp+8]; sub ecx,ecx; dec ecx; xor eax,eax; repne scasb; not ecx; dec ecx;
+     mov eax,ecx; pop edi; ret. The lifted REPNE SCASB loop plus the `~ecx - 1` result is the
+     shape the string-ops=intrinsic arm must render as `strlen(s)` (V3). -->
+<binaryimage arch="x86:LE:32:default:watcom">
+  <bytechunk space="ram" offset="0x6000" readonly="true">
+578b7c240829c94931c0f2aef7d14989c85fc3
+  </bytechunk>
+</binaryimage>

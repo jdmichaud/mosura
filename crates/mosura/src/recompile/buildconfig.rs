@@ -635,7 +635,8 @@ pub fn array_index_sites_from_evidence(
 /// actually implements as a repeated string instruction — the byte-exact witness that keeps a
 /// hand-written loop of the same shape from being collapsed to a `memcpy`/`memset` call. Per
 /// candidate `(REP MOVS pc, element size)`: the instruction at that pc must be `REP`-prefixed
-/// (`0xF3`) `MOVS`/`STOS` (`0xA4`/`0xA5` = movsb/movsd, `0xAA`/`0xAB` = stosb/stosd).
+/// (`0xF3`) `MOVS`/`STOS`/`CMPS`/`SCAS` (`0xA4`/`0xA5` = movsb/movsd, `0xA6`/`0xA7` = cmpsb/cmpsd,
+/// `0xAA`/`0xAB` = stosb/stosd, `0xAE`/`0xAF` = scasb/scasd).
 pub fn string_ops_from_evidence(
     cands: &[(u64, u32)],
     insns: &[NormInsn],
@@ -643,7 +644,7 @@ pub fn string_ops_from_evidence(
     let mut out = std::collections::HashSet::new();
     for &(pc, _sz) in cands {
         let Some(insn) = insns.iter().find(|x| x.addr == pc) else { continue };
-        if insn.bytes.len() >= 2 && matches!(insn.bytes[0], 0xF2 | 0xF3) && matches!(insn.bytes[1], 0xA4 | 0xA5 | 0xA6 | 0xA7 | 0xAA | 0xAB)
+        if insn.bytes.len() >= 2 && matches!(insn.bytes[0], 0xF2 | 0xF3) && matches!(insn.bytes[1], 0xA4 | 0xA5 | 0xA6 | 0xA7 | 0xAA | 0xAB | 0xAE | 0xAF)
         {
             out.insert(pc);
         }

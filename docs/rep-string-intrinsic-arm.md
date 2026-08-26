@@ -127,4 +127,50 @@ down, +987 insn-sim; 9 verdict flips, all upward (MISMATCH→EXACT 0x11b44 0x225
   game-loss function, 315 insns, 0.279 → 1.000); 19 moved, 19 up, 0 down, no sim-downs.**
   V3 candidate (fable-b's round-trip POC at 0x16118): `strlen` via `REPNE SCASB` — Watcom re-emits
   `SUB ECX,ECX; DEC ECX; XOR EAX,EAX; REPNE SCASB; NOT ECX; DEC ECX` from `strlen()` under the pragma.
+- **V3 `strlen` (LANDED 2026-08-27; fable-b's round-trip POC at 0x16118 reproduced the
+  template `SUB ECX,ECX; DEC ECX; XOR EAX,EAX; REPNE SCASB; NOT ECX; DEC ECX` from `strlen()` under
+  `#pragma intrinsic(strlen)`).** Lifted shape (fixture `x86_repne_scasb.xml`, all loop ops at the
+  SCAS pc): `cnt = 0xffffffff; do { if (cnt == 0) break; cnt = cnt - 1; c = *p; p = p + 1; }
+  while (c != '\0');` then the template's `NOT; DEC` as `~cnt - 1` on the exit count (a
+  MULTIEQUAL of the count phi and its decrement). Corpus census on the w1e tree: **24 loops, 22 in
+  game code across 19 functions** (0x16118 0x16598 0x16668 0x2bb10 0x2ddf8 0x49720 0x49ad8 0x49d30
+  0x49df8 0x4a330 0x4b338 0x50604 0x507d4 0x5b91c 0x5d0c8 0x5d100 0x5d138 0x5d394 0x5d7c8) = the
+  whole game ceiling fable-b counted from the bytes. What the sites do with the exit count: `~cnt -
+  1` (= the length: assignments, call arguments, compares, a `(char)` store); `~cnt` alone (=
+  length + 1 — Ghidra folded the user's `+ 1` into the template's `- 1`: `malloc(~cnt)` at
+  0x16598/0x16668, `if (~cnt != 1)` at 0x2ddf8/0x5d100/0x5d394, `cnt = ~cnt` at 0x4a330); `~cnt -
+  2` (length − 1, 0x6d870); and two sites whose count is dead (0x2bb10, 0x49ad8 — the scanned
+  pointer is what they use; not a source-level `strlen`, left as loops). Design (as landed, each
+  rule named by a probe): the exit count's only live reader must be an `INT_NEGATE`; the value the
+  arm names is always the LENGTH (what `NOT; DEC` leaves in ECX) — the `INT_SUB(neg, 1)` output
+  when that chain exists, else the negate's own output — assigned at the LOOP's position
+  (`r = strlen(s);`, where the original's template sits: fable-b's round-trip POC at 0x16118 was
+  position-exact there) when the result is explicit, read more than once, or read by nothing the
+  printer shows (0x2bb10: the length is a hidden third call argument the recovered prototype
+  lacks — the missing-args backlog; dropping the loop there lost the template rows), and inlined
+  `strlen(s)` at its single implied use otherwise. Every reader of the bare negate is `len + 1`
+  with its constant re-adjusted (`strlen_fold`: `~cnt != 1` → `len != 0`, `~cnt - 2` → `len - 1`),
+  undoing the fold Ghidra applied to the template's `DEC` — the probe rows at 0x5d100 showed the
+  literal `strlen(p) + 1 != 1` compiling to `INC ECX; CMP ECX,1` against the original's `TEST
+  ECX,ECX`, and `p + strlen(p) + 1 - 2` to `[ECX-2]` against `[ECX+EDI-1]`. The argument prints
+  with `(char *)` when its type is not a char pointer (the entry resolver crosses the phi input's
+  CAST; Watcom's intrinsic type-checks the parameter — `E1071`, 6 COMPILE_FAILs in the first probe;
+  Ghidra's `castInput` for the `const char *` parameter). Value guard: the chain sits in the loop's
+  exit block with no CALL/STORE before it and nothing between reading the result's variable
+  (phis excepted — the exit MULTIEQUAL's inputs share the count's variable when the negate assigns
+  into the count itself, 0x4a330). Loop node and the `cnt = -1; p = s;` entry copies suppressed.
+  Witness: `F2 AE` (REPNE SCASB; `AF` = SCASD). Prelude: `unsigned strlen(const char *)` + the
+  pragma.
+  **Measured (round w2b vs w8, 2026-08-27): WGSS 0.5433 -> 0.5450 (+216.0 insn-sim, +0.00176); 840 EXACT held, 0 lost; SAME_SHAPE 76 -> 78 (0x5d0c8, 0x5d100 MISMATCH -> SAME_SHAPE); 21 TUs moved, 19 up / 2 down (0x2bb10 -0.018: the missing-args site; 0x614fc -0.012: the W8 fix-up's correct goto replacing wrong code); no new COMPILE_FAIL; game memcpy/memset/memcmp unchanged (78/0/20), 20 strlen calls in 17 functions (10 with the cast), the 2 pointer-product loops kept; largest movers 0x4b338 0.225 -> 0.921, 0x5d7c8 0.595 -> 0.905, 0x5d0c8 0.276 -> 0.852, 0x5d100 0.296 -> 0.852, 0x49720 0.394 -> 0.719.** The 0x5d100 witness: `TEST ECX,ECX` now
+  matches (the row left the divergences); its residual is Watcom folding `p + (len - 1)` into
+  `ADD ECX,[EDX+0x14]; MOV byte [ECX-1]` where the original keeps `p` in EDI (`MOV EDI,[EDX+0x14];
+  MOV byte [ECX+EDI-1]`) — an addressing/allocation choice, not the arm's. First probe (w2p) had
+  6 COMPILE_FAILs (the missing `(char *)`, E1071) and an over-inlined multi-use result; both fixed
+  by a hand-patched POC on the same tree before this round.
+- Follow-up seen while building V3 (w8 tree): 61 of 140 `memcpy` lines sit beside a stray
+  `x = n >> 2;` / `x = n & 3;` statement — the runtime-length pair's split counts are `INT_RIGHT`/
+  `INT_AND` ops assigned to explicit variables, and the phi-entry suppression covers only the COPY
+  links. 29 TUs (14 game: 11 MISMATCH, 3 EXACT — the EXACT ones show Watcom dead-stores them when
+  the temp is otherwise unused). Suppressing an op whose only live uses are the suppressed entry
+  chain would remove them; measure before assuming it moves bytes.
 - Later: `memset` pairs need only the same recognizer (no game sites use REP STOS; libraries do).
