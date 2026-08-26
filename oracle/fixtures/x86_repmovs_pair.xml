@@ -1,0 +1,9 @@
+<!-- Watcom 10.0a memcpy intrinsic template with a RUNTIME length (docs/rep-string-intrinsic-arm.md):
+     push edi;push esi; edi=[esp+0xc] esi=[esp+0x10] ecx=[esp+0x14]; mov eax,ecx; shr ecx,2;
+     repne movsd; mov cl,al; and cl,3; repne movsb; pop esi;pop edi;ret. (F2 = REPNE prefix, as the
+     compiler emits it.) The pair is one memcpy(dst, src, n). -->
+<binaryimage arch="x86:LE:32:default:watcom">
+  <bytechunk space="ram" offset="0x6000" readonly="true">
+57568b7c240c8b7424108b4c24148bc1c1e902f2a58ac880e103f2a45e5fc3
+  </bytechunk>
+</binaryimage>

@@ -194,6 +194,10 @@ pub struct EmitReport {
     /// the witness (`buildconfig::join_narrow_sites_from_evidence`) keeps only those loaded into
     /// an 8-bit sub-register (`MOV r8,imm8`), the sites where narrowing the declaration is right.
     pub join_narrow_candidates: Vec<u64>,
+    /// `string-ops`: a lifted single-instruction copy/set loop — `(REP MOVS pc, element size)`.
+    /// The witness (`buildconfig::string_ops_from_evidence`) keeps only pcs whose ORIGINAL byte is
+    /// `REP MOVS`/`REP STOS`, so a hand-written loop of the same shape is never collapsed to a call.
+    pub rep_movs_candidates: Vec<(u64, u32)>,
 }
 
 /// Per-site rendering decisions RECOVERED from the original's bytes by a target profile —
@@ -248,6 +252,8 @@ pub struct RecoveredChoices {
     pub array_index_sites: std::collections::HashSet<u64>,
     /// N1 constant-materialization pcs witnessed as 8-bit sub-register loads.
     pub join_narrow_sites: std::collections::HashSet<u64>,
+    /// `string-ops`: REP MOVS/STOS pcs to render as `memcpy`/`memset` — witnessed by the original byte.
+    pub string_op_sites: std::collections::HashSet<u64>,
     /// Pointer-context INT_ADD chains print their COMPUTED terms in the ORIGINAL's
     /// computation order (`sum-order`, allocator thread lever 1): each implicit term keyed by
     /// the earliest original address among its inline ops, swapped within the slots such
@@ -264,6 +270,127 @@ pub struct RecoveredChoices {
     /// (calls, control) keep their positions; the re-emitted ops are skipped when the block
     /// walk reaches them, as `store_orders` does.
     pub ilv_orders: std::collections::HashMap<OpId, Vec<OpId>>,
+}
+
+/// How a recognized copy/set call's byte size is rendered.
+#[derive(Debug, Clone, Copy)]
+enum RepSize {
+    /// A compile-time constant (a struct copy / `UNMAP_SIZE`): `c1*4 + c2` folded.
+    Const(u64),
+    /// The runtime length varnode `n` that fed both `n>>2` and `n&3`.
+    Var(VarnodeId),
+    /// Unrecovered runtime split: rendered `count1 * 4 + count2` (value-identical).
+    Split(VarnodeId, VarnodeId),
+}
+
+/// A recognized lifted `REP MOVS`/`REP STOS` (single, or a MOVSD+MOVSB / STOSD+STOSB PAIR — Watcom
+/// 10.0a's intrinsic template always emits the pair, even for a constant length), keyed by the
+/// FIRST loop's instruction pc — the operands to render as `memcpy(dst, src, size)` /
+/// `memset(dst, val, size)`. `src`/`set_val` are exclusive (copy vs set); values are loop-entry.
+#[derive(Debug, Clone, Copy)]
+struct RepMovs {
+    dst: VarnodeId,
+    src: Option<VarnodeId>,
+    set_val: Option<VarnodeId>,
+    size: RepSize,
+}
+
+/// One lifted rep-string loop, as the recognizer sees it (all ops at one pc).
+#[derive(Debug, Clone, Copy)]
+struct RepLoop {
+    pc: u64,
+    elem: u32,
+    dst_phi: VarnodeId,
+    src_phi: Option<VarnodeId>,
+    dst_entry: VarnodeId,
+    src_entry: Option<VarnodeId>,
+    set_val: Option<VarnodeId>,
+    count_phi: VarnodeId,
+    count_entry: VarnodeId,
+}
+
+/// Follow `COPY` chains to the source varnode.
+fn strip_copies(f: &Funcdata, mut v: VarnodeId) -> VarnodeId {
+    for _ in 0..8 {
+        match f.vn(v).def {
+            Some(d) if f.op(d).code() == OpCode::Copy => v = f.op(d).input(0).unwrap_or(v),
+            _ => break,
+        }
+    }
+    v
+}
+
+/// The loop-entry (pre-loop) value of a rep-string induction varnode: if `v` is a `MULTIEQUAL`
+/// whose one input is defined at the loop pc (the back-edge, a `PTRADD`/`INT_ADD`) and the other is
+/// not, return the other (following a `COPY` to its source so it renders as the original operand).
+fn rep_loop_entry(f: &Funcdata, v: VarnodeId, pc: u64) -> Option<VarnodeId> {
+    let d = f.vn(v).def?;
+    let o = f.op(d);
+    if o.code() != OpCode::Multiequal || o.num_inputs() != 2 {
+        return None;
+    }
+    let (a, b) = (o.input(0)?, o.input(1)?);
+    let at = f.vn(a).def.map(|x| f.op(x).seqnum.pc.offset);
+    let bt = f.vn(b).def.map(|x| f.op(x).seqnum.pc.offset);
+    let entry = match (at == Some(pc), bt == Some(pc)) {
+        (true, false) => b,
+        (false, true) => a,
+        _ => return None,
+    };
+    // follow a pre-loop COPY to its source (the initial register value: a parameter/stack slot)
+    match f.vn(entry).def {
+        Some(cd) if f.op(cd).code() == OpCode::Copy => f.op(cd).input(0),
+        _ => Some(entry),
+    }
+}
+
+/// The count phi of the rep-string loop at `pc` (a `MULTIEQUAL` at `pc` whose back-edge input is
+/// `INT_ADD(self, const)` — the `ECX--`) and its loop-entry value (the initial `ECX`).
+fn rep_count(f: &Funcdata, pc: u64) -> Option<(VarnodeId, VarnodeId)> {
+    for op in f.op_ids() {
+        let o = f.op(op);
+        if o.is_dead() || o.code() != OpCode::Multiequal || o.seqnum.pc.offset != pc || o.num_inputs() != 2 {
+            continue;
+        }
+        let out = o.output?;
+        // `ECX--`: INT_ADD(self, -1) for a signed count, INT_SUB(self, 1) once typed unsigned.
+        let back = [o.input(0)?, o.input(1)?].into_iter().find(|&iv| {
+            f.vn(iv).def.is_some_and(|dd| {
+                let do_ = f.op(dd);
+                matches!(do_.code(), OpCode::IntAdd | OpCode::IntSub) && do_.input(0) == Some(out)
+            })
+        });
+        if back.is_some() {
+            return rep_loop_entry(f, out, pc).map(|e| (out, e));
+        }
+    }
+    None
+}
+
+/// Safety: `memcpy`/`memset` does not leave the advanced pointers/count behind, so the loop's
+/// induction phis must have NO use outside the loop's own pc. Returns false if any live use of a
+/// listed varnode's phi output is at a different pc (then the loop is kept, not collapsed).
+fn rep_post_loop_dead(f: &Funcdata, phis: &[VarnodeId], pc: u64) -> bool {
+    for &v in phis {
+        for &u in &f.vn(v).descend {
+            if !f.op(u).is_dead() && f.op(u).seqnum.pc.offset != pc {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+/// The basic blocks under a structured node (its `Basic` leaves), recursively.
+fn collect_basics(s: &Structured, idx: usize, acc: &mut Vec<BlockId>) {
+    match &s.blocks[idx].kind {
+        FlowKind::Basic(b) => acc.push(*b),
+        _ => {
+            for &c in &s.blocks[idx].components {
+                collect_basics(s, c, acc);
+            }
+        }
+    }
 }
 
 /// How a tier-2 materialized temp's def statement renders — see the `tier2_widen` field.
@@ -310,6 +437,12 @@ struct PrintC<'a> {
     array_index_spelled: bool,
     /// N3 pointer temps to inline as `((T *)base)[idx]`: temp varnode → (base, index, pointee).
     array_index_temps: HashMap<VarnodeId, (VarnodeId, VarnodeId, Datatype)>,
+    /// `EmitChoices::string_ops == Intrinsic` (EMISSION ARM): render a witnessed lifted `REP MOVS`/
+    /// `REP STOS` loop as a `memcpy`/`memset` call. Recognized loops keyed by their single pc.
+    string_ops_intrinsic: bool,
+    rep_movs: HashMap<u64, RepMovs>,
+    /// The SECOND loop of a recognized pair: emits nothing (the first loop's call covers it).
+    rep_skip: std::collections::HashSet<u64>,
     reg_space: Option<super::space::SpaceId>,
     ram_space: Option<super::space::SpaceId>,
     stack_space: Option<super::space::SpaceId>,
@@ -2862,10 +2995,65 @@ impl<'a> PrintC<'a> {
         }
     }
 
+    /// `string-ops=intrinsic`: if this loop node is a recognized single-instruction `REP MOVS`/
+    /// `REP STOS` (all its ops share one recovered pc in `self.rep_movs`), emit the `memcpy`/`memset`
+    /// call in place of the whole loop and return true (so the caller skips the loop emit).
+    fn try_emit_rep_movs(&mut self, s: &Structured, idx: usize, indent: usize, out: &mut String) -> bool {
+        if self.rep_movs.is_empty() {
+            return false;
+        }
+        let mut basics = Vec::new();
+        collect_basics(s, idx, &mut basics);
+        let mut pc: Option<u64> = None;
+        for b in basics {
+            for op in self.f.block(b).ops.clone() {
+                if self.f.op(op).is_dead() {
+                    continue;
+                }
+                let p = self.f.op(op).seqnum.pc.offset;
+                match pc {
+                    None => pc = Some(p),
+                    Some(x) if x == p => {}
+                    _ => return false, // more than one instruction's ops → not a single REP MOVS
+                }
+            }
+        }
+        let Some(pc) = pc else { return false };
+        if self.rep_skip.contains(&pc) {
+            return true; // the pair's byte loop: covered by the first loop's call
+        }
+        let Some(info) = self.rep_movs.get(&pc).copied() else { return false };
+        let dst = self.render_var(info.dst).0;
+        let size = match info.size {
+            RepSize::Const(c) => if c < 10 { format!("{c}") } else { format!("{c:#x}") },
+            RepSize::Var(v) => self.render_var(v).0,
+            RepSize::Split(a, b) if a == b => format!("{} * 4", self.render_var(a).0),
+            RepSize::Split(a, b) => format!("{} * 4 + {}", self.render_var(a).0, self.render_var(b).0),
+        };
+        let stmt = match (info.src, info.set_val) {
+            (Some(src), _) => {
+                let src = self.render_var(src).0;
+                format!("memcpy({dst}, {src}, {size})")
+            }
+            (None, Some(v)) => {
+                let v = self.render_var(v).0;
+                format!("memset({dst}, {v}, {size})")
+            }
+            _ => return false,
+        };
+        let _ = writeln!(out, "{}{stmt};", "  ".repeat(indent));
+        true
+    }
+
     fn emit_structured_body(&mut self, s: &Structured, idx: usize, indent: usize, out: &mut String) {
         let pad = "  ".repeat(indent);
         let fb = &s.blocks[idx];
         let (kind, comps, negated) = (fb.kind.clone(), fb.components.clone(), fb.negated);
+        if matches!(kind, FlowKind::WhileDo | FlowKind::DoWhile | FlowKind::InfLoop)
+            && self.try_emit_rep_movs(s, idx, indent, out)
+        {
+            return;
+        }
         match kind {
             FlowKind::Basic(bid) => self.emit_basic(bid, indent, out),
             // A short-circuit condition's statements pass. Ghidra `PrintC::emitBlockCondition`'s
@@ -4883,6 +5071,9 @@ fn print_c_inner(
         join_width_consumer: choices.join_width == super::emit::JoinWidth::Consumer,
         array_index_spelled: choices.array_index == super::emit::ArrayIndex::Spelled,
         array_index_temps: HashMap::new(),
+        string_ops_intrinsic: choices.string_ops == super::emit::StringOps::Intrinsic,
+        rep_movs: HashMap::new(),
+        rep_skip: std::collections::HashSet::new(),
         reg_space,
         ram_space: f.spaces.by_name("ram"),
         stack_space: f.spaces.by_name("stack"),
@@ -5102,6 +5293,173 @@ fn print_c_inner(
             }
             p.array_index_temps.insert(out, (base, idx, (*pointee).clone()));
             p.suppressed.insert(op); // the `piVar = (T *)(...)` assignment is inlined
+        }
+    }
+    // string-ops=intrinsic (docs/rep-string-intrinsic-arm.md): lifted REP MOVS/STOS loops →
+    // memcpy/memset. Watcom 10.0a's intrinsic template is a MOVSD+MOVSB (STOSD+STOSB) PAIR sharing
+    // the advanced pointers — `n>>2` dwords then `n&3` bytes — emitted even for a constant length
+    // (a struct copy / sizeof), so the pair is the unit. All of one loop's ops share one pc.
+    // Witnessed on the original bytes (buildconfig::string_ops_from_evidence: F2|F3 MOVS/STOS).
+    if choices.string_ops == super::emit::StringOps::Intrinsic {
+        let mut loops: Vec<RepLoop> = Vec::new();
+        for op in f.op_ids() {
+            let o = f.op(op);
+            if o.is_dead() || o.code() != OpCode::Store {
+                continue;
+            }
+            let pc = o.seqnum.pc.offset;
+            let (Some(dst_phi), Some(val)) = (o.input(1), o.input(2)) else { continue };
+            let elem = f.vn(val).size;
+            if elem == 0 || loops.iter().any(|l| l.pc == pc) {
+                continue;
+            }
+            let (src_phi, set_val) = match f.vn(val).def {
+                Some(d)
+                    if f.op(d).code() == OpCode::Load
+                        && f.op(d).seqnum.pc.offset == pc
+                        && f.op(d).input(1).is_some() =>
+                {
+                    (f.op(d).input(1), None)
+                }
+                _ => (None, Some(val)),
+            };
+            let Some(dst_entry) = rep_loop_entry(f, dst_phi, pc) else { continue };
+            let src_entry = match src_phi {
+                Some(sp) => match rep_loop_entry(f, sp, pc) {
+                    Some(e) => Some(e),
+                    None => continue,
+                },
+                None => None,
+            };
+            let Some((count_phi, count_entry)) = rep_count(f, pc) else { continue };
+            loops.push(RepLoop { pc, elem, dst_phi, src_phi, dst_entry, src_entry, set_val, count_phi, count_entry });
+        }
+        // Pair up: a dword loop whose advanced pointers are the entry of a byte loop.
+        let mut used: std::collections::HashSet<u64> = std::collections::HashSet::new();
+        let mut recognized: Vec<(RepLoop, Option<RepLoop>)> = Vec::new();
+        for l1 in &loops {
+            if l1.elem != 4 || used.contains(&l1.pc) {
+                continue;
+            }
+            let pair = loops.iter().find(|l2| {
+                l2.elem == 1
+                    && !used.contains(&l2.pc)
+                    && strip_copies(f, l2.dst_entry) == l1.dst_phi
+                    && match (l2.src_entry, l1.src_phi) {
+                        (Some(e), Some(p)) => strip_copies(f, e) == p,
+                        (None, None) => true,
+                        _ => false,
+                    }
+            });
+            if let Some(l2) = pair {
+                used.insert(l1.pc);
+                used.insert(l2.pc);
+                recognized.push((*l1, Some(*l2)));
+            }
+        }
+        for l in &loops {
+            if !used.contains(&l.pc) {
+                recognized.push((*l, None));
+            }
+        }
+        for (l1, l2) in recognized {
+            // memcpy/memset leaves no advanced pointer behind: the LAST loop's pointers must be dead
+            // after it (a pair's first-loop pointers legitimately flow into the second).
+            let last = l2.unwrap_or(l1);
+            let mut phis = vec![last.dst_phi];
+            if let Some(sp) = last.src_phi {
+                phis.push(sp);
+            }
+            if !rep_post_loop_dead(f, &phis, last.pc) {
+                continue;
+            }
+            // Size in bytes.
+            let c = |v: VarnodeId| -> Option<u64> {
+                let v = strip_copies(f, v);
+                f.vn(v).is_constant().then(|| f.vn(v).constant_value())
+            };
+            let size = match l2 {
+                Some(l2) => match (c(l1.count_entry), c(l2.count_entry)) {
+                    (Some(c1), Some(c2)) => RepSize::Const(c1 * 4 + c2),
+                    _ => {
+                        // runtime n: count1 = n >> 2, count2 = n & 3 from one varnode
+                        let n1 = f.vn(strip_copies(f, l1.count_entry)).def.and_then(|d| {
+                            let o = f.op(d);
+                            (o.code() == OpCode::IntRight
+                                && o.input(1).is_some_and(|k| f.vn(k).is_constant() && f.vn(k).constant_value() == 2))
+                            .then(|| strip_copies(f, o.input(0).unwrap()))
+                        });
+                        let n2 = f.vn(strip_copies(f, l2.count_entry)).def.and_then(|d| {
+                            let o = f.op(d);
+                            (o.code() == OpCode::IntAnd
+                                && o.input(1).is_some_and(|k| f.vn(k).is_constant() && f.vn(k).constant_value() == 3))
+                            .then(|| strip_copies(f, o.input(0).unwrap()))
+                        });
+                        match (n1, n2) {
+                            (Some(a), Some(b)) if a == b => RepSize::Var(a),
+                            _ => RepSize::Split(l1.count_entry, l2.count_entry),
+                        }
+                    }
+                },
+                None => match c(l1.count_entry) {
+                    Some(c1) => RepSize::Const(c1 * l1.elem as u64),
+                    None if l1.elem == 1 => RepSize::Var(l1.count_entry),
+                    None => RepSize::Split(l1.count_entry, l1.count_entry), // rendered below as count*elem
+                },
+            };
+            // memset value: a pair's byte loop carries the byte; a lone STOSD needs a broadcast const.
+            let set_val = match (l1.set_val, l2) {
+                (Some(_), Some(l2)) => l2.set_val,
+                (Some(v), None) => Some(v),
+                _ => None,
+            };
+            let single_dword_set_ok = match (l1.set_val, l2) {
+                (Some(v), None) if l1.elem == 4 => {
+                    let v = strip_copies(f, v);
+                    f.vn(v).is_constant() && {
+                        let k = f.vn(v).constant_value();
+                        (k & 0xff) * 0x0101_0101 == k
+                    }
+                }
+                _ => true,
+            };
+            if !single_dword_set_ok {
+                continue;
+            }
+            p.report.rep_movs_candidates.push((l1.pc, l1.elem));
+            if let Some(l2) = l2 {
+                p.report.rep_movs_candidates.push((l2.pc, l2.elem));
+            }
+            let witnessed = p.recovered.string_op_sites.contains(&l1.pc)
+                && l2.map_or(true, |l2| p.recovered.string_op_sites.contains(&l2.pc));
+            if !witnessed {
+                continue;
+            }
+            p.rep_movs.insert(l1.pc, RepMovs { dst: l1.dst_entry, src: l1.src_entry, set_val, size });
+            if let Some(l2) = l2 {
+                p.rep_skip.insert(l2.pc);
+            }
+            // The phi-entry COPYs (`pxVar6 = pTemp; iVar4 = 0x4000; ...`) become dead assignments once
+            // the call reads the entry values directly; suppress those used only by their phi, so the
+            // recompile sees exactly the source's `memcpy(dst, src, n)` and allocates like the original.
+            let mut entries = vec![(l1.dst_phi, l1.dst_entry), (l1.count_phi, l1.count_entry)];
+            if let (Some(sp), Some(se)) = (l1.src_phi, l1.src_entry) {
+                entries.push((sp, se));
+            }
+            if let Some(l2) = l2 {
+                entries.push((l2.count_phi, l2.count_entry));
+            }
+            for (phi, entry) in entries {
+                let Some(pd) = f.vn(phi).def else { continue };
+                let raw = f.op(pd).inrefs.iter().copied().find(|&i| strip_copies(f, i) == strip_copies(f, entry) || i == entry);
+                let Some(raw) = raw else { continue };
+                if let Some(cd) = f.vn(raw).def {
+                    let only_phi = f.vn(raw).descend.iter().all(|&u| u == pd || f.op(u).is_dead());
+                    if f.op(cd).code() == OpCode::Copy && only_phi {
+                        p.suppressed.insert(cd);
+                    }
+                }
+            }
         }
     }
     let t0 = std::time::Instant::now();

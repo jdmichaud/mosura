@@ -215,6 +215,7 @@ pub struct EmitChoices {
     pub narrow_tests: NarrowTests,
     pub join_width: JoinWidth,
     pub array_index: ArrayIndex,
+    pub string_ops: StringOps,
 }
 
 /// How an integer extension (INT_ZEXT/INT_SEXT) that C's promotion would perform anyway is
@@ -306,6 +307,16 @@ pub enum ArrayIndex {
     Spelled,
 }
 
+/// A lifted `REP MOVS`/`REP STOS` renders as the Ghidra counted `for` loop (`Loop`), or as the
+/// `memcpy`/`memset` intrinsic call (`Intrinsic`) the source used — which Watcom's `-oi` re-inlines
+/// to `REP MOVS`, recovering the bytes (docs/rep-string-intrinsic-arm.md). Byte-witnessed on the
+/// original instruction being `REP MOVS`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StringOps {
+    Loop,
+    Intrinsic,
+}
+
 impl Default for EmitChoices {
     fn default() -> Self {
         Self {
@@ -322,6 +333,7 @@ impl Default for EmitChoices {
             narrow_tests: NarrowTests::Ghidra,
             join_width: JoinWidth::Ghidra,
             array_index: ArrayIndex::Ghidra,
+            string_ops: StringOps::Loop,
         }
     }
 }
@@ -415,6 +427,12 @@ impl EmitChoices {
             doc: "render a scaled-index access through a constant/global base as address \
                   arithmetic *(T *)(base + i*sz), or as the array subscript ((T *)base)[i]",
         },
+        Axis {
+            name: "string-ops",
+            values: &["loop", "intrinsic"],
+            doc: "render a lifted REP MOVS/REP STOS as the Ghidra counted loop, or as the \
+                  memcpy/memset intrinsic call the source used (witnessed on the original REP MOVS)",
+        },
     ];
 
     /// Every axis, for a search that wants to enumerate rather than hardcode.
@@ -477,6 +495,10 @@ impl EmitChoices {
             "array-index" => Some(match self.array_index {
                 ArrayIndex::Ghidra => "ghidra",
                 ArrayIndex::Spelled => "spelled",
+            }),
+            "string-ops" => Some(match self.string_ops {
+                StringOps::Loop => "loop",
+                StringOps::Intrinsic => "intrinsic",
             }),
             _ => None,
         }
@@ -576,6 +598,13 @@ impl EmitChoices {
                 self.array_index = match value {
                     "ghidra" => ArrayIndex::Ghidra,
                     "spelled" => ArrayIndex::Spelled,
+                    _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
+                }
+            }
+            "string-ops" => {
+                self.string_ops = match value {
+                    "loop" => StringOps::Loop,
+                    "intrinsic" => StringOps::Intrinsic,
                     _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
                 }
             }

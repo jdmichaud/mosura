@@ -61,6 +61,12 @@ const PRELUDE: &str = "\
    idiom and app_fatal's body. parm []/modify exact [] = touches nothing. */
 void __int3(void);
 #pragma aux __int3 = 0xcc parm [] modify exact [];
+/* memcpy/memset intrinsics (the string-ops=intrinsic emission arm): a witnessed REP MOVS/STOS
+   renders as the library call the source wrote, and Watcom's -oi (via -ox in -onatx) re-inlines it
+   back to REP MOVS -- recovering the bytes. Plain prototypes; -oi makes them intrinsic. */
+void *memcpy(void *, const void *, unsigned);
+void *memset(void *, int, unsigned);
+#pragma intrinsic(memcpy,memset);
 typedef unsigned char undefined; typedef unsigned char undefined1; typedef unsigned short undefined2;
 typedef unsigned int undefined4; typedef unsigned char byte;
 /* Integer widths the target CANNOT hold (Watcom 10.0a x86-32 has no 64-bit integer type).
@@ -770,6 +776,8 @@ fn main() {
             c.set("array-index", "spelled").expect("known axis");
             // N1 (join-width=consumer), now WITNESSED by the original's 8-bit constant load.
             c.set("join-width", "consumer").expect("known axis");
+            // Render a witnessed REP MOVS/STOS loop as memcpy/memset so Watcom's -oi re-inlines it.
+            c.set("string-ops", "intrinsic").expect("known axis");
             // (historical: zc62 measured the blanket form net-flat
             // (+0.7w) with an EXACT regression (0x2c9a8) — a constant-join whose bytes load the
             // FULL register (MOV EDX,k) not the sub-register (MOV DL,k). The two are IR-identical;
@@ -2185,6 +2193,10 @@ fn main() {
                 ),
                 join_narrow_sites: mosura::recompile::buildconfig::join_narrow_sites_from_evidence(
                     &report.join_narrow_candidates,
+                    &insns,
+                ),
+                string_op_sites: mosura::recompile::buildconfig::string_ops_from_evidence(
+                    &report.rep_movs_candidates,
                     &insns,
                 ),
                 unsigned_cmp_sites: mosura::recompile::buildconfig::unsigned_cmps_from_evidence(
