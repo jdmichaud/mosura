@@ -96,6 +96,7 @@ pub(crate) struct State {
     pub(crate) complement_cmp: complement_cmp::State,
     pub(crate) sum_order: sum_order::State,
     pub(crate) join_narrow: join_narrow::State,
+    pub(crate) array_index: array_index::State,
 }
 
 impl State {
@@ -110,11 +111,13 @@ impl State {
             complement_cmp: complement_cmp::State::new(choices),
             sum_order: sum_order::State::new(choices),
             join_narrow: join_narrow::State::new(choices),
+            array_index: array_index::State::new(choices),
         }
     }
 }
 
 pub mod complement_cmp;
+pub mod array_index;
 pub mod frame_fill;
 pub mod nested_conds;
 pub mod sdiv_pow2;
@@ -208,6 +211,7 @@ pub const SURFACE_METHODS: &[&str] = &[
     "lab_name", "first_pc", "next_flow_after", "plain_if_condition_vn", "spacebase_sym_at", "frame_off",
     "type_of", "stack_slot_name", "declare_stack", "collect_conj_clauses", "render_cond_expr", "emit_basic",
     "cast_operand",
+    "operand",
     "render_mem",
     "get_input_cast",
 ];
@@ -225,7 +229,7 @@ mod tests {
     /// The arm files, as text, for the surface scan — every `pub mod` of this module must be here
     /// (`arms_touch_only_the_documented_surface` checks that against this file's own source, so a
     /// new arm file cannot slip past the scan).
-    const ARM_SOURCES: [(&str, &str); 11] = [
+    const ARM_SOURCES: [(&str, &str); 12] = [
         ("string_ops.rs", include_str!("string_ops.rs")),
         ("struct_copy.rs", include_str!("struct_copy.rs")),
         ("sparse_switch.rs", include_str!("sparse_switch.rs")),
@@ -233,6 +237,7 @@ mod tests {
         ("sdiv_pow2.rs", include_str!("sdiv_pow2.rs")),
         ("nested_conds.rs", include_str!("nested_conds.rs")),
         ("unsigned_cmp.rs", include_str!("unsigned_cmp.rs")),
+        ("array_index.rs", include_str!("array_index.rs")),
         ("join_narrow.rs", include_str!("join_narrow.rs")),
         ("sum_order.rs", include_str!("sum_order.rs")),
         ("testmem.rs", include_str!("testmem.rs")),
@@ -352,6 +357,10 @@ pub enum ValueSite<'v> {
     /// print in the original's schedule order under `sum-order=original`. Replaces the inline
     /// consult (33d6e37); R2b, commit 4.
     Sum { op: OpId },
+    /// `render_mem`: `addr` the address it is about to dereference — an inlined scaled-index temp
+    /// renders as the subscript. Replaces the inline consult at the head of render_mem (8bd43ce);
+    /// R2b, commit 6.
+    Deref { addr: VarnodeId },
 }
 
 /// The value-render chokepoint — ONE hook with situations, the same shape as [`try_emit`]'s
@@ -369,6 +378,7 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
         ValueSite::Compare { op, strict, prec } => complement_cmp::render(p, op, strict, prec),
         ValueSite::Load { out, addr } => testmem::render(p, out, addr),
         ValueSite::Sum { op } => sum_order::render(p, op),
+        ValueSite::Deref { addr } => array_index::render(p, addr),
         other => frame_fill::render_value(p, &other),
     }
 }

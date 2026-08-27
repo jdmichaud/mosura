@@ -345,11 +345,6 @@ pub(crate) struct PrintC<'a> {
     /// `EmitChoices::narrow_tests == Rewiden` (EMISSION ARM): a `(x >> 8k) & m` zero test
     /// prints as `x & (m << 8k)`.
     narrow_tests_rewiden: bool,
-    /// `EmitChoices::array_index == Spelled` (EMISSION ARM): scaled-index access through a
-    /// constant/global base prints as `((T *)base)[i]`.
-    array_index_spelled: bool,
-    /// N3 pointer temps to inline as `((T *)base)[idx]`: temp varnode → (base, index, pointee).
-    array_index_temps: HashMap<VarnodeId, (VarnodeId, VarnodeId, Datatype)>,
     /// list components a printed sparse switch walked into (the tree continued in the root's siblings)
     pub(crate) sparse_consumed: std::collections::HashSet<usize>,
     reg_space: Option<super::space::SpaceId>,
@@ -1206,7 +1201,7 @@ impl<'a> PrintC<'a> {
         }
     }
 
-    fn operand(&mut self, v: VarnodeId, parent: u8, right: bool) -> String {
+    pub(crate) fn operand(&mut self, v: VarnodeId, parent: u8, right: bool) -> String {
         let (s, p) = self.render_var(v);
         if p < parent || (right && p == parent) {
             format!("({s})")
@@ -1427,11 +1422,9 @@ impl<'a> PrintC<'a> {
     /// address when it is not already a pointer to a value of the right size (Ghidra's
     /// `TypeOpLoad`/`TypeOpStore::getInputCast` on the pointer operand → `*(xunknown4 *)(addr)`).
     pub(crate) fn render_mem(&mut self, addr: VarnodeId, size: u32, vty: &Datatype) -> (String, u8) {
-        // N3: an inlined scaled-index pointer temp renders as the array subscript at each deref.
-        if let Some((base, idx, pointee)) = self.array_index_temps.get(&addr).cloned() {
-            let bs = self.operand(base, 14, false);
-            let i = self.render_var(idx).0;
-            return (format!("(({} *){bs})[{i}]", pointee.name()), 16);
+        // array-index (emit/arms/array_index.rs): an inlined scaled-index temp renders as the subscript
+        if let Some(r) = arms::render_value(self, ValueSite::Deref { addr }) {
+            return r;
         }
         // Ghidra `PrintC::checkArrayDeref` (printc.cc): the subscript/member form absorbs the
         // dereference only when the address varnode is IMPLIED (`if (!vn->isImplied()) return
@@ -4653,8 +4646,6 @@ fn print_c_inner(
         split_pairs: HashMap::new(),
         fused_store: HashMap::new(),
         narrow_tests_rewiden: choices.narrow_tests == super::emit::NarrowTests::Rewiden,
-        array_index_spelled: choices.array_index == super::emit::ArrayIndex::Spelled,
-        array_index_temps: HashMap::new(),
         sparse_consumed: std::collections::HashSet::new(),
         reg_space,
         ram_space: f.spaces.by_name("ram"),
@@ -4800,84 +4791,8 @@ fn print_c_inner(
             }
         }
     }
-    // N3 (array-index=spelled, wc2src-reconciliation-3): inline a scaled-index pointer temp
-    // `piVar = (T *)(idx*sizeof(T) + base)` (base a constant/global) whose only uses are derefs,
-    // rendering `((T *)base)[idx]` at each use so Watcom uses a scaled-index operand.
-    if choices.array_index == super::emit::ArrayIndex::Spelled {
-        for op in f.op_ids() {
-            let o = f.op(op);
-            if o.is_dead() || !matches!(o.code(), OpCode::Cast | OpCode::Copy) {
-                continue;
-            }
-            let (Some(out), Some(inp)) = (o.output, o.input(0)) else { continue };
-            // the pointee type of the temp (the `(int2 *)` cast) and its size = the scale
-            let Datatype::Pointer(_, pointee) = f.vn(out).get_type() else { continue };
-            let elem = pointee.size();
-            if elem == 0 {
-                continue;
-            }
-            // input must be INT_ADD(scaled_index(elem), const/global base), either order
-            let Some(d) = f.vn(inp).def else { continue };
-            let add = f.op(d);
-            if add.code() != OpCode::IntAdd || add.num_inputs() != 2 {
-                continue;
-            }
-            let (a, b) = (add.input(0).unwrap(), add.input(1).unwrap());
-            let pick = |base: VarnodeId, off: VarnodeId| -> Option<(VarnodeId, VarnodeId)> {
-                let base_ok = f.vn(base).is_constant()
-                    || Some(f.vn(base).loc.space) == f.spaces.by_name("ram");
-                if !base_ok {
-                    return None;
-                }
-                let od = f.vn(off).def?;
-                let oo = f.op(od);
-                if oo.code() == OpCode::IntMult
-                    && oo.input(1).is_some_and(|c| f.vn(c).is_constant() && f.vn(c).constant_value() == elem as u64)
-                {
-                    return Some((base, oo.input(0)?));
-                }
-                None
-            };
-            let Some((base, idx)) = pick(a, b).or_else(|| pick(b, a)) else { continue };
-            let _ = idx;
-            // Every use must be a LOAD/STORE deref at width == elem, collecting the access pcs.
-            let uses: Vec<OpId> = f.vn(out).descend.iter().copied().filter(|&u| !f.op(u).is_dead()).collect();
-            if uses.is_empty() {
-                continue;
-            }
-            let mut pcs: Vec<u64> = Vec::new();
-            let all_deref = uses.iter().all(|&u| {
-                let uo = f.op(u);
-                let ok = match uo.code() {
-                    OpCode::Load => uo.input(1) == Some(out) && uo.output.is_some_and(|v| f.vn(v).size == elem),
-                    OpCode::Store => uo.input(1) == Some(out) && uo.input(2).is_some_and(|v| f.vn(v).size == elem),
-                    _ => false,
-                };
-                if ok {
-                    pcs.push(uo.seqnum.pc.offset);
-                }
-                ok
-            });
-            if !all_deref {
-                continue;
-            }
-            // N3 WITNESS (wc2src-reconciliation-3, reviewer's steer — witnessed from the first
-            // round, not blanket-then-gate): the subscript form is value-identical to the pointer
-            // arithmetic but is a Watcom-codegen LOTTERY — the original either addresses the access
-            // with a scaled-index operand (`[reg*sz + base]` → spell the subscript) or keeps the
-            // address in a register (`SHL`/`ADD` then `[reg]` → keep the arithmetic). Record each
-            // access pc as a candidate; inline only when EVERY deref is witnessed (the recovered
-            // set is empty on the report pass, so this records there and applies on the final one).
-            for &pc in &pcs {
-                p.report.array_index_candidates.push((pc, elem));
-            }
-            if !pcs.iter().all(|pc| p.recovered.array_index_sites.contains(pc)) {
-                continue;
-            }
-            p.array_index_temps.insert(out, (base, idx, (*pointee).clone()));
-            p.suppressed.insert(op); // the `piVar = (T *)(...)` assignment is inlined
-        }
-    }
+    // array-index=spelled: the arm's recognizer (emit/arms/array_index.rs) — arm setup
+    arms::array_index::recognize(&mut p, f, choices);
     // string-ops=intrinsic: the arm's recognizer (emit/arms/string_ops.rs) — arm setup
     arms::string_ops::recognize(&mut p);
     // frame-fill=aggregate: the arm's gate (emit/arms/frame_fill.rs) — arm setup
