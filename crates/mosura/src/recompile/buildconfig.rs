@@ -19,6 +19,7 @@
 //! this module consumes such an answer, never invents one.
 
 use super::insn::{NormInsn, SemArg, SemOp};
+use super::x86enc;
 use std::collections::HashMap;
 
 /// What the original function's own code says about how it was compiled.
@@ -644,7 +645,9 @@ pub fn string_ops_from_evidence(
     let mut out = std::collections::HashSet::new();
     for &(pc, _sz) in cands {
         let Some(insn) = insns.iter().find(|x| x.addr == pc) else { continue };
-        if insn.bytes.len() >= 2 && matches!(insn.bytes[0], 0xF2 | 0xF3) && matches!(insn.bytes[1], 0xA4 | 0xA5 | 0xA6 | 0xA7 | 0xAA | 0xAB | 0xAE | 0xAF)
+        // a MOVS/CMPS/STOS/SCAS whose ONLY prefix is the `REP`/`REPNE` (`x86enc::string_insn`; LODS
+        // is never a candidate) — the raw `F2|F3` + opcode match this witness always had
+        if matches!(x86enc::string_insn(&insn.bytes), Some(s) if (s.rep || s.repne) && s.prefixes.len == 1 && s.op != x86enc::StringOp::Lods)
         {
             out.insert(pc);
         }
@@ -1200,9 +1203,12 @@ pub fn sdiv_pow2_from_evidence(cands: &[(u64, u32)], insns: &[NormInsn]) -> std:
     for &(pc, n) in cands {
         let Some(i) = insns.iter().position(|x| x.addr == pc) else { continue };
         let b = &insns[i].bytes;
-        let is_sar = (b.len() >= 3 && b[0] == 0xC1 && (b[1] & 0xF8) == 0xF8 && b[2] as u32 == n)
-            || (b.len() >= 2 && b[0] == 0xD1 && (b[1] & 0xF8) == 0xF8 && n == 1);
-        let prev_sbb = i > 0 && insns[i - 1].bytes.first().is_some_and(|&f| f == 0x1B || f == 0x19);
+        // `SAR r32, imm8 = C1 /7 ib` or `SAR r32, 1 = D1 /7` (dword, register-direct) by exactly `n`
+        let is_sar = matches!(
+            x86enc::shift_imm(b),
+            Some(sh) if sh.kind == x86enc::Shift::Sar && sh.opsize == 32 && sh.modrm.is_register_direct() && sh.count as u32 == n
+        );
+        let prev_sbb = i > 0 && x86enc::is_sbb_rr(&insns[i - 1].bytes);
         if is_sar && prev_sbb {
             out.insert(pc);
         }
@@ -1235,18 +1241,13 @@ pub fn sparse_cmps_from_evidence(insns: &[NormInsn]) -> std::collections::HashMa
         if dbg && (m == "CMP" || m == "TEST" || b.first().is_some_and(|&x| (0x70..=0x7f).contains(&x)) || b.first() == Some(&0x0f)) {
             eprintln!("[sparse-witness]   {:#x} {m} bytes {:02x?} consts {:?} regs {:?}", insn.addr, b, insn.consts, insn.regs);
         }
-        let cc = if b.len() == 2 && (0x70..=0x7f).contains(&b[0]) {
-            Some(b[0] & 0xf)
-        } else if b.len() == 6 && b[0] == 0x0f && (0x80..=0x8f).contains(&b[1]) {
-            Some(b[1] & 0xf)
-        } else {
-            None
-        };
-        if let Some(cc) = cc {
-            let kind = match cc {
-                0x2 | 0x3 | 0xc | 0xd => LT,
-                0x6 | 0x7 | 0xe | 0xf => LE,
-                0x4 | 0x5 => EQ,
+        // the jump's kind from its encoding (`x86enc::jcc`): JB/JAE and JL/JGE fold to LT, JBE/JA
+        // and JLE/JG to LE, JE/JNE to EQ — the signed/unsigned distinction is not this witness's
+        if let Some(j) = x86enc::jcc(b) {
+            let kind = match j.cond {
+                x86enc::Cond::Below | x86enc::Cond::Less => LT,
+                x86enc::Cond::BelowOrEqual | x86enc::Cond::LessOrEqual => LE,
+                x86enc::Cond::Equal => EQ,
                 _ => continue,
             };
             if let Some((cpc, imm, seen, reg)) = last {
@@ -1258,30 +1259,12 @@ pub fn sparse_cmps_from_evidence(insns: &[NormInsn]) -> std::collections::HashMa
             }
             continue;
         }
-        // the CMP's immediate, decoded from the encoding (the SLEIGH constant list also carries
-        // the flag arithmetic's constants and a memory operand's displacement): `3C ib` (AL),
-        // `3D iz` (eAX), `80 /7 ib`, `81 /7 iz`, `83 /7 ib` sign-extended to the operand size,
-        // `iz` = 16 bits under a 66 prefix; `TEST r,r` (84/85 with mod=11, reg==rm) compares 0
-        let mut i = 0;
-        let mut opsize = 32u32;
-        while i < b.len() && matches!(b[i], 0x66 | 0x67 | 0x26 | 0x2e | 0x36 | 0x3e | 0x64 | 0x65) {
-            if b[i] == 0x66 {
-                opsize = 16;
-            }
-            i += 1;
-        }
-        let imm_tail = |n: usize| -> Option<u64> {
-            (b.len() >= i + 1 + n).then(|| b[b.len() - n..].iter().rev().fold(0u64, |a, &x| (a << 8) | x as u64))
-        };
-        let cmp_imm = match b.get(i) {
-            Some(0x3c) => imm_tail(1),
-            Some(0x3d) => imm_tail(if opsize == 16 { 2 } else { 4 }),
-            Some(0x80) if b.get(i + 1).is_some_and(|m| (m >> 3) & 7 == 7) => imm_tail(1),
-            Some(0x81) if b.get(i + 1).is_some_and(|m| (m >> 3) & 7 == 7) => imm_tail(if opsize == 16 { 2 } else { 4 }),
-            Some(0x83) if b.get(i + 1).is_some_and(|m| (m >> 3) & 7 == 7) => imm_tail(1).map(|v| (v as u8 as i8 as i64 as u64) & if opsize == 16 { 0xffff } else { 0xffff_ffff }),
-            _ => None,
-        };
-        let test_rr = matches!(b.get(i), Some(0x84 | 0x85)) && b.get(i + 1).is_some_and(|m| m >> 6 == 3 && (m >> 3) & 7 == m & 7);
+        // the CMP's immediate from its encoding (`x86enc::alu_imm` `/7`: `3C ib`, `3D iz`,
+        // `80/81/83 /7`, the `83` imm8 sign-extended to the operand size, `iz` = 16 bits under
+        // `66`) — the SLEIGH constant list also carries the flag arithmetic's constants and a
+        // memory operand's displacement; `TEST r,r` (`x86enc::test_rr`) compares against 0
+        let cmp_imm = x86enc::alu_imm(b, 7).map(|imm| imm.value);
+        let test_rr = x86enc::test_rr(b).is_some();
         // the compared operand: the first general register the instruction names (x86's flag
         // registers sit at offsets 0x200+); a memory operand leaves it unnamed
         let reg = insn.regs.iter().copied().find(|&(off, _)| off < 0x100).unwrap_or((u64::MAX, 0));
@@ -1307,7 +1290,7 @@ pub fn movsd_runs_from_evidence(insns: &[NormInsn]) -> std::collections::HashMap
     let mut out = std::collections::HashMap::new();
     let mut start: Option<(u64, u32)> = None;
     for insn in insns {
-        let plain = insn.bytes.len() == 1 && insn.bytes[0] == 0xa5;
+        let plain = x86enc::is_plain_movsd(&insn.bytes);
         match (plain, start) {
             (true, Some((pc, k))) if insn.addr == pc + k as u64 => start = Some((pc, k + 1)),
             (true, _) => {
@@ -1335,15 +1318,12 @@ pub fn frame_from_evidence(insns: &[NormInsn]) -> Option<(u32, u32)> {
     let mut pushes = 0u32;
     for insn in insns.iter().take(8) {
         let b = &insn.bytes;
-        if b.len() == 1 && (0x50..=0x57).contains(&b[0]) {
+        if x86enc::push_r32(b).is_some() {
             pushes += 1;
             continue;
         }
-        if b.len() >= 3 && b[0] == 0x83 && b[1] == 0xEC {
-            return Some((b[2] as u32, pushes));
-        }
-        if b.len() >= 6 && b[0] == 0x81 && b[1] == 0xEC {
-            return Some((u32::from_le_bytes([b[2], b[3], b[4], b[5]]), pushes));
+        if let Some(frame) = x86enc::sub_esp_imm(b) {
+            return Some((frame, pushes));
         }
     }
     None

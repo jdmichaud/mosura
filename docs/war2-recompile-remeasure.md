@@ -74,7 +74,8 @@ landings are round failures, not a reviewer's greps. `war2_survey` runs the text
 emit (1 declared symbols, 2 piece-on-field, 3 call-as-argument on any emit; 4 the string-ops bar,
 5 chains never switch, 6 switch labels only on a full emit — a `--only` probe skips them audibly);
 `recompile_check` runs the verdict gates after writing `--out` (7 the guard sets stay EXACT; 8
-against `--prev <previous --out tsv>`: no EXACT lost, no new COMPILE_FAIL, every other down LISTED
+against `--prev <previous --out tsv>`: no EXACT lost, no new failure verdict (COMPILE_FAIL, OBJ_ERROR,
+DECOMPILE_FAIL), every other down LISTED
 with old/new verdict and sim under the WGSS delta — their classification stays the human step).
 Without `--prev` gate 8 prints `SKIP`, never a silent pass. The bars and sets live in
 `scripts/corpus-gates.tsv`, each row with its rule (`>=` floor, `==` count, `no-switch`, `EXACT`)

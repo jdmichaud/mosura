@@ -40,6 +40,7 @@ pub mod toolchain;
 pub mod verify;
 pub mod vocab;
 pub mod watsched;
+pub mod x86enc;
 
 pub use buildconfig::{BuildConfig, Evidence, Profile};
 pub use align::{AlignOp, Divergence, DivergenceClass, FnDiff, Verdict, compare};
