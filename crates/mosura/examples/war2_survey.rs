@@ -765,40 +765,7 @@ fn main() {
                 .map(|t| EmitChoices::parse(t).unwrap_or_else(|e| panic!("--arms: {e}")))
                 .collect()
         })
-        .unwrap_or_else(|| {
-            // The Watcom-32 emitter's own defaults: integer extensions left to C's promotion
-            // (`ext-cast=promotion`) — the measured rendering for this target (zc42 vs zc46).
-            let mut c = EmitChoices::default();
-            c.set("ext-cast", "promotion").expect("known axis");
-            // INT3 as the prelude's `__int3()` (`#pragma aux = 0xcc`) — the D5 audit rows'
-            // assert traps and `app_fatal`'s body are compiled C only under this form.
-            c.set("swi", "int3").expect("known axis");
-            // if/else arms in the original's layout order (A1 — the address witness).
-            c.set("arm-order", "address").expect("known axis");
-            // half-written 4-byte locals declared once (A2ii — the GPOINT shape).
-            c.set("struct-locals", "coalesce").expect("known axis");
-            // byte-of-word zero tests at the operand's width (A5).
-            c.set("narrow-tests", "rewiden").expect("known axis");
-            // N3: scaled-index accesses through a constant/global base as array subscripts.
-            c.set("array-index", "spelled").expect("known axis");
-            // N1 (join-width=consumer), now WITNESSED by the original's 8-bit constant load.
-            c.set("join-width", "consumer").expect("known axis");
-            // Render a witnessed REP MOVS/STOS loop as memcpy/memset so Watcom's -oi re-inlines it.
-            c.set("string-ops", "intrinsic").expect("known axis");
-            // Render a witnessed SBB power-of-two division as `x / 2^n` (docs/sdiv-pow2-arm.md).
-            c.set("sdiv-pow2", "div").expect("known axis");
-            // Declare an under-sized frame as one byte aggregate sized to the original SUB ESP frame.
-            c.set("frame-fill", "aggregate").expect("known axis");
-            // Print a compare tree on one scrutinee as the sparse switch the source wrote.
-            c.set("sparse-switch", "switch").expect("known axis");
-            c.set("struct-copy", "assign").expect("known axis");
-            // (historical: zc62 measured the blanket form net-flat
-            // (+0.7w) with an EXACT regression (0x2c9a8) — a constant-join whose bytes load the
-            // FULL register (MOV EDX,k) not the sub-register (MOV DL,k). The two are IR-identical;
-            // only the original's bytes separate them, so N1 needs a DL-vs-EDX byte witness
-            // (survey-side, like ext-cast). The axis + CallSpec::param_widths stay as groundwork.
-            vec![c]
-        });
+        .unwrap_or_else(|| vec![mosura::recompile::recovery::canonical_arm()]);
     // Like the loop-overflow branch form below: this survey's output exists to be RECOMPILED,
     // and the target's shift instructions perform the `& 0x1f` count mask themselves, so every
     // arm elides the lifter's hardware mask (`EmitChoices` shift-mask=hardware; the axis doc in

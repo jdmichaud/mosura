@@ -198,3 +198,18 @@ sweep named the gap and two more ports followed: `PrintC::opIntZext/opIntSext` w
 `TypeOpIntAdd::propagateType`'s INT/UINT-onto-a-constant clause (typeop.cc:1186), which is what
 makes the promotion cast implied on `uRam + 0x80248`. Sweep vs the pre-session baseline: **up
 1013 / down 216, +938 weighted (mean 0.9036 → 0.9115)**. Corpus: **27 programs, 27/27 PASS**.
+
+## i386 callee resolution: a call the ELF symbol table does not name (2026-08-27, review R5 b)
+
+In the 32-bit gcc column (`Target::Gcc32`, `-m32`) six of the 27 ground-truth programs are
+NOLINK in BOTH the plain and the arm-enabled pass, with the same cause: a caller TU carries an
+`undefined reference to func_0x0804xxxx` -- fnptr (`apply.isra.0` -> `func_0x080490c2`), globals
+(`note` -> `func_0x08049152`), ladder (`search.constprop.0.isra.0`), linklist (`alloc_node` ->
+`func_0x08049118`), strloop (`count_vowels.constprop.0.isra.0`), structs
+(`damage_all.constprop.0.isra.0`). The decompiler names a callee by its address when the ELF
+symbol table has no function symbol there; under `-m32` gcc emits calls to targets the table does
+not name as functions (the `.isra`/`.constprop` clones' entry, or a local thunk), so the emitted
+name resolves to nothing at link time. The 64-bit column does not show it (its 20/20 PASS
+baseline is unchanged). Plain-32 verdicts are REPORTED by tests/ground_truth_recompile_arms.rs,
+never asserted against the 64-bit baseline; this item is outside review R5 (the arms are not
+involved: the same six fail plain) -- owner: JD's call.

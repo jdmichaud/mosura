@@ -1,0 +1,84 @@
+//! Review R5 (commit b): the gcc ground-truth oracle over ARM-ENABLED emit, in the 32-bit column.
+//!
+//! Every program of oracle/ground-truth/src is built with `gcc -m32` and recompiled twice from
+//! mosura's decompilation — PLAIN (the reference rendering) and ARMS (the survey's measured
+//! configuration: the canonical arm set, `sum-order=original` on the recovered pass, the
+//! per-function recovery over the program's own instructions) — and each recompiled program is
+//! RUN against the original. The invariant this test holds: a program that PASSes plain must PASS
+//! arm-enabled. A PASS→FAIL under the arms is a WRONG-CODE ARM — the finding class this oracle
+//! exists to catch — listed here as a finding for JD, never baselined silently, not fixed here.
+//!
+//! What this test does NOT assert: the plain-32 verdicts. The i386 SysV path through the ELF
+//! analysis has never been measured (every existing baseline is the 64-bit host column); plain-32
+//! is REPORTED per program, and a plain-32 FAIL is its own finding, outside this invariant.
+//! COVERAGE is reported too: the ARM TUs of a program are the functions whose arm-enabled text
+//! differs from the plain text — the only functions the arms touched; gcc rarely emits the Watcom
+//! idioms the witnesses look for, so most witness-gated arms fire on few or no gcc functions, and
+//! that is said here rather than hidden (there is deliberately no stress mode: an unwitnessed
+//! candidate rendered as if witnessed executes a rendering the measured configuration never
+//! produces, and some arms are value-identical only because of their witness).
+//!
+//! COST: 27 programs x 2 passes, each a `gcc -m32` build, decompile, recompile and run -- about
+//! 7 minutes. It stays in the suite because the contract is "a wrong-code arm fails the suite"; a
+//! test that runs only when someone remembers to is not a gate. For a quick local run,
+//! `MOSURA_SKIP_GT_ARMS=1` makes it print a SKIP line and return -- never a silent pass, never
+//! `#[ignore]` -- and the acceptance chains never set it.
+use mosura::recompile::groundtruth::{gcc_available, gcc_programs, recompile_program, EmitPlan, Target};
+
+#[test]
+fn arm_enabled_emit_passes_wherever_plain_passes_in_the_32bit_column() {
+    if std::env::var_os("MOSURA_SKIP_GT_ARMS").is_some() {
+        println!("SKIP ground_truth_recompile_arms: MOSURA_SKIP_GT_ARMS is set (a local shortcut; the acceptance chains never set it)");
+        return;
+    }
+    assert!(gcc_available(), "gcc is required by the development environment (ground-truth recompile gate)");
+    let workdir = mosura::paths::workspace_root().join("build/gt-recompile");
+    std::fs::create_dir_all(&workdir).unwrap();
+    let mut findings: Vec<String> = Vec::new();
+    let (mut programs, mut plain_pass, mut arm_tus_total, mut fns_total) = (0usize, 0usize, 0usize, 0usize);
+    for src in gcc_programs() {
+        let plain = recompile_program(&src, &workdir, Target::Gcc32, &EmitPlan::plain())
+            .unwrap_or_else(|e| panic!("{} (plain-32): {e}", src.display()));
+        let arms = recompile_program(&src, &workdir, Target::Gcc32, &EmitPlan::arms())
+            .unwrap_or_else(|e| panic!("{} (arms-32): {e}", src.display()));
+        // the arm TUs: the functions whose arm-enabled text differs from the plain text
+        let arm_tus: Vec<&str> = arms
+            .functions
+            .iter()
+            .filter(|a| plain.functions.iter().any(|p| p.symbol == a.symbol && p.c != a.c))
+            .map(|a| a.symbol.as_str())
+            .collect();
+        println!(
+            "gt-arms {}: plain-32 {} | arms-32 {} | arm TUs {}/{}{}{}",
+            plain.program,
+            plain.functional,
+            arms.functional,
+            arm_tus.len(),
+            arms.functions.len(),
+            if arm_tus.is_empty() { "" } else { ": " },
+            arm_tus.join(" ")
+        );
+        programs += 1;
+        arm_tus_total += arm_tus.len();
+        fns_total += arms.functions.len();
+        if plain.functional == "PASS" {
+            plain_pass += 1;
+            if arms.functional != "PASS" {
+                findings.push(format!(
+                    "{}: plain-32 PASS but arms-32 {} (arm TUs: {})",
+                    plain.program,
+                    arms.functional,
+                    if arm_tus.is_empty() { "none".to_string() } else { arm_tus.join(" ") }
+                ));
+            }
+        }
+    }
+    println!(
+        "gt-arms summary: {programs} programs, plain-32 PASS {plain_pass}, arm TUs {arm_tus_total}/{fns_total} functions"
+    );
+    assert!(
+        findings.is_empty(),
+        "WRONG-CODE ARM findings (a program that PASSes plain fails arm-enabled) -- for JD, not to be baselined:\n  {}",
+        findings.join("\n  ")
+    );
+}

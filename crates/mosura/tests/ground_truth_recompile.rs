@@ -8,7 +8,7 @@
 //! WGSS drop over 0.01, and `MOSURA_GT_BASELINE=update` rewrites it after an accepted change.
 use std::collections::BTreeMap;
 
-use mosura::recompile::groundtruth::{gcc_available, gcc_programs, recompile_program, GtReport};
+use mosura::recompile::groundtruth::{gcc_available, gcc_programs, recompile_program, EmitPlan, GtReport, Target};
 
 fn rank(v: &str) -> u8 {
     match v {
@@ -29,7 +29,10 @@ fn decompile_recompile_does_not_regress_against_the_local_baseline() {
     std::fs::create_dir_all(&workdir).unwrap();
     let mut reports: Vec<GtReport> = Vec::new();
     for src in gcc_programs() {
-        reports.push(recompile_program(&src, &workdir).unwrap_or_else(|e| panic!("{}: {e}", src.display())));
+        reports.push(
+            recompile_program(&src, &workdir, Target::Gcc64, &EmitPlan::plain())
+                .unwrap_or_else(|e| panic!("{}: {e}", src.display())),
+        );
     }
     let mut current: BTreeMap<(String, String), (String, f64, usize)> = BTreeMap::new();
     for r in &reports {

@@ -5,6 +5,7 @@
 //! Usage: cargo run -q --release --example gt_recompile [-- <program> ...]   (default: all)
 //! Output: a per-function table, the per-program summary, and `build/gt-recompile/report.tsv`.
 use mosura::recompile::align::{AlignOp, DivergenceClass};
+use mosura::recompile::groundtruth::{EmitPlan, Target};
 use mosura::recompile::groundtruth::{gcc_available, gcc_programs, recompile_program, source_function};
 use mosura::recompile::report::{write_divergence_rows, FnKey};
 
@@ -14,6 +15,11 @@ fn main() {
         std::process::exit(2);
     }
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    // review R5: `--m32` measures in the 32-bit column, `--arms` under the survey's measured arm set
+    // (canonical arms + sum-order=original on the recovered pass + per-function recovery).
+    let target = if args.iter().any(|a| a == "--m32") { Target::Gcc32 } else { Target::Gcc64 };
+    let plan = if args.iter().any(|a| a == "--arms") { EmitPlan::arms() } else { EmitPlan::plain() };
+    args.retain(|a| a != "--m32" && a != "--arms");
     // `--fixture <dir>`: also write every function's original bytes as a datatest fixture
     // (`gt_<program>_<symbol>.xml`, arch x86:LE:64:default) into <dir>, for the oracle recipe
     // (`oracle/capture --c`, `dumpc`, `trace-diff.sh`) — Ghidra's reading of the same bytes.
@@ -39,7 +45,7 @@ fn main() {
     let (mut tw, mut ts) = (0usize, 0f64);
     for src in progs {
         let source = std::fs::read_to_string(&src).unwrap_or_default();
-        let rep = match recompile_program(&src, &workdir) {
+        let rep = match recompile_program(&src, &workdir, target, &plan) {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("{}: {e}", src.display());

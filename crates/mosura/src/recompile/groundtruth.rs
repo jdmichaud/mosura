@@ -15,7 +15,6 @@ use object::{Object, ObjectSection, ObjectSymbol, SymbolKind};
 
 use super::verify::{emitted_symbol_address, verify, Subject};
 use crate::analysis::{self, decompiler::decompile_function};
-use crate::decompile::printc::print_c;
 use crate::decompile::space::Address;
 use crate::decompile::types::Datatype;
 
@@ -26,6 +25,77 @@ pub const GCC_FLAGS: &[&str] =
     &["-nostdlib", "-static", "-no-pie", "-O2", "-ffreestanding", "-fno-asynchronous-unwind-tables"];
 /// The SLEIGH language of the host gcc column.
 pub const LANG: &str = "x86:LE:64:default";
+/// The SLEIGH language of the 32-bit gcc column (`-m32`; review R5).
+pub const LANG32: &str = "x86:LE:32:default";
+
+/// The gcc column a program is built and measured in (review R5, commit b). `Gcc64` is the host
+/// column every ground-truth baseline was taken in; `Gcc32` is the `-m32` column the arms are
+/// written for (they read 32-bit x86 facts and Watcom idioms — never a 64-bit build). The i386
+/// SysV path through the ELF analysis has never been measured: plain-32 verdicts are REPORTED
+/// per program, never asserted against the 64-bit baseline.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    Gcc64,
+    Gcc32,
+}
+
+impl Target {
+    /// The build/compile/link flags: `GCC_FLAGS`, plus `-m32` for the 32-bit column.
+    pub fn flags(self) -> Vec<&'static str> {
+        let mut f = GCC_FLAGS.to_vec();
+        if self == Target::Gcc32 {
+            f.push("-m32");
+        }
+        f
+    }
+    pub fn lang(self) -> &'static str {
+        match self {
+            Target::Gcc64 => LANG,
+            Target::Gcc32 => LANG32,
+        }
+    }
+    pub fn tag(self) -> &'static str {
+        match self {
+            Target::Gcc64 => "gcc64",
+            Target::Gcc32 => "gcc32",
+        }
+    }
+}
+
+/// How the oracle renders each function (review R5, commit b): `plain` = the reference rendering
+/// (`print_c`, what every existing baseline measured); `arms` = the survey's MEASURED configuration
+/// — the canonical arm set, `sum-order=original` on the recovered pass, and the per-function
+/// recovery (`recovery::recover`) over the program's own instructions — so the arms' renderings
+/// are executed by a compiler that is not Watcom.
+#[derive(Debug, Clone)]
+pub struct EmitPlan {
+    pub name: &'static str,
+    /// The arm of the report pass / the plain rendering.
+    pub choices: crate::decompile::emit::EmitChoices,
+    /// The arm the recovered passes render under.
+    pub rec_choices: crate::decompile::emit::EmitChoices,
+    /// Recover per-site decisions from the function's instructions and render the recovered text.
+    pub recover: bool,
+}
+
+impl EmitPlan {
+    pub fn plain() -> Self {
+        let d = crate::decompile::emit::EmitChoices::default();
+        EmitPlan { name: "plain", choices: d.clone(), rec_choices: d, recover: false }
+    }
+    pub fn arms() -> Self {
+        let (choices, rec_choices) = crate::recompile::recovery::measured_arms();
+        EmitPlan { name: "arms", choices, rec_choices, recover: true }
+    }
+    /// The workdir suffix that keeps the columns and plans apart; empty for the host plain run,
+    /// so every existing path stays where it was.
+    pub fn dir_suffix(&self, target: Target) -> String {
+        match (target, self.recover) {
+            (Target::Gcc64, false) => String::new(),
+            _ => format!(".{}.{}", target.tag(), self.name),
+        }
+    }
+}
 
 /// One function's result.
 #[derive(Debug, Clone)]
@@ -61,6 +131,9 @@ pub struct GtReport {
     /// exit status is the program's result. `PASS` (same status as the original), `FAIL(o,n)`,
     /// `NOLINK` (an object failed or the link did), `NORUN` (the original could not be run).
     pub functional: String,
+    /// The column ([`Target::tag`]) and the plan ([`EmitPlan::name`]) this report measured.
+    pub target: &'static str,
+    pub plan: &'static str,
 }
 
 impl GtReport {
@@ -116,11 +189,11 @@ pub fn gcc_available() -> bool {
     Command::new("gcc").arg("--version").output().is_ok_and(|o| o.status.success())
 }
 
-/// `gcc GCC_FLAGS -I<srcdir> -o <out> <src>` — the unstripped program (symbols are the truth).
-pub fn build_program(src: &Path, out: &Path) -> Result<(), String> {
+/// `gcc <target flags> -I<srcdir> -o <out> <src>` — the unstripped program (symbols are the truth).
+pub fn build_program(src: &Path, out: &Path, target: Target) -> Result<(), String> {
     let srcdir = src.parent().unwrap_or(Path::new("."));
     let o = Command::new("gcc")
-        .args(GCC_FLAGS)
+        .args(target.flags())
         .arg("-I")
         .arg(srcdir)
         .arg("-o")
@@ -232,6 +305,28 @@ fn prefix_type(prefix: &str, width: u64) -> String {
 
 /// Integer typedefs for every width the emitter can name, plus the helper vocabulary
 /// (`SUB`/`ZEXT`/`SEXT`/`CONCAT`/carry family) generated for 1/2/4/8-byte operands.
+/// [`prelude`] for a column: the host prelude, or its 32-bit form — every 8-byte C type is
+/// `long long` (an i386 `long` is 4 bytes), `pointer` is 4 bytes, and the `__int128` types go
+/// (no such type on i386).
+pub fn prelude_for(target: Target) -> String {
+    let p = prelude();
+    if target == Target::Gcc64 {
+        return p;
+    }
+    let mut q = String::new();
+    for line in p.lines() {
+        if line.contains("__int128") {
+            continue;
+        }
+        let mut l = line.replace("typedef unsigned long pointer;", "typedef unsigned int pointer;");
+        l = l.replace("typedef unsigned long ", "typedef unsigned long long ").replace("typedef long ", "typedef long long ");
+        l = l.replace("typedef long long double", "typedef long double");
+        q.push_str(&l);
+        q.push('\n');
+    }
+    q
+}
+
 pub fn prelude() -> String {
     let mut p = String::from(
         "typedef unsigned char undefined; typedef unsigned char byte; typedef unsigned char bool;\n\
@@ -424,12 +519,12 @@ fn signature(c: &str) -> Option<(String, String)> {
 }
 
 /// Run the loop over one program source; every function gets a verdict.
-pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String> {
+pub fn recompile_program(src: &Path, workdir: &Path, target: Target, plan: &EmitPlan) -> Result<GtReport, String> {
     let program_name = src.file_stem().and_then(|s| s.to_str()).unwrap_or("prog").to_string();
-    let dir = workdir.join(&program_name);
+    let dir = workdir.join(format!("{program_name}{}", plan.dir_suffix(target)));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let bin_path = dir.join(format!("{program_name}.elf"));
-    build_program(src, &bin_path)?;
+    build_program(src, &bin_path, target)?;
     let bin = std::fs::read(&bin_path).map_err(|e| e.to_string())?;
     let (syms, fn_bytes) = elf_symbols(&bin)?;
     let symmap: BTreeMap<String, u64> = syms.iter().map(|s| (s.name.clone(), s.addr)).collect();
@@ -459,7 +554,20 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
                 if std::env::var("MOSURA_GT_RAW").is_ok_and(|v| v == s.name) {
                     eprint!("{}", f.print_raw());
                 }
-                let c = print_c(&f);
+                let c = if plan.recover {
+                    // the survey's recovery over THIS program's instructions (recompile::recovery)
+                    let insns = crate::recompile::insn::normalize(
+                        target.lang(),
+                        &fn_bytes[&s.addr],
+                        s.addr,
+                        &crate::recompile::insn::NoReloc,
+                    )
+                    .unwrap_or_default();
+                    let recovered = crate::recompile::recovery::recover(&f, &insns, &plan.choices, &plan.rec_choices, |_| Default::default());
+                    crate::decompile::printc::print_c_recovered(&f, &plan.rec_choices, &recovered)
+                } else {
+                    crate::decompile::printc::print_c_with(&f, &plan.choices)
+                };
                 let (n, sig) = signature(&c).unwrap_or((String::from("func"), String::from("int func()")));
                 let mut globals = BTreeMap::new();
                 let mut addr_of: BTreeMap<String, (u32, Datatype)> = BTreeMap::new();
@@ -509,7 +617,7 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
         symmap.get(sym).copied().or_else(|| emitted_symbol_address(sym))
     };
 
-    let pre = prelude();
+    let pre = prelude_for(target);
     let mut functions = Vec::new();
     for i in 0..decs.len() {
         let d = &decs[i];
@@ -678,7 +786,7 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
             // gcc 14 promotes these to errors; they are diagnostics, not codegen, and the
             // emitted C's casts are the decompiler's business, not the instrument's.
             let o = Command::new("gcc")
-                .args(GCC_FLAGS)
+                .args(target.flags())
                 .args([
                     "-c",
                     "-w",
@@ -803,7 +911,7 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
         };
         let subject = Subject { name: d.self_name.clone(), va: d.sym.addr, len: weight_bytes.len() };
         let tu_text = std::fs::read_to_string(&c_path).unwrap_or_default();
-        match verify(LANG, &weight_bytes, &subject, &obj, &resolver) {
+        match verify(target.lang(), &weight_bytes, &subject, &obj, &resolver) {
             Ok(checked) => {
                 let diff = &checked.diff;
                 functions.push(GtFunction {
@@ -835,10 +943,10 @@ pub fn recompile_program(src: &Path, workdir: &Path) -> Result<GtReport, String>
     }
     let data_names: Vec<(String, u64)> = data_syms.iter().map(|(n, a)| (n.clone(), *a)).collect();
     let data_name_sizes: BTreeMap<String, u64> = syms_by_name_sizes.clone();
-    let functional = functional_check(&dir, &program_name, src, &bin_path, &functions, &data_names, &data_name_sizes);
+    let functional = functional_check(&dir, &program_name, src, &bin_path, &functions, &data_names, &data_name_sizes, target);
     let original_bytes: Vec<(String, u64, Vec<u8>)> =
         decs.iter().map(|d| (d.sym.name.clone(), d.sym.addr, fn_bytes[&d.sym.addr].clone())).collect();
-    Ok(GtReport { program: program_name, functions, workdir: dir, functional, original_bytes })
+    Ok(GtReport { program: program_name, functions, workdir: dir, functional, original_bytes, target: target.tag(), plan: plan.name })
 }
 
 /// Link every per-function object into one program and run it against the original: the
@@ -853,6 +961,7 @@ fn functional_check(
     functions: &[GtFunction],
     data_syms: &[(String, u64)],
     data_sizes: &BTreeMap<String, u64>,
+    target: Target,
 ) -> String {
     if functions.iter().any(|f| f.verdict == "COMPILE_FAIL" || f.verdict == "DECOMPILE_FAIL") {
         return "NOLINK".into();
@@ -867,7 +976,7 @@ fn functional_check(
     // false FAIL(7,55)).
     let harness = dir.join(format!("{program}.harness.o"));
     let h = Command::new("gcc")
-        .args(GCC_FLAGS)
+        .args(target.flags())
         .args(["-Dstatic=", "-fno-ipa-ra", "-w", "-c", "-I"])
         .arg(src.parent().unwrap_or(Path::new(".")))
         .arg("-o")
@@ -919,7 +1028,7 @@ fn functional_check(
     }
     let ours = dir.join(format!("{program}.ours"));
     let o = Command::new("gcc")
-        .args(GCC_FLAGS)
+        .args(target.flags())
         .arg("-Wl,--allow-multiple-definition")
         .args(&defsyms)
         .arg("-o")

@@ -12,7 +12,7 @@
 //! report pass, `rec_choices` = the arm the recovered passes render under). The argument-order
 //! derivation is the caller's (`call_arg_orders`): it reads cross-function tables the survey owns
 //! and fills the survey's pragma list, so it comes in as a closure over the report.
-use crate::decompile::emit::EmitChoices;
+use crate::decompile::emit::{EmitChoices, ShiftMask};
 use crate::decompile::funcdata::Funcdata;
 use crate::decompile::printc::{EmitReport, RecoveredChoices};
 use crate::recompile::insn::NormInsn;
@@ -130,4 +130,54 @@ pub fn recover(
         );
     }
     recovered
+}
+
+/// The Watcom-32 CANONICAL ARM SET — the survey's flagless arm, verbatim from war2_survey.rs
+/// (review R5, commit b moved it here so the oracle and the survey build the same set; the
+/// survey's `--arms` override and its own shift-mask rule stay the survey's).
+pub fn canonical_arm() -> EmitChoices {
+        // The Watcom-32 emitter's own defaults: integer extensions left to C's promotion
+        // (`ext-cast=promotion`) — the measured rendering for this target (zc42 vs zc46).
+        let mut c = EmitChoices::default();
+        c.set("ext-cast", "promotion").expect("known axis");
+        // INT3 as the prelude's `__int3()` (`#pragma aux = 0xcc`) — the D5 audit rows'
+        // assert traps and `app_fatal`'s body are compiled C only under this form.
+        c.set("swi", "int3").expect("known axis");
+        // if/else arms in the original's layout order (A1 — the address witness).
+        c.set("arm-order", "address").expect("known axis");
+        // half-written 4-byte locals declared once (A2ii — the GPOINT shape).
+        c.set("struct-locals", "coalesce").expect("known axis");
+        // byte-of-word zero tests at the operand's width (A5).
+        c.set("narrow-tests", "rewiden").expect("known axis");
+        // N3: scaled-index accesses through a constant/global base as array subscripts.
+        c.set("array-index", "spelled").expect("known axis");
+        // N1 (join-width=consumer), now WITNESSED by the original's 8-bit constant load.
+        c.set("join-width", "consumer").expect("known axis");
+        // Render a witnessed REP MOVS/STOS loop as memcpy/memset so Watcom's -oi re-inlines it.
+        c.set("string-ops", "intrinsic").expect("known axis");
+        // Render a witnessed SBB power-of-two division as `x / 2^n` (docs/sdiv-pow2-arm.md).
+        c.set("sdiv-pow2", "div").expect("known axis");
+        // Declare an under-sized frame as one byte aggregate sized to the original SUB ESP frame.
+        c.set("frame-fill", "aggregate").expect("known axis");
+        // Print a compare tree on one scrutinee as the sparse switch the source wrote.
+        c.set("sparse-switch", "switch").expect("known axis");
+        c.set("struct-copy", "assign").expect("known axis");
+        // (historical: zc62 measured the blanket form net-flat
+        // (+0.7w) with an EXACT regression (0x2c9a8) — a constant-join whose bytes load the
+        // FULL register (MOV EDX,k) not the sub-register (MOV DL,k). The two are IR-identical;
+        // only the original's bytes separate them, so N1 needs a DL-vs-EDX byte witness
+        // (survey-side, like ext-cast). The axis + CallSpec::param_widths stay as groundwork.
+    c
+}
+
+/// The MEASURED configuration — what the survey's recovered tree is emitted with: the canonical
+/// arm with the target's hardware shift mask (`shift-mask=hardware`, every survey arm has it),
+/// and, for the recovered passes, `sum-order=original` (the `rec_arm` of the survey). Returned as
+/// `(choices, rec_choices)`, the two arms `recover` takes.
+pub fn measured_arms() -> (EmitChoices, EmitChoices) {
+    let mut c = canonical_arm();
+    c.shift_mask = ShiftMask::Hardware;
+    let mut rec = c.clone();
+    rec.set("sum-order", "original").expect("known axis");
+    (c, rec)
 }
