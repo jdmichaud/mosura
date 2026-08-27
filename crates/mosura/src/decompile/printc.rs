@@ -3407,25 +3407,6 @@ impl<'a> PrintC<'a> {
     }
 
     /// Emit one basic block's statements (skipping control-flow and inlined ops).
-    /// MOSURA_HIGH_DEBUG=<hex reg off>: print every frozen high class containing a varnode at
-    /// that register offset — the merge-grouping view (which defs share one printed variable).
-    fn debug_high_classes(&self) {
-        let Ok(v) = std::env::var("MOSURA_HIGH_DEBUG") else { return };
-        let Ok(off) = u64::from_str_radix(v.trim_start_matches("0x"), 16) else { return };
-        let Some(reg) = self.f.spaces.by_name("register") else { return };
-        for (h, members) in &self.high_members {
-            if !members.iter().any(|&m| self.f.vn(m).loc.space == reg && self.f.vn(m).loc.offset == off) {
-                continue;
-            }
-            debug!(crate::debug::Topic::Printc, "class {h}:");
-            for &m in members {
-                let vn = self.f.vn(m);
-                let def = vn.def.map(|d| (format!("{:?}", self.f.op(d).code()), self.f.op(d).seqnum.pc.offset));
-                debug!(crate::debug::Topic::Printc, "v{} {}+{:#x}:{} def {:?}", m.0, self.f.spaces.get(vn.loc.space).name, vn.loc.offset, vn.size, def);
-            }
-        }
-    }
-
     pub(crate) fn emit_basic(&mut self, b: super::block::BlockId, indent: usize, out: &mut String) {
         let pad = "  ".repeat(indent);
         if self.labels.contains(&b) {
@@ -5068,7 +5049,6 @@ fn print_c_inner(
     // could not reduce the graph to a single node is normal (see [`Structured::roots`]); emitting
     // only the first drops the others' whole subtrees, which is how WAR2 FUN_00077dcb lost four of
     // its eight basic blocks and a live CALL while its siblings kept jumping to labels in them.
-    p.debug_high_classes();
     for &root in &s.roots {
         if p.sparse_consumed.contains(&root) {
             continue; // walked into the sparse switch an earlier root printed
