@@ -76,7 +76,7 @@ fn sum_chain_reordered(pr: &mut PrintC<'_>, op: OpId) -> Option<(String, u8)> {
     // SUM-ORDER CENSUS (MOSURA_SUMORD_CENSUS=1): size the lever outside pointer context
     // — the reorder is computed for every chain and reported with its context; only
     // pointer-context chains change the print.
-    let census = std::env::var_os("MOSURA_SUMORD_CENSUS").is_some();
+    let census = crate::debug::on(crate::debug::Topic::SumOrder);
     // MOSURA_SUMORD_CTX=all lifts the pointer-context gate (the non-pointer A/B: census
     // 120 ptr vs 670 non-ptr chains on zc26); default stays pointer context only.
     let all_ctx = std::env::var("MOSURA_SUMORD_CTX").as_deref() == Ok("all");
@@ -124,7 +124,7 @@ fn sum_chain_reordered(pr: &mut PrintC<'_>, op: OpId) -> Option<(String, u8)> {
         return None;
     }
     if census {
-        eprintln!("[sumord] pc {:#x} ctx={} terms={}", pr.f.op(op).seqnum.pc.offset, if in_ptr_context { "ptr" } else { "nonptr" }, terms.len());
+        debug!(crate::debug::Topic::SumOrder, "pc {:#x} ctx={} terms={}", pr.f.op(op).seqnum.pc.offset, if in_ptr_context { "ptr" } else { "nonptr" }, terms.len());
         if !in_ptr_context && !all_ctx {
             return None;
         }

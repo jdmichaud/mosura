@@ -575,10 +575,10 @@ impl Structured {
         // `MOSURA_STRUCT=1` — every composite the collapse installs, in order. A decline-only trace
         // says which rules refused; this says which ones FIRED, which is what identifies the node
         // indices the goto selections later talk about (they are all composites).
-        if std::env::var("MOSURA_STRUCT").is_ok() {
+        if crate::debug::on(crate::debug::Topic::Structure) {
             let b = &self.blocks[n];
-            eprintln!(
-                "  STRUCT install blk{} {:?} components={:?} outs={:?} labels={:?}",
+            debug!(crate::debug::Topic::Structure, 
+                "STRUCT install blk{} {:?} components={:?} outs={:?} labels={:?}",
                 n, b.kind, b.components, b.out_edges, b.out_labels
             );
         }
@@ -647,9 +647,7 @@ impl Structured {
         }
         macro_rules! decline {
             ($($t:tt)*) => {{
-                if std::env::var("MOSURA_STRUCT").is_ok() {
-                    eprintln!("  STRUCT rule_switch DECLINE blk{}: {}", b, format!($($t)*));
-                }
+                debug!(crate::debug::Topic::Structure, "STRUCT rule_switch DECLINE blk{}: {}", b, format!($($t)*));
                 return false;
             }};
         }
@@ -848,13 +846,10 @@ impl Structured {
     /// orientations `(i=0,j=1)`/`(i=1,j=0)` carry no flip and reproduce the previous 2-case fold
     /// byte-for-byte; the swapped `(i=0,j=0)`/`(i=1,j=1)` orientations are the newly-recovered folds.
     fn rule_short_circuit(&mut self, b: usize, ins: &[Vec<(usize, usize)>]) -> bool {
-        let dbg = std::env::var("MOSURA_STRUCT").is_ok();
         if self.out(b).len() != 2 {
             return false;
         }
-        if dbg {
-            eprintln!("  STRUCT short_circuit TRY blk{b} outs={:?}", self.out(b));
-        }
+        debug!(crate::debug::Topic::Structure, "STRUCT short_circuit TRY blk{b} outs={:?}", self.out(b));
         if self.blocks[b].is_goto_out(0) || self.blocks[b].is_goto_out(1) {
             return false;
         }
@@ -864,12 +859,10 @@ impl Structured {
         for i in 0..2 {
             let orblock = self.out(b)[i]; // the second condition (Ghidra's orblock)
             if orblock == b || ins[orblock].len() != 1 || self.out(orblock).len() != 2 {
-                if dbg {
-                    eprintln!(
-                        "  STRUCT short_circuit DECLINE blk{b} i={i} orblock=blk{orblock}: shape (ins={}, outs={})",
+                debug!(crate::debug::Topic::Structure, 
+                        "STRUCT short_circuit DECLINE blk{b} i={i} orblock=blk{orblock}: shape (ins={}, outs={})",
                         ins[orblock].len(), self.out(orblock).len()
                     );
-                }
                 continue;
             }
             if self.blocks[orblock].is_interior_goto_target() {
@@ -882,9 +875,7 @@ impl Structured {
                 continue; // don't use a loop branch to reach the second condition
             }
             if self.is_complex(orblock) {
-                if std::env::var("MOSURA_STRUCT").is_ok() {
-                    eprintln!("  STRUCT short_circuit DECLINE blk{b} i={i} orblock=blk{orblock}: is_complex");
-                }
+                debug!(crate::debug::Topic::Structure, "STRUCT short_circuit DECLINE blk{b} i={i} orblock=blk{orblock}: is_complex");
                 continue; // second condition block must print as a pure expression
             }
             let clauseblock = self.out(b)[1 - i];
@@ -955,10 +946,10 @@ impl Structured {
     /// only Ghidra's print carrier; mosura's carrier is the [`GotoRecord`]).
     fn rule_block_goto(&mut self, b: usize, _ins: &[Vec<(usize, usize)>]) -> bool {
         let sizeout = self.out(b).len();
-        if std::env::var("MOSURA_STRUCT").is_ok() {
+        if crate::debug::on(crate::debug::Topic::Structure) {
             for i in 0..sizeout {
                 if self.blocks[b].is_goto_out(i) {
-                    eprintln!("  STRUCT rule_block_goto CUTS: blk{b} -> blk{} (sizeout={sizeout})", self.out(b)[i]);
+                    debug!(crate::debug::Topic::Structure, "STRUCT rule_block_goto CUTS: blk{b} -> blk{} (sizeout={sizeout})", self.out(b)[i]);
                 }
             }
         }
@@ -1309,11 +1300,11 @@ impl Structured {
     /// `FlowBlock::setGotoBranch` (block.cc:305): mark out-edge `i` of `b` unstructured and set
     /// the interior-goto flags on source and target.
     fn set_goto_branch(&mut self, b: usize, i: usize) {
-        if std::env::var("MOSURA_STRUCT").is_ok() {
+        if crate::debug::on(crate::debug::Topic::Structure) {
             let tgt = self.out(b)[i];
             let ins = self.in_edges();
-            eprintln!(
-                "  STRUCT select_goto marks GOTO: blk{b}(outs={}) -> blk{tgt}(ins={}, outs={}) | order={:?}",
+            debug!(crate::debug::Topic::Structure, 
+                "STRUCT select_goto marks GOTO: blk{b}(outs={}) -> blk{tgt}(ins={}, outs={}) | order={:?}",
                 self.out(b).len(), ins[tgt].len(), self.out(tgt).len(), self.order
             );
         }
@@ -2074,9 +2065,7 @@ fn structure_loops(s: &mut Structured, n: usize) {
                     if visitcount[x] > visitcount[yprime] || visitcount[x] + numdesc[x] <= visitcount[yprime] {
                         irreducible_count += 1;
                         let is_tree = s.blocks[y].out_labels[revidx] & TREE_EDGE != 0;
-                        if std::env::var("MOSURA_STRUCT").is_ok() {
-                            eprintln!("  STRUCT structure_loops marks IRREDUCIBLE: blk{y} -> out[{revidx}]");
-                        }
+                        debug!(crate::debug::Topic::Structure, "STRUCT structure_loops marks IRREDUCIBLE: blk{y} -> out[{revidx}]");
                         s.blocks[y].set_out_edge_flag(revidx, IRREDUCIBLE);
                         if is_tree {
                             needrebuild = true; // an irreducible tree edge forces a rebuild
@@ -3121,7 +3110,7 @@ fn install_switch_defaults(s: &mut Structured, f: &Funcdata) {
                 break;
             }
         }
-        if std::env::var("MOSURA_SWD_DEBUG").is_ok() {
+        if crate::debug::on(crate::debug::Topic::Structure) {
             let outs: Vec<_> = s.blocks[b]
                 .out_edges
                 .iter()
@@ -3130,7 +3119,7 @@ fn install_switch_defaults(s: &mut Structured, f: &Funcdata) {
                     _ => None,
                 })
                 .collect();
-            eprintln!("[swdflag] pc {:x} defaddr {:x} hit {} outs {:x?}", f.op(last).seqnum.pc.offset, defaddr, hit, outs);
+            debug!(crate::debug::Topic::Structure, "pc {:x} defaddr {:x} hit {} outs {:x?}", f.op(last).seqnum.pc.offset, defaddr, hit, outs);
         }
     }
 }
@@ -3171,15 +3160,15 @@ pub fn reached_basic_blocks(s: &Structured) -> HashSet<usize> {
 /// the CFG where Ghidra cuts it?" — the question that a structuring-side instrument cannot,
 /// because by then the granularity is already fixed.
 fn dump_cfg_partition(f: &Funcdata) {
-    eprintln!("CFG {} nblocks={}", f.name, f.num_blocks());
+    debug!(crate::debug::Topic::Structure, "{} nblocks={}", f.name, f.num_blocks());
     for b in 0..f.num_blocks() {
         let blk = f.block(BlockId(b as u32));
         let start = blk.ops.first().map(|&o| f.op(o).seqnum.pc.offset);
         let stop = blk.ops.last().map(|&o| f.op(o).seqnum.pc.offset);
         let live = blk.ops.iter().filter(|&&o| !f.op(o).is_dead()).count();
         let last = blk.ops.last().map(|&o| format!("{:?}", f.op(o).code())).unwrap_or_default();
-        eprintln!(
-            "CFG blk{} start={} stop={} ops={} live={} ins={:?} outs={:?} last={}",
+        debug!(crate::debug::Topic::Structure, 
+            "blk{} start={} stop={} ops={} live={} ins={:?} outs={:?} last={}",
             b,
             start.map(|a| format!("{a:#x}")).unwrap_or_else(|| "-".into()),
             stop.map(|a| format!("{a:#x}")).unwrap_or_else(|| "-".into()),
@@ -3193,7 +3182,7 @@ fn dump_cfg_partition(f: &Funcdata) {
 }
 
 pub fn structure(f: &Funcdata) -> Structured {
-    if std::env::var("MOSURA_CFG").is_ok() {
+    if crate::debug::on(crate::debug::Topic::Structure) {
         dump_cfg_partition(f);
     }
     // `MOSURA_STRUCT=1` emits one header per function before any of its trace lines. Without it the
@@ -3203,9 +3192,7 @@ pub fn structure(f: &Funcdata) -> Structured {
     // dump ORDER, which is exactly the kind of guess this project treats as a fabricated
     // measurement. `MOSURA_CFG` already prints `CFG <name>`; this is the same key for the other
     // half of the pair, so the two dumps segment identically.
-    if std::env::var("MOSURA_STRUCT").is_ok() {
-        eprintln!("STRUCT {} nblocks={}", f.name, f.num_blocks());
-    }
+    debug!(crate::debug::Topic::Structure, "{} nblocks={}", f.name, f.num_blocks());
     let blocks: Vec<FlowBlock> = (0..f.num_blocks())
         .map(|b| {
             let out_edges: Vec<usize> = f.blocks()[b].out_edges.iter().map(|e| e.0 as usize).collect();
@@ -3258,9 +3245,9 @@ pub fn structure(f: &Funcdata) -> Structured {
     let complex: Vec<bool> = if let Some(c) =
         f.structure_complex.as_ref().filter(|c| c.len() == f.num_blocks())
     {
-        if std::env::var_os("MOSURA_COMPLEX").is_some() {
+        if crate::debug::on(crate::debug::Topic::Structure) {
             let pcs: Vec<String> = (0..f.num_blocks()).map(|b| f.block(BlockId(b as u32)).ops.iter().find(|&&op| !f.op(op).is_dead()).map(|&op| format!("{:x}", f.op(op).seqnum.pc.offset)).unwrap_or_else(|| "-".into())).collect();
-            eprintln!("COMPLEX reusing frozen verdicts nblocks={} verdicts={:?} first-pcs={:?}", f.num_blocks(), c, pcs);
+            debug!(crate::debug::Topic::Structure, "reusing frozen verdicts nblocks={} verdicts={:?} first-pcs={:?}", f.num_blocks(), c, pcs);
         }
         c.clone()
     } else {
@@ -3268,9 +3255,9 @@ pub fn structure(f: &Funcdata) -> Structured {
         .map(|b| {
             let bid = BlockId(b as u32);
             let mut statement = if f.block(bid).out_edges.len() >= 2 { 1 } else { 0 };
-            if std::env::var_os("MOSURA_COMPLEX").is_some() {
+            if crate::debug::on(crate::debug::Topic::Structure) {
                 let ops: Vec<String> = f.block(bid).ops.iter().map(|&op| { let o = f.op(op); format!("{:x}:{:?}{}{}", o.seqnum.pc.offset, o.code(), if o.is_marker() { "*" } else { "" }, if o.is_dead() { "(dead)" } else { "" }) }).collect();
-                eprintln!("COMPLEX blk{b} ops {:?}", ops);
+                debug!(crate::debug::Topic::Structure, "blk{b} ops {:?}", ops);
             }
             for &op in &f.block(bid).ops {
                 let o = f.op(op);
@@ -3297,13 +3284,11 @@ pub fn structure(f: &Funcdata) -> Structured {
                 };
                 if yes {
                     statement += 1;
-                    if std::env::var_os("MOSURA_COMPLEX").is_some() {
-                        eprintln!(
-                            "COMPLEX blk{b} stmt#{statement}: {:x}:{} {:?} out={:?}",
+                    debug!(crate::debug::Topic::Structure, 
+                            "blk{b} stmt#{statement}: {:x}:{} {:?} out={:?}",
                             o.seqnum.pc.offset, o.seqnum.uniq, o.code(),
                             o.output.map(|v| (f.vn(v).loc.offset, f.vn(v).descend.len()))
                         );
-                    }
                 }
                 if statement > 2 {
                     return true;
@@ -3374,15 +3359,13 @@ pub fn structure(f: &Funcdata) -> Structured {
     );
     // Ghidra's `ActionFinalStructure` (blockaction.cc:2191) orders the list before printing.
     s.order_roots(f);
-    if std::env::var("MOSURA_COLLAPSE").is_ok() {
-        eprintln!(
+    debug!(crate::debug::Topic::Structure, 
             "COLLAPSE n={} order={:?} roots={:?} indices={:?}",
             n,
             s.order,
             s.roots,
             s.roots.iter().map(|&r| s.block_index(r)).collect::<Vec<_>>()
         );
-    }
 
     // Reclassify loop-exit gotos as breaks (Ghidra's ActionFinalStructure → BlockGraph::scopeBreak,
     // blockaction.cc:2193), run over the fully-collapsed tree.

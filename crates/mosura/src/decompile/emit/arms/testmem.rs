@@ -19,8 +19,6 @@ use crate::decompile::varnode::VarnodeId;
 /// The census (survey evidence, `EmitReport::testmem_candidates`), called from `print_c_inner`'s
 /// evidence section where it sat.
 pub(crate) fn recognize(pr: &mut PrintC<'_>, f: &Funcdata) {
-    // (`ram` was a local of print_c_inner the census read; bound here the same way)
-    let ram = f.spaces.by_name("ram");
     // testmem candidates (see EmitReport::testmem_candidates): masked narrow loads feeding a
     // zero-equality — the shape whose original-instruction readout distinguishes an int-wide
     // source access from a narrow one.

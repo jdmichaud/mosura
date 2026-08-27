@@ -57,9 +57,9 @@ pub(crate) fn recognize(p: &mut PrintC<'_>, f: &Funcdata, choices: &EmitChoices)
 // frame-fill=aggregate: witnessed prologue frame, an escaping local (the alias boundary exists),
 // and >= 32 bytes of slack between the frame and the recovered locals inside it.
 if choices.frame_fill == crate::decompile::emit::FrameFill::Aggregate {
-    if std::env::var_os("MOSURA_FRAME_DEBUG").is_some() {
+    if crate::debug::on(crate::debug::Topic::FrameFill) {
         let declared: i64 = p.stack_syms.iter().map(|s| s.size as i64).sum();
-        eprintln!("[frame-fill] {:#x}: witness={:?} alias_boundary={:?} stack_syms={} declared={} syms={:?}",
+        debug!(crate::debug::Topic::FrameFill, "{:#x}: witness={:?} alias_boundary={:?} stack_syms={} declared={} syms={:?}",
             f.addr.offset, p.recovered.frame_fill, f.alias_boundary, p.stack_syms.len(), declared,
             p.stack_syms.iter().map(|s| (s.start, s.size)).collect::<Vec<_>>());
     }
@@ -71,9 +71,7 @@ if choices.frame_fill == crate::decompile::emit::FrameFill::Aggregate {
         // frame), whose five scalars then lost their registers to a needless aggregate
         let boundary = p.frame_off(ab as u64);
         if boundary < bottom {
-            if std::env::var_os("MOSURA_FRAME_DEBUG").is_some() {
-                eprintln!("[frame-fill] {:#x}: alias boundary {boundary:#x} below the frame bottom {bottom:#x} — declined", f.addr.offset);
-            }
+            debug!(crate::debug::Topic::FrameFill, "{:#x}: alias boundary {boundary:#x} below the frame bottom {bottom:#x} — declined", f.addr.offset);
         } else {
         // the slack is against the symbols the C will DECLARE — those some live stack varnode or
         // PTRSUB offset references — not the recovered scope's full extent: the lookup that sizes
@@ -106,9 +104,7 @@ if choices.frame_fill == crate::decompile::emit::FrameFill::Aggregate {
             .filter(|s| s.start >= bottom && s.start < top && referenced.iter().any(|&r| r >= s.start && r < s.start + s.size as i64))
             .map(|s| s.size as i64)
             .sum();
-        if std::env::var_os("MOSURA_FRAME_DEBUG").is_some() {
-            eprintln!("[frame-fill] {:#x}: referenced-declared={declared} slack={}", f.addr.offset, frame as i64 - declared);
-        }
+        debug!(crate::debug::Topic::FrameFill, "{:#x}: referenced-declared={declared} slack={}", f.addr.offset, frame as i64 - declared);
         if frame > 0 && frame as i64 - declared >= 32 {
             let ty = Datatype::Array(Box::new(Datatype::Unknown(1)), frame as u64);
             let name = p.stack_slot_name(bottom, &ty);

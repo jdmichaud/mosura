@@ -120,15 +120,13 @@ pub fn recover(
             insns,
         ),
     );
-    if std::env::var_os("MOSURA_EMIT_DEBUG").is_some() {
-        eprintln!(
-            "[recover] runs={} orders={} snap={} testmem={}",
+    debug!(crate::debug::Topic::Recover, 
+            "runs={} orders={} snap={} testmem={}",
             report.store_runs.len(),
             recovered.store_orders.len(),
             recovered.snapshot_sites.len(),
             recovered.testmem_sites.len()
         );
-    }
     recovered
 }
 

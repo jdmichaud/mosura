@@ -632,7 +632,7 @@ impl PrintC<'_> {
                         let _ = write!(out, "{stmtxt}");
                         *separator = true;
                     } else {
-                        if std::env::var_os("MOSURA_STMT_PC").is_some() {
+                        if crate::debug::on(crate::debug::Topic::Printc) {
                             let _ = writeln!(out, "{pad}{stmtxt}; /*pc {:x} op {:?}*/", self.f.op(op).seqnum.pc.offset, self.f.op(op).code());
                         } else {
                             let _ = writeln!(out, "{pad}{stmtxt};");
@@ -2172,7 +2172,7 @@ impl<'a> PrintC<'a> {
                     Some(t) => format!("func_0x{:08x}", self.f.vn(t).loc.offset),
                     None => "func".to_string(),
                 };
-                if std::env::var_os("MOSURA_CALLARGS").is_some() {
+                if crate::debug::on(crate::debug::Topic::Printc) {
                     let facts: Vec<String> = (1..o.num_inputs())
                         .map(|i| {
                             let v = a(i);
@@ -2188,7 +2188,7 @@ impl<'a> PrintC<'a> {
                             )
                         })
                         .collect();
-                    eprintln!("CALLARGS {name} op={} args=[{}]", op.0, facts.join(" | "));
+                    debug!(crate::debug::Topic::Printc, "{name} op={} args=[{}]", op.0, facts.join(" | "));
                 }
                 let args: Vec<String> = (1..o.num_inputs()).map(|i| self.render_var(a(i)).0).collect();
                 // call-arg-orders MARK: the candidacy report and the recovered permutation
@@ -2593,9 +2593,9 @@ impl<'a> PrintC<'a> {
                 // INSTRUMENT: the full negation algebra per node, so a printed connective
                 // that contradicts the built structure names its own term (the wrong-code
                 // specimen: CondAnd printed as `||` with positive leaves).
-                if std::env::var_os("MOSURA_COND_DEBUG").is_some() {
+                if crate::debug::on(crate::debug::Topic::Printc) {
                     let (f0, f1) = s.blocks[idx].cond_flip;
-                    eprintln!(
+                    debug!(crate::debug::Topic::Printc, 
                         "[cond] node={idx} kind={:?} neg_in={neg} conn={conn} flip=({f0},{f1}) or0={} or1={} comps={:?}",
                         s.blocks[idx].kind,
                         operand_oriented(self.f, s, s.blocks[idx].components[0]),
@@ -3041,11 +3041,9 @@ impl<'a> PrintC<'a> {
                 // through the do-while's live test instead, a rotated CONTROL flow the byte
                 // comparison caught in the jump table's first entry.
                 for (v, landing) in &exit_bound {
-                    if std::env::var("MOSURA_SWITCH_DEBUG").is_ok() {
-                        eprintln!("[swexit] case {v}: landing {:?} range {:?} scope_exit {:?} range {:?}",
+                    debug!(crate::debug::Topic::Printc, "case {v}: landing {:?} range {:?} scope_exit {:?} range {:?}",
                             landing, landing.and_then(|b| self.f.block_range(b)),
                             scope_exit, scope_exit.and_then(|b| self.f.block_range(b)));
-                    }
                     let _ = writeln!(out, "{pad}case {v}:");
                     match landing {
                         Some(b) if scope_exit != Some(*b) => {
@@ -3417,11 +3415,11 @@ impl<'a> PrintC<'a> {
             if !members.iter().any(|&m| self.f.vn(m).loc.space == reg && self.f.vn(m).loc.offset == off) {
                 continue;
             }
-            eprintln!("[high] class {h}:");
+            debug!(crate::debug::Topic::Printc, "class {h}:");
             for &m in members {
                 let vn = self.f.vn(m);
                 let def = vn.def.map(|d| (format!("{:?}", self.f.op(d).code()), self.f.op(d).seqnum.pc.offset));
-                eprintln!("[high]   v{} {}+{:#x}:{} def {:?}", m.0, self.f.spaces.get(vn.loc.space).name, vn.loc.offset, vn.size, def);
+                debug!(crate::debug::Topic::Printc, "v{} {}+{:#x}:{} def {:?}", m.0, self.f.spaces.get(vn.loc.space).name, vn.loc.offset, vn.size, def);
             }
         }
     }
@@ -3439,11 +3437,11 @@ impl<'a> PrintC<'a> {
         // recovered order; ops of the run reached later in block order are skipped.
         let mut reordered: std::collections::HashSet<OpId> = std::collections::HashSet::new();
         let block_ops = self.f.block(b).ops.clone();
-        if std::env::var_os("MOSURA_STMT_PC").is_some() {
+        if crate::debug::on(crate::debug::Topic::Printc) {
             for &op in &block_ops {
                 let o = self.f.op(op);
                 if !o.is_dead() {
-                    eprintln!("[stmt] blk{} pc {:#x} {:?} out {:?}", b.0, o.seqnum.pc.offset, o.code(),
+                    debug!(crate::debug::Topic::Printc, "blk{} pc {:#x} {:?} out {:?}", b.0, o.seqnum.pc.offset, o.code(),
                         o.output.map(|v| (self.f.spaces.get(self.f.vn(v).loc.space).name.clone(), self.f.vn(v).loc.offset)));
                 }
             }
@@ -3590,7 +3588,7 @@ impl<'a> PrintC<'a> {
                         out.push_str(", ");
                     }
                     out.push_str(&stmt);
-                } else if std::env::var_os("MOSURA_STMT_PC").is_some() {
+                } else if crate::debug::on(crate::debug::Topic::Printc) {
                     let _ = writeln!(out, "{pad}{stmt}; /*pc {:x} {:?}*/", self.f.op(op).seqnum.pc.offset, self.f.op(op).code());
                 } else {
                     let _ = writeln!(out, "{pad}{stmt};");
@@ -4357,9 +4355,7 @@ fn ilv_block_stmts(f: &Funcdata, insns: &[crate::recompile::insn::NormInsn]) -> 
                     e.anchor = Some(e.anchor.map_or(a, |x: u64| x.min(a)));
                 }
             }
-            if std::env::var_os("MOSURA_ILV_DEBUG").is_some() {
-                eprintln!("[ilv-stmt] pc {:#x} {:?} kind={} anchor={:?}", here, o.code(), kind, e.anchor);
-            }
+            debug!(crate::debug::Topic::Printc, "pc {:#x} {:?} kind={} anchor={:?}", here, o.code(), kind, e.anchor);
             stmts.push(e);
         }
         blocks_out.push(stmts);
@@ -4724,6 +4720,8 @@ fn print_c_inner(
     arms::array_index::recognize(&mut p, f, choices);
     // string-ops=intrinsic: the arm's recognizer (emit/arms/string_ops.rs) — arm setup
     arms::string_ops::recognize(&mut p);
+    // struct-copy: the arm's own setup — its diagnostic dump under `MOSURA_DEBUG=struct-copy` (R6)
+    arms::struct_copy::recognize(&p);
     // frame-fill=aggregate: the arm's gate (emit/arms/frame_fill.rs) — arm setup
     arms::frame_fill::recognize(&mut p, f, choices);
     let t0 = std::time::Instant::now();
@@ -4808,7 +4806,7 @@ fn print_c_inner(
     // Release builds compile the assert out, so the WAR2 survey does not abort; it records
     // `blocks_cfg`/`blocks_reached` per function instead, which is how the population is censused.
     // `MOSURA_BLOCKSET=1` enumerates the missing blocks in any build.
-    if cfg!(debug_assertions) || std::env::var("MOSURA_BLOCKSET").is_ok() {
+    if cfg!(debug_assertions) || crate::debug::on(crate::debug::Topic::Printc) {
         let reached = super::structure::reached_basic_blocks(&s);
         if reached.len() != f.num_blocks() {
             let missing: Vec<String> = (0..f.num_blocks())
@@ -4827,20 +4825,16 @@ fn print_c_inner(
                 f.name,
                 missing.join(" ")
             );
-            if std::env::var("MOSURA_BLOCKSET").is_ok() {
-                eprintln!(
-                    "BLOCKSET {}: cfg={} reached={} MISSING={} [{}]",
+            debug!(crate::debug::Topic::Printc, 
+                    "{}: cfg={} reached={} MISSING={} [{}]",
                     f.name,
                     f.num_blocks(),
                     reached.len(),
                     missing.len(),
                     missing.join(" ")
                 );
-            }
             debug_assert!(false, "{}", msg);
-        } else if std::env::var("MOSURA_BLOCKSET").is_ok() {
-            eprintln!("BLOCKSET {}: cfg={} reached={} MISSING=0 []", f.name, f.num_blocks(), reached.len());
-        }
+        } else { debug!(crate::debug::Topic::Printc, "{}: cfg={} reached={} MISSING=0 []", f.name, f.num_blocks(), reached.len()); }
     }
     p.gotos = s.gotos.clone();
     p.labels = s.labels.clone();
@@ -5040,12 +5034,12 @@ fn print_c_inner(
                     let rhs = o.input(0)?;
                     pure_expr(f, &p, rhs, 4).then_some((out, addr, vn.size))
                 })();
-                if std::env::var_os("MOSURA_STORE_DEBUG").is_some() {
+                if crate::debug::on(crate::debug::Topic::Printc) {
                     let od = o.output.map(|v| {
                         let vn = f.vn(v);
                         format!("{:?} sp{} off{:#x} expl={}", v, vn.loc.space.0, vn.loc.offset, p.is_explicit(v))
                     });
-                    eprintln!(
+                    debug!(crate::debug::Topic::Printc, 
                         "[srun] op={:?} pc={:#x} code={:?} out={:?} pure={:?}",
                         op, o.seqnum.pc.offset, o.code(), od, pure_store
                     );
@@ -5069,7 +5063,6 @@ fn print_c_inner(
     // only the first drops the others' whole subtrees, which is how WAR2 FUN_00077dcb lost four of
     // its eight basic blocks and a live CALL while its siblings kept jumping to labels in them.
     p.debug_high_classes();
-    arms::struct_copy::debug_dump_setup(&p);
     for &root in &s.roots {
         if p.sparse_consumed.contains(&root) {
             continue; // walked into the sparse switch an earlier root printed

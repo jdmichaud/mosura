@@ -49,9 +49,17 @@ fn try_emit(p: &mut PrintC<'_>, site: Site<'_>, _out: &mut String) -> Option<Ans
 }
 
 /// The arm's setup-time dump (`MOSURA_STRUCTCOPY_DEBUG`): the witness runs.
+/// The arm's setup hook (review R6): nothing to recognize — the witnesses are the port's
+/// `movsd_runs` — only the diagnostic dump of the setup under its topic. Called from
+/// print_c_inner's arm-setup block, where every arm's recognizer is called, instead of from the
+/// port's printing code.
+pub(crate) fn recognize(p: &PrintC<'_>) {
+    debug_dump_setup(p);
+}
+
 pub(crate) fn debug_dump_setup(p: &PrintC<'_>) {
-if p.arms.struct_copy.assign && std::env::var_os("MOSURA_STRUCTCOPY_DEBUG").is_some() {
-    eprintln!("[structcopy] {:#x} witness runs {:?}", p.f.addr.offset, p.recovered.movsd_runs);
+if p.arms.struct_copy.assign {
+    debug!(crate::debug::Topic::StructCopy, "{:#x} witness runs {:?}", p.f.addr.offset, p.recovered.movsd_runs);
 }
 }
 
@@ -64,10 +72,10 @@ fn debug_dump_block(p: &PrintC<'_>, block_ops: &[OpId], op: OpId) {
         return;
     }
     let Some(b) = p.f.op(op).parent else { return };
-    if p.arms.struct_copy.assign && std::env::var_os("MOSURA_STRUCTCOPY_DEBUG").is_some() && !p.recovered.movsd_runs.is_empty() {
+    if p.arms.struct_copy.assign && !p.recovered.movsd_runs.is_empty() {
     for (&rp, &rk) in &p.recovered.movsd_runs {
         let here: Vec<String> = block_ops.iter().filter(|&&o| { let pc = p.f.op(o).seqnum.pc.offset; pc >= rp && pc < rp + rk as u64 }).map(|&o| { let x = p.f.op(o); format!("{:#x}:{:?}{}", x.seqnum.pc.offset, x.code(), if x.is_dead() { "(dead)" } else { "" }) }).collect();
-        if !here.is_empty() { eprintln!("[structcopy] {:#x} blk{} run @{rp:#x} k {rk}: ops {:?}", p.f.addr.offset, b.0, here); }
+        if !here.is_empty() { debug!(crate::debug::Topic::StructCopy, "{:#x} blk{} run @{rp:#x} k {rk}: ops {:?}", p.f.addr.offset, b.0, here); }
     }
 }
 }
@@ -83,15 +91,13 @@ fn debug_dump_block(p: &PrintC<'_>, block_ops: &[OpId], op: OpId) {
 pub(crate) fn movsd_run_at(p: &mut PrintC<'_>, block_ops: &[OpId], op: OpId, pc: u64) -> Option<(String, Vec<OpId>)> {
     let k = *p.recovered.movsd_runs.get(&pc)?;
     let fused = movsd_run_stmt(p, block_ops, pc, k);
-    if std::env::var_os("MOSURA_STRUCTCOPY_DEBUG").is_some() {
-        eprintln!(
-            "[structcopy] {:#x} run @{pc:#x} k {k} at op {:?} {:?}: {}",
+    debug!(crate::debug::Topic::StructCopy, 
+            "{:#x} run @{pc:#x} k {k} at op {:?} {:?}: {}",
             p.f.addr.offset,
             op,
             p.f.op(op).code(),
             fused.as_ref().map(|f| f.0.clone()).unwrap_or_else(|| "-".to_string())
         );
-    }
     // fires once, at the run's first member
     fused.filter(|(_, m)| m.first() == Some(&op))
 }
@@ -99,7 +105,7 @@ pub(crate) fn movsd_run_at(p: &mut PrintC<'_>, block_ops: &[OpId], op: OpId, pc:
 fn movsd_run_stmt(p: &mut PrintC<'_>, block_ops: &[OpId], pc: u64, k: u32) -> Option<(String, Vec<OpId>)> {
     let mut members = Vec::new();
     let mut first: Option<(String, String)> = None;
-    let dbg = std::env::var_os("MOSURA_STRUCTCOPY_DEBUG").is_some();
+    let dbg = crate::debug::on(crate::debug::Topic::StructCopy);
     for i in 0..k as u64 {
         let op = block_ops.iter().copied().find(|&o| {
             let x = p.f.op(o);
@@ -109,7 +115,7 @@ fn movsd_run_stmt(p: &mut PrintC<'_>, block_ops: &[OpId], pc: u64, k: u32) -> Op
         let Some(op) = op else {
             if dbg {
                 let at: Vec<String> = block_ops.iter().filter(|&&o| p.f.op(o).seqnum.pc.offset == pc + i).map(|&o| { let x = p.f.op(o); format!("{:?}{}{}{}", x.code(), if x.is_dead() { "(dead)" } else { "" }, if p.suppressed.contains(&o) { "(supp)" } else { "" }, x.output.map(|v| if p.is_explicit(v) { "(explicit)" } else { "(implied)" }).unwrap_or("")) }).collect();
-                eprintln!("[structcopy]   element {i} @{:#x}: no printable copy; ops there: {:?}", pc + i, at);
+                debug!(crate::debug::Topic::StructCopy, "element {i} @{:#x}: no printable copy; ops there: {:?}", pc + i, at);
             }
             return None;
         };
@@ -191,18 +197,18 @@ fn movsd_global_run(p: &mut PrintC<'_>, block_ops: &[OpId], first: OpId, reorder
 /// parenthesized for the cast. A RAM varnode names its own address.
 fn movsd_copy_shape(p: &mut PrintC<'_>, op: OpId, pc: u64) -> Option<(String, String)> {
     let o = p.f.op(op);
-    let dbg = std::env::var_os("MOSURA_STRUCTCOPY_DEBUG").is_some();
+    let dbg = crate::debug::on(crate::debug::Topic::StructCopy);
     let ram = |me: &PrintC<'_>, v: VarnodeId| -> Option<String> {
         let vn = me.f.vn(v);
         let name = &me.f.spaces.get(vn.loc.space).name;
-        if dbg && name != "ram" { eprintln!("[structcopy]   varnode {v:?} in space {name:?} size {} — not ram", vn.size); }
+        if dbg && name != "ram" { debug!(crate::debug::Topic::StructCopy, "varnode {v:?} in space {name:?} size {} — not ram", vn.size); }
         (name == "ram" && vn.size == 4).then(|| format!("{:#x}", vn.loc.offset))
     };
     let (dst, value) = match o.code() {
         OpCode::Store => {
             let (addr, vv) = (o.input(1)?, o.input(2)?);
             if p.f.vn(vv).size != 4 {
-                if dbg { eprintln!("[structcopy]   copy @{pc:#x}: store of size {} — declined", p.f.vn(vv).size); }
+                debug!(crate::debug::Topic::StructCopy, "copy @{pc:#x}: store of size {} — declined", p.f.vn(vv).size);
                 return None;
             }
             let a = p.render_var(addr).0;
@@ -215,13 +221,13 @@ fn movsd_copy_shape(p: &mut PrintC<'_>, op: OpId, pc: u64) -> Option<(String, St
         _ => {
             let out = o.output?;
             if p.f.vn(out).size != 4 {
-                if dbg { eprintln!("[structcopy]   copy @{pc:#x}: assign of size {} — declined", p.f.vn(out).size); }
+                debug!(crate::debug::Topic::StructCopy, "copy @{pc:#x}: assign of size {} — declined", p.f.vn(out).size);
                 return None;
             }
             let vv = match o.code() {
                 OpCode::Copy => o.input(0)?,
                 other => {
-                    if dbg { eprintln!("[structcopy]   copy @{pc:#x}: printable {other:?} is not a copy — declined"); }
+                    debug!(crate::debug::Topic::StructCopy, "copy @{pc:#x}: printable {other:?} is not a copy — declined");
                     return None;
                 }
             };
@@ -234,7 +240,7 @@ fn movsd_copy_shape(p: &mut PrintC<'_>, op: OpId, pc: u64) -> Option<(String, St
     let src = match p.f.vn(value).def {
         Some(d) if p.f.op(d).code() == OpCode::Load => {
             if p.f.op(d).seqnum.pc.offset != pc {
-                if dbg { eprintln!("[structcopy]   copy @{pc:#x}: load from another pc {:#x} — declined", p.f.op(d).seqnum.pc.offset); }
+                debug!(crate::debug::Topic::StructCopy, "copy @{pc:#x}: load from another pc {:#x} — declined", p.f.op(d).seqnum.pc.offset);
                 return None;
             }
             let a = p.render_var(p.f.op(d).input(1)?).0;
@@ -247,7 +253,7 @@ fn movsd_copy_shape(p: &mut PrintC<'_>, op: OpId, pc: u64) -> Option<(String, St
         _ => match ram(p, value) {
             Some(a) => a,
             None => {
-                if dbg { eprintln!("[structcopy]   copy @{pc:#x}: value {:?} def {:?} is not a load/global — declined", value, p.f.vn(value).def.map(|d| p.f.op(d).code())); }
+                debug!(crate::debug::Topic::StructCopy, "copy @{pc:#x}: value {:?} def {:?} is not a load/global — declined", value, p.f.vn(value).def.map(|d| p.f.op(d).code()));
                 return None;
             }
         },
