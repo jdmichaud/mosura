@@ -15,7 +15,8 @@
 //!   iterates the table, so that by the last move the `match` is gone and the table IS the order.
 //!   The hook carries no arm logic — an arm's own debugging travels with the arm.
 //! - [`render_value`], the value-render chokepoint at the expression printer's dispatch
-//!   ([`ValueSite`]): sdiv-pow2 answers for the root of a division chain; frame-fill will answer for
+//!   ([`ValueSite`]): string-ops answers the strlen fold and sdiv-pow2 the root of a division
+//!   chain, in that order (render_op_inner's); frame-fill will answer for
 //!   anything rooted in a stack slot its aggregate swallowed (the slot's name, its PTRSUB, an
 //!   element, a piece, the fused store — today six inline consults of `frame_agg` in printc.rs,
 //!   rerouted here by the frame_fill commit); order documented at the function.
@@ -26,13 +27,24 @@
 //!
 //! THE ARM SURFACE — what the arms may touch of the printer, all `pub(crate)` on [`PrintC`] and
 //! listed here so the boundary is reviewable in one place (an `ArmCtx` narrowing is the follow-up
-//! once the moves are done). At the skeleton: `try_emit_rep_movs`, `try_emit_sparse_switch`,
-//! `try_emit_if_nested`, `movsd_run_at`, `sdiv_pow2_render`, and the field `sparse_switch`. Each
-//! move commit extends this list with exactly what its arm reads.
+//! once the moves are done). Each move commit extends this list with exactly what its arm reads:
+//! - delegates of the arms not yet moved: `try_emit_sparse_switch`, `try_emit_if_nested`,
+//!   `movsd_run_at`, `sdiv_pow2_render`, and the field `sparse_switch`;
+//! - string_ops (commit 1): the fields `f`, `recovered`, `report`, `h`, `force_explicit`, the arm's
+//!   own state `rep_movs`, `rep_skip`, `strlen_alias`, `strlen_exprs` (commit 7 moves it), and
+//!   `suppressed` — a PRINTER SERVICE FOR THE ARMS, not Ghidra's: the ops an arm has covered,
+//!   which the port's own statement printer then skips; the methods `name_of`, `render_var`,
+//!   `lvalue_of`, `is_explicit`, `strlen_arg`; the free helpers `strip_copies`, `collect_basics`,
+//!   `render_const_typed`.
 //!
-//! THE MOVES (one commit each, identity-gated): 0 this skeleton — the seams wired, delegating to
+//! THE MOVES (one commit each, identity-gated): 0 the skeleton — the seams wired, delegating to
 //! the code still in printc.rs; 1 string_ops; 2 struct_copy; 3 sparse_switch; 4 frame_fill (the
-//! value-render answers and the declaration setup); 5 sdiv_pow2; 6 nested_conds.
+//! value-render answers and the declaration setup); 5 sdiv_pow2; 6 nested_conds; 7 the ARM STATE
+//! — through the moves each arm's witness state (`rep_movs`, `rep_skip`, `strlen_alias`, … typed by
+//! the arm's module) stays a `PrintC` field so every move is verbatim; commit 7 relocates it into
+//! one `arms::State` (per-arm state structs composed in it) held by `PrintC` as a single field,
+//! together with the `ArmCtx` narrowing of the surface. The series' acceptance therefore reads:
+//! zero arm LOGIC in printc.rs after the moves, zero arm identifiers after commit 7.
 //!
 //! R2b — the older `RecoveredChoices`-driven renderings are choices too and still sit in the port:
 //! complement compares (`complement_sites`), unsigned compares (`unsigned_cmp_sites`), return
@@ -46,6 +58,8 @@ use super::super::op::OpId;
 use super::super::printc::PrintC;
 use super::super::structure::Structured;
 
+pub mod string_ops;
+
 /// The kinds of site the statement-level hook is called from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SiteKind {
@@ -58,6 +72,9 @@ pub enum SiteKind {
     IfWithoutElse,
     /// One op of a block's statement list: a MOVSD run may be one struct assignment.
     BlockOp,
+    /// ANY structured node, before the port prints it: a node a collapsed string op covers emits
+    /// nothing.
+    Node,
 }
 
 /// One call of the statement-level hook.
@@ -66,6 +83,7 @@ pub enum Site<'s> {
     IfEntry { s: &'s Structured, idx: usize, indent: usize },
     IfWithoutElse { s: &'s Structured, idx: usize, indent: usize },
     BlockOp { block_ops: &'s [OpId], op: OpId, pc: u64 },
+    Node { s: &'s Structured, idx: usize },
 }
 
 impl Site<'_> {
@@ -75,6 +93,7 @@ impl Site<'_> {
             Site::IfEntry { .. } => SiteKind::IfEntry,
             Site::IfWithoutElse { .. } => SiteKind::IfWithoutElse,
             Site::BlockOp { .. } => SiteKind::BlockOp,
+            Site::Node { .. } => SiteKind::Node,
         }
     }
 }
@@ -87,28 +106,53 @@ pub enum Answer {
     Fused { stmt: String, members: Vec<OpId> },
 }
 
+/// One arm as the table holds it: its name (with its doc), the site kinds it declares, and its
+/// answer at a site of one of those kinds.
+pub struct Arm {
+    /// Read by the table test and by the debug facility to come (R6); not on the print path.
+    #[allow(dead_code)]
+    pub name: &'static str,
+    pub kinds: &'static [SiteKind],
+    pub try_emit: fn(&mut PrintC<'_>, Site<'_>, &mut String) -> Option<Answer>,
+}
+
 /// The arms in the order they are tried, each with the site kinds it declares. First match wins;
-/// no two arms declare the same kind (`tests::arms_declare_disjoint_site_kinds`).
-pub const ARMS: [(&str, &[SiteKind]); 4] = [
-    ("string-ops: a lifted REP MOVS/STOS/CMPS/SCAS as memcpy/memset/memcmp/strlen (docs/rep-string-intrinsic-arm.md)", &[SiteKind::LoopNode]),
-    ("sparse-switch: Watcom's compare tree as the switch it came from (docs/sparse-switch-arm.md)", &[SiteKind::IfEntry]),
-    ("struct-copy: a plain MOVSD run as the struct assignment (docs/struct-copy-arm.md)", &[SiteKind::BlockOp]),
-    ("nested-conds: a short-circuit as nested ifs (cond-form=nested, docs/byte-exact-families.md sb58 / byte-exact-status.md sb65)", &[SiteKind::IfWithoutElse]),
+/// no two arms declare the same kind (`tests::arms_declare_disjoint_site_kinds`). An arm not yet
+/// moved out of printc.rs sits here as a thin delegate.
+pub const ARMS: [Arm; 4] = [
+    string_ops::ARM,
+    Arm {
+        name: "sparse-switch: Watcom's compare tree as the switch it came from (docs/sparse-switch-arm.md)",
+        kinds: &[SiteKind::IfEntry],
+        try_emit: |p, site, out| match site {
+            Site::IfEntry { s, idx, indent } => (p.sparse_switch && p.try_emit_sparse_switch(s, idx, indent, out)).then_some(Answer::Emitted),
+            _ => None,
+        },
+    },
+    Arm {
+        name: "struct-copy: a plain MOVSD run as the struct assignment (docs/struct-copy-arm.md)",
+        kinds: &[SiteKind::BlockOp],
+        try_emit: |p, site, _out| match site {
+            Site::BlockOp { block_ops, op, pc } => p.movsd_run_at(block_ops, op, pc).map(|(stmt, members)| Answer::Fused { stmt, members }),
+            _ => None,
+        },
+    },
+    Arm {
+        name: "nested-conds: a short-circuit as nested ifs (cond-form=nested, docs/byte-exact-families.md sb58 / byte-exact-status.md sb65)",
+        kinds: &[SiteKind::IfWithoutElse],
+        try_emit: |p, site, out| match site {
+            Site::IfWithoutElse { s, idx, indent } => p.try_emit_if_nested(s, idx, indent, out).then_some(Answer::Emitted),
+            _ => None,
+        },
+    },
 ];
 
-/// The statement-level hook. Tries the arms of [`ARMS`] that declare the site's kind, in table
-/// order; `None` = no arm answered, the port prints the site itself.
+/// The statement-level hook: the first arm of [`ARMS`] that declares the site's kind answers;
+/// `None` = no arm answered, the port prints the site itself. The table IS the dispatch.
 pub fn try_emit(p: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<Answer> {
-    match site {
-        Site::LoopNode { s, idx, indent } => p.try_emit_rep_movs(s, idx, indent, out).then_some(Answer::Emitted),
-        Site::IfEntry { s, idx, indent } => {
-            (p.sparse_switch && p.try_emit_sparse_switch(s, idx, indent, out)).then_some(Answer::Emitted)
-        }
-        Site::IfWithoutElse { s, idx, indent } => p.try_emit_if_nested(s, idx, indent, out).then_some(Answer::Emitted),
-        Site::BlockOp { block_ops, op, pc } => {
-            p.movsd_run_at(block_ops, op, pc).map(|(stmt, members)| Answer::Fused { stmt, members })
-        }
-    }
+    let kind = site.kind();
+    let arm = ARMS.iter().find(|arm| arm.kinds.contains(&kind))?;
+    (arm.try_emit)(p, site, out)
 }
 
 #[cfg(test)]
@@ -119,31 +163,31 @@ mod tests {
     /// arms declares disjoint kinds, so "first match wins" never has two candidates.
     #[test]
     fn arms_declare_disjoint_site_kinds() {
-        for (i, (a, ka)) in ARMS.iter().enumerate() {
-            for (b, kb) in ARMS.iter().skip(i + 1) {
-                for k in *ka {
-                    assert!(!kb.contains(k), "arms `{a}` and `{b}` both declare {k:?}");
+        for (i, a) in ARMS.iter().enumerate() {
+            for b in ARMS.iter().skip(i + 1) {
+                for k in a.kinds {
+                    assert!(!b.kinds.contains(k), "arms `{}` and `{}` both declare {k:?}", a.name, b.name);
                 }
             }
         }
-        for kind in [SiteKind::LoopNode, SiteKind::IfEntry, SiteKind::IfWithoutElse, SiteKind::BlockOp] {
-            assert_eq!(ARMS.iter().filter(|(_, ks)| ks.contains(&kind)).count(), 1, "{kind:?} has exactly one arm");
+        for kind in [SiteKind::LoopNode, SiteKind::IfEntry, SiteKind::IfWithoutElse, SiteKind::BlockOp, SiteKind::Node] {
+            assert_eq!(ARMS.iter().filter(|a| a.kinds.contains(&kind)).count(), 1, "{kind:?} has exactly one arm");
         }
     }
 }
 
 /// One call of the value-render chokepoint.
 pub enum ValueSite {
-    /// The root of an expression the port is about to render (`render_op_inner`): a witnessed
-    /// SBB/SAR chain prints as `x / 2^n`.
-    Division { op: OpId },
+    /// The root of an expression the port is about to render (`render_op_inner`): a `len + 1`
+    /// alias folds to `strlen`'s value, a witnessed SBB/SAR chain prints as `x / 2^n`.
+    OpRoot { op: OpId },
 }
 
 /// The value-render chokepoint: the rendering and its precedence, or `None` = the port renders
-/// the value itself. Answerers in order: sdiv-pow2 (a division chain root); frame-fill joins in
-/// its move commit (a value rooted in a swallowed stack slot).
+/// the value itself. Answerers in order: string-ops (the strlen fold), sdiv-pow2 (a division
+/// chain root); frame-fill joins in its move commit (a value rooted in a swallowed stack slot).
 pub fn render_value(p: &mut PrintC<'_>, site: ValueSite) -> Option<(String, u8)> {
     match site {
-        ValueSite::Division { op } => p.sdiv_pow2_render(op),
+        ValueSite::OpRoot { op } => string_ops::strlen_fold(p, op).or_else(|| p.sdiv_pow2_render(op)),
     }
 }
