@@ -35,7 +35,7 @@ pub const ARM: Arm = Arm {
 
 fn try_emit(p: &mut PrintC<'_>, site: Site<'_>, _out: &mut String) -> Option<Answer> {
     let Site::BlockOp { block_ops, op, pc, reordered } = site else { return None };
-    if !p.struct_copy {
+    if !p.arms.struct_copy.assign {
         return None;
     }
     debug_dump_block(p, block_ops, op);
@@ -50,7 +50,7 @@ fn try_emit(p: &mut PrintC<'_>, site: Site<'_>, _out: &mut String) -> Option<Ans
 
 /// The arm's setup-time dump (`MOSURA_STRUCTCOPY_DEBUG`): the witness runs.
 pub(crate) fn debug_dump_setup(p: &PrintC<'_>) {
-if p.struct_copy && std::env::var_os("MOSURA_STRUCTCOPY_DEBUG").is_some() {
+if p.arms.struct_copy.assign && std::env::var_os("MOSURA_STRUCTCOPY_DEBUG").is_some() {
     eprintln!("[structcopy] {:#x} witness runs {:?}", p.f.addr.offset, p.recovered.movsd_runs);
 }
 }
@@ -64,7 +64,7 @@ fn debug_dump_block(p: &PrintC<'_>, block_ops: &[OpId], op: OpId) {
         return;
     }
     let Some(b) = p.f.op(op).parent else { return };
-    if p.struct_copy && std::env::var_os("MOSURA_STRUCTCOPY_DEBUG").is_some() && !p.recovered.movsd_runs.is_empty() {
+    if p.arms.struct_copy.assign && std::env::var_os("MOSURA_STRUCTCOPY_DEBUG").is_some() && !p.recovered.movsd_runs.is_empty() {
     for (&rp, &rk) in &p.recovered.movsd_runs {
         let here: Vec<String> = block_ops.iter().filter(|&&o| { let pc = p.f.op(o).seqnum.pc.offset; pc >= rp && pc < rp + rk as u64 }).map(|&o| { let x = p.f.op(o); format!("{:#x}:{:?}{}", x.seqnum.pc.offset, x.code(), if x.is_dead() { "(dead)" } else { "" }) }).collect();
         if !here.is_empty() { eprintln!("[structcopy] {:#x} blk{} run @{rp:#x} k {rk}: ops {:?}", p.f.addr.offset, b.0, here); }
@@ -253,4 +253,17 @@ fn movsd_copy_shape(p: &mut PrintC<'_>, op: OpId, pc: u64) -> Option<(String, St
         },
     };
     Some((dst, src))
+}
+
+/// The arm's state: its configuration (the witness, `recovered.movsd_runs`, is the port's).
+#[derive(Debug, Default)]
+pub(crate) struct State {
+    /// `struct-copy=assign` is on for this function.
+    pub(crate) assign: bool,
+}
+
+impl State {
+    pub(crate) fn new(choices: &crate::decompile::emit::EmitChoices) -> Self {
+        State { assign: choices.struct_copy == crate::decompile::emit::StructCopy::Assign }
+    }
 }

@@ -36,7 +36,9 @@ pub(crate) struct FrameAgg {
     pub(crate) bottom: i64,
     pub(crate) top: i64,
     pub(crate) size: u32,
-    pub(crate) name: String,
+    /// The aggregate's name — shared, so the answers' per-call clone is a refcount bump, not an
+    /// allocation (a true borrow across `frame_field` is blocked by its `declare_stack` mutation).
+    pub(crate) name: std::rc::Rc<str>,
 }
 
 impl FrameAgg {
@@ -107,7 +109,7 @@ if choices.frame_fill == crate::decompile::emit::FrameFill::Aggregate {
         if frame > 0 && frame as i64 - declared >= 32 {
             let ty = Datatype::Array(Box::new(Datatype::Unknown(1)), frame as u64);
             let name = p.stack_slot_name(bottom, &ty);
-            p.frame_agg = Some(FrameAgg { bottom, top, size: frame, name });
+            p.arms.frame_fill.agg = Some(FrameAgg { bottom, top, size: frame, name: name.into() });
         }
         }
     }
@@ -119,7 +121,7 @@ if choices.frame_fill == crate::decompile::emit::FrameFill::Aggregate {
 fn frame_field(pr: &mut PrintC<'_>, agg: &FrameAgg, off: i64, ty: &Datatype) -> String {
     pr.declare_stack(off, "", Datatype::Unknown(1));
     let delta = off - agg.bottom;
-    let base = if delta == 0 { agg.name.clone() } else { format!("{} + {}", agg.name, render_const_typed(delta as u64, 4, false)) };
+    let base = if delta == 0 { agg.name.to_string() } else { format!("{} + {}", agg.name, render_const_typed(delta as u64, 4, false)) };
     if ty.size() == 1 {
         if delta == 0 { format!("{}[0]", agg.name) } else { format!("{}[{}]", agg.name, render_const_typed(delta as u64, 4, false)) }
     } else if delta == 0 {
@@ -136,7 +138,7 @@ pub(crate) fn render_value(pr: &mut PrintC<'_>, site: &ValueSite<'_>) -> Option<
 // frame-fill=aggregate (seam 6): a piece of a slot the aggregate covers is the field at
 // `base offset + off` with the piece's own type — never `<field expr>._off_size_`
 // (0x66100: `*(uint4 *)(axStack_534 + 0x510)._1_1_`, COMPILE_FAIL E1032)
-if let Some(agg) = pr.frame_agg.clone() {
+if let Some(agg) = pr.arms.frame_fill.agg.clone() {
     let bvn = pr.f.vn(base);
     let boff = if Some(bvn.loc.space) == pr.stack_space {
         Some(pr.frame_off(bvn.loc.offset))
@@ -156,7 +158,7 @@ if let Some(agg) = pr.frame_agg.clone() {
 // frame-fill=aggregate: an element or a split-pair piece of a swallowed symbol is
 // the field at its slot (0x4e06e's `aiStack_2c[0]` read the symbol by name after
 // the aggregate had taken its declaration — COMPILE_FAIL E1011 in probe w4bp)
-if let Some(agg) = pr.frame_agg.clone() {
+if let Some(agg) = pr.arms.frame_fill.agg.clone() {
     if agg.covers(foff) {
         let fty = sym.array_index(foff).map(|(e, _)| e).unwrap_or_else(|| ty.clone());
         let field = frame_field(pr, &agg, foff, &fty);
@@ -167,7 +169,7 @@ if let Some(agg) = pr.frame_agg.clone() {
             None
         }
         ValueSite::SlotOffset { off, ty } => {
-if let Some(agg) = pr.frame_agg.clone() {
+if let Some(agg) = pr.arms.frame_fill.agg.clone() {
     if agg.covers(off) {
         return Some((frame_field(pr, &agg, off, ty), NOMINAL));
     }
@@ -178,7 +180,7 @@ if let Some(agg) = pr.frame_agg.clone() {
 // frame-fill=aggregate: an address inside the frame is `(T *)(base + delta)` (`base` itself for
 // the byte aggregate's own bottom), an element/value `*(T *)(base + delta)` — T from the
 // recovered symbol (its element type for an array), the W1 cast rule on the pointer.
-if let Some(agg) = pr.frame_agg.clone() {
+if let Some(agg) = pr.arms.frame_fill.agg.clone() {
     if agg.covers(off) {
         let ty = match pr.spacebase_sym_at(off) {
             Some(sym) => sym.array_index(off).map(|(e, _)| e).unwrap_or(sym.ty.clone()),
@@ -189,7 +191,7 @@ if let Some(agg) = pr.frame_agg.clone() {
         }
         pr.declare_stack(off, "", Datatype::Unknown(1));
         let delta = off - agg.bottom;
-        let addr = if delta == 0 { agg.name.clone() } else { format!("{} + {}", agg.name, render_const_typed(delta as u64, 4, false)) };
+        let addr = if delta == 0 { agg.name.to_string() } else { format!("{} + {}", agg.name, render_const_typed(delta as u64, 4, false)) };
         return Some((if ty.size() == 1 { addr } else if delta == 0 { format!("({} *){}", ty.name(), agg.name) } else { format!("({} *)({addr})", ty.name()) }, NOMINAL));
     }
 }
@@ -197,7 +199,7 @@ if let Some(agg) = pr.frame_agg.clone() {
         }
         ValueSite::FusedStore { sym, src } => {
 // frame-fill=aggregate: the fused whole-symbol store writes the field at its slot
-if let Some(agg) = pr.frame_agg.clone() {
+if let Some(agg) = pr.arms.frame_fill.agg.clone() {
     if agg.covers(sym.start) {
         let sty = pr.type_of(src);
         let lhs = frame_field(pr, &agg, sym.start, &sty);
@@ -215,13 +217,25 @@ if let Some(agg) = pr.frame_agg.clone() {
 /// itself; `true` = declared here, the port declares nothing.
 pub(crate) fn declare_slot(pr: &mut PrintC<'_>, start: i64) -> bool {
 // frame-fill=aggregate: a slot inside the frame declares the ONE aggregate instead
-if let Some(agg) = pr.frame_agg.clone() {
+if let Some(agg) = pr.arms.frame_fill.agg.clone() {
     if agg.covers(start) {
         if pr.stack_declared.insert(agg.bottom) {
-            pr.decls.push((agg.name, Datatype::Array(Box::new(Datatype::Unknown(1)), agg.size as u64), Some(agg.bottom)));
+            pr.decls.push((agg.name.to_string(), Datatype::Array(Box::new(Datatype::Unknown(1)), agg.size as u64), Some(agg.bottom)));
         }
         return true;
     }
 }
     false
+}
+
+/// The arm's state: the one aggregate, when the gate fired (review R2, commit 7).
+#[derive(Debug, Default)]
+pub(crate) struct State {
+    pub(crate) agg: Option<FrameAgg>,
+}
+
+impl State {
+    pub(crate) fn new(_choices: &EmitChoices) -> Self {
+        State::default()
+    }
 }

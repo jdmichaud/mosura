@@ -37,7 +37,7 @@ pub const ARM: Arm = Arm {
 
 fn try_emit(pr: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<Answer> {
     let Site::IfEntry { s, idx, indent } = site else { return None };
-    (pr.sparse_switch && try_emit_sparse_switch(pr, s, idx, indent, out)).then_some(Answer::Emitted)
+    (pr.arms.sparse_switch.switch && try_emit_sparse_switch(pr, s, idx, indent, out)).then_some(Answer::Emitted)
 }
 
 /// A set of closed integer ranges — the values a path through the compare tree admits.
@@ -146,10 +146,10 @@ fn try_emit_sparse_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
     if std::env::var_os("MOSURA_SPARSE_DEBUG").is_some() {
         eprintln!("[sparse] {:#x} enter root node {idx} key {scrut_high:?} negated {} kind {:?} parent {:?}", pr.f.addr.offset, s.blocks[idx].negated, s.blocks[idx].kind, s.blocks[idx].parent.map(|p| (p, format!("{:?}", s.blocks[p].kind), s.blocks[p].components.clone())));
     }
-    pr.sparse_hoist_pending.borrow_mut().clear();
-    pr.sparse_exit_goto.borrow_mut().clear();
-    pr.sparse_head_stmts.borrow_mut().clear();
-    pr.sparse_root.set(idx);
+    pr.arms.sparse_switch.hoist_pending.borrow_mut().clear();
+    pr.arms.sparse_switch.exit_goto.borrow_mut().clear();
+    pr.arms.sparse_switch.head_stmts.borrow_mut().clear();
+    pr.arms.sparse_switch.root.set(idx);
     // root only: a parent that is itself a compare on the same scrutinee owns the tree
     if let Some(parent) = s.blocks[idx].parent {
         let mut anc = Some(parent);
@@ -227,8 +227,8 @@ fn try_emit_sparse_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
         }
         None => pr.next_flow_after(s, idx),
     };
-    pr.sparse_cond_override_pending.borrow_mut().clear();
-    pr.sparse_tail.set(tail);
+    pr.arms.sparse_switch.cond_override_pending.borrow_mut().clear();
+    pr.arms.sparse_switch.tail.set(tail);
     let mut leaves: Vec<SparseLeaf> = Vec::new();
     let mut compares: Vec<OpId> = Vec::new();
     let mut consts: Vec<(u64, i64, u8)> = Vec::new();
@@ -472,7 +472,7 @@ fn try_emit_sparse_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
         if dbg { eprintln!("[sparse]   bail: total cases {total} (pivot {has_pivot})"); }
         return false;
     }
-    for (n, c) in pr.sparse_cond_override_pending.borrow_mut().drain(..) {
+    for (n, c) in pr.arms.sparse_switch.cond_override_pending.borrow_mut().drain(..) {
         pr.sparse_cond_override.insert(n, c);
     }
     if let Some((parent, pos, end)) = list_from {
@@ -549,7 +549,7 @@ fn try_emit_sparse_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
     let head = s.blocks[idx].components[0];
     match s.blocks[head].kind {
         FlowKind::List => {
-            let head_stmts: Vec<usize> = pr.sparse_head_stmts.borrow().clone();
+            let head_stmts: Vec<usize> = pr.arms.sparse_switch.head_stmts.borrow().clone();
             for c in s.blocks[head].components.clone() {
                 if head_stmts.contains(&c) || !matches!(s.blocks[c].kind, FlowKind::If | FlowKind::IfElse | FlowKind::CondAnd | FlowKind::CondOr | FlowKind::List) {
                     pr.emit_structured(s, c, indent, out);
@@ -558,7 +558,7 @@ fn try_emit_sparse_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
         }
         _ => pr.emit_structured(s, head, indent, out),
     }
-    let hoisted: Vec<usize> = pr.sparse_hoist_pending.borrow_mut().drain(..).collect();
+    let hoisted: Vec<usize> = pr.arms.sparse_switch.hoist_pending.borrow_mut().drain(..).collect();
     for c in hoisted {
         pr.emit_structured(s, c, indent, out);
     }
@@ -883,14 +883,14 @@ fn sparse_walk(pr: &PrintC<'_>, s: &Structured, node: usize, scrut_high: SparseK
             // narrow through them; the if's own condition is the last component
             let Some((cond, reach)) = sparse_if_cond(pr, s, node, reach, scrut_high, signed, lo, hi, leaves, compares, consts, d, depth, join.clone()) else { return false };
             let Some(cond) = cond else {
-                leaves.push(SparseLeaf { node, vals: reach, join: join.clone(), goto: None, exit_goto: pr.sparse_exit_goto.borrow().last().copied() });
+                leaves.push(SparseLeaf { node, vals: reach, join: join.clone(), goto: None, exit_goto: pr.arms.sparse_switch.exit_goto.borrow().last().copied() });
                 return true;
             };
             // an inner condition block must be nothing but its compare; the root's head may
             // carry the scrutinee load (emitted before the switch)
             if d > 0 && !sparse_cond_accept(pr, s, cond, d) {
                 if std::env::var_os("MOSURA_SPARSE_DEBUG").is_some() { eprintln!("[sparse]   leaf(impure cond) node {node}: cond node {cond} kind {:?} comps {:?}", s.blocks[cond].kind, s.blocks[cond].components); }
-                leaves.push(SparseLeaf { node, vals: reach, join: join.clone(), goto: None, exit_goto: pr.sparse_exit_goto.borrow().last().copied() });
+                leaves.push(SparseLeaf { node, vals: reach, join: join.clone(), goto: None, exit_goto: pr.arms.sparse_switch.exit_goto.borrow().last().copied() });
                 return true;
             }
             let Some(t) = sparse_cond_ranges(pr, s, cond, scrut_high, lo, hi, compares, consts) else {
@@ -901,7 +901,7 @@ fn sparse_walk(pr: &PrintC<'_>, s: &Structured, node: usize, scrut_high: SparseK
                 if d == 0 {
                     return false;
                 }
-                leaves.push(SparseLeaf { node, vals: reach, join: join.clone(), goto: None, exit_goto: pr.sparse_exit_goto.borrow().last().copied() });
+                leaves.push(SparseLeaf { node, vals: reach, join: join.clone(), goto: None, exit_goto: pr.arms.sparse_switch.exit_goto.borrow().last().copied() });
                 return true;
             };
             *depth = (*depth).max(d + 1);
@@ -914,14 +914,14 @@ fn sparse_walk(pr: &PrintC<'_>, s: &Structured, node: usize, scrut_high: SparseK
             // of both branches: leaves inside them end there
             let via_goto = s.node_gotos.get(&node).and_then(|rs| rs.iter().find(|g| !g.conditional && !g.is_break).map(|g| g.target));
             if let Some(t) = via_goto {
-                pr.sparse_exit_goto.borrow_mut().push(t);
+                pr.arms.sparse_switch.exit_goto.borrow_mut().push(t);
             }
             let mut ok = sparse_walk(pr, s, comps[1], scrut_high, signed, then_reach, lo, hi, leaves, compares, consts, d + 1, depth, join.clone());
             if ok && comps.len() == 3 {
                 ok = sparse_walk(pr, s, comps[2], scrut_high, signed, else_reach.clone(), lo, hi, leaves, compares, consts, d + 1, depth, join.clone());
             }
             if via_goto.is_some() {
-                pr.sparse_exit_goto.borrow_mut().pop();
+                pr.arms.sparse_switch.exit_goto.borrow_mut().pop();
             }
             if !ok {
                 return false;
@@ -952,7 +952,7 @@ fn sparse_walk(pr: &PrintC<'_>, s: &Structured, node: usize, scrut_high: SparseK
                         let rest = reach.intersect(&taken.complement(lo, hi));
                         if let Some(fb) = pr.next_flow_after(s, node) {
                             if let Some(fnode) = sparse_body_node(pr, s, fb) {
-                                leaves.push(SparseLeaf { node: fnode, vals: rest, join: join.clone(), goto: None, exit_goto: pr.sparse_exit_goto.borrow().last().copied() });
+                                leaves.push(SparseLeaf { node: fnode, vals: rest, join: join.clone(), goto: None, exit_goto: pr.arms.sparse_switch.exit_goto.borrow().last().copied() });
                                 return true;
                             }
                         }
@@ -964,7 +964,7 @@ fn sparse_walk(pr: &PrintC<'_>, s: &Structured, node: usize, scrut_high: SparseK
             if std::env::var_os("MOSURA_SPARSE_DEBUG").is_some() && matches!(s.blocks[node].kind, FlowKind::CondAnd | FlowKind::CondOr) {
                 eprintln!("[sparse]   leaf(cond group) node {node} kind {:?}: cond-goto {:?} node_gotos {:?} pure {}", s.blocks[node].kind, sparse_cond_goto(pr, s, node, true), s.node_gotos.get(&node).map(|r| r.len()), sparse_pure_cond(pr, s, node));
             }
-            leaves.push(SparseLeaf { node, vals: reach, join: join.clone(), goto: None, exit_goto: pr.sparse_exit_goto.borrow().last().copied() });
+            leaves.push(SparseLeaf { node, vals: reach, join: join.clone(), goto: None, exit_goto: pr.arms.sparse_switch.exit_goto.borrow().last().copied() });
             true
         }
     }
@@ -978,11 +978,11 @@ fn sparse_walk(pr: &PrintC<'_>, s: &Structured, node: usize, scrut_high: SparseK
 fn sparse_walk_list(pr: &PrintC<'_>, s: &Structured, comps: &[usize], list_node: Option<usize>, scrut_high: SparseKey, signed: bool, reach: Ranges, lo: i64, hi: i64, leaves: &mut Vec<SparseLeaf>, compares: &mut Vec<OpId>, consts: &mut Vec<(u64, i64, u8)>, d: usize, depth: &mut usize, join: Option<Vec<usize>>) -> bool {
     let list_goto = list_node.and_then(|n| s.node_gotos.get(&n)).and_then(|rs| rs.iter().find(|g| !g.conditional && !g.is_break).map(|g| g.target));
     if let Some(t) = list_goto {
-        pr.sparse_exit_goto.borrow_mut().push(t);
+        pr.arms.sparse_switch.exit_goto.borrow_mut().push(t);
     }
     let ok = sparse_walk_list_inner(pr, s, comps, list_node, scrut_high, signed, reach, lo, hi, leaves, compares, consts, d, depth, join);
     if list_goto.is_some() {
-        pr.sparse_exit_goto.borrow_mut().pop();
+        pr.arms.sparse_switch.exit_goto.borrow_mut().pop();
     }
     ok
 }
@@ -1009,7 +1009,7 @@ fn sparse_walk_list_inner(pr: &PrintC<'_>, s: &Structured, comps: &[usize], list
                 if let Some(j) = &join {
                     rest.extend(j.iter().copied());
                 }
-                leaves.push(SparseLeaf { node: c, vals, join: (!rest.is_empty()).then_some(rest), goto: None, exit_goto: pr.sparse_exit_goto.borrow().last().copied() });
+                leaves.push(SparseLeaf { node: c, vals, join: (!rest.is_empty()).then_some(rest), goto: None, exit_goto: pr.arms.sparse_switch.exit_goto.borrow().last().copied() });
             }
         };
         if !is_last && matches!(s.blocks[c].kind, FlowKind::IfElse) {
@@ -1138,7 +1138,7 @@ fn sparse_if_cond(pr: &PrintC<'_>, s: &Structured, if_node: usize, mut reach: Ra
         // subtree's root: 0x2d7fc's `puVar3 = param_1 + 8`) prints above the switch
         if sparse_pure_stmt(pr, s, c) {
             if d > 0 {
-                pr.sparse_hoist_pending.borrow_mut().push(c);
+                pr.arms.sparse_switch.hoist_pending.borrow_mut().push(c);
             }
             continue;
         }
@@ -1146,7 +1146,7 @@ fn sparse_if_cond(pr: &PrintC<'_>, s: &Structured, if_node: usize, mut reach: Ra
         // (0x4ccc4: `if (cVar1 == 0) func();` on another variable, the calls, and the
         // `iVar2 = func_0x00059060();` defining the scrutinee): printed above the switch
         if d == 0 {
-            pr.sparse_head_stmts.borrow_mut().push(c);
+            pr.arms.sparse_switch.head_stmts.borrow_mut().push(c);
             continue;
         }
         if std::env::var_os("MOSURA_SPARSE_DEBUG").is_some() {
@@ -1155,7 +1155,7 @@ fn sparse_if_cond(pr: &PrintC<'_>, s: &Structured, if_node: usize, mut reach: Ra
         }
         return Some((None, reach));
     }
-    pr.sparse_cond_override_pending.borrow_mut().push((if_node, cc[last]));
+    pr.arms.sparse_switch.cond_override_pending.borrow_mut().push((if_node, cc[last]));
     Some((Some(cc[last]), reach))
 }
 
@@ -1185,7 +1185,7 @@ fn sparse_cond_accept(pr: &PrintC<'_>, s: &Structured, cond: usize, d: usize) ->
             });
         if no_side_effects {
             if d > 0 {
-                pr.sparse_hoist_pending.borrow_mut().push(cond);
+                pr.arms.sparse_switch.hoist_pending.borrow_mut().push(cond);
             }
             return true;
         }
@@ -1234,8 +1234,8 @@ fn sparse_goto_only(pr: &PrintC<'_>, s: &Structured, node: usize) -> Option<Bloc
 /// group entered at `b` (0x4fbcc's default body `if ((p < lo) || ..) {..}; ..` is entered at
 /// its condition's first block), stopping below the tree's own root.
 fn sparse_body_node(pr: &PrintC<'_>, s: &Structured, b: BlockId) -> Option<usize> {
-    let root = pr.sparse_root.get();
-    let tail = pr.sparse_tail.get();
+    let root = pr.arms.sparse_switch.root.get();
+    let tail = pr.arms.sparse_switch.tail.get();
     let mut n = s.blocks.iter().position(|fb| fb.kind == FlowKind::Basic(b))?;
     // the switch's exit is the exit, never a body (a leaf landing there is an empty case)
     if Some(b) == tail {
@@ -1295,4 +1295,38 @@ fn sparse_is_bare_return(pr: &PrintC<'_>, s: &Structured, node: usize) -> bool {
     // the epilogue's register restores are COPYs that never print; the statement is `return;`
     let live: Vec<OpId> = pr.f.block(bid).ops.iter().copied().filter(|&op| !pr.f.op(op).is_dead() && !pr.f.op(op).is_marker() && pr.f.op(op).code() != OpCode::Copy).collect();
     live.len() == 1 && pr.f.op(live[0]).code() == OpCode::Return
+}
+
+/// The arm's state: its configuration and the walk's working state, one place (review R2,
+/// commit 7). The walk keeps interior-mutable cells because it runs through `&PrintC` readers.
+#[derive(Debug)]
+pub(crate) struct State {
+    /// `sparse-switch=switch` is on for this function.
+    pub(crate) switch: bool,
+    /// The node the switch being printed hangs from (`usize::MAX` = none).
+    pub(crate) root: std::cell::Cell<usize>,
+    /// The switch's tail block, when its body flows into one.
+    pub(crate) tail: std::cell::Cell<Option<BlockId>>,
+    /// The walk's stack of enclosing unconditional gotos (see `SparseLeaf::exit_goto`).
+    pub(crate) exit_goto: std::cell::RefCell<Vec<BlockId>>,
+    /// Statements hoisted ahead of the switch head.
+    pub(crate) head_stmts: std::cell::RefCell<Vec<usize>>,
+    /// Nodes whose hoist is pending.
+    pub(crate) hoist_pending: std::cell::RefCell<Vec<usize>>,
+    /// Overrides recorded during a `&PrintC` walk, applied at the next `&mut` point.
+    pub(crate) cond_override_pending: std::cell::RefCell<Vec<(usize, usize)>>,
+}
+
+impl State {
+    pub(crate) fn new(choices: &crate::decompile::emit::EmitChoices) -> Self {
+        State {
+            switch: choices.sparse_switch == crate::decompile::emit::SparseSwitch::Switch,
+            root: std::cell::Cell::new(usize::MAX),
+            tail: std::cell::Cell::new(None),
+            exit_goto: std::cell::RefCell::new(Vec::new()),
+            head_stmts: std::cell::RefCell::new(Vec::new()),
+            hoist_pending: std::cell::RefCell::new(Vec::new()),
+            cond_override_pending: std::cell::RefCell::new(Vec::new()),
+        }
+    }
 }

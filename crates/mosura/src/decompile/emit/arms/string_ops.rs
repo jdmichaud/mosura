@@ -15,10 +15,11 @@
 //! That suppression is its own site because it applies to EVERY structured node kind, not only
 //! to the loop the call replaced; and `ValueSite::OpRoot` — an add/sub/compare between a
 //! `len + 1` alias and a constant prints with the constant re-adjusted (V3 `strlen`).
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use crate::decompile::emit::arms::{Answer, Arm, Site, SiteKind};
-use crate::decompile::emit::EmitChoices;
+use crate::decompile::emit::{EmitChoices, StringOps};
 use crate::decompile::funcdata::Funcdata;
 use crate::decompile::op::OpId;
 use crate::decompile::opcode::OpCode;
@@ -328,10 +329,10 @@ pub(crate) fn strlen_fold(p: &mut PrintC<'_>, op: OpId) -> Option<(String, u8)> 
 }
 
 /// `string-ops=intrinsic`: if this loop node is a recognized single-instruction `REP MOVS`/
-/// `REP STOS` (all its ops share one recovered pc in `p.rep_movs`), emit the `memcpy`/`memset`
+/// `REP STOS` (all its ops share one recovered pc in `p.arms.string_ops.rep_movs`), emit the `memcpy`/`memset`
 /// call in place of the whole loop and return true (so the caller skips the loop emit).
 fn try_emit_rep_movs(p: &mut PrintC<'_>, s: &Structured, idx: usize, indent: usize, out: &mut String) -> bool {
-    if p.rep_movs.is_empty() {
+    if p.arms.string_ops.rep_movs.is_empty() {
         return false;
     }
     let mut basics = Vec::new();
@@ -351,10 +352,10 @@ fn try_emit_rep_movs(p: &mut PrintC<'_>, s: &Structured, idx: usize, indent: usi
         }
     }
     let Some(pc) = pc else { return false };
-    if p.rep_skip.contains(&pc) {
+    if p.arms.string_ops.rep_skip.contains(&pc) {
         return true; // the pair's byte loop: covered by the first loop's call
     }
-    let Some(info) = p.rep_movs.get(&pc).copied() else { return false };
+    let Some(info) = p.arms.string_ops.rep_movs.get(&pc).copied() else { return false };
     let dst = p.render_var(info.dst).0;
     let size = match info.size {
         RepSize::Const(c) => if c < 10 { format!("{c}") } else { format!("{c:#x}") },
@@ -393,7 +394,7 @@ fn try_emit_rep_movs(p: &mut PrintC<'_>, s: &Structured, idx: usize, indent: usi
 /// A node whose every live op belongs to a collapsed string-op's skip set (the pair's byte loop,
 /// memcmp's `if (!zf) r = …` result block) emits nothing: the call covers it.
 fn covered_by_collapsed(p: &mut PrintC<'_>, s: &Structured, idx: usize) -> bool {
-if p.rep_skip.is_empty() {
+if p.arms.string_ops.rep_skip.is_empty() {
     return false;
 }
 {
@@ -405,7 +406,7 @@ if p.rep_skip.is_empty() {
             let o = p.f.op(op);
             if o.is_dead() { return true; }
             any = true;
-            p.rep_skip.contains(&o.seqnum.pc.offset)
+            p.arms.string_ops.rep_skip.contains(&o.seqnum.pc.offset)
         })
     });
     if any && all_skip {
@@ -418,14 +419,14 @@ if p.rep_skip.is_empty() {
 /// The recognizer, run once when the printer is built (arm setup): lifted REP loops → the
 /// witness map `rep_movs`, the skip set `rep_skip`, the `strlen_alias` table and the port's
 /// `suppressed` set, reported through `report.rep_movs_candidates`.
-pub(crate) fn recognize(p: &mut PrintC<'_>, choices: &EmitChoices) {
+pub(crate) fn recognize(p: &mut PrintC<'_>) {
     let f: &Funcdata = p.f;
 // string-ops=intrinsic (docs/rep-string-intrinsic-arm.md): lifted REP MOVS/STOS loops →
 // memcpy/memset. Watcom 10.0a's intrinsic template is a MOVSD+MOVSB (STOSD+STOSB) PAIR sharing
 // the advanced pointers — `n>>2` dwords then `n&3` bytes — emitted even for a constant length
 // (a struct copy / sizeof), so the pair is the unit. All of one loop's ops share one pc.
 // Witnessed on the original bytes (buildconfig::string_ops_from_evidence: F2|F3 MOVS/STOS).
-if choices.string_ops == crate::decompile::emit::StringOps::Intrinsic {
+if p.arms.string_ops.intrinsic {
     let mut loops: Vec<RepLoop> = Vec::new();
     for op in f.op_ids() {
         let o = f.op(op);
@@ -558,9 +559,9 @@ if choices.string_ops == crate::decompile::emit::StringOps::Intrinsic {
         if !witnessed {
             continue;
         }
-        p.rep_movs.insert(l1.pc, RepMovs { dst: l1.dst_entry, src: l1.src_entry, set_val, size, cmp_result: None, strlen_result: None });
+        p.arms.string_ops.rep_movs.insert(l1.pc, RepMovs { dst: l1.dst_entry, src: l1.src_entry, set_val, size, cmp_result: None, strlen_result: None });
         if let Some(l2) = l2 {
-            p.rep_skip.insert(l2.pc);
+            p.arms.string_ops.rep_skip.insert(l2.pc);
         }
         // The phi-entry COPYs (`pxVar6 = pTemp; iVar4 = 0x4000; ...`) become dead assignments once
         // the call reads the entry values directly; suppress those used only by their phi, so the
@@ -666,10 +667,10 @@ if choices.string_ops == crate::decompile::emit::StringOps::Intrinsic {
             c if elem == 1 => RepSize::Var(c),
             c => RepSize::Split(c, c),
         };
-        p.rep_movs.insert(pc, RepMovs { dst: a_entry, src: Some(b_entry), set_val: None, size, cmp_result: Some(result), strlen_result: None });
-        p.rep_skip.insert(f.op(cbr).seqnum.pc.offset);
+        p.arms.string_ops.rep_movs.insert(pc, RepMovs { dst: a_entry, src: Some(b_entry), set_val: None, size, cmp_result: Some(result), strlen_result: None });
+        p.arms.string_ops.rep_skip.insert(f.op(cbr).seqnum.pc.offset);
         for &c in &chain {
-            p.rep_skip.insert(f.op(c).seqnum.pc.offset);
+            p.arms.string_ops.rep_skip.insert(f.op(c).seqnum.pc.offset);
             p.suppressed.insert(c);
         }
         // pre-loop inits: the result's zero, the flag phis' entries, the pointer/count entries
@@ -825,7 +826,7 @@ if choices.string_ops == crate::decompile::emit::StringOps::Intrinsic {
         for (v, add) in aliases {
             p.strlen_alias.insert(v, (result, add));
         }
-        p.rep_movs.insert(pc, RepMovs { dst: ptr_entry, src: None, set_val: None, size: RepSize::Const(0), cmp_result: None, strlen_result: Some((result, addend)) });
+        p.arms.string_ops.rep_movs.insert(pc, RepMovs { dst: ptr_entry, src: None, set_val: None, size: RepSize::Const(0), cmp_result: None, strlen_result: Some((result, addend)) });
         for &c in &chain {
             p.suppressed.insert(c);
         }
@@ -839,4 +840,23 @@ if choices.string_ops == crate::decompile::emit::StringOps::Intrinsic {
         }
     }
 }
+}
+
+/// The arm's state: its configuration and its witness maps, one place (review R2, commit 7).
+#[derive(Debug, Default)]
+pub(crate) struct State {
+    /// `string-ops=intrinsic` is on for this function.
+    pub(crate) intrinsic: bool,
+    /// The recognized loops, keyed by the FIRST loop's instruction pc — what to render as
+    /// `memcpy`/`memset`/`memcmp`/`strlen`.
+    pub(crate) rep_movs: HashMap<u64, RepMovs>,
+    /// The pcs of every op a collapsed string op covers (the pair's byte loop, memcmp's result
+    /// block): a node made only of these emits nothing.
+    pub(crate) rep_skip: HashSet<u64>,
+}
+
+impl State {
+    pub(crate) fn new(choices: &EmitChoices) -> Self {
+        State { intrinsic: choices.string_ops == StringOps::Intrinsic, ..Default::default() }
+    }
 }

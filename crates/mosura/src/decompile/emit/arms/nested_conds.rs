@@ -112,7 +112,7 @@ fn try_emit_if_nested(pr: &mut PrintC<'_>, s: &Structured, idx: usize, indent: u
     if let Some(k) = key {
         pr.report.cond_nest_candidates.push((k, clause_pcs.clone()));
     }
-    if !(pr.nest_cond_stmts || key.is_some_and(|k| pr.recovered.nested_sites.contains(&k))) {
+    if !(pr.arms.nested_conds.nested || key.is_some_and(|k| pr.recovered.nested_sites.contains(&k))) {
         return false;
     }
     let mut buf = String::new();
@@ -162,4 +162,17 @@ fn try_emit_if_nested(pr: &mut PrintC<'_>, s: &Structured, idx: usize, indent: u
     }
     out.push_str(&buf);
     true
+}
+
+/// The arm's state: its configuration (the witness, `recovered.nested_sites`, is the port's).
+#[derive(Debug, Default)]
+pub(crate) struct State {
+    /// `cond-form=nested` is on for the whole function.
+    pub(crate) nested: bool,
+}
+
+impl State {
+    pub(crate) fn new(choices: &crate::decompile::emit::EmitChoices) -> Self {
+        State { nested: choices.cond_form == crate::decompile::emit::CondForm::Nested }
+    }
 }

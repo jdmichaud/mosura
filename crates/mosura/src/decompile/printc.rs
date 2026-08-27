@@ -13,8 +13,6 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use super::block::BlockId;
-use super::emit::arms::frame_fill::FrameAgg;
-use super::emit::arms::string_ops::RepMovs;
 use super::emit::arms::{self, Answer, Site, ValueSite};
 use super::emit::{EmitChoices, ReturnWidth};
 use super::funcdata::Funcdata;
@@ -364,43 +362,8 @@ pub(crate) struct PrintC<'a> {
     array_index_spelled: bool,
     /// N3 pointer temps to inline as `((T *)base)[idx]`: temp varnode → (base, index, pointee).
     array_index_temps: HashMap<VarnodeId, (VarnodeId, VarnodeId, Datatype)>,
-    /// `EmitChoices::string_ops == Intrinsic` (EMISSION ARM): render a witnessed lifted `REP MOVS`/
-    /// `REP STOS` loop as a `memcpy`/`memset` call. Recognized loops keyed by their single pc.
-    string_ops_intrinsic: bool,
-    pub(crate) sdiv_pow2_div: bool,
-    /// `frame-fill=aggregate`, once witnessed and gated: the frame's stack symbols render as fields of
-    /// one byte aggregate `name[size]` at `bottom` (`[bottom, top)` = the SUB ESP frame below the
-    /// pushed registers).
-    pub(crate) frame_agg: Option<FrameAgg>,
-    /// `sparse-switch=switch`: print a compare tree on one scrutinee as the sparse `switch`.
-    pub(crate) sparse_switch: bool,
-    /// `struct-copy=assign` (see emit.rs)
-    pub(crate) struct_copy: bool,
-    /// `sparse-switch`: an `if` whose condition List carried tree compares prints with the List's
-    /// last component as its condition (the compares became cases).
-    pub(crate) sparse_cond_override: HashMap<usize, usize>,
-    pub(crate) sparse_cond_override_pending: std::cell::RefCell<Vec<(usize, usize)>>,
     /// list components a printed sparse switch walked into (the tree continued in the root's siblings)
     pub(crate) sparse_consumed: std::collections::HashSet<usize>,
-    /// pure statement blocks met inside the tree's condition lists, printed above the switch
-    pub(crate) sparse_hoist_pending: std::cell::RefCell<Vec<usize>>,
-    /// the walk's stack of enclosing unconditional gotos (see `SparseLeaf::exit_goto`)
-    pub(crate) sparse_exit_goto: std::cell::RefCell<Vec<BlockId>>,
-    /// the root node of the tree being walked (`sparse_body_node` never climbs into it)
-    pub(crate) sparse_root: std::cell::Cell<usize>,
-    /// the switch's exit block (`sparse_body_node` never climbs into a node that holds it)
-    pub(crate) sparse_tail: std::cell::Cell<Option<BlockId>>,
-    /// leading components of the root's condition list that are statements, printed as the head
-    pub(crate) sparse_head_stmts: std::cell::RefCell<Vec<usize>>,
-    pub(crate) rep_movs: HashMap<u64, RepMovs>,
-    /// The SECOND loop of a recognized pair: emits nothing (the first loop's call covers it).
-    pub(crate) rep_skip: std::collections::HashSet<u64>,
-    /// V3 `strlen` results that Ghidra would inline (implied): rendered `strlen(s) + addend` at
-    /// their use, the loop node printing nothing.
-    pub(crate) strlen_exprs: HashMap<VarnodeId, (VarnodeId, i64)>,
-    /// V3 `strlen`: the bare `~cnt` reader beside the `- 1` chain (or a duplicate `- 1`) renders as
-    /// the named result plus an addend (`r + 1`) — one evaluation, Watcom's `NOT; DEC` seen twice.
-    pub(crate) strlen_alias: HashMap<VarnodeId, (VarnodeId, i64)>,
     reg_space: Option<super::space::SpaceId>,
     ram_space: Option<super::space::SpaceId>,
     pub(crate) stack_space: Option<super::space::SpaceId>,
@@ -445,13 +408,22 @@ pub(crate) struct PrintC<'a> {
     /// field-path counterpart of the searched axes (see [`RecoveredChoices`]). Empty under a
     /// plain [`print_c_with`].
     pub(crate) recovered: RecoveredChoices,
+    /// The emit arms' state — each arm's configuration and working state (`emit::arms::State`);
+    /// the port never reads it, the arms reach it through the seams.
+    pub(crate) arms: arms::State,
+    /// PRINTER SERVICES for the arms, written by an arm and READ by the port (like `suppressed` and
+    /// `sparse_consumed`): V3 `strlen`'s `len + 1` aliases (the template's `~cnt`) with their
+    /// addend, and the expressions already folded, by their result — the value renderer prints a
+    /// value that is one of these as the strlen form (emit/arms/string_ops.rs fills them).
+    pub(crate) strlen_alias: HashMap<VarnodeId, (VarnodeId, i64)>,
+    pub(crate) strlen_exprs: HashMap<VarnodeId, (VarnodeId, i64)>,
+    /// PRINTER SERVICE: the condition overrides the sparse-switch walk installed, by node — the if
+    /// emitter prints the overriding condition (emit/arms/sparse_switch.rs fills it).
+    pub(crate) sparse_cond_override: HashMap<usize, usize>,
     /// [`EmitChoices::return_split`] == `Paths`: split a tail boolean return into per-path
     /// constant returns where the gate proves value-identity (see the `FlowKind::List` arm).
     /// Default false.
     split_bool_returns: bool,
-    /// [`EmitChoices::cond_form`] == `Nested`: render statement-carrying `&&` clauses as
-    /// nested ifs (see `try_emit_if_nested`). Default false.
-    pub(crate) nest_cond_stmts: bool,
     /// Tier 2 of the same axis value: values materialized as explicit widened temps
     /// (members of `force_explicit` too), keyed to how their def statement renders.
     ///
@@ -5013,23 +4985,7 @@ fn print_c_inner(
         join_width_consumer: choices.join_width == super::emit::JoinWidth::Consumer,
         array_index_spelled: choices.array_index == super::emit::ArrayIndex::Spelled,
         array_index_temps: HashMap::new(),
-        string_ops_intrinsic: choices.string_ops == super::emit::StringOps::Intrinsic,
-        sdiv_pow2_div: choices.sdiv_pow2 == super::emit::SdivPow2::Div,
-        frame_agg: None,
-        sparse_switch: choices.sparse_switch == super::emit::SparseSwitch::Switch,
-        struct_copy: choices.struct_copy == super::emit::StructCopy::Assign,
-        sparse_cond_override: HashMap::new(),
         sparse_consumed: std::collections::HashSet::new(),
-        sparse_hoist_pending: std::cell::RefCell::new(Vec::new()),
-        sparse_exit_goto: std::cell::RefCell::new(Vec::new()),
-        sparse_root: std::cell::Cell::new(usize::MAX),
-        sparse_tail: std::cell::Cell::new(None),
-        sparse_head_stmts: std::cell::RefCell::new(Vec::new()),
-        sparse_cond_override_pending: std::cell::RefCell::new(Vec::new()),
-        rep_movs: HashMap::new(),
-        rep_skip: std::collections::HashSet::new(),
-        strlen_exprs: HashMap::new(),
-        strlen_alias: HashMap::new(),
         reg_space,
         ram_space: f.spaces.by_name("ram"),
         stack_space: f.spaces.by_name("stack"),
@@ -5044,12 +5000,15 @@ fn print_c_inner(
         complement_compares: choices.compare_form == super::emit::CompareForm::Complement,
         recovered: recovered.clone(),
         split_bool_returns: choices.return_split == super::emit::ReturnSplit::Paths,
-        nest_cond_stmts: choices.cond_form == super::emit::CondForm::Nested,
         tier2_widen: std::collections::HashMap::new(),
         var_counter: 0,
         ret_val: None,
         for_loops: HashMap::new(),
         suppressed: HashSet::new(),
+        arms: arms::State::new(choices),
+        strlen_alias: HashMap::new(),
+        strlen_exprs: HashMap::new(),
+        sparse_cond_override: HashMap::new(),
         array_elem: HashMap::new(),
         gotos: HashMap::new(),
         labels: HashSet::new(),
@@ -5252,7 +5211,7 @@ fn print_c_inner(
         }
     }
     // string-ops=intrinsic: the arm's recognizer (emit/arms/string_ops.rs) — arm setup
-    arms::string_ops::recognize(&mut p, choices);
+    arms::string_ops::recognize(&mut p);
     // frame-fill=aggregate: the arm's gate (emit/arms/frame_fill.rs) — arm setup
     arms::frame_fill::recognize(&mut p, f, choices);
     let t0 = std::time::Instant::now();

@@ -101,7 +101,7 @@ pub(crate) fn render(pr: &mut PrintC<'_>, op: OpId) -> Option<(String, u8)> {
     let (x, n, exact) = sdiv_pow2_shape(pr.f, op)?;
     let pc = pr.f.op(op).seqnum.pc.offset;
     pr.report.sdiv_pow2_candidates.push((pc, n));
-    if !pr.sdiv_pow2_div || !pr.recovered.sdiv_pow2_sites.contains(&pc) {
+    if !pr.arms.sdiv_pow2.div || !pr.recovered.sdiv_pow2_sites.contains(&pc) {
         return None;
     }
     let size = pr.f.vn(x).size;
@@ -112,4 +112,17 @@ pub(crate) fn render(pr: &mut PrintC<'_>, op: OpId) -> Option<(String, u8)> {
     let t = if prec < 13 { format!("({t})") } else { t };
     let l = if matches!(pr.type_of(x), Datatype::Int(_)) { t } else { format!("({}){t}", Datatype::Int(size).name()) };
     Some((format!("{l} / {}", render_const_typed(1u64 << n, size, true)), 13))
+}
+
+/// The arm's state: its configuration (the witness, `recovered.sdiv_pow2_sites`, is the port's).
+#[derive(Debug, Default)]
+pub(crate) struct State {
+    /// `sdiv-pow2=div` is on for this function.
+    pub(crate) div: bool,
+}
+
+impl State {
+    pub(crate) fn new(choices: &crate::decompile::emit::EmitChoices) -> Self {
+        State { div: choices.sdiv_pow2 == crate::decompile::emit::SdivPow2::Div }
+    }
 }
