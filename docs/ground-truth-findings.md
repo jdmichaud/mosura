@@ -213,3 +213,22 @@ name resolves to nothing at link time. The 64-bit column does not show it (its 2
 baseline is unchanged). Plain-32 verdicts are REPORTED by tests/ground_truth_recompile_arms.rs,
 never asserted against the 64-bit baseline; this item is outside review R5 (the arms are not
 involved: the same six fail plain) -- owner: JD's call.
+
+## Twin build, first runs (2026-08-27, review R5 d2): a split local, a struct-by-value return
+
+The MVE twin build (`recompile::twin`, tests/mve_twin_build.rs) runs the MVE's own source and
+mosura's decompilation of its Watcom fixture against the same recording stubs. Two MVEs differ
+PLAIN (the reference rendering, no arm involved):
+
+- **CSAVE** (`x86_watcom_callee_save.xml`): `char buf[16]` is passed to `read16(buf, n)` and the
+  word at `buf + 12` is stored to a global. The decompiled text declares `axStack_18[12]` and a
+  separate `xStack_c`: the 16-byte buffer is split into a 12-byte array and a word, and the
+  callee's 16-byte write reaches the word only if the compiler happens to lay the two objects out
+  adjacently -- gcc -m32 does not, so `gsum` stays 0. A split local relying on layout: the
+  decompiled C is not the source's program.
+- **SPLIT** (`x86_watcom_split_local.xml`): `GPOINT getp(void)` returns a 4-byte struct in EAX
+  (Watcom returns small structs in registers); the decompiler recovers an `int` return, and with
+  the callee bound to its real prototype the assignment `uVar = getp()` is a compile error --
+  the binding rule (a wrongly recovered signature is a finding, never hidden) working as written.
+
+Both are decompiler findings, outside review R5; owner: JD's call.

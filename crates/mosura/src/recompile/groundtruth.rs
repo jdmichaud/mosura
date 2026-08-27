@@ -270,7 +270,7 @@ fn c_type(dt: &Datatype) -> String {
 /// The C type for an emitted `<prefix>Ram<hex>` global from its name stem (Ghidra's
 /// `buildVariableName`: `i` int, `u` uint, `x` unknown, `c` char, `b` bool, `f` float, `d` double,
 /// `p<T>` pointer to T, `a<T>` array of T) at the varnode's width.
-fn prefix_type(prefix: &str, width: u64) -> String {
+pub(crate) fn prefix_type(prefix: &str, width: u64) -> String {
     let scalar = |c: char, w: u64| -> String {
         match c {
             'i' => format!("int{w}"),
@@ -563,6 +563,10 @@ pub fn recompile_program(src: &Path, workdir: &Path, target: Target, plan: &Emit
                         &crate::recompile::insn::NoReloc,
                     )
                     .unwrap_or_default();
+                    // `call_arg_orders` is the survey's CROSS-FUNCTION derivation (its site_orders /
+                    // order_excluded / arg_reg_offs tables over the whole binary's call sites); it has
+                    // no counterpart over a gcc program, so no argument order is recovered here — a
+                    // stated absence, not an omission (review R5 b, fable-b's note).
                     let recovered = crate::recompile::recovery::recover(&f, &insns, &plan.choices, &plan.rec_choices, |_| Default::default());
                     crate::decompile::printc::print_c_recovered(&f, &plan.rec_choices, &recovered)
                 } else {

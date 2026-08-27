@@ -39,6 +39,7 @@ pub mod mve;
 pub mod recovery;
 pub mod report;
 pub mod toolchain;
+pub mod twin;
 pub mod verify;
 pub mod vocab;
 pub mod watsched;
