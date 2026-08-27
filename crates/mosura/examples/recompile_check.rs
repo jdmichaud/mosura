@@ -34,7 +34,7 @@ fn main() {
         eprintln!(
             "usage: recompile_check <binary> <manifest> <src-dir> <flags-file> <watcom-dir> \
              [--only ids] [--cache dir] [--verbose] [--include-library] [--exclude-foreign <confirmations>] \
-             [--out tsv] [--divergences tsv]"
+             [--out tsv] [--divergences tsv] [--prev <previous --out tsv>] [--no-gates]"
         );
         std::process::exit(2);
     }
@@ -46,6 +46,8 @@ fn main() {
     let mut out_path: Option<String> = None;
     let mut div_path: Option<String> = None;
     let mut foreign_file: Option<String> = None;
+    let mut prev_path: Option<String> = None;
+    let mut no_gates = false;
     let mut i = 5;
     while i < a.len() {
         match a[i].as_str() {
@@ -58,6 +60,11 @@ fn main() {
                 cache_dir = std::path::PathBuf::from(&a[i]);
             }
             "--verbose" => verbose = true,
+            "--prev" => {
+                i += 1;
+                prev_path = Some(a[i].clone());
+            }
+            "--no-gates" => no_gates = true,
             "--include-library" => include_library = true,
             "--exclude-foreign" => {
                 i += 1;
@@ -272,6 +279,11 @@ fn main() {
     // semantics diverge, so the verdicts stay the ground truth.
     let (mut agg_equal, mut agg_denom) = (0u64, 0u64);
     let (mut sim_sum, mut sim_n) = (0f64, 0usize);
+    // The CANONICAL census (scripts/war2-verdicts.sh, the runbook's only allowed census, and gate 8's
+    // delta): Σ orig_n·sim / Σ orig_n — a function weighs its ORIGINAL size, a bloated candidate
+    // lowers its sim, not the denominator. Printed next to the micro-average so the harness and the
+    // script agree.
+    let (mut canon_w, mut canon_n) = (0f64, 0u64);
     // Header carries the foreign-scope stamp when excluding, so the series is self-identifying
     // (the census skips the `idx` header row, so the extra field is safe).
     let stamp_col = foreign_stamp.as_deref().map(|s| format!("\tEXCLUDE-FOREIGN={s}")).unwrap_or_default();
@@ -284,6 +296,7 @@ fn main() {
             *census.entry("COMPILE_FAIL").or_default() += 1;
             let n = orig_insns_of(row);
             agg_denom += n as u64;
+            canon_n += n as u64;
             sim_n += 1;
             if verbose {
                 println!("=== {} : COMPILE_FAIL ===\n{}", row.name, out.log.trim());
@@ -337,6 +350,7 @@ fn main() {
                 *census.entry("OBJ_ERROR").or_default() += 1;
                 let n = orig_insns_of(row);
                 agg_denom += n as u64;
+                canon_n += n as u64;
                 sim_n += 1;
                 tsv.push_str(&format!(
                     "{}\t{:08x}\t{}\tOBJ_ERROR\t\t\t\t0\t{n}\t0\t\n",
@@ -355,6 +369,8 @@ fn main() {
         *census.entry(diff.verdict.as_str()).or_default() += 1;
         agg_equal += diff.equal_insns as u64;
         agg_denom += diff.orig_insns.max(diff.cand_insns) as u64;
+        canon_w += diff.orig_insns as f64 * diff.similarity;
+        canon_n += diff.orig_insns as u64;
         sim_sum += diff.similarity;
         sim_n += 1;
         if let Some(p) = diff.primary {
@@ -456,6 +472,10 @@ fn main() {
             agg_equal as f64 / agg_denom.max(1) as f64
         );
         eprintln!("{:.4}  unweighted mean of per-function sim", sim_sum / sim_n as f64);
+        eprintln!(
+            "{:.4}  WGSS — the canonical census (scripts/war2-verdicts.sh: Σ orig_n·sim / Σ orig_n over {canon_n} original instructions)",
+            canon_w / canon_n.max(1) as f64
+        );
     }
     if !causes.is_empty() {
         eprintln!("=== dominant cause ===");
@@ -466,13 +486,44 @@ fn main() {
         }
     }
     if let Some(p) = out_path {
-        std::fs::write(&p, tsv).expect("write");
+        std::fs::write(&p, &tsv).expect("write");
         eprintln!("rows written to {p}");
     }
     if let Some(p) = div_path {
         let n = divs.lines().count().saturating_sub(1);
         std::fs::write(&p, divs).expect("write");
         eprintln!("{n} divergence rows written to {p}");
+    }
+    // R4: the verdict gates (`recompile::gates`) — the guard sets must stay EXACT (7) and, against
+    // `--prev`, no EXACT may be lost and no COMPILE_FAIL appear (8; the other downs are listed with
+    // the WGSS delta, their classification stays the human step). A violation FAILS the round after
+    // the rows are written; without `--prev` gate 8 prints SKIP, never a silent pass.
+    if !no_gates {
+        use mosura::recompile::gates;
+        let baseline = gates::Baseline::load(&mosura::paths::corpus_gates_file()).unwrap_or_else(|e| {
+                eprintln!("corpus gates baseline: {e}");
+                std::process::exit(2)
+            });
+        let cur = gates::parse_verdicts(&tsv).unwrap_or_else(|e| {
+            eprintln!("corpus gates: {e}");
+            std::process::exit(2)
+        });
+        let prev = prev_path.as_ref().map(|p| {
+            let text = std::fs::read_to_string(p).unwrap_or_else(|e| {
+                eprintln!("--prev {p}: {e}");
+                std::process::exit(2)
+            });
+            gates::parse_verdicts(&text).unwrap_or_else(|e| {
+                eprintln!("--prev {p}: {e}");
+                std::process::exit(2)
+            })
+        });
+        let reports = gates::run_verdict_gates(&cur, prev.as_ref(), &baseline, !only.is_empty());
+        eprint!("{}", gates::render(&reports));
+        if gates::any_failed(&reports) {
+            eprintln!("corpus gates: FAIL");
+            std::process::exit(1);
+        }
     }
     eprintln!("recompile_check: COMPLETE");
     // A non-zero exit when nothing reached EXACT makes this usable as a gate on one function.

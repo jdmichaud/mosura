@@ -2646,6 +2646,30 @@ fn main() {
         );
     }
     eprintln!("manifest: {}", manifest_path.display());
+    // R4: the corpus gates over what was just written (`recompile::gates`) — a violation FAILS the
+    // round, and the tree stays on disk as the evidence. Gates 1–3 on any emit; 4–6 only on a full
+    // one (a `--only` probe's partial tree would misfire the corpus-level bars and sets); the scope
+    // for the string-ops bar is the manifest's `kind`. `--no-gates` for diagnostics only.
+    if let Some(dir) = &recovered_dir {
+        if !rest.iter().any(|a| a == "--no-gates") {
+            use mosura::recompile::gates;
+            let baseline = gates::Baseline::load(&mosura::paths::corpus_gates_file()).unwrap_or_else(|e| {
+                eprintln!("corpus gates baseline: {e}");
+                std::process::exit(2)
+            });
+            let tus = gates::load_tree(&manifest_path, dir).unwrap_or_else(|e| {
+                eprintln!("corpus gates: {e}");
+                std::process::exit(2)
+            });
+            let reports = gates::run_text_gates(&tus, &gates::kind_is_user, &baseline, !probing);
+            eprint!("{}", gates::render(&reports));
+            if gates::any_failed(&reports) {
+                eprintln!("corpus gates: FAIL — the tree stays at {} for the read", dir.display());
+                std::process::exit(1);
+            }
+            eprintln!("corpus gates: OK ({} TUs)", tus.len());
+        }
+    }
 }
 
 fn is_ident(c: u8) -> bool {

@@ -33,6 +33,7 @@ pub mod groundtruth;
 pub mod buildconfig;
 pub mod candidate;
 pub mod convention;
+pub mod gates;
 pub mod insn;
 pub mod report;
 pub mod toolchain;

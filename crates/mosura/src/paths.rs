@@ -16,6 +16,11 @@ pub fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// The corpus gates' bars and sets (`recompile::gates`), committed next to the smoke set.
+pub fn corpus_gates_file() -> PathBuf {
+    workspace_root().join("scripts/corpus-gates.tsv")
+}
+
 /// The pinned Ghidra source checkout (`GHIDRA_SRC`, else `<workspace>/../ghidra`).
 pub fn ghidra_src() -> PathBuf {
     if let Ok(p) = std::env::var("GHIDRA_SRC") {

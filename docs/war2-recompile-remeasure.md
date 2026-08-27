@@ -47,7 +47,8 @@ at the same clean commit refuses unless `--force`.
 
 ```sh
 $EX/recompile_check <binary> <manifest> <src-dir> <flags-file> <watcom-dir> \
-    [--only <idx|0xva>,...] [--cache <dir>] [--verbose] [--out <tsv>] [--divergences <tsv>]
+    [--only <idx|0xva>,...] [--cache <dir>] [--verbose] [--out <tsv>] [--divergences <tsv>] \
+    [--prev <previous --out tsv>] [--no-gates]
 
 $EX/recompile_check /home/jd/WAR2.EXE $OUT/manifest.tsv $OUT/src recover $WAT \
     --cache /data/be2/cache --out $OUT/verdicts.tsv --divergences $OUT/div.tsv
@@ -64,6 +65,27 @@ the general path since another binary has no flags table. Pass a file instead to
 `--only` takes a manifest index, a `0x`-prefixed VA, or a function name; with `--verbose` it prints
 the full aligned instruction diff for those functions, which is the fastest way to see what a single
 function is doing wrong.
+
+#### The corpus gates (review R4)
+
+Both tools end by running the corpus gates (`recompile::gates`, `scripts/corpus-gates.tsv`) over
+what they just wrote, and EXIT 1 on a violation — the invariants that decided the 2026-08-26/27
+landings are round failures, not a reviewer's greps. `war2_survey` runs the text gates after the
+emit (1 declared symbols, 2 piece-on-field, 3 call-as-argument on any emit; 4 the string-ops bar,
+5 chains never switch, 6 switch labels only on a full emit — a `--only` probe skips them audibly);
+`recompile_check` runs the verdict gates after writing `--out` (7 the guard sets stay EXACT; 8
+against `--prev <previous --out tsv>`: no EXACT lost, no new COMPILE_FAIL, every other down LISTED
+with old/new verdict and sim under the WGSS delta — their classification stays the human step).
+Without `--prev` gate 8 prints `SKIP`, never a silent pass. The bars and sets live in
+`scripts/corpus-gates.tsv`, each row with its rule (`>=` floor, `==` count, `no-switch`, `EXACT`)
+and the round it was set at: a landing that legitimately moves a bar edits that file in the same
+commit. The string-ops bar's scope is the manifest's `kind` column (`user`), the same scope as
+`recompile_check`'s default census. `--no-gates` is for diagnostics only. Re-run everything on an
+existing tree with
+
+```sh
+$EX/corpus_gates $OUT [--rec $OUT/verdicts.tsv] [--prev <previous verdicts.tsv>] [--partial]
+```
 
 ### 3. `recompile_select` — pick the winning arm per function
 
