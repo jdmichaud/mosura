@@ -15,9 +15,10 @@
 //! are `self.` → `pr.`, the sibling call, the gate's path (the arm's State from the axis) and
 //! the answer form (`return r` → `return Some(r)`).
 //!
-//! EXPERIMENT LEFTOVERS, carried verbatim and left for review R6 (one debug facility): the
-//! `[sumord]` eprintln! and the `MOSURA_SUMORD_CENSUS` / `MOSURA_SUMORD_CTX` knobs inside
-//! `sum_chain_reordered`.
+//! Review R6 settled the experiment leftovers this arm carried: the `[sumord]` census print is the
+//! `sum-order` topic of `crate::debug` (`MOSURA_DEBUG=sum-order`, commit 2); the context knob
+//! `MOSURA_SUMORD_CTX=all` (the non-pointer A/B, measured on zc26 and lost) is gone with its branch
+//! (commit 3a) — pointer-context chains only, the landed behaviour.
 use crate::decompile::emit::{EmitChoices, SumOrder};
 use crate::decompile::op::OpId;
 use crate::decompile::opcode::OpCode;
@@ -77,10 +78,7 @@ fn sum_chain_reordered(pr: &mut PrintC<'_>, op: OpId) -> Option<(String, u8)> {
     // — the reorder is computed for every chain and reported with its context; only
     // pointer-context chains change the print.
     let census = crate::debug::on(crate::debug::Topic::SumOrder);
-    // MOSURA_SUMORD_CTX=all lifts the pointer-context gate (the non-pointer A/B: census
-    // 120 ptr vs 670 non-ptr chains on zc26); default stays pointer context only.
-    let all_ctx = std::env::var("MOSURA_SUMORD_CTX").as_deref() == Ok("all");
-    if !in_ptr_context && !census && !all_ctx {
+    if !in_ptr_context && !census {
         return None;
     }
     // flatten the left spine: ((A + K) + B) prints A, K, B
@@ -125,7 +123,7 @@ fn sum_chain_reordered(pr: &mut PrintC<'_>, op: OpId) -> Option<(String, u8)> {
     }
     if census {
         debug!(crate::debug::Topic::SumOrder, "pc {:#x} ctx={} terms={}", pr.f.op(op).seqnum.pc.offset, if in_ptr_context { "ptr" } else { "nonptr" }, terms.len());
-        if !in_ptr_context && !all_ctx {
+        if !in_ptr_context {
             return None;
         }
     }
