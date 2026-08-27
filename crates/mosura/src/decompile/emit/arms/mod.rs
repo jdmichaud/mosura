@@ -28,7 +28,7 @@
 //! THE ARM SURFACE — what the arms may touch of the printer, all `pub(crate)` on [`PrintC`] and
 //! listed here so the boundary is reviewable in one place (an `ArmCtx` narrowing is the follow-up
 //! once the moves are done). Each move commit extends this list with exactly what its arm reads:
-//! - the delegate of the arm not yet moved: `try_emit_if_nested`;
+//! - no delegates remain: every arm in the table is its own module;
 //! - string_ops (commit 1): the fields `f`, `recovered`, `report`, `h`, `force_explicit`, the arm's
 //!   own state `rep_movs`, `rep_skip`, `strlen_alias`, `strlen_exprs` (commit 7 moves it), and
 //!   `suppressed` — a PRINTER SERVICE FOR THE ARMS, not Ghidra's: the ops an arm has covered,
@@ -48,7 +48,10 @@
 //!   methods `spacebase_sym_at`, `frame_off`, `type_of`, `stack_slot_name`, `declare_stack`;
 //! - sdiv_pow2 (commit 5): the choice flag `sdiv_pow2_div` (and `report`, `recovered`, `f`,
 //!   `render_var`, `type_of`, `strip_copies`, `render_const_typed`, already open); no delegate left
-//!   on the value seam.
+//!   on the value seam;
+//! - nested_conds (commit 6): the choice flag `nest_cond_stmts`, the field `comma_separate`; the
+//!   methods `collect_conj_clauses`, `render_cond_expr`, `emit_basic` (and `emit_structured`,
+//!   already open); the free helper `exit_basic`. No delegate remains in the table.
 //!
 //! THREE NODE-LEVEL MECHANISMS, side by side, so a reader sees why there are two shapes:
 //! - `suppressed` — a printer SERVICE: the OPS an arm has covered (marked at arm setup or while
@@ -87,6 +90,7 @@ use super::super::varmap::StackSymbol;
 use super::super::varnode::VarnodeId;
 
 pub mod frame_fill;
+pub mod nested_conds;
 pub mod sdiv_pow2;
 pub mod sparse_switch;
 pub mod string_ops;
@@ -155,14 +159,7 @@ pub const ARMS: [Arm; 4] = [
     string_ops::ARM,
     sparse_switch::ARM,
     struct_copy::ARM,
-    Arm {
-        name: "nested-conds: a short-circuit as nested ifs (cond-form=nested, docs/byte-exact-families.md sb58 / byte-exact-status.md sb65)",
-        kinds: &[SiteKind::IfWithoutElse],
-        try_emit: |p, site, out| match site {
-            Site::IfWithoutElse { s, idx, indent } => p.try_emit_if_nested(s, idx, indent, out).then_some(Answer::Emitted),
-            _ => None,
-        },
-    },
+    nested_conds::ARM,
 ];
 
 /// The statement-level hook: the first arm of [`ARMS`] that declares the site's kind answers;

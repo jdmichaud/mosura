@@ -451,7 +451,7 @@ pub(crate) struct PrintC<'a> {
     split_bool_returns: bool,
     /// [`EmitChoices::cond_form`] == `Nested`: render statement-carrying `&&` clauses as
     /// nested ifs (see `try_emit_if_nested`). Default false.
-    nest_cond_stmts: bool,
+    pub(crate) nest_cond_stmts: bool,
     /// Tier 2 of the same axis value: values materialized as explicit widened temps
     /// (members of `force_explicit` too), keyed to how their def statement renders.
     ///
@@ -547,7 +547,7 @@ pub(crate) struct PrintC<'a> {
     /// printc.cc:2707/2716) and with no terminating `;` (`PrintC::emitStatement`, printc.cc:2291).
     /// Set/cleared around a condition-block emit exactly where Ghidra does `pushMod();
     /// setMod(comma_separate); … popMod();`.
-    comma_separate: bool,
+    pub(crate) comma_separate: bool,
 }
 
 impl PrintC<'_> {
@@ -2826,7 +2826,7 @@ impl<'a> PrintC<'a> {
     /// Render a (possibly short-circuit) condition, pushing a pending negation inward via
     /// De Morgan (Ghidra's print-time negation): `!(a && b)` → `!a || !b`, `!(a || b)` →
     /// `!a && !b`, recursing so the leading `!` never survives on a compound condition.
-    fn render_cond_expr(&mut self, s: &Structured, idx: usize, neg: bool) -> String {
+    pub(crate) fn render_cond_expr(&mut self, s: &Structured, idx: usize, neg: bool) -> String {
         let comps = s.blocks[idx].components.clone();
         match s.blocks[idx].kind {
             FlowKind::CondAnd | FlowKind::CondOr => {
@@ -3614,7 +3614,7 @@ impl<'a> PrintC<'a> {
     /// negation algebra lives here beyond the recursion test (the measured trap: a
     /// hand-rolled De Morgan flatten inverted a predicate; see `EmitChoices::cond_form`).
     /// A subtree whose printed connective is `||` stays one clause.
-    fn collect_conj_clauses(&self, s: &Structured, idx: usize, neg: bool, out_clauses: &mut Vec<(usize, bool)>) {
+    pub(crate) fn collect_conj_clauses(&self, s: &Structured, idx: usize, neg: bool, out_clauses: &mut Vec<(usize, bool)>) {
         if matches!(s.blocks[idx].kind, FlowKind::CondAnd | FlowKind::CondOr) {
             let is_and = matches!(s.blocks[idx].kind, FlowKind::CondAnd);
             if (is_and != neg) && s.blocks[idx].components.len() == 2 {
@@ -3628,136 +3628,7 @@ impl<'a> PrintC<'a> {
         out_clauses.push((idx, neg));
     }
 
-    /// Whether a BASIC condition clause carries statements of its own — anything that would
-    /// print before its boolean (an explicit-output op, a store, a call). `None` = not a
-    /// basic clause (compound clauses keep their statements inside their own parens).
-    fn basic_clause_stmts(&self, s: &Structured, idx: usize) -> Option<(BlockId, bool)> {
-        let FlowKind::Basic(bid) = s.blocks[idx].kind else { return None };
-        let mut has = false;
-        for &op in &self.f.block(bid).ops {
-            let o = self.f.op(op);
-            if o.is_dead() || o.is_marker() {
-                continue;
-            }
-            match o.code() {
-                OpCode::Cbranch | OpCode::Branch => {}
-                OpCode::Store | OpCode::Call | OpCode::Callind | OpCode::Callother => has = true,
-                _ => {
-                    if o.output.is_some_and(|v| self.is_explicit(v)) {
-                        has = true;
-                    }
-                }
-            }
-        }
-        Some((bid, has))
-    }
 
-    /// The `cond-form=nested` rendering (the axis doc in emit.rs carries the measured probe
-    /// and the faithfulness trap): a plain `if` whose printed `&&` spine carries
-    /// statement-bearing BASIC clauses prints as nested ifs split before each such clause —
-    /// the clause's statements then run exactly when every earlier clause held, which is
-    /// short-circuit evaluation spelled structurally. Clause text comes from
-    /// `render_cond_expr` at the exact effective negation `collect_conj_clauses` recorded,
-    /// so the printed predicates are the collapsed rendering's own, regrouped. Returns
-    /// false (fall back to collapsed) when a gate declines.
-    pub(crate) fn try_emit_if_nested(&mut self, s: &Structured, idx: usize, indent: usize, out: &mut String) -> bool {
-        let fb = &s.blocks[idx];
-        if !matches!(fb.kind, FlowKind::If) {
-            return false;
-        }
-        let negated = fb.negated;
-        let (cond_idx, body_idx) = (fb.components[0], fb.components[1]);
-        let mut clauses = Vec::new();
-        self.collect_conj_clauses(s, cond_idx, negated, &mut clauses);
-        if clauses.len() < 2 {
-            return false;
-        }
-        // the win condition: some non-first BASIC clause carries statements; and no goto
-        // records anywhere in the condition (their placement is the collapsed form's)
-        let mut split_at = vec![false; clauses.len()];
-        let mut any_split = false;
-        for (i, &(c, _)) in clauses.iter().enumerate() {
-            if s.node_gotos.get(&c).is_some() {
-                return false;
-            }
-            if let Some((_, has)) = self.basic_clause_stmts(s, c) {
-                if has && i > 0 {
-                    split_at[i] = true;
-                    any_split = true;
-                }
-            }
-        }
-        if !any_split || s.node_gotos.get(&cond_idx).is_some() {
-            return false;
-        }
-        // structural candidacy holds — record `(key, clause branch pcs)` for the target
-        // profile (on EVERY print), then apply under the axis OR a recovered decision
-        let clause_pcs: Vec<u64> = clauses
-            .iter()
-            .filter_map(|&(c, _)| {
-                exit_basic(s, c).and_then(|bid| {
-                    self.f.block(bid).ops.iter().rev().copied().find_map(|op| {
-                        (!self.f.op(op).is_dead() && self.f.op(op).code() == OpCode::Cbranch)
-                            .then(|| self.f.op(op).seqnum.pc.offset)
-                    })
-                })
-            })
-            .collect();
-        let key = clause_pcs.first().copied();
-        if let Some(k) = key {
-            self.report.cond_nest_candidates.push((k, clause_pcs.clone()));
-        }
-        if !(self.nest_cond_stmts || key.is_some_and(|k| self.recovered.nested_sites.contains(&k))) {
-            return false;
-        }
-        let mut buf = String::new();
-        let mut depth = indent;
-        let mut pending: Vec<String> = Vec::new();
-        let mut opened = 0usize;
-        for (i, &(c, neg)) in clauses.iter().enumerate() {
-            if split_at[i] {
-                let pad = "  ".repeat(depth);
-                let joined = pending.join(" && ");
-                let _ = writeln!(buf, "{pad}if ({joined}) {{");
-                depth += 1;
-                opened += 1;
-                pending.clear();
-            }
-            // a BASIC clause's statements print at the current level (clause 0's before the
-            // first `if`, exactly where the collapsed form hoists them); its boolean renders
-            // WITHOUT comma_separate so the leaf arm does not print them a second time.
-            // Compound (||) clauses render under comma_separate and keep their statements
-            // inside their own parens, as the collapsed form does.
-            match self.basic_clause_stmts(s, c) {
-                Some((bid, _)) => {
-                    self.emit_basic(bid, depth, &mut buf);
-                    let saved = self.comma_separate;
-                    self.comma_separate = false;
-                    let e = self.render_cond_expr(s, c, neg);
-                    self.comma_separate = saved;
-                    pending.push(format!("({e})"));
-                }
-                None => {
-                    let saved = self.comma_separate;
-                    self.comma_separate = true;
-                    let e = self.render_cond_expr(s, c, neg);
-                    self.comma_separate = saved;
-                    pending.push(format!("({e})"));
-                }
-            }
-        }
-        let pad = "  ".repeat(depth);
-        let joined = pending.join(" && ");
-        let _ = writeln!(buf, "{pad}if ({joined}) {{");
-        depth += 1;
-        opened += 1;
-        self.emit_structured(s, body_idx, depth, &mut buf);
-        for k in (0..opened).rev() {
-            let _ = writeln!(buf, "{}}}", "  ".repeat(indent + k));
-        }
-        out.push_str(&buf);
-        true
-    }
 
     /// The component is a basic block whose ONLY printable statement assigns one CONSTANT to
     /// a variable: `Some((high representative, constant))`. The safe class for the arm-order
@@ -3931,7 +3802,7 @@ impl<'a> PrintC<'a> {
         }
     }
 
-    fn emit_basic(&mut self, b: super::block::BlockId, indent: usize, out: &mut String) {
+    pub(crate) fn emit_basic(&mut self, b: super::block::BlockId, indent: usize, out: &mut String) {
         let pad = "  ".repeat(indent);
         if self.labels.contains(&b) {
             let _ = writeln!(out, "{}{}:", "  ".repeat(indent.saturating_sub(1)), self.lab_name(b));
