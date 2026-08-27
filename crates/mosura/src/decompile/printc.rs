@@ -13,6 +13,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
 use super::block::BlockId;
+use super::emit::arms::{self, Answer, Site, ValueSite};
 use super::emit::{EmitChoices, ReturnWidth};
 use super::funcdata::Funcdata;
 use super::merge::HighVariables;
@@ -656,7 +657,9 @@ enum Tier2Widen {
     Extract(u32),
 }
 
-struct PrintC<'a> {
+/// `pub(crate)`: the emit arms (`emit::arms`) reach the printer through the seams documented
+/// there; the members they touch are the arm surface listed in `emit/arms/mod.rs`.
+pub(crate) struct PrintC<'a> {
     f: &'a Funcdata,
     h: HighVariables,
     names: HashMap<u32, String>,
@@ -702,7 +705,7 @@ struct PrintC<'a> {
     /// pushed registers).
     frame_agg: Option<FrameAgg>,
     /// `sparse-switch=switch`: print a compare tree on one scrutinee as the sparse `switch`.
-    sparse_switch: bool,
+    pub(crate) sparse_switch: bool,
     /// `struct-copy=assign` (see emit.rs)
     struct_copy: bool,
     /// `sparse-switch`: an `if` whose condition List carried tree compares prints with the List's
@@ -2566,7 +2569,7 @@ impl<'a> PrintC<'a> {
 
     /// `sdiv-pow2`: report a candidate shift and, at a witnessed site under the `div` arm, render
     /// `x / 2^n` — the dividend through the signed cast rule the arithmetic shift already carries.
-    fn sdiv_pow2_render(&mut self, op: OpId) -> Option<(String, u8)> {
+    pub(crate) fn sdiv_pow2_render(&mut self, op: OpId) -> Option<(String, u8)> {
         let (x, n, exact) = sdiv_pow2_shape(self.f, op)?;
         let pc = self.f.op(op).seqnum.pc.offset;
         self.report.sdiv_pow2_candidates.push((pc, n));
@@ -2587,7 +2590,7 @@ impl<'a> PrintC<'a> {
         if let Some(folded) = self.strlen_fold(op) {
             return folded;
         }
-        if let Some(div) = self.sdiv_pow2_render(op) {
+        if let Some(div) = arms::render_value(self, ValueSite::Division { op }) {
             return div;
         }
         let o = self.f.op(op);
@@ -3483,7 +3486,7 @@ impl<'a> PrintC<'a> {
     /// `string-ops=intrinsic`: if this loop node is a recognized single-instruction `REP MOVS`/
     /// `REP STOS` (all its ops share one recovered pc in `self.rep_movs`), emit the `memcpy`/`memset`
     /// call in place of the whole loop and return true (so the caller skips the loop emit).
-    fn try_emit_rep_movs(&mut self, s: &Structured, idx: usize, indent: usize, out: &mut String) -> bool {
+    pub(crate) fn try_emit_rep_movs(&mut self, s: &Structured, idx: usize, indent: usize, out: &mut String) -> bool {
         if self.rep_movs.is_empty() {
             return false;
         }
@@ -3548,7 +3551,7 @@ impl<'a> PrintC<'a> {
         let fb = &s.blocks[idx];
         let (kind, comps, negated) = (fb.kind.clone(), fb.components.clone(), fb.negated);
         if matches!(kind, FlowKind::WhileDo | FlowKind::DoWhile | FlowKind::InfLoop)
-            && self.try_emit_rep_movs(s, idx, indent, out)
+            && arms::try_emit(self, Site::LoopNode { s, idx, indent }, out).is_some()
         {
             return;
         }
@@ -4182,7 +4185,7 @@ impl<'a> PrintC<'a> {
     /// `render_cond_expr` at the exact effective negation `collect_conj_clauses` recorded,
     /// so the printed predicates are the collapsed rendering's own, regrouped. Returns
     /// false (fall back to collapsed) when a gate declines.
-    fn try_emit_if_nested(&mut self, s: &Structured, idx: usize, indent: usize, out: &mut String) -> bool {
+    pub(crate) fn try_emit_if_nested(&mut self, s: &Structured, idx: usize, indent: usize, out: &mut String) -> bool {
         let fb = &s.blocks[idx];
         if !matches!(fb.kind, FlowKind::If) {
             return false;
@@ -4339,7 +4342,7 @@ impl<'a> PrintC<'a> {
     }
 
     fn emit_if(&mut self, s: &Structured, idx: usize, indent: usize, out: &mut String, else_if: bool) {
-        if self.sparse_switch && !else_if && self.try_emit_sparse_switch(s, idx, indent, out) {
+        if !else_if && arms::try_emit(self, Site::IfEntry { s, idx, indent }, out).is_some() {
             return;
         }
         let fb = &s.blocks[idx];
@@ -4387,7 +4390,7 @@ impl<'a> PrintC<'a> {
                 }
             }
         }
-        if !else_if && !has_else && self.try_emit_if_nested(s, idx, indent, out) {
+        if !else_if && !has_else && arms::try_emit(self, Site::IfWithoutElse { s, idx, indent }, out).is_some() {
             return;
         }
 
@@ -4507,28 +4510,20 @@ impl<'a> PrintC<'a> {
                     continue;
                 }
                 let pc = self.f.op(op).seqnum.pc.offset;
-                if let Some(&k) = self.recovered.movsd_runs.get(&pc) {
-                    let fused = self.movsd_run_stmt(&block_ops, pc, k);
-                    if std::env::var_os("MOSURA_STRUCTCOPY_DEBUG").is_some() {
-                        eprintln!("[structcopy] {:#x} run @{pc:#x} k {k} at op {:?} {:?}: {}", self.f.addr.offset, op, self.f.op(op).code(), fused.as_ref().map(|f| f.0.clone()).unwrap_or_else(|| "declined".into()));
+                if let Some(Answer::Fused { stmt, members }) = arms::try_emit(self, Site::BlockOp { block_ops: &block_ops, op, pc }, out) {
+                    for m in members {
+                        reordered.insert(m);
                     }
-                    // fires once, at the run's first member (the other ops of that pc are its
-                    // load and the folded pointer steps)
-                    if let Some((stmt, members)) = fused.filter(|(_, m)| m.first() == Some(&op)) {
-                        for m in members {
-                            reordered.insert(m);
+                    if self.comma_separate {
+                        if separator {
+                            let _ = write!(out, ", ");
                         }
-                        if self.comma_separate {
-                            if separator {
-                                let _ = write!(out, ", ");
-                            }
-                            let _ = write!(out, "{stmt}");
-                            separator = true;
-                        } else {
-                            let _ = writeln!(out, "{pad}{stmt};");
-                        }
-                        continue;
+                        let _ = write!(out, "{stmt}");
+                        separator = true;
+                    } else {
+                        let _ = writeln!(out, "{pad}{stmt};");
                     }
+                    continue;
                 }
             }
             if let Some(order) = self.recovered.ilv_orders.get(&op).cloned() {
@@ -7161,7 +7156,7 @@ impl<'a> PrintC<'a> {
     /// `sparse-switch=switch` (docs/wc2src-reconciliation-4.md W5): the structured if/else tree rooted
     /// at `idx` whose every condition compares ONE scrutinee against constants is Watcom's compare
     /// tree for a sparse `switch`; print the `switch`. Bails (returns false) on any other shape.
-    fn try_emit_sparse_switch(&mut self, s: &Structured, idx: usize, indent: usize, out: &mut String) -> bool {
+    pub(crate) fn try_emit_sparse_switch(&mut self, s: &Structured, idx: usize, indent: usize, out: &mut String) -> bool {
         // the root's condition: a plain compare block, or a List-condition whose last component is
         // the compare — its leading components are tree nodes (0x14ac8's `if (u < 2) {..}` folded
         // ahead of the `u <= 2` test) or pure statements the printer hoists above the switch
@@ -7686,6 +7681,25 @@ impl<'a> PrintC<'a> {
     /// with the run's first destination and source addresses (the later ones are base + 4i by
     /// the instruction's own semantics). Each copy is a STORE fed by a LOAD, or the explicit
     /// assignment the load/store rules made of a global (`xRam.. = xRam..`).
+    /// `struct-copy` at a block op: the fused statement when `op` is the first member of a witnessed
+    /// run at `pc` (the other ops of that pc are its load and the folded pointer steps). The arm's
+    /// answer at `Site::BlockOp`; its debug print lives here, with the arm.
+    pub(crate) fn movsd_run_at(&mut self, block_ops: &[OpId], op: OpId, pc: u64) -> Option<(String, Vec<OpId>)> {
+        let k = *self.recovered.movsd_runs.get(&pc)?;
+        let fused = self.movsd_run_stmt(block_ops, pc, k);
+        if std::env::var_os("MOSURA_STRUCTCOPY_DEBUG").is_some() {
+            eprintln!(
+                "[structcopy] {:#x} run @{pc:#x} k {k} at op {:?} {:?}: {}",
+                self.f.addr.offset,
+                op,
+                self.f.op(op).code(),
+                fused.as_ref().map(|f| f.0.clone()).unwrap_or_else(|| "-".to_string())
+            );
+        }
+        // fires once, at the run's first member
+        fused.filter(|(_, m)| m.first() == Some(&op))
+    }
+
     fn movsd_run_stmt(&mut self, block_ops: &[OpId], pc: u64, k: u32) -> Option<(String, Vec<OpId>)> {
         let mut members = Vec::new();
         let mut first: Option<(String, String)> = None;

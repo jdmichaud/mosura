@@ -1203,7 +1203,10 @@ pub fn sdiv_pow2_from_evidence(cands: &[(u64, u32)], insns: &[NormInsn]) -> std:
     for &(pc, n) in cands {
         let Some(i) = insns.iter().position(|x| x.addr == pc) else { continue };
         let b = &insns[i].bytes;
-        // `SAR r32, imm8 = C1 /7 ib` or `SAR r32, 1 = D1 /7` (dword, register-direct) by exactly `n`
+        // `SAR r32, imm8 = C1 /7 ib` or `SAR r32, 1 = D1 /7` (dword, register-direct) by exactly `n`.
+        // `shift_imm` skips the legacy prefixes, so a segment-prefixed SAR (`2E C1 F8 ib`) decodes
+        // here where the raw first-byte match this witness had refused it — Watcom never emits one
+        // (identity diff clean at R3); the operand-size check keeps the word form out.
         let is_sar = matches!(
             x86enc::shift_imm(b),
             Some(sh) if sh.kind == x86enc::Shift::Sar && sh.opsize == 32 && sh.modrm.is_register_direct() && sh.count as u32 == n

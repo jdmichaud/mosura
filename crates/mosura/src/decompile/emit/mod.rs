@@ -49,6 +49,9 @@
 //!   code must be edited every time, which is the difference between a search that grows and a
 //!   table of hand-written arms.
 
+
+/// The Watcom emit arms — target-informed emit choices behind named seams (review R2).
+pub mod arms;
 use std::fmt;
 
 /// Whether a function's return type is declared at the width of the **value** or of the
