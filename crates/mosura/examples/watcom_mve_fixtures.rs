@@ -4,6 +4,12 @@
 //! XML with the source embedded as a comment. Committed alongside the fixtures it generates, so provenance and regeneration stay in-repo.
 //!
 //! Usage: watcom_mve_fixtures <WATCOM-dir> <out-dir>
+//!        watcom_mve_fixtures --check <WATCOM-dir>   — regenerate into a temp dir and diff against
+//!        oracle/fixtures; exit 1 on any difference, on a missing product, or on an ORPHAN (a
+//!        committed fixture carrying the generator's header that is not a product of this
+//!        generator — nothing could regenerate it). On failure the temp dir is kept and its path
+//!        printed. The manual pre-landing step for anything that touches a fixture (it needs the
+//!        in-house wcc386, so it is not a unit test).
 use mosura::recompile::candidate::load_object_function;
 use mosura::recompile::toolchain::{CompileUnit, Toolchain, WatcomDos};
 
@@ -241,29 +247,74 @@ void mve(unsigned short a, int unused, int c)
 }
 "#;
 
-/// W4b (frame-fill, seam 4): a 0xcc frame holding an int array read by element in a loop — the
-/// recovered locals include an indexed symbol the aggregate must not swallow (WAR2 0x4e06e).
+/// W4b (frame-fill, seam 4): a 0xcc frame holding an int array in the MIDDLE — untouched bytes on
+/// both sides — whose base escapes and whose elements are read by constant index and in a loop. The
+/// frame-fill gate fires on the slack, the aggregate covers the array, and every element read must
+/// render as the field at its slot (the array declaration is gone — WAR2 0x4e06e's `aiStack_2c[0]`
+/// read the vanished name in probe w4bp).
 const FRAME_INDEX_SRC: &str = r#"
-struct big { int pad[40]; int s[11]; };
-extern void fill(struct big *b);
-extern void use(int acc);
+struct big { int pad0[20]; int s[11]; int pad1[20]; };
 extern void keep(int *s);
+extern void use(int acc);
 void mve(int n)
 {
     struct big b;
-    int i, acc = 0;
-    fill(&b);
-    for (i = 0; i < n; i++)
+    int i, acc;
+    keep(b.s);
+    acc = b.s[0];
+    for (i = 1; i < n; i++)
         acc += b.s[i];
     use(acc);
-    keep(b.s);
 }
 "#;
 
+/// The first line of every product; `tests/fixture_provenance.rs` keys the generator-product bar on it.
+const GENERATED_MARKER: &str = "<!-- SELF-COMPILED fixture: wcc386";
+
+/// The names an MVE declares `extern`, by kind: a declarator followed by `(` is a function, anything
+/// else (scalar, array, struct object) is data. Struct bodies and non-extern prototypes (the
+/// intrinsics) are skipped.
+fn extern_kinds(src: &str) -> (std::collections::HashSet<String>, std::collections::HashSet<String>) {
+    // the identifier that ends `s`, behind any `[..]` suffix (`tbl[]`, `arr[40]`)
+    let ident_before = |s: &str| -> Option<String> {
+        let mut s = s.trim_end();
+        while s.ends_with(']') {
+            s = s[..s.rfind('[')?].trim_end();
+        }
+        let start = s.rfind(|c: char| !(c.is_alphanumeric() || c == '_')).map_or(0, |i| i + 1);
+        let name = &s[start..];
+        (!name.is_empty()).then(|| name.to_string())
+    };
+    let mut code = std::collections::HashSet::new();
+    let mut data = std::collections::HashSet::new();
+    for decl in src.split(';') {
+        let Some(rest) = decl.trim().strip_prefix("extern ") else { continue };
+        match rest.find('(') {
+            Some(p) => {
+                if let Some(n) = ident_before(&rest[..p]) {
+                    code.insert(n);
+                }
+            }
+            None => {
+                if let Some(n) = ident_before(rest) {
+                    data.insert(n);
+                }
+            }
+        }
+    }
+    (code, data)
+}
+
 fn main() {
-    let mut args = std::env::args().skip(1);
-    let watcom = args.next().expect("usage: dumpmve <WATCOM-dir> <out-dir>");
-    let out = std::path::PathBuf::from(args.next().expect("usage: dumpmve <WATCOM-dir> <out-dir>"));
+    const USAGE: &str = "usage: watcom_mve_fixtures <WATCOM-dir> <out-dir> | watcom_mve_fixtures --check <WATCOM-dir>";
+    let (flags_only, positional): (Vec<String>, Vec<String>) = std::env::args().skip(1).partition(|a| a.starts_with("--"));
+    let check = flags_only.iter().any(|a| a == "--check");
+    let watcom = positional.first().cloned().expect(USAGE);
+    let out = if check {
+        std::env::temp_dir().join(format!("watcom_mve_check_{}", std::process::id()))
+    } else {
+        std::path::PathBuf::from(positional.get(1).expect(USAGE))
+    };
     std::fs::create_dir_all(&out).unwrap();
     let work = out.join("work");
     let tc = WatcomDos::new(&watcom, &work, "10.0a").expect("toolchain").owning_work_dir();
@@ -290,6 +341,7 @@ fn main() {
         ("FRAMEST", "mve_", FRAME_STORE_SRC, "x86_2dcd4_frame.xml", 0xd000u64),
         ("FRAMEIX", "mve_", FRAME_INDEX_SRC, "x86_4e06e_frame_index.xml", 0xe000u64),
     ];
+    let mut products: Vec<&str> = Vec::new();
     for (key, sym, src, file, base) in units {
         let outp = tc.compile(&CompileUnit {
             key: key.into(),
@@ -308,8 +360,18 @@ fn main() {
         // tail-merge into shared labels).
         let seen = std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::<String, u64>::new()));
         let seen_r = seen.clone();
+        // The KIND of an extern comes from the MVE source itself — an `extern` declarator followed
+        // by `(` is a function, anything else is data — never from its name (a `g`-prefix rule had
+        // sent `getv` to the data area: a CALL with no RET stub behind it).
+        let (code_names, data_names) = extern_kinds(src);
+        let unit = key.to_string();
         let resolver = move |sym: &str| {
-            let is_data = sym.contains("gsum") || sym.contains("tbl") || sym.contains("gtbl") || sym.starts_with("_g") || sym.starts_with('g');
+            // Watcom's register convention: functions are `name_`, data `_name`
+            let bare = sym.trim_start_matches('_').trim_end_matches('_');
+            let is_data = data_names.contains(bare);
+            if !is_data && !code_names.contains(bare) {
+                eprintln!("{unit}: `{sym}` is not declared extern in the MVE source — placed as a callee stub");
+            }
             let mut m = seen_r.borrow_mut();
             let n_data = m.values().filter(|&&a| a >= data).count() as u64;
             let n_code = m.values().filter(|&&a| a < data).count() as u64;
@@ -357,7 +419,62 @@ fn main() {
              {stub_chunks}</binaryimage>\n",
             fl = flags.join(" "),
         );
+        debug_assert!(xml.starts_with(GENERATED_MARKER), "the product header must carry the marker");
         std::fs::write(out.join(file), xml).unwrap();
         println!("{file}: {} bytes of {sym}", cand.bytes.len());
+        products.push(file);
+    }
+    if check {
+        // every product must match the committed fixture byte for byte ...
+        let committed = mosura::paths::oracle_fixtures_dir();
+        let mut problems: Vec<String> = Vec::new();
+        for file in &products {
+            let ours = std::fs::read(out.join(file)).unwrap();
+            match std::fs::read(committed.join(file)) {
+                Ok(theirs) if theirs == ours => println!("check: {file}: same"),
+                Ok(_) => {
+                    println!("check: {file}: DIFFERS");
+                    problems.push(file.to_string());
+                }
+                Err(_) => {
+                    println!("check: {file}: MISSING from {}", committed.display());
+                    problems.push(file.to_string());
+                }
+            }
+        }
+        // ... and every committed fixture that carries the generator's header must be one of the
+        // products: a file the generator once wrote and no longer does would otherwise pass
+        // silently, with nothing left that can regenerate it.
+        let mut marked = 0;
+        let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(&committed).unwrap().map(|e| e.unwrap().path()).collect();
+        entries.sort();
+        for path in entries {
+            if path.extension().and_then(|e| e.to_str()) != Some("xml") {
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            if !std::fs::read_to_string(&path).map(|s| s.starts_with(GENERATED_MARKER)).unwrap_or(false) {
+                continue;
+            }
+            marked += 1;
+            if !products.iter().any(|p| *p == name) {
+                println!("check: {name}: ORPHAN (carries the generator header, but is not a product of this generator)");
+                problems.push(name);
+            }
+        }
+        drop(tc);
+        if !problems.is_empty() {
+            eprintln!(
+                "--check: {} problem(s) against oracle/fixtures: {problems:?} — the regenerated products are kept in {}",
+                problems.len(),
+                out.display()
+            );
+            std::process::exit(1);
+        }
+        let _ = std::fs::remove_dir_all(&out);
+        println!(
+            "--check: all {} generator products match oracle/fixtures, and all {marked} generator-marked fixtures there are products (no orphans)",
+            products.len()
+        );
     }
 }

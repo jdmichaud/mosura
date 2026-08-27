@@ -16,9 +16,12 @@
 -->
 <binaryimage arch="x86:LE:32:default:watcom">
   <bytechunk space="ram" offset="0xd000" readonly="true">
-515589e581ecd000000081ed4201000089c189d8c645720fc645781f66894d7aba01000000e8d61f00006689457e8d4572e8ca0f00008da5420100005d59c3
+515589e581ecd000000081ed4201000089c189d8c645720fc645781f66894d7aba01000000e8d60f00006689457e8d4572e8da0f00008da5420100005d59c3
   </bytechunk>
   <bytechunk space="ram" offset="0xe000" readonly="true">
+c3
+  </bytechunk>
+  <bytechunk space="ram" offset="0xe010" readonly="true">
 c3
   </bytechunk>
 </binaryimage>

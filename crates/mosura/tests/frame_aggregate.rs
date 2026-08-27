@@ -30,14 +30,17 @@ fn under_sized_frame_declares_one_aggregate_with_field_offsets() {
     assert!(c.contains("xunknown1 axStack_d8 [208];"), "one aggregate sized to the frame:\n{c}");
     assert!(!c.contains("xStack_d0;") && !c.contains("xStack_cc;"), "no sibling scalar declarations:\n{c}");
     assert!(c.contains("*(xunknown2 *)(axStack_d8 + 8) = param_1;"), "field store at +8:\n{c}");
-    assert!(c.contains("*(xunknown2 *)(axStack_d8 + 0xc) = func_0x0000f000(param_3, 1);"), "the kept call-result store at +0xc:\n{c}");
+    assert!(c.contains("*(xunknown2 *)(axStack_d8 + 0xc) = func_0x0000e000(param_3, 1);"), "the kept call-result store at +0xc:\n{c}");
     assert!(c.contains("axStack_d8[6] = 0x1f;") && c.contains("axStack_d8[0] = 0xf;"), "byte fields index the aggregate:\n{c}");
-    assert!(c.contains("func_0x0000e000(axStack_d8);"), "the escaping base decays to the aggregate:\n{c}");
+    assert!(c.contains("func_0x0000e010(axStack_d8);"), "the escaping base decays to the aggregate:\n{c}");
 }
 
 /// Seam 4/5 (probe w4bp, fable-b's hold): an element read of a symbol the aggregate swallowed
 /// (`aiStack_2c[0]` at WAR2 0x4e06e) must render as the field at its slot, never by the vanished
-/// name — every stack symbol the C references must be declared.
+/// name — every stack symbol the C references must be declared. The MVE puts an int array in the
+/// MIDDLE of a 0xcc frame (80 untouched bytes on each side), lets its base escape to a callee, and
+/// reads one element by constant index and the rest in a loop: the gate fires on the slack, the
+/// aggregate covers the array, and every element read is the field at its slot.
 #[test]
 fn swallowed_symbol_elements_render_as_fields() {
     let path = paths::oracle_fixtures_dir().join("x86_4e06e_frame_index.xml");
@@ -51,15 +54,19 @@ fn swallowed_symbol_elements_render_as_fields() {
     pipeline::decompile(&mut f);
     let mut choices = EmitChoices::default();
     choices.set("frame-fill", "aggregate").unwrap();
-    // PUSH x3; ... SUB ESP,0xcc → frame 0xcc under 3 pushes (the aggregate at -0xd8)
-    let recovered = RecoveredChoices { frame_fill: Some((0xcc, 3)), ..Default::default() };
+    // PUSH EBX/ECX/EDX/EBP; SUB ESP,0xcc → frame 0xcc under 4 pushes (the aggregate at -0xdc)
+    let recovered = RecoveredChoices { frame_fill: Some((0xcc, 4)), ..Default::default() };
     let c = print_c_recovered(&f, &choices, &recovered);
-    // The self-compiled MVE (an under-declared 0xcc frame: 160 untouched bytes below an int array
-    // read by element, the array's base escaping to a callee) fills the SLACK with one aggregate
-    // and keeps the indexed array declared. The WAR2 specimen's swallowing path (the array inside
-    // the aggregate, its elements printed as fields — seam 4) is not reached by this shape;
-    // TODO(review R1 remainder): an MVE whose indexed symbol sits inside the swallowed region.
-    assert!(c.contains("xunknown1 axStack_dc [160];"), "the frame slack is one aggregate:\n{c}");
+    assert!(c.contains("xunknown1 axStack_dc [204];"), "one aggregate sized to the frame:\n{c}");
+    // seam 4: the constant-index element read is the field at its slot, not the vanished array
+    assert!(c.contains("*(int4 *)(axStack_dc + 0x50)"), "the element read renders as the field at +0x50:\n{c}");
+    assert!(c.contains("func_0x0000f000((int4 *)(axStack_dc + 0x50));"), "the escaping array base is the field's address:\n{c}");
+    assert!(c.contains("(int4 *)(axStack_dc + 0x50) + iVar"), "the indexed element read goes through the field's address:\n{c}");
+    let stack_decls = c
+        .lines()
+        .filter(|l| l.contains("Stack_") && l.trim_end().ends_with(';') && !l.contains('=') && !l.contains('('))
+        .count();
+    assert_eq!(stack_decls, 1, "no stack declaration besides the aggregate:\n{c}");
     let declared: std::collections::HashSet<&str> = c
         .lines()
         .filter(|l| l.trim_end().ends_with(';') && !l.contains('=') && !l.contains('('))

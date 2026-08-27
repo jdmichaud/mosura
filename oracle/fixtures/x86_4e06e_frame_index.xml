@@ -1,32 +1,28 @@
 <!-- SELF-COMPILED fixture: wcc386 10.0a (in-house), flags -5r -fpi87 -s -onatx -d1+ -zq. No third-party
      bytes — the source is this comment; regenerate with examples/watcom_mve_fixtures.rs.
      Externs: code from 0xf000 (one RET stub per callee, 0x10 apart), data from 0x10000 (0x100 apart).
-  struct big { int pad[40]; int s[11]; };
-  extern void fill(struct big *b);
-  extern void use(int acc);
+  struct big { int pad0[20]; int s[11]; int pad1[20]; };
   extern void keep(int *s);
+  extern void use(int acc);
   void mve(int n)
   {
       struct big b;
-      int i, acc = 0;
-      fill(&b);
-      for (i = 0; i < n; i++)
+      int i, acc;
+      keep(b.s);
+      acc = b.s[0];
+      for (i = 1; i < n; i++)
           acc += b.s[i];
       use(acc);
-      keep(b.s);
   }
 -->
 <binaryimage arch="x86:LE:32:default:watcom">
   <bytechunk space="ram" offset="0xe000" readonly="true">
-5351525589e581eccc00000089c38d8534ffffffe8e70f000031d231c0eb078b4c85d44001ca39d87cf589d0e8df0f00008d45d4e8e70f000089ec5d5a595bc3
+5351525589e581eccc00000089c38d4584e8ea0f00008b5584b801000000eb078b4c85844001ca39d87cf589d0e8de0f000089ec5d5a595bc3
   </bytechunk>
   <bytechunk space="ram" offset="0xf000" readonly="true">
 c3
   </bytechunk>
   <bytechunk space="ram" offset="0xf010" readonly="true">
-c3
-  </bytechunk>
-  <bytechunk space="ram" offset="0xf020" readonly="true">
 c3
   </bytechunk>
 </binaryimage>
