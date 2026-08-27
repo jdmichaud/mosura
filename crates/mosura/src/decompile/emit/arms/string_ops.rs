@@ -163,6 +163,9 @@ fn rep_load_at(f: &Funcdata, v: VarnodeId, pc: u64) -> Option<(VarnodeId, u32)> 
 /// Follow `COPY`/`CAST` chains to the source varnode (`ActionSetCasts` inserts a `CAST` between a
 /// typed pointer phi and the LOAD/STORE that reads it; a rep-string loop's shape is the same).
 
+/// The loop-entry (pre-loop) value of a rep-string induction varnode: if `v` is a `MULTIEQUAL`
+/// whose one input is defined at the loop pc (the back-edge, a `PTRADD`/`INT_ADD`) and the other is
+/// not, return the other (following a `COPY` to its source so it renders as the original operand).
 fn rep_loop_entry(f: &Funcdata, v: VarnodeId, pc: u64) -> Option<VarnodeId> {
     let d = f.vn(v).def?;
     let o = f.op(d);
@@ -285,11 +288,6 @@ fn rep_cmp_chain(f: &Funcdata, r1: VarnodeId, cf_exit: VarnodeId) -> Option<Vec<
     Some(ops)
 }
 
-/// `sdiv-pow2`: is `op` an `INT_SRIGHT(a, n)` that is Watcom's signed power-of-two division?
-/// Returns `(x, n, exact)`: `exact` when `a` is the lifted SBB chain
-/// `INT_SUB(INT_ADD(x, INT_MULT(s, -2^n)), ZEXT(SLESS(LEFT(s, n-1), 0)))` with `s = SRIGHT(x, bits-1)`,
-/// else the bare shift (its dividend proven non-negative, the chain folded) — both `x / 2^n`.
-
 /// V3 `strlen`: an add/sub/compare between a `len + 1` alias and a constant prints with the
 /// constant re-adjusted (`~cnt != 1` → `len != 0`, `~cnt - 2` → `len - 1`, `~cnt + k` →
 /// `len + (k + 1)`) — undoing the fold Ghidra applied to the template's `DEC`.
@@ -328,7 +326,6 @@ pub(crate) fn strlen_fold(p: &mut PrintC<'_>, op: OpId) -> Option<(String, u8)> 
     let kt = render_const_typed((k2 as u64) & mask, size, k2 < 0);
     Some(if alias_left || matches!(o.code(), OpCode::IntAdd) { (format!("{rn} {sym} {kt}"), prec) } else { (format!("{kt} {sym} {rn}"), prec) })
 }
-
 
 /// `string-ops=intrinsic`: if this loop node is a recognized single-instruction `REP MOVS`/
 /// `REP STOS` (all its ops share one recovered pc in `p.rep_movs`), emit the `memcpy`/`memset`
@@ -392,7 +389,6 @@ fn try_emit_rep_movs(p: &mut PrintC<'_>, s: &Structured, idx: usize, indent: usi
     let _ = writeln!(out, "{}{stmt};", "  ".repeat(indent));
     true
 }
-
 
 /// A node whose every live op belongs to a collapsed string-op's skip set (the pair's byte loop,
 /// memcmp's `if (!zf) r = …` result block) emits nothing: the call covers it.

@@ -37,7 +37,24 @@
 //!   `lvalue_of`, `is_explicit`, `strlen_arg`; the free helpers `strip_copies`, `collect_basics`,
 //!   `render_const_typed`;
 //! - struct_copy (commit 2): the choice flag `struct_copy`, the fields `high_of`, `high_members`,
-//!   `nonprinting` (and `f`, `recovered`, `suppressed` already open); no methods.
+//!   `nonprinting` (and `f`, `recovered`, `suppressed` already open); no methods;
+//! - sparse_switch (commit 3): the choice flag `sparse_switch`, the node-level service
+//!   `sparse_consumed`, the arm's own walk state `sparse_root`, `sparse_tail`, `sparse_exit_goto`,
+//!   `sparse_head_stmts`, `sparse_hoist_pending`, `sparse_cond_override`,
+//!   `sparse_cond_override_pending` (commit 7 moves it), the field `labels`; the methods
+//!   `emit_structured`, `render_op`, `lab_name`, `first_pc`, `next_flow_after`,
+//!   `plain_if_condition_vn`; the free helpers `entry_basic`, `exit_basic`, `operand_oriented`.
+//!
+//! THREE NODE-LEVEL MECHANISMS, side by side, so a reader sees why there are two shapes:
+//! - `suppressed` — a printer SERVICE: the OPS an arm has covered (marked at arm setup or while
+//!   the arm prints), which the port's statement printer then skips;
+//! - `sparse_consumed` — a printer SERVICE: the structured NODES the sparse-switch arm consumed,
+//!   marked while it prints the tree, which the port's root loop and component walk then skip;
+//! - string-ops' `Site::Node` — not a mark but a PREDICATE: a node's coverage is DERIVED at print
+//!   time from the op skip set (every live op of the node belongs to a collapsed string op), so it
+//!   is asked at the site rather than recorded. Commit 7 asks whether string-ops can fill the node
+//!   service at setup instead (it needs the `Structured` tree there), which would retire the `Node`
+//!   kind and leave one node mechanism.
 //!
 //! THE MOVES (one commit each, identity-gated): 0 the skeleton — the seams wired, delegating to
 //! the code still in printc.rs; 1 string_ops; 2 struct_copy; 3 sparse_switch; 4 frame_fill (the
@@ -45,8 +62,9 @@
 //! — through the moves each arm's witness state (`rep_movs`, `rep_skip`, `strlen_alias`, … typed by
 //! the arm's module) stays a `PrintC` field so every move is verbatim; commit 7 relocates it into
 //! one `arms::State` (per-arm state structs composed in it) held by `PrintC` as a single field,
-//! together with the `ArmCtx` narrowing of the surface. The series' acceptance therefore reads:
-//! zero arm LOGIC in printc.rs after the moves, zero arm identifiers after commit 7.
+//! together with the `ArmCtx` narrowing of the surface, and decides whether string-ops fills the
+//! node service at setup (retiring `Site::Node`). The series' acceptance therefore reads: zero arm
+//! LOGIC in printc.rs after the moves, zero arm identifiers after commit 7.
 //!
 //! R2b — the older `RecoveredChoices`-driven renderings are choices too and still sit in the port:
 //! complement compares (`complement_sites`), unsigned compares (`unsigned_cmp_sites`), return
@@ -60,6 +78,7 @@ use super::super::op::OpId;
 use super::super::printc::PrintC;
 use super::super::structure::Structured;
 
+pub mod sparse_switch;
 pub mod string_ops;
 pub mod struct_copy;
 
@@ -124,14 +143,7 @@ pub struct Arm {
 /// moved out of printc.rs sits here as a thin delegate.
 pub const ARMS: [Arm; 4] = [
     string_ops::ARM,
-    Arm {
-        name: "sparse-switch: Watcom's compare tree as the switch it came from (docs/sparse-switch-arm.md)",
-        kinds: &[SiteKind::IfEntry],
-        try_emit: |p, site, out| match site {
-            Site::IfEntry { s, idx, indent } => (p.sparse_switch && p.try_emit_sparse_switch(s, idx, indent, out)).then_some(Answer::Emitted),
-            _ => None,
-        },
-    },
+    sparse_switch::ARM,
     struct_copy::ARM,
     Arm {
         name: "nested-conds: a short-circuit as nested ifs (cond-form=nested, docs/byte-exact-families.md sb58 / byte-exact-status.md sb65)",
