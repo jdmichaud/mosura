@@ -1214,6 +1214,93 @@ pub fn sdiv_pow2_from_evidence(cands: &[(u64, u32)], insns: &[NormInsn]) -> std:
 /// `(the SUB ESP immediate, the number of PUSHes before it)` — read from the first instructions.
 /// `None` when no `SUB ESP,imm` opens the frame within the first eight instructions (a
 /// frameless function, or one whose frame is built otherwise).
+/// `sparse-switch`: the compare witness — for every conditional jump, the immediate of the CMP
+/// (or `TEST r,r` = 0) whose flags it consumes and the jump's kind in the `x OP imm` orientation:
+/// JB/JAE (`CF`) = `CMP_LT`, JBE/JA (`CF|ZF`) = `CMP_LE`, JE/JNE (`ZF`) = `CMP_EQ`, with the signed
+/// JL/JGE and JLE/JG alike. Keyed by the jump's pc and, for the first jump after a CMP, by the
+/// CMP's pc as well (Ghidra puts the flag compare at the CMP and a derived compare at the jump).
+pub fn sparse_cmps_from_evidence(insns: &[NormInsn]) -> std::collections::HashMap<u64, (u64, u8, (u64, u32))> {
+    const LT: u8 = 0;
+    const LE: u8 = 1;
+    const EQ: u8 = 2;
+    let mut out = std::collections::HashMap::new();
+    let mut last: Option<(u64, u64, bool, (u64, u32))> = None; // (cmp pc, imm, first jump seen, compared register)
+    let dbg = std::env::var_os("MOSURA_SPARSE_DEBUG").is_some();
+    if dbg {
+        eprintln!("[sparse-witness] {} insns; first: {:?}", insns.len(), insns.iter().take(6).map(|i| (format!("{:#x}", i.addr), i.mnemonic.clone(), i.bytes.clone(), i.consts.clone())).collect::<Vec<_>>());
+    }
+    for insn in insns {
+        let b = &insn.bytes;
+        let m = insn.mnemonic.to_ascii_uppercase();
+        if dbg && (m == "CMP" || m == "TEST" || b.first().is_some_and(|&x| (0x70..=0x7f).contains(&x)) || b.first() == Some(&0x0f)) {
+            eprintln!("[sparse-witness]   {:#x} {m} bytes {:02x?} consts {:?} regs {:?}", insn.addr, b, insn.consts, insn.regs);
+        }
+        let cc = if b.len() == 2 && (0x70..=0x7f).contains(&b[0]) {
+            Some(b[0] & 0xf)
+        } else if b.len() == 6 && b[0] == 0x0f && (0x80..=0x8f).contains(&b[1]) {
+            Some(b[1] & 0xf)
+        } else {
+            None
+        };
+        if let Some(cc) = cc {
+            let kind = match cc {
+                0x2 | 0x3 | 0xc | 0xd => LT,
+                0x6 | 0x7 | 0xe | 0xf => LE,
+                0x4 | 0x5 => EQ,
+                _ => continue,
+            };
+            if let Some((cpc, imm, seen, reg)) = last {
+                out.insert(insn.addr, (imm, kind, reg));
+                if !seen {
+                    out.insert(cpc, (imm, kind, reg));
+                    last = Some((cpc, imm, true, reg));
+                }
+            }
+            continue;
+        }
+        // the CMP's immediate, decoded from the encoding (the SLEIGH constant list also carries
+        // the flag arithmetic's constants and a memory operand's displacement): `3C ib` (AL),
+        // `3D iz` (eAX), `80 /7 ib`, `81 /7 iz`, `83 /7 ib` sign-extended to the operand size,
+        // `iz` = 16 bits under a 66 prefix; `TEST r,r` (84/85 with mod=11, reg==rm) compares 0
+        let mut i = 0;
+        let mut opsize = 32u32;
+        while i < b.len() && matches!(b[i], 0x66 | 0x67 | 0x26 | 0x2e | 0x36 | 0x3e | 0x64 | 0x65) {
+            if b[i] == 0x66 {
+                opsize = 16;
+            }
+            i += 1;
+        }
+        let imm_tail = |n: usize| -> Option<u64> {
+            (b.len() >= i + 1 + n).then(|| b[b.len() - n..].iter().rev().fold(0u64, |a, &x| (a << 8) | x as u64))
+        };
+        let cmp_imm = match b.get(i) {
+            Some(0x3c) => imm_tail(1),
+            Some(0x3d) => imm_tail(if opsize == 16 { 2 } else { 4 }),
+            Some(0x80) if b.get(i + 1).is_some_and(|m| (m >> 3) & 7 == 7) => imm_tail(1),
+            Some(0x81) if b.get(i + 1).is_some_and(|m| (m >> 3) & 7 == 7) => imm_tail(if opsize == 16 { 2 } else { 4 }),
+            Some(0x83) if b.get(i + 1).is_some_and(|m| (m >> 3) & 7 == 7) => imm_tail(1).map(|v| (v as u8 as i8 as i64 as u64) & if opsize == 16 { 0xffff } else { 0xffff_ffff }),
+            _ => None,
+        };
+        let test_rr = matches!(b.get(i), Some(0x84 | 0x85)) && b.get(i + 1).is_some_and(|m| m >> 6 == 3 && (m >> 3) & 7 == m & 7);
+        // the compared operand: the first general register the instruction names (x86's flag
+        // registers sit at offsets 0x200+); a memory operand leaves it unnamed
+        let reg = insn.regs.iter().copied().find(|&(off, _)| off < 0x100).unwrap_or((u64::MAX, 0));
+        if m == "CMP" && cmp_imm.is_some() {
+            last = Some((insn.addr, cmp_imm.unwrap(), false, reg));
+        } else if m == "TEST" && test_rr {
+            last = Some((insn.addr, 0, false, reg));
+        } else if !matches!(m.as_str(), "MOV" | "MOVZX" | "MOVSX" | "LEA" | "JMP" | "PUSH" | "POP" | "NOP") {
+            last = None; // anything that may write flags ends the compare's reach
+        }
+        if dbg {
+            if let Some((cpc, imm, _, reg)) = last {
+                if cpc == insn.addr { eprintln!("[sparse-witness]   -> compare at {:#x} imm {imm:#x} reg {reg:?}", insn.addr); }
+            }
+        }
+    }
+    out
+}
+
 pub fn frame_from_evidence(insns: &[NormInsn]) -> Option<(u32, u32)> {
     let mut pushes = 0u32;
     for insn in insns.iter().take(8) {

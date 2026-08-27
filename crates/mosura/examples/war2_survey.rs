@@ -784,6 +784,8 @@ fn main() {
             c.set("sdiv-pow2", "div").expect("known axis");
             // Declare an under-sized frame as one byte aggregate sized to the original SUB ESP frame.
             c.set("frame-fill", "aggregate").expect("known axis");
+            // Print a compare tree on one scrutinee as the sparse switch the source wrote.
+            c.set("sparse-switch", "switch").expect("known axis");
             // (historical: zc62 measured the blanket form net-flat
             // (+0.7w) with an EXACT regression (0x2c9a8) — a constant-join whose bytes load the
             // FULL register (MOV EDX,k) not the sub-register (MOV DL,k). The two are IR-identical;
@@ -2210,6 +2212,7 @@ fn main() {
                     &insns,
                 ),
                 frame_fill: mosura::recompile::buildconfig::frame_from_evidence(&insns),
+                sparse_cmp_sites: mosura::recompile::buildconfig::sparse_cmps_from_evidence(&insns),
                 unsigned_cmp_sites: mosura::recompile::buildconfig::unsigned_cmps_from_evidence(
                     &report.allones_cmp_candidates,
                     &insns,

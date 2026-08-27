@@ -218,6 +218,7 @@ pub struct EmitChoices {
     pub string_ops: StringOps,
     pub sdiv_pow2: SdivPow2,
     pub frame_fill: FrameFill,
+    pub sparse_switch: SparseSwitch,
 }
 
 /// How an integer extension (INT_ZEXT/INT_SEXT) that C's promotion would perform anyway is
@@ -343,6 +344,18 @@ pub enum FrameFill {
     Aggregate,
 }
 
+/// `sparse-switch`: Watcom compiles a sparse `switch` into a balanced compare tree (pivot = the
+/// lower median of the sorted cases), which Ghidra structures as nested if/else on one scrutinee.
+/// `switch` recognizes that tree and prints the `switch` the source wrote — the case set from the
+/// tree (empty cases kept, since the tree is rebuilt from the case set), bodies in address order,
+/// the scrutinee load inlined when single-use (fable-b's srcform4/16 probes: 0x14620 0.376 → 0.812,
+/// docs/wc2src-reconciliation-4.md W5); `ghidra` is the reference if/else rendering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SparseSwitch {
+    Ghidra,
+    Switch,
+}
+
 impl Default for EmitChoices {
     fn default() -> Self {
         Self {
@@ -362,6 +375,7 @@ impl Default for EmitChoices {
             string_ops: StringOps::Loop,
             sdiv_pow2: SdivPow2::Shift,
             frame_fill: FrameFill::Ghidra,
+            sparse_switch: SparseSwitch::Ghidra,
         }
     }
 }
@@ -473,6 +487,12 @@ impl EmitChoices {
             doc: "declare the frame's locals per symbol (Ghidra), or as one byte aggregate sized to the \
                   original SUB ESP frame with every slot a field at its byte offset (witnessed on the prologue)",
         },
+        Axis {
+            name: "sparse-switch",
+            values: &["ghidra", "switch"],
+            doc: "render a compare tree on one scrutinee as Ghidra's nested if/else, or as the sparse \
+                  `switch` the source wrote (case set from the tree, bodies in address order)",
+        },
     ];
 
     /// Every axis, for a search that wants to enumerate rather than hardcode.
@@ -547,6 +567,10 @@ impl EmitChoices {
             "frame-fill" => Some(match self.frame_fill {
                 FrameFill::Ghidra => "ghidra",
                 FrameFill::Aggregate => "aggregate",
+            }),
+            "sparse-switch" => Some(match self.sparse_switch {
+                SparseSwitch::Ghidra => "ghidra",
+                SparseSwitch::Switch => "switch",
             }),
             _ => None,
         }
@@ -667,6 +691,13 @@ impl EmitChoices {
                 self.frame_fill = match value {
                     "ghidra" => FrameFill::Ghidra,
                     "aggregate" => FrameFill::Aggregate,
+                    _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
+                }
+            }
+            "sparse-switch" => {
+                self.sparse_switch = match value {
+                    "ghidra" => SparseSwitch::Ghidra,
+                    "switch" => SparseSwitch::Switch,
                     _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
                 }
             }

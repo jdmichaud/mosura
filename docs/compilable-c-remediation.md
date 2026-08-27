@@ -436,6 +436,34 @@ extracted 0x12e6c fixture (`x86_12e6c_order.xml`) prints the same order as mosur
 xStack_cc = param_1; xStack_cb = param_2;`), so it is Ghidra's order, a future pc-order emitter arm
 for independent frame stores, not a defect.
 
+
+**Phase 11 — W5, the sparse-switch arm (built 2026-08-27, axis `sparse-switch={ghidra,switch}`,
+docs/sparse-switch-arm.md).** Watcom compiles a sparse `switch` into a balanced JB/JBE compare
+tree (pivot = the sorted labels' lower median); Ghidra prints nested if/else, and the recompiled
+if-chain is a different tree. The arm walks the structured tree with interval narrowing and prints
+the `switch`. The decisive instrument is a compare WITNESS from the original bytes
+(`buildconfig::sparse_cmps_from_evidence`: every Jcc pc, and the CMP's pc for its first jump, →
+(immediate, kind LT/LE/EQ, operand)): the IR cannot carry the case set, because Ghidra
+canonicalizes `CMP AL,4; JB` on its fall-through edge to `3 < x`, `CMP AL,0xf; JBE` to `x < 0x10`,
+`CMP AL,1; JB` to `x != 0` and `!(x <= 0xfe)` on a byte to `x == 0xff` (dropping the redundant
+`JE 0xff`) — a pivot's JB side and a run's JBE bound are the same p-code. Rules from the bytes: a
+run is `JB a` (or the floor) + `JBE`/`JA b` (or the ceiling) with no `JB k` inside; a pivot is one
+constant under two kinds; a folded equality counts only as an EQ witness right after a tree
+compare on the same operand; a value that jumps where the default jumps is the default unless
+compared by itself (`case 0: default:` shares the body and its continuation). Structure handled:
+compares cut to conditional gotos (`if (u != 1) goto LAB;`, CondOr groups through the exit
+block's record), leaves outside the tree printed as `goto`, jumps resolved to the outermost node
+entered at the block, enclosing unconditional gotos following a leaf's body, List-condition roots,
+nested lists, loop-condition narrowing (`while(true)` holding the tree's JB guard), pure statements
+hoisted above the switch, nested switches on a second field. Census on fable-b's 17 byte-verified
+trees: 16 render with the exact label set (0x122b0/0x488c8 nested {8,9}+{0,1,2}, 0x14620's 12,
+0x2d7fc's 26 in byte order); 0x173b4 declines by design (a stack-store placement parity item: the
+`xStack_14` store is killed and re-materialized at the compare's pc, so the faithful `ruleBlockOr`
+merges the condition). Found on the way and fixed in the same tree: a reference-printer wrong-code
+bug — a short-circuit node standing as a statement whose cut edge is a conditional goto (Ghidra's
+`BlockIfGoto` over a `BlockCondition`) printed as an empty `else { }` (0x4fbcc sent 11..25 to the
+wrong target, 0x46138 lost a test and its body); the record sits on the condition's exit block and
+now prints `if (cond) goto LAB;` with the whole condition. Landing round: `w5a` vs `w4b2`.
 ## CORRECTION — most of the "64-bit problem" is not 64-bit arithmetic
 
 Traced in the IR (`dumpwar2 --raw`) rather than inferred from rendered C, which had misled the

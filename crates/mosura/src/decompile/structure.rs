@@ -3258,12 +3258,20 @@ pub fn structure(f: &Funcdata) -> Structured {
     let complex: Vec<bool> = if let Some(c) =
         f.structure_complex.as_ref().filter(|c| c.len() == f.num_blocks())
     {
+        if std::env::var_os("MOSURA_COMPLEX").is_some() {
+            let pcs: Vec<String> = (0..f.num_blocks()).map(|b| f.block(BlockId(b as u32)).ops.iter().find(|&&op| !f.op(op).is_dead()).map(|&op| format!("{:x}", f.op(op).seqnum.pc.offset)).unwrap_or_else(|| "-".into())).collect();
+            eprintln!("COMPLEX reusing frozen verdicts nblocks={} verdicts={:?} first-pcs={:?}", f.num_blocks(), c, pcs);
+        }
         c.clone()
     } else {
         (0..f.num_blocks())
         .map(|b| {
             let bid = BlockId(b as u32);
             let mut statement = if f.block(bid).out_edges.len() >= 2 { 1 } else { 0 };
+            if std::env::var_os("MOSURA_COMPLEX").is_some() {
+                let ops: Vec<String> = f.block(bid).ops.iter().map(|&op| { let o = f.op(op); format!("{:x}:{:?}{}{}", o.seqnum.pc.offset, o.code(), if o.is_marker() { "*" } else { "" }, if o.is_dead() { "(dead)" } else { "" }) }).collect();
+                eprintln!("COMPLEX blk{b} ops {:?}", ops);
+            }
             for &op in &f.block(bid).ops {
                 let o = f.op(op);
                 // Skip dead ops: mosura's block op lists retain removed ops (output cleared,
