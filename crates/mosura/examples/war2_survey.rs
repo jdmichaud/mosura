@@ -2099,7 +2099,6 @@ fn main() {
             // arm below can render an alternative decompile of the same world under identical
             // per-site decisions and choose between the two texts.
             let render = |f: &Funcdata| -> String {
-            let (_, report) = mosura::decompile::printc::print_c_report(&f, &arms[0]);
             let insns = mosura::recompile::insn::normalize(
                 SURVEY_LANG,
                 &region,
@@ -2107,171 +2106,80 @@ fn main() {
                 &mosura::recompile::insn::NoReloc,
             )
             .unwrap_or_default();
-            let widen = mosura::recompile::buildconfig::widened_sites_from_evidence(
-                &report.local_width_candidates,
-                &report.tier2_candidates,
-                &insns,
-            );
-            // ARGUMENT-ORDER RECOVERY: apply each site's own recovered declaration order.
-            // The rendered argument list permutes and the TU declares the matching
-            // `parm [..]` pragma. The pragma rebinds EVERY call to that callee in the TU,
-            // so all of a callee's sites here must derive the SAME order and every one
-            // must qualify (its own evidence present, arity matching, every argument
-            // reorder-safe) — one failing site vetoes the callee for the whole TU.
-            let mut call_arg_orders: std::collections::HashMap<u64, Vec<usize>> = Default::default();
-            // Per-callee `parm [..]` clauses from param-order recovery — merged below with the
-            // caller-pops and modify clauses into ONE `#pragma aux` per callee: Watcom treats a
-            // second `#pragma aux` for the same symbol as a REPLACEMENT, so split emission
-            // would silently drop whichever clause came first.
             let mut order_parms: std::collections::BTreeMap<u64, String> = Default::default();
-            {
-                let mut by_callee: std::collections::BTreeMap<u64, Vec<(u64, &Vec<bool>)>> =
-                    Default::default();
-                for (addr, callee, safe) in &report.call_order_candidates {
-                    by_callee.entry(*callee).or_default().push((*addr, safe));
-                }
-                for (callee, csites) in by_callee {
-                    if callee == *va || order_excluded.contains(&callee) {
-                        continue;
+            // PER-FUNCTION RECOVERY (recompile::recovery, review R5 commit a): the report pass, the
+            // `*_from_evidence` witnesses over this function's instructions and the second evidence
+            // round, one library fn shared with the gcc ground-truth oracle. The argument-order
+            // derivation stays here as the closure: it reads the survey's cross-function tables
+            // (site_orders, order_excluded, arg_reg_offs, watreg) and fills `order_parms`.
+            let recovered = mosura::recompile::recovery::recover(&f, &insns, &arms[0], &rec_arm, |report| {
+                // ARGUMENT-ORDER RECOVERY: apply each site's own recovered declaration order.
+                // The rendered argument list permutes and the TU declares the matching
+                // `parm [..]` pragma. The pragma rebinds EVERY call to that callee in the TU,
+                // so all of a callee's sites here must derive the SAME order and every one
+                // must qualify (its own evidence present, arity matching, every argument
+                // reorder-safe) — one failing site vetoes the callee for the whole TU.
+                let mut call_arg_orders: std::collections::HashMap<u64, Vec<usize>> = Default::default();
+                // Per-callee `parm [..]` clauses from param-order recovery — merged below with the
+                // caller-pops and modify clauses into ONE `#pragma aux` per callee: Watcom treats a
+                // second `#pragma aux` for the same symbol as a REPLACEMENT, so split emission
+                // would silently drop whichever clause came first.
+                {
+                    let mut by_callee: std::collections::BTreeMap<u64, Vec<(u64, &Vec<bool>)>> =
+                        Default::default();
+                    for (addr, callee, safe) in &report.call_order_candidates {
+                        by_callee.entry(*callee).or_default().push((*addr, safe));
                     }
-                    let mut tu_p: Option<&Vec<u64>> = None;
-                    let ok = csites.iter().all(|(addr, safe)| {
-                        let Some(p) = site_orders.get(addr) else { return false };
-                        let n = p.len();
-                        if n > arg_reg_offs.len() || safe.len() != n || !safe.iter().all(|&s| s) {
-                            return false;
+                    for (callee, csites) in by_callee {
+                        if callee == *va || order_excluded.contains(&callee) {
+                            continue;
                         }
-                        let mut sp: Vec<u64> = p.clone();
-                        sp.sort_unstable();
-                        let mut sd: Vec<u64> = arg_reg_offs[..n].to_vec();
-                        sd.sort_unstable();
-                        if sp != sd {
-                            return false;
-                        }
-                        match tu_p {
-                            None => {
-                                tu_p = Some(p);
-                                true
+                        let mut tu_p: Option<&Vec<u64>> = None;
+                        let ok = csites.iter().all(|(addr, safe)| {
+                            let Some(p) = site_orders.get(addr) else { return false };
+                            let n = p.len();
+                            if n > arg_reg_offs.len() || safe.len() != n || !safe.iter().all(|&s| s) {
+                                return false;
                             }
-                            Some(q) => q == p,
+                            let mut sp: Vec<u64> = p.clone();
+                            sp.sort_unstable();
+                            let mut sd: Vec<u64> = arg_reg_offs[..n].to_vec();
+                            sd.sort_unstable();
+                            if sp != sd {
+                                return false;
+                            }
+                            match tu_p {
+                                None => {
+                                    tu_p = Some(p);
+                                    true
+                                }
+                                Some(q) => q == p,
+                            }
+                        });
+                        let Some(p) = tu_p else { continue };
+                        if !ok {
+                            continue;
                         }
-                    });
-                    let Some(p) = tu_p else { continue };
-                    if !ok {
-                        continue;
-                    }
-                    let n = p.len();
-                    let default = &arg_reg_offs[..n];
-                    let perm: Vec<usize> =
-                        p.iter().map(|r| default.iter().position(|d| d == r).unwrap()).collect();
-                    for (addr, _) in &csites {
-                        call_arg_orders.insert(*addr, perm.clone());
-                    }
-                    let names: Vec<&str> = p
-                        .iter()
-                        .filter_map(|r| {
-                            watreg.iter().find(|&&(o, sz, _)| o == *r && sz == 4).map(|t| t.2)
-                        })
-                        .collect();
-                    if names.len() == n {
-                        order_parms.insert(callee, format!("parm [{}]", names.join("] [")));
+                        let n = p.len();
+                        let default = &arg_reg_offs[..n];
+                        let perm: Vec<usize> =
+                            p.iter().map(|r| default.iter().position(|d| d == r).unwrap()).collect();
+                        for (addr, _) in &csites {
+                            call_arg_orders.insert(*addr, perm.clone());
+                        }
+                        let names: Vec<&str> = p
+                            .iter()
+                            .filter_map(|r| {
+                                watreg.iter().find(|&&(o, sz, _)| o == *r && sz == 4).map(|t| t.2)
+                            })
+                            .collect();
+                        if names.len() == n {
+                            order_parms.insert(callee, format!("parm [{}]", names.join("] [")));
+                        }
                     }
                 }
-            }
-            let recovered = mosura::decompile::printc::RecoveredChoices {
-                complement_sites: mosura::recompile::buildconfig::complement_compares_from_evidence(
-                    &report.compare_sites,
-                    &insns,
-                ),
-                return_split_sites: mosura::recompile::buildconfig::split_returns_from_evidence(
-                    &report.return_split_candidates,
-                    &insns,
-                ),
-                nested_sites: mosura::recompile::buildconfig::nested_conds_from_evidence(
-                    &report.cond_nest_candidates,
-                    &insns,
-                ),
-                narrow_return: mosura::recompile::buildconfig::narrow_return_from_evidence(
-                    &report.return_width_candidates,
-                    &insns,
-                ),
-                widen_local_reps: widen.0,
-                tier2_sites: widen.1,
-                snapshot_sites: mosura::recompile::buildconfig::entry_snapshots_from_evidence(
-                    &report.snapshot_candidates,
-                    &insns,
-                ),
-                testmem_sites: mosura::recompile::buildconfig::testmem_from_evidence(
-                    &report.testmem_candidates,
-                    &insns,
-                ),
-                store_orders: mosura::recompile::buildconfig::store_orders_from_evidence(
-                    &report.store_runs,
-                    &insns,
-                ),
-                call_arg_orders,
-                arm_swap_sites: mosura::recompile::buildconfig::arm_swaps_from_evidence(
-                    &report.arm_swap_candidates,
-                    &insns,
-                ),
-                array_index_sites: mosura::recompile::buildconfig::array_index_sites_from_evidence(
-                    &report.array_index_candidates,
-                    &insns,
-                ),
-                join_narrow_sites: mosura::recompile::buildconfig::join_narrow_sites_from_evidence(
-                    &report.join_narrow_candidates,
-                    &insns,
-                ),
-                string_op_sites: mosura::recompile::buildconfig::string_ops_from_evidence(
-                    &report.rep_movs_candidates,
-                    &insns,
-                ),
-                sdiv_pow2_sites: mosura::recompile::buildconfig::sdiv_pow2_from_evidence(
-                    &report.sdiv_pow2_candidates,
-                    &insns,
-                ),
-                frame_fill: mosura::recompile::buildconfig::frame_from_evidence(&insns),
-                sparse_cmp_sites: mosura::recompile::buildconfig::sparse_cmps_from_evidence(&insns),
-                movsd_runs: mosura::recompile::buildconfig::movsd_runs_from_evidence(&insns),
-                unsigned_cmp_sites: mosura::recompile::buildconfig::unsigned_cmps_from_evidence(
-                    &report.allones_cmp_candidates,
-                    &insns,
-                ),
-                // statement interleave (allocator thread lever 3): OFF — measured at probe
-                // scale (2026-08-22) as a loser: re-sequencing a block's independent
-                // statements into the original's instruction order broke 3 of 5 EXACT
-                // functions (125bc, 2911c, 31c60) and moved the motivating 31c0c not at
-                // all. The original's order is the SCHEDULER's output, not the source's
-                // statement order, and the scheduler does not round-trip its own output
-                // (source-sequence tie-breaks). The census and the orders machinery stay
-                // for a model-inverse variant; MOSURA_ILV=1 enables the blind form.
-                ilv_orders: if std::env::var("MOSURA_ILV").as_deref() == Ok("1") {
-                    mosura::decompile::printc::interleave_orders(&f, &insns)
-                } else {
-                    Default::default()
-                },
-            };
-            // SECOND EVIDENCE ROUND (see print_c_recovered_report): decisions interact — a
-            // tier-2 materialization creates the statement-carrying clause cond-form nests —
-            // so re-assess candidacy on the rendering the first round produces and merge.
-            let (_, report2) =
-                mosura::decompile::printc::print_c_recovered_report(&f, &rec_arm, &recovered);
-            let mut recovered = recovered;
-            recovered.nested_sites.extend(
-                mosura::recompile::buildconfig::nested_conds_from_evidence(
-                    &report2.cond_nest_candidates,
-                    &insns,
-                ),
-            );
-            if std::env::var_os("MOSURA_EMIT_DEBUG").is_some() {
-                eprintln!(
-                    "[recover] runs={} orders={} snap={} testmem={}",
-                    report.store_runs.len(),
-                    recovered.store_orders.len(),
-                    recovered.snapshot_sites.len(),
-                    recovered.testmem_sites.len()
-                );
-            }
+                call_arg_orders
+            });
             if std::env::var_os("MOSURA_ILV_CENSUS").is_some() {
                 for (pa, pb, k) in mosura::decompile::printc::interleave_census(&f, &insns) {
                     eprintln!("[ilv] {name} {pa:#x} {pb:#x} {k}");

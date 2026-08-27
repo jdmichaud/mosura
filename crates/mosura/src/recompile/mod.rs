@@ -35,6 +35,7 @@ pub mod candidate;
 pub mod convention;
 pub mod gates;
 pub mod insn;
+pub mod recovery;
 pub mod report;
 pub mod toolchain;
 pub mod verify;
