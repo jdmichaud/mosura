@@ -646,3 +646,13 @@ Settled by measurement on WAR2:
   of this plan: a multiply's high half is genuinely **dead** (liveness), while a divide's high half
   is **consumed by the divide itself** and is instead a recognisable **extension idiom** (pattern).
 * `typedef double int8` is ours, not Ghidra's, and is a defect independent of any of this.
+
+**imm8 spelling arm — REFUTED by the round-trip POC (2026-08-27).** The residue named after the
+uintlit round (`docs/compilable-c-remediation.md` Phase 7: an unsigned/unknown read-facing constant
+printed as Ghidra does — `x == 0xffffffff`, `& 0xfffffffe`, `p + 0xffffffff` — where the original
+used a sign-extended imm8/disp8) is not a spelling matter. Hand-editing five of fable-b's 30 census
+sites on the landed w5c tree to the signed spelling (`== -1`, `!= -3`, `& -2`, `+ -1` at 0x31f24,
+0x4d1f0, 0x35d44, 0x41808, 0x3a270) and recompiling leaves every verdict, sim and equal-count
+IDENTICAL: Watcom picks `83 /x ib` / disp8 from the constant's bit pattern, whatever the C says.
+The 13 dips of the uintlit round have another cause (0x31f24's rows are byte masks `AND r,0xff`
+against the original's `ROL EAX,CL`). No arm to build; the sites stay as Ghidra prints them.
