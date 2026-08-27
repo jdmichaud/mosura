@@ -400,10 +400,6 @@ pub(crate) struct PrintC<'a> {
     /// where the node would otherwise print. Distinct from `sparse_consumed` (a switch printed the
     /// node elsewhere; two consult points): different semantics, different points.
     pub(crate) covered_nodes: HashSet<usize>,
-    /// [`EmitChoices::return_split`] == `Paths`: split a tail boolean return into per-path
-    /// constant returns where the gate proves value-identity (see the `FlowKind::List` arm).
-    /// Default false.
-    split_bool_returns: bool,
     /// Tier 2 of the same axis value: values materialized as explicit widened temps
     /// (members of `force_explicit` too), keyed to how their def statement renders.
     ///
@@ -2957,49 +2953,16 @@ impl<'a> PrintC<'a> {
                 let _ = writeln!(out, "{pad}}}");
             }
             FlowKind::List => {
-                // return-split=paths (the axis doc in emit.rs carries the measured probe): the
-                // tail pair [plain `if` testing B] + [basic whose sole statement returns
-                // (zext of) the SAME B] prints as per-path constant returns — `return 1;`
-                // injected at the body's end and `return 0;` on the fall-through (constants
-                // swapped when the structured condition is the negation). Value-identical by
-                // construction: the returned varnode IS the tested one, so it is true exactly
-                // on the taken path. Gates: no else arm, no goto records on either component,
-                // and nothing else printable in the tail block.
                 let mut i = 0usize;
                 while i < comps.len() {
                     let c = comps[i];
+                    // return-split (emit/arms/return_split.rs): the list's tail pair [if] + [bool
+                    // return] may print as per-path constant returns; the arm consumes both
                     if i + 2 == comps.len()
-                        && matches!(s.blocks[c].kind, FlowKind::If)
-                        && s.node_gotos.get(&c).is_none()
-                        && s.node_gotos.get(&comps[i + 1]).is_none()
+                        && arms::try_emit(self, Site::ListTail { s, c, tail: comps[i + 1], indent }, out).is_some()
                     {
-                        if let (Some(cond), Some((tail_bid, ret_b))) = (
-                            self.plain_if_condition_vn(s, c),
-                            self.sole_bool_return(s, comps[i + 1]),
-                        ) {
-                            // structural candidacy holds — record it for the target profile
-                            // (on EVERY print, both axis values), then apply under the axis
-                            // OR a recovered per-site decision
-                            let key = self.plain_if_branch_pc(s, c);
-                            if let Some(pc) = key {
-                                self.report.return_split_candidates.push(pc);
-                            }
-                            let apply = self.split_bool_returns
-                                || key.is_some_and(|pc| {
-                                    self.recovered.return_split_sites.contains(&pc)
-                                });
-                            if apply && self.same_bool_value(cond, ret_b) {
-                                let negated = s.blocks[c].negated;
-                                let (then_k, tail_k) = if negated { (0, 1) } else { (1, 0) };
-                                self.emit_if_with_tail(s, c, indent, out, &format!("return {then_k};"));
-                                let pad = "  ".repeat(indent);
-                                let _ = writeln!(out, "{pad}return {tail_k};");
-                                // the tail block's ops are consumed by this rendering
-                                let _ = tail_bid;
-                                i += 2;
-                                continue;
-                            }
-                        }
+                        i += 2;
+                        continue;
                     }
                     if self.sparse_consumed.contains(&c) {
                         i += 1;
@@ -3134,7 +3097,7 @@ impl<'a> PrintC<'a> {
     /// The instruction address of the plain `if`'s CBRANCH — the stable per-site key the
     /// recovered `return-split` decisions are made against (an address in the ORIGINAL, since
     /// every op carries its lifting address).
-    fn plain_if_branch_pc(&self, s: &Structured, if_idx: usize) -> Option<u64> {
+    pub(crate) fn plain_if_branch_pc(&self, s: &Structured, if_idx: usize) -> Option<u64> {
         let fb = &s.blocks[if_idx];
         let FlowKind::Basic(bid) = s.blocks[*fb.components.first()?].kind else { return None };
         let cb = self.f.block(bid).ops.iter().rev().copied().find(|&op| {
@@ -3150,101 +3113,6 @@ impl<'a> PrintC<'a> {
             !self.f.op(op).is_dead() && self.f.op(op).code() == OpCode::Cbranch
         })?;
         self.f.op(cb).input(1)
-    }
-
-    /// The boolean behind a basic block whose ONLY printable statement is `return (zext of)
-    /// B` with `B` a bool-op output: `Some((block, B))`, else `None`. Ops that inline into
-    /// the return expression (implied outputs) are fine; anything that would print its own
-    /// statement (explicit output, store, call) declines.
-    fn sole_bool_return(&self, s: &Structured, tail_idx: usize) -> Option<(BlockId, VarnodeId)> {
-        let FlowKind::Basic(bid) = s.blocks[tail_idx].kind else { return None };
-        let mut ret = None;
-        for &op in &self.f.block(bid).ops {
-            let o = self.f.op(op);
-            if o.is_dead() || o.is_marker() {
-                continue;
-            }
-            match o.code() {
-                OpCode::Return => {
-                    if ret.is_some() {
-                        return None;
-                    }
-                    ret = Some(op);
-                }
-                OpCode::Store | OpCode::Call | OpCode::Callind | OpCode::Callother => return None,
-                OpCode::Branch | OpCode::Cbranch | OpCode::Branchind => return None,
-                _ => {
-                    if o.output.is_some_and(|v| self.is_explicit(v)) {
-                        return None; // would print its own assignment before the return
-                    }
-                }
-            }
-        }
-        let ret = ret?;
-        let mut v = self.f.op(ret).input(1)?;
-        // peel the printer-transparent links (COPY/ZEXT chains) down to the boolean
-        for _ in 0..6 {
-            let d = self.f.vn(v).def?;
-            if self.f.op(d).is_bool_output() {
-                if self.f.vn(v).size != 1 {
-                    return None;
-                }
-                return Some((bid, v));
-            }
-            match self.f.op(d).code() {
-                OpCode::Copy | OpCode::IntZext => v = self.f.op(d).input(0)?,
-                _ => return None,
-            }
-        }
-        None
-    }
-
-    /// Whether two 1-byte booleans provably hold the same value: the same varnode, or
-    /// outputs of two bool ops with the same opcode and pairwise-identical inputs (the
-    /// rules duplicate the predicate rather than CSE it — the branch's compare and the
-    /// return's compare are distinct ops over the same operands in the measured IR).
-    fn same_bool_value(&self, a: VarnodeId, b: VarnodeId) -> bool {
-        if a == b {
-            return true;
-        }
-        let (Some(da), Some(db)) = (self.f.vn(a).def, self.f.vn(b).def) else { return false };
-        let (oa, ob) = (self.f.op(da), self.f.op(db));
-        if oa.code() != ob.code() || oa.num_inputs() != ob.num_inputs() || !oa.is_bool_output() {
-            return false;
-        }
-        (0..oa.num_inputs()).all(|i| match (oa.input(i), ob.input(i)) {
-            (Some(x), Some(y)) => {
-                x == y
-                    || (self.f.vn(x).is_constant()
-                        && self.f.vn(y).is_constant()
-                        && self.f.vn(x).constant_value() == self.f.vn(y).constant_value()
-                        && self.f.vn(x).size == self.f.vn(y).size)
-            }
-            _ => false,
-        })
-    }
-
-    /// Emit a `FlowKind::If` / `FlowKind::IfElse`, collapsing `else { if … }` into `else if …`.
-    ///
-    /// Faithful port of `PrintC::emitBlockIf`'s pending-brace handling (printc.cc:2882-2943): when
-    /// an `if`/`else`'s else-arm is itself an `if` (`FlowBlock::t_if`), Ghidra prints the `else`
-    /// keyword and emits the nested `if` in "pending brace" mode — the nested `if`'s opening brace
-    /// is only issued if its condition block emits a leading statement; otherwise the `if` glues
-    /// onto the `else` on one line (`else if (…)`). `else_if` is true when this block sits in that
-    /// else-position and the caller has just written the bare `else` keyword (no trailing newline).
-    /// ccompare normalizes `else { if … }` and `else if …` to the same token skeleton, so this
-    /// changes no corpus score — it makes the emitted C match Ghidra's exact rendering.
-    /// `emit_if` with an extra statement injected as the LAST line of the then-body — the
-    /// `return-split` rendering. Only called for plain `If` (no else), where the body's
-    /// closing brace is the emission's final line.
-    fn emit_if_with_tail(&mut self, s: &Structured, idx: usize, indent: usize, out: &mut String, tail: &str) {
-        let mut buf = String::new();
-        self.emit_if(s, idx, indent, &mut buf, false);
-        // insert before the final closing-brace line
-        let insert_at = buf.trim_end_matches('\n').rfind('\n').map(|p| p + 1).unwrap_or(0);
-        let inner_pad = "  ".repeat(indent + 1);
-        buf.insert_str(insert_at, &format!("{inner_pad}{tail}\n"));
-        out.push_str(&buf);
     }
 
     /// Collect the PRINTED `&&` clauses of a condition, mirroring `render_cond_expr`'s
@@ -3328,7 +3196,7 @@ impl<'a> PrintC<'a> {
         best
     }
 
-    fn emit_if(&mut self, s: &Structured, idx: usize, indent: usize, out: &mut String, else_if: bool) {
+    pub(crate) fn emit_if(&mut self, s: &Structured, idx: usize, indent: usize, out: &mut String, else_if: bool) {
         if !else_if && arms::try_emit(self, Site::IfEntry { s, idx, indent }, out).is_some() {
             return;
         }
@@ -4659,7 +4527,6 @@ fn print_c_inner(
         snapshot_names: HashMap::new(),
         snapshot_decls: Vec::new(),
         recovered: recovered.clone(),
-        split_bool_returns: choices.return_split == super::emit::ReturnSplit::Paths,
         tier2_widen: std::collections::HashMap::new(),
         var_counter: 0,
         ret_val: None,
