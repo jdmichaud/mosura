@@ -95,6 +95,7 @@ pub(crate) struct State {
     pub(crate) nested_conds: nested_conds::State,
     pub(crate) complement_cmp: complement_cmp::State,
     pub(crate) sum_order: sum_order::State,
+    pub(crate) join_narrow: join_narrow::State,
 }
 
 impl State {
@@ -108,6 +109,7 @@ impl State {
             nested_conds: nested_conds::State::new(choices),
             complement_cmp: complement_cmp::State::new(choices),
             sum_order: sum_order::State::new(choices),
+            join_narrow: join_narrow::State::new(choices),
         }
     }
 }
@@ -120,6 +122,7 @@ pub mod sparse_switch;
 pub mod string_ops;
 pub mod struct_copy;
 pub mod unsigned_cmp;
+pub mod join_narrow;
 pub mod sum_order;
 pub mod testmem;
 
@@ -222,7 +225,7 @@ mod tests {
     /// The arm files, as text, for the surface scan — every `pub mod` of this module must be here
     /// (`arms_touch_only_the_documented_surface` checks that against this file's own source, so a
     /// new arm file cannot slip past the scan).
-    const ARM_SOURCES: [(&str, &str); 10] = [
+    const ARM_SOURCES: [(&str, &str); 11] = [
         ("string_ops.rs", include_str!("string_ops.rs")),
         ("struct_copy.rs", include_str!("struct_copy.rs")),
         ("sparse_switch.rs", include_str!("sparse_switch.rs")),
@@ -230,6 +233,7 @@ mod tests {
         ("sdiv_pow2.rs", include_str!("sdiv_pow2.rs")),
         ("nested_conds.rs", include_str!("nested_conds.rs")),
         ("unsigned_cmp.rs", include_str!("unsigned_cmp.rs")),
+        ("join_narrow.rs", include_str!("join_narrow.rs")),
         ("sum_order.rs", include_str!("sum_order.rs")),
         ("testmem.rs", include_str!("testmem.rs")),
         ("complement_cmp.rs", include_str!("complement_cmp.rs")),
@@ -367,6 +371,22 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
         ValueSite::Sum { op } => sum_order::render(p, op),
         other => frame_fill::render_value(p, &other),
     }
+}
+
+// THE DECLARATIONS SEAMS — one family, two situations, each with exactly one answerer:
+//   * a SLOT's declaration (`declare_slot`: the port is about to declare the stack slot at
+//     `start`; frame-fill answers `true` when its aggregate declares it);
+//   * a LOCAL's declared type (`local_decl_type`: the port is about to declare a genuine local;
+//     join-narrow answers the narrowed type).
+// They are two functions because their answers differ in type (a bool "declared it" vs an
+// `Option<Datatype>`), not because each arm gets its own seam. RULE: a third declaration-level
+// seam needs a design note in the channel first — the family must not grow one function per arm
+// (review R2b, commit 5, fable-b's note).
+/// The declared type of a genuine local `name_of` is about to declare (`v` the varnode, `ty` its
+/// value type): one answerer, join-narrow; `None` = the port's own declaration width. Replaces
+/// the inline consult in name_of (8bd43ce); R2b, commit 5.
+pub(crate) fn local_decl_type(p: &mut PrintC<'_>, v: VarnodeId, ty: &Datatype) -> Option<Datatype> {
+    join_narrow::local_decl_type(p, v, ty)
 }
 
 /// THE DECLARATIONS SEAM — the one arm effect that is neither a statement nor a value, and the
