@@ -94,6 +94,7 @@ pub(crate) struct State {
     pub(crate) sdiv_pow2: sdiv_pow2::State,
     pub(crate) nested_conds: nested_conds::State,
     pub(crate) complement_cmp: complement_cmp::State,
+    pub(crate) sum_order: sum_order::State,
 }
 
 impl State {
@@ -106,6 +107,7 @@ impl State {
             sdiv_pow2: sdiv_pow2::State::new(choices),
             nested_conds: nested_conds::State::new(choices),
             complement_cmp: complement_cmp::State::new(choices),
+            sum_order: sum_order::State::new(choices),
         }
     }
 }
@@ -118,6 +120,7 @@ pub mod sparse_switch;
 pub mod string_ops;
 pub mod struct_copy;
 pub mod unsigned_cmp;
+pub mod sum_order;
 pub mod testmem;
 
 /// The kinds of site the statement-level hook is called from.
@@ -219,7 +222,7 @@ mod tests {
     /// The arm files, as text, for the surface scan — every `pub mod` of this module must be here
     /// (`arms_touch_only_the_documented_surface` checks that against this file's own source, so a
     /// new arm file cannot slip past the scan).
-    const ARM_SOURCES: [(&str, &str); 9] = [
+    const ARM_SOURCES: [(&str, &str); 10] = [
         ("string_ops.rs", include_str!("string_ops.rs")),
         ("struct_copy.rs", include_str!("struct_copy.rs")),
         ("sparse_switch.rs", include_str!("sparse_switch.rs")),
@@ -227,6 +230,7 @@ mod tests {
         ("sdiv_pow2.rs", include_str!("sdiv_pow2.rs")),
         ("nested_conds.rs", include_str!("nested_conds.rs")),
         ("unsigned_cmp.rs", include_str!("unsigned_cmp.rs")),
+        ("sum_order.rs", include_str!("sum_order.rs")),
         ("testmem.rs", include_str!("testmem.rs")),
         ("complement_cmp.rs", include_str!("complement_cmp.rs")),
     ];
@@ -340,6 +344,10 @@ pub enum ValueSite<'v> {
     /// masked narrow load prints its deref at int width. Replaces the inline width consult
     /// (33d6e37); R2b, commit 3.
     Load { out: VarnodeId, addr: VarnodeId },
+    /// `render_op_inner`'s `IntAdd` arm: `op` the root of a left-nested INT_ADD chain — its terms
+    /// print in the original's schedule order under `sum-order=original`. Replaces the inline
+    /// consult (33d6e37); R2b, commit 4.
+    Sum { op: OpId },
 }
 
 /// The value-render chokepoint — ONE hook with situations, the same shape as [`try_emit`]'s
@@ -356,6 +364,7 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
         ValueSite::Equality { op, sym, prec } => unsigned_cmp::render(p, op, sym, prec),
         ValueSite::Compare { op, strict, prec } => complement_cmp::render(p, op, strict, prec),
         ValueSite::Load { out, addr } => testmem::render(p, out, addr),
+        ValueSite::Sum { op } => sum_order::render(p, op),
         other => frame_fill::render_value(p, &other),
     }
 }

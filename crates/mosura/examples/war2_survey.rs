@@ -831,6 +831,14 @@ fn main() {
             a
         })
         .collect();
+    // The RECOVERED emit's choices: the canonical arm plus `sum-order=original` — the term order
+    // was `RecoveredChoices::sum_order` (default on) until review R2b commit 4 made it an axis; it
+    // applied only where recovery applied, so raw/ and the report pass keep the reference order.
+    let rec_arm = {
+        let mut c = arms[0].clone();
+        c.set("sum-order", "original").expect("known axis");
+        c
+    };
 
     // Artifacts are STAMPED with the commit that produced them: `src.<stamp>/`, `raw.<stamp>/`,
     // `manifest.<stamp>.tsv`, with the unsuffixed names as symlinks to the current stamp.
@@ -1089,6 +1097,11 @@ fn main() {
     // `tail -n +2`, compare.py's `header = next(fh)`), so they were changed to drop `#` lines
     // first — otherwise this line pushes the column header into the data.
     writeln!(mf, "# war2_survey emit @ {stamp}").unwrap();
+    // The arm set this tree was MEASURED with (the recovered emit's choices, every axis spelled
+    // out), so a tree or a copied manifest is self-describing about its arm set (code review
+    // 2026-08-27: measurement documents carry their arm set). `#` lines are skipped by every reader.
+    writeln!(mf, "# arms: {rec_arm}").unwrap();
+    eprintln!("arms (recovered emit): {rec_arm}");
     writeln!(
         mf,
         "idx\tva\tname\tstatus\torig_len\tcov_lo\tcov_hi\tsmells\torig_hex\tir_calls\tblocks_cfg\tblocks_reached\tkind\tcontract"
@@ -2224,10 +2237,6 @@ fn main() {
                     &report.allones_cmp_candidates,
                     &insns,
                 ),
-                // sum-order (allocator thread lever 1): the evidence is the IR's own original
-                // addresses, so the decision is the recovered mode itself. MOSURA_SUMORD=0
-                // restores the reference term order for A/B rounds.
-                sum_order: std::env::var("MOSURA_SUMORD").as_deref() != Ok("0"),
                 // statement interleave (allocator thread lever 3): OFF — measured at probe
                 // scale (2026-08-22) as a loser: re-sequencing a block's independent
                 // statements into the original's instruction order broke 3 of 5 EXACT
@@ -2246,7 +2255,7 @@ fn main() {
             // tier-2 materialization creates the statement-carrying clause cond-form nests —
             // so re-assess candidacy on the rendering the first round produces and merge.
             let (_, report2) =
-                mosura::decompile::printc::print_c_recovered_report(&f, &arms[0], &recovered);
+                mosura::decompile::printc::print_c_recovered_report(&f, &rec_arm, &recovered);
             let mut recovered = recovered;
             recovered.nested_sites.extend(
                 mosura::recompile::buildconfig::nested_conds_from_evidence(
@@ -2268,7 +2277,7 @@ fn main() {
                     eprintln!("[ilv] {name} {pa:#x} {pb:#x} {k}");
                 }
             }
-            let rc = mosura::decompile::printc::print_c_recovered(&f, &arms[0], &recovered);
+            let rc = mosura::decompile::printc::print_c_recovered(&f, &rec_arm, &recovered);
             // VOLATILE RECOVERY: globals whose original store sites show the blocked order
             // (see buildconfig::volatile_globals_from_evidence) declare volatile in this TU.
             let volatiles =

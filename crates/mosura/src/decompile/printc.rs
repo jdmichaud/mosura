@@ -273,15 +273,6 @@ pub struct RecoveredChoices {
     pub sparse_cmp_sites: std::collections::HashMap<u64, (u64, u8, (u64, u32))>,
     /// `struct-copy`: runs of plain `MOVSD` in the original — start pc → run length k.
     pub movsd_runs: std::collections::HashMap<u64, u32>,
-    /// Pointer-context INT_ADD chains print their COMPUTED terms in the ORIGINAL's
-    /// computation order (`sum-order`, allocator thread lever 1): each implicit term keyed by
-    /// the earliest original address among its inline ops, swapped within the slots such
-    /// terms occupy; constants and bare variables keep their places. The reference print keeps the
-    /// IR's left-nested order, which is Ghidra's term canonicalization, not the source's —
-    /// and Watcom evaluates a sum's terms in source order, so two independent terms schedule
-    /// as written (FUN_000294b8: the masked-multiply term's `AND` precedes the zero-extend
-    /// `AND` in the original; Ghidra prints it second, and the two instructions transpose).
-    pub sum_order: bool,
     /// Statement-interleave orders (allocator thread lever 3): per basic block whose
     /// independent adjacent statements the original computed in the reverse order, keyed
     /// by the block's first re-emitted statement op, the block's assign/gstore/store
@@ -1299,118 +1290,6 @@ impl<'a> PrintC<'a> {
         }
     }
 
-    /// Render `v` as an operand of an operator of precedence `parent`, parenthesizing when
-    /// the sub-expression binds looser (`right` operands also parenthesize at equal
-    /// precedence, for left-associativity).
-    /// `sum-order` (see [`RecoveredChoices::sum_order`]): the left-nested implicit INT_ADD
-    /// chain rooted at `op`, when its value is a LOAD/STORE address (directly or through one
-    /// CAST/COPY/PTRADD), printed with its terms in the original's computation order. Each
-    /// term prints through the same cast rule as the reference (`cast_operand` on the chain
-    /// op/slot that holds it), so only the ORDER changes. `None` when the chain is not in
-    /// pointer context, has fewer than two non-constant terms, or already prints in that
-    /// order — the reference arm then renders it.
-    fn sum_chain_reordered(&mut self, op: OpId) -> Option<(String, u8)> {
-        let ram = self.f.spaces.by_name("ram");
-        // pointer context: the chain's value feeds an address slot
-        let out = self.f.op(op).output?;
-        let is_addr_use = |s: &Self, v: VarnodeId| -> bool {
-            s.f.vn(v).descend.iter().any(|&c| {
-                let co = s.f.op(c);
-                matches!(co.code(), OpCode::Load | OpCode::Store) && co.input(1) == Some(v)
-            })
-        };
-        let in_ptr_context = is_addr_use(self, out)
-            || self.f.vn(out).descend.iter().any(|&c| {
-                let co = self.f.op(c);
-                matches!(co.code(), OpCode::Cast | OpCode::Copy | OpCode::Ptradd)
-                    && co.output.is_some_and(|o2| is_addr_use(self, o2))
-            });
-        // SUM-ORDER CENSUS (MOSURA_SUMORD_CENSUS=1): size the lever outside pointer context
-        // — the reorder is computed for every chain and reported with its context; only
-        // pointer-context chains change the print.
-        let census = std::env::var_os("MOSURA_SUMORD_CENSUS").is_some();
-        // MOSURA_SUMORD_CTX=all lifts the pointer-context gate (the non-pointer A/B: census
-        // 120 ptr vs 670 non-ptr chains on zc26); default stays pointer context only.
-        let all_ctx = std::env::var("MOSURA_SUMORD_CTX").as_deref() == Ok("all");
-        if !in_ptr_context && !census && !all_ctx {
-            return None;
-        }
-        // flatten the left spine: ((A + K) + B) prints A, K, B
-        let inline_add = |s: &Self, v: VarnodeId| -> Option<OpId> {
-            let vn = s.f.vn(v);
-            let d = vn.def?;
-            (s.f.op(d).code() == OpCode::IntAdd && !s.is_explicit(v) && vn.descend.len() == 1).then_some(d)
-        };
-        let mut rights: Vec<(OpId, usize)> = Vec::new();
-        let mut cur = op;
-        while let Some(inner) = self.f.op(cur).input(0).and_then(|v| inline_add(self, v)) {
-            rights.push((cur, 1));
-            cur = inner;
-        }
-        let mut terms: Vec<(OpId, usize)> = vec![(cur, 0), (cur, 1)];
-        terms.extend(rights.into_iter().rev());
-        // Only COMPUTED terms (those with inline ops at original addresses) move, and only
-        // among the slots they already occupy, ordered by their earliest address; constants
-        // and bare variables keep their reference slots. Measured (zc25): moving a constant
-        // out of the middle cost FUN_00031100 its EXACT, and pushing a bare variable behind
-        // the computed terms cost FUN_0005fb24 its shape (its original evaluates
-        // `iVar1 + 0x10` first, by LEA) — while the reorder that converts FUN_000294b8 and
-        // the 0x25a04 family holds with the constant left in place (dumpwc probes).
-        let mut slots: Vec<usize> = Vec::new();
-        let mut pcs: Vec<u64> = Vec::new();
-        for (i, &(o, slot)) in terms.iter().enumerate() {
-            let v = self.f.op(o).input(slot)?;
-            if !self.f.vn(v).is_constant() {
-                if let Some(pc) = self.term_min_pc(v, ram, 0) {
-                    slots.push(i);
-                    pcs.push(pc);
-                }
-            }
-        }
-        if slots.len() < 2 {
-            return None;
-        }
-        let mut order: Vec<usize> = (0..slots.len()).collect();
-        order.sort_by_key(|&k| pcs[k]); // stable: ties keep the reference order
-        if order.iter().enumerate().all(|(k, &j)| k == j) {
-            return None;
-        }
-        if census {
-            eprintln!("[sumord] pc {:#x} ctx={} terms={}", self.f.op(op).seqnum.pc.offset, if in_ptr_context { "ptr" } else { "nonptr" }, terms.len());
-            if !in_ptr_context && !all_ctx {
-                return None;
-            }
-        }
-        let mut placed: Vec<(OpId, usize)> = terms.clone();
-        for (k, &j) in order.iter().enumerate() {
-            placed[slots[k]] = terms[slots[j]];
-        }
-        let mut parts: Vec<String> = Vec::new();
-        for (i, &(o, slot)) in placed.iter().enumerate() {
-            parts.push(self.cast_operand(o, slot, 12, i > 0));
-        }
-        Some((parts.join(" + "), 12))
-    }
-
-    /// The earliest original (ram) address among the inline ops that compute `v` — the
-    /// instruction where the term's computation starts. `None` for constants, explicit
-    /// (named) values and inputs, which materialize nothing of their own here.
-    fn term_min_pc(&self, v: VarnodeId, ram: Option<super::space::SpaceId>, depth: usize) -> Option<u64> {
-        let vn = self.f.vn(v);
-        if depth > 16 || vn.is_constant() || self.is_explicit(v) {
-            return None;
-        }
-        let d = vn.def?;
-        let o = self.f.op(d);
-        let mut best = (Some(o.seqnum.pc.space) == ram).then_some(o.seqnum.pc.offset);
-        for k in 0..o.num_inputs() {
-            if let Some(pc) = o.input(k).and_then(|iv| self.term_min_pc(iv, ram, depth + 1)) {
-                best = Some(best.map_or(pc, |b: u64| b.min(pc)));
-            }
-        }
-        best
-    }
-
     fn operand(&mut self, v: VarnodeId, parent: u8, right: bool) -> String {
         let (s, p) = self.render_var(v);
         if p < parent || (right && p == parent) {
@@ -2130,10 +2009,9 @@ impl<'a> PrintC<'a> {
             // pointer), named off the ScopeLocal table by `render_ptrsub`; a plain `INT_ADD` is just
             // addition. (The print-time `stack_addr` INT_ADD adaptation is retired — task #22-A.)
             OpCode::IntAdd => {
-                if self.recovered.sum_order {
-                    if let Some(r) = self.sum_chain_reordered(op) {
-                        return r;
-                    }
+                // sum-order (emit/arms/sum_order.rs): the chain's terms in the original's order
+                if let Some(r) = arms::render_value(self, ValueSite::Sum { op }) {
+                    return r;
                 }
                 // pointer + pointer is not C (E1081, measured on FUN_000793e0's decoder —
                 // a type-inference artifact where an offset carries a pointer type). The

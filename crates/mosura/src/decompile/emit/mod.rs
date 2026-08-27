@@ -223,6 +223,7 @@ pub struct EmitChoices {
     pub frame_fill: FrameFill,
     pub sparse_switch: SparseSwitch,
     pub struct_copy: StructCopy,
+    pub sum_order: SumOrder,
 }
 
 /// How an integer extension (INT_ZEXT/INT_SEXT) that C's promotion would perform anyway is
@@ -370,6 +371,26 @@ pub enum StructCopy {
     Assign,
 }
 
+/// Pointer-context INT_ADD chains print their COMPUTED terms in the ORIGINAL's
+/// computation order (`sum-order`, allocator thread lever 1): each implicit term keyed by
+/// the earliest original address among its inline ops, swapped within the slots such
+/// terms occupy; constants and bare variables keep their places. The reference print keeps the
+/// IR's left-nested order, which is Ghidra's term canonicalization, not the source's —
+/// and Watcom evaluates a sum's terms in source order, so two independent terms schedule
+/// as written (FUN_000294b8: the masked-multiply term's `AND` precedes the zero-extend
+/// `AND` in the original; Ghidra prints it second, and the two instructions transpose).
+///
+/// Until review R2b (commit 4) this was `RecoveredChoices::sum_order`, set by the survey from the
+/// `MOSURA_SUMORD` environment variable (default on); it is a rendering choice, not a witness, so
+/// it is an axis like the other arms': `ghidra` = the reference order (the default), `original` =
+/// the schedule order — selected by the survey's RECOVERED emit only, where the flag applied
+/// (raw/, the plain arm rendering, has no recovery and keeps the reference order).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SumOrder {
+    Ghidra,
+    Original,
+}
+
 impl Default for EmitChoices {
     fn default() -> Self {
         Self {
@@ -391,6 +412,7 @@ impl Default for EmitChoices {
             frame_fill: FrameFill::Ghidra,
             sparse_switch: SparseSwitch::Ghidra,
             struct_copy: StructCopy::Ghidra,
+            sum_order: SumOrder::Ghidra,
         }
     }
 }
@@ -513,6 +535,12 @@ impl EmitChoices {
             doc: "render a compare tree on one scrutinee as Ghidra's nested if/else, or as the sparse \
                   `switch` the source wrote (case set from the tree, bodies in address order)",
         },
+        Axis {
+            name: "sum-order",
+            values: &["ghidra", "original"],
+            doc: "print an implicit INT_ADD chain's terms in the IR's left-nested order, or in \
+                  the original's schedule order (each inline term by its earliest address)",
+        },
     ];
 
     /// Every axis, for a search that wants to enumerate rather than hardcode.
@@ -595,6 +623,10 @@ impl EmitChoices {
             "sparse-switch" => Some(match self.sparse_switch {
                 SparseSwitch::Ghidra => "ghidra",
                 SparseSwitch::Switch => "switch",
+            }),
+            "sum-order" => Some(match self.sum_order {
+                SumOrder::Ghidra => "ghidra",
+                SumOrder::Original => "original",
             }),
             _ => None,
         }
@@ -729,6 +761,13 @@ impl EmitChoices {
                 self.sparse_switch = match value {
                     "ghidra" => SparseSwitch::Ghidra,
                     "switch" => SparseSwitch::Switch,
+                    _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
+                }
+            }
+            "sum-order" => {
+                self.sum_order = match value {
+                    "ghidra" => SumOrder::Ghidra,
+                    "original" => SumOrder::Original,
                     _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
                 }
             }
