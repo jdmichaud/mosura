@@ -29,13 +29,15 @@
 //! listed here so the boundary is reviewable in one place (an `ArmCtx` narrowing is the follow-up
 //! once the moves are done). Each move commit extends this list with exactly what its arm reads:
 //! - delegates of the arms not yet moved: `try_emit_sparse_switch`, `try_emit_if_nested`,
-//!   `movsd_run_at`, `sdiv_pow2_render`, and the field `sparse_switch`;
+//!   `sdiv_pow2_render`, and the field `sparse_switch`;
 //! - string_ops (commit 1): the fields `f`, `recovered`, `report`, `h`, `force_explicit`, the arm's
 //!   own state `rep_movs`, `rep_skip`, `strlen_alias`, `strlen_exprs` (commit 7 moves it), and
 //!   `suppressed` — a PRINTER SERVICE FOR THE ARMS, not Ghidra's: the ops an arm has covered,
 //!   which the port's own statement printer then skips; the methods `name_of`, `render_var`,
 //!   `lvalue_of`, `is_explicit`, `strlen_arg`; the free helpers `strip_copies`, `collect_basics`,
-//!   `render_const_typed`.
+//!   `render_const_typed`;
+//! - struct_copy (commit 2): the choice flag `struct_copy`, the fields `high_of`, `high_members`,
+//!   `nonprinting` (and `f`, `recovered`, `suppressed` already open); no methods.
 //!
 //! THE MOVES (one commit each, identity-gated): 0 the skeleton — the seams wired, delegating to
 //! the code still in printc.rs; 1 string_ops; 2 struct_copy; 3 sparse_switch; 4 frame_fill (the
@@ -59,6 +61,7 @@ use super::super::printc::PrintC;
 use super::super::structure::Structured;
 
 pub mod string_ops;
+pub mod struct_copy;
 
 /// The kinds of site the statement-level hook is called from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,7 +85,7 @@ pub enum Site<'s> {
     LoopNode { s: &'s Structured, idx: usize, indent: usize },
     IfEntry { s: &'s Structured, idx: usize, indent: usize },
     IfWithoutElse { s: &'s Structured, idx: usize, indent: usize },
-    BlockOp { block_ops: &'s [OpId], op: OpId, pc: u64 },
+    BlockOp { block_ops: &'s [OpId], op: OpId, pc: u64, reordered: &'s std::collections::HashSet<OpId> },
     Node { s: &'s Structured, idx: usize },
 }
 
@@ -129,14 +132,7 @@ pub const ARMS: [Arm; 4] = [
             _ => None,
         },
     },
-    Arm {
-        name: "struct-copy: a plain MOVSD run as the struct assignment (docs/struct-copy-arm.md)",
-        kinds: &[SiteKind::BlockOp],
-        try_emit: |p, site, _out| match site {
-            Site::BlockOp { block_ops, op, pc } => p.movsd_run_at(block_ops, op, pc).map(|(stmt, members)| Answer::Fused { stmt, members }),
-            _ => None,
-        },
-    },
+    struct_copy::ARM,
     Arm {
         name: "nested-conds: a short-circuit as nested ifs (cond-form=nested, docs/byte-exact-families.md sb58 / byte-exact-status.md sb65)",
         kinds: &[SiteKind::IfWithoutElse],
