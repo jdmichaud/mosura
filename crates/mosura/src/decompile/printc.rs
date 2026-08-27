@@ -414,6 +414,12 @@ pub(crate) struct PrintC<'a> {
     /// PRINTER SERVICE: the condition overrides the sparse-switch walk installed, by node — the if
     /// emitter prints the overriding condition (emit/arms/sparse_switch.rs fills it).
     pub(crate) sparse_cond_override: HashMap<usize, usize>,
+    /// PRINTER SERVICE (a MARK): the structured nodes a collapsed string op covers — every live op
+    /// of the node belongs to the call's skip set — marked at setup once the tree exists
+    /// (emit/arms/string_ops.rs `mark_covered`), consulted at exactly ONE point, `emit_structured_body`,
+    /// where the node would otherwise print. Distinct from `sparse_consumed` (a switch printed the
+    /// node elsewhere; two consult points): different semantics, different points.
+    pub(crate) covered_nodes: HashSet<usize>,
     /// [`EmitChoices::return_split`] == `Paths`: split a tail boolean return into per-path
     /// constant returns where the gate proves value-identity (see the `FlowKind::List` arm).
     /// Default false.
@@ -3008,7 +3014,9 @@ impl<'a> PrintC<'a> {
         }
         // A node whose every live op belongs to a collapsed string-op's skip set (the pair's byte
         // loop, memcmp's `if (!zf) r = …` result block) emits nothing: the call covers it.
-        if arms::try_emit(self, Site::Node { s, idx }, out).is_some() {
+        // the string-ops mark: a node whose every live op a collapsed string op covers emits
+        // nothing, the call covers it (`covered_nodes`, marked at setup; this is its one consult)
+        if self.covered_nodes.contains(&idx) {
             return;
         }
         match kind {
@@ -4998,6 +5006,7 @@ fn print_c_inner(
         suppressed: HashSet::new(),
         arms: arms::State::new(choices),
         sparse_cond_override: HashMap::new(),
+        covered_nodes: HashSet::new(),
         array_elem: HashMap::new(),
         gotos: HashMap::new(),
         labels: HashSet::new(),
@@ -5263,6 +5272,9 @@ fn print_c_inner(
         "stale structure cache: a CFG mutation missed structure_reset"
     );
     let s = if cached_valid { f.structure.clone().unwrap() } else { structure(f) };
+    // string-ops=intrinsic (emit/arms/string_ops.rs): with the tree built, the arm MARKS the nodes
+    // its collapsed calls cover into `covered_nodes` — arm setup, the recognizer's maps are final
+    arms::string_ops::mark_covered(&mut p, &s);
     if super::action::perf::enabled() {
         super::action::perf::record("print", "structure", t0.elapsed());
     }

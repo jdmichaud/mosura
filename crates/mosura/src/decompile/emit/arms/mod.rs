@@ -38,17 +38,20 @@
 //! choice flag, its witness maps, its walk cells), composed into [`State`] — the printer's one
 //! `arms` field, which the port never reads. State the PORT reads is not arm state but a PRINTER
 //! SERVICE — and a service is a MARK the port applies generically, never a rendering rule: "skip
-//! this op", "skip this node", "print that node's condition" are marks; "print this value as
-//! `strlen(s)`" is the arm's rule and is asked through the value seam (`ValueSite::Var`, 7b),
-//! with the maps behind it as arm state.
+//! this op", "skip this covered node", "skip this consumed node", "print that node's condition"
+//! are marks; "print this value as `strlen(s)`" is the arm's rule and is asked through the value
+//! seam (`ValueSite::Var`, 7b), with the maps behind it as arm state. And a site kind is never a
+//! predicate: what an arm can decide at setup it marks (commit 8 retired `Site::Node`).
 //!
-//! PRINTER SERVICES — the THREE port fields an arm WRITES and the port READS as a mark (the
-//! reverse of a seam; each documented at its field, all on the surface): `suppressed` (ops an
-//! arm covered, the statement printer skips them), `sparse_consumed` (nodes the switch consumed,
-//! the root loop and component walk skip them), `sparse_cond_override` (the condition the switch
-//! walk installed for a node, the if emitter prints it). Beside them, string-ops' `Site::Node`
-//! derives a node's coverage at print time (a predicate, not a mark); commit 8 asks whether that
-//! becomes a mark at setup too, leaving one node mechanism.
+//! PRINTER SERVICES — the FOUR marks: port fields an arm WRITES and the port READS generically
+//! (the reverse of a seam; each documented at its field, all on the surface, each with its own
+//! semantics and consult points): `suppressed` (ops an arm covered — the statement printer skips
+//! them), `covered_nodes` (nodes a collapsed string op covers, marked at setup — consulted at
+//! `emit_structured_body` only, commit 8), `sparse_consumed` (nodes the switch printed elsewhere,
+//! marked while it prints — consulted at the root loop and the component walk), and
+//! `sparse_cond_override` (the condition the switch walk installed for a node — the if emitter
+//! prints it). Two node marks, not one: their semantics and their consult points differ, and a
+//! single service with the union of points would change what is skipped in both directions.
 //!
 //! THE MOVES (one commit each, identity-gated): 0 the skeleton — the seams wired, delegating to
 //! the code then still in printc.rs; 1 string_ops; 2 struct_copy; 3 sparse_switch; 4 frame_fill
@@ -56,10 +59,11 @@
 //! STATE — through the moves each arm's state (`rep_movs`, `rep_skip`, the sparse walk cells, …
 //! typed by the arm's module) stayed a `PrintC` field so every move was verbatim; commit 7
 //! relocated it into [`State`] (per-arm state structs composed in it), the printer's single field
-//! `arms`, and made the surface a test. The `ArmCtx` narrowing is R2c; whether string-ops fills the
-//! node service at setup (retiring `Site::Node`) is commit 8. The series' acceptance therefore
-//! reads: zero arm LOGIC in printc.rs after the moves; after commit 7 the port names the arms only
-//! as `arms::State`, the five services and the seams.
+//! `arms`, and made the surface a test; 7b moved the strlen rendering rule out of `render_var`
+//! behind `ValueSite::Var`; 8 turned string-ops' print-time `Node` predicate into the setup mark
+//! `covered_nodes`. The `ArmCtx` narrowing is R2c. The series' acceptance therefore reads: zero
+//! arm LOGIC in printc.rs; the port names the arms only as `arms::State`, the four marks and the
+//! seams.
 //!
 //! R2b — the older `RecoveredChoices`-driven renderings are choices too and still sit in the port:
 //! complement compares (`complement_sites`), unsigned compares (`unsigned_cmp_sites`), return
@@ -67,7 +71,8 @@
 //! (`widen_local_reps`), entry snapshots (`snapshot_sites`), TEST-witnessed loads
 //! (`testmem_sites`), store orders (`store_orders`), call argument orders (`call_arg_orders`),
 //! arm swaps (`arm_swap_sites`), array subscripts (`array_index_sites`), narrow joins
-//! (`join_narrow_sites`), the sum order (`sum_orders`), the interleave orders (`ilv_orders`). One
+//! (`join_narrow_sites`), the sum order (`sum_order`), the interleave orders (`ilv_orders`), the
+//! tier-2 materializations (`tier2_sites`). One
 //! per commit after this series, so the end state reads "printc.rs = the port + the seams".
 use super::super::op::OpId;
 use super::super::printc::PrintC;
@@ -122,9 +127,6 @@ pub enum SiteKind {
     IfWithoutElse,
     /// One op of a block's statement list: a MOVSD run may be one struct assignment.
     BlockOp,
-    /// ANY structured node, before the port prints it: a node a collapsed string op covers emits
-    /// nothing.
-    Node,
 }
 
 /// One call of the statement-level hook.
@@ -133,7 +135,6 @@ pub enum Site<'s> {
     IfEntry { s: &'s Structured, idx: usize, indent: usize },
     IfWithoutElse { s: &'s Structured, idx: usize, indent: usize },
     BlockOp { block_ops: &'s [OpId], op: OpId, pc: u64, reordered: &'s std::collections::HashSet<OpId> },
-    Node { s: &'s Structured, idx: usize },
 }
 
 impl Site<'_> {
@@ -143,7 +144,6 @@ impl Site<'_> {
             Site::IfEntry { .. } => SiteKind::IfEntry,
             Site::IfWithoutElse { .. } => SiteKind::IfWithoutElse,
             Site::BlockOp { .. } => SiteKind::BlockOp,
-            Site::Node { .. } => SiteKind::Node,
         }
     }
 }
@@ -189,7 +189,7 @@ pub fn try_emit(p: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<
 pub const SURFACE_FIELDS: &[&str] = &[
     "arms", "f", "recovered", "report", "h", "force_explicit", "suppressed", "names", "decls",
     "stack_declared", "stack_space", "stack_syms", "high_stack_off", "high_of", "high_members",
-    "nonprinting", "labels", "comma_separate", "sparse_consumed", "sparse_cond_override",
+    "nonprinting", "labels", "comma_separate", "sparse_consumed", "sparse_cond_override", "covered_nodes",
 ];
 #[cfg_attr(not(test), allow(dead_code))] // the documented list; read by the surface test
 pub const SURFACE_METHODS: &[&str] = &[
@@ -267,7 +267,7 @@ mod tests {
                 }
             }
         }
-        for kind in [SiteKind::LoopNode, SiteKind::IfEntry, SiteKind::IfWithoutElse, SiteKind::BlockOp, SiteKind::Node] {
+        for kind in [SiteKind::LoopNode, SiteKind::IfEntry, SiteKind::IfWithoutElse, SiteKind::BlockOp] {
             assert_eq!(ARMS.iter().filter(|a| a.kinds.contains(&kind)).count(), 1, "{kind:?} has exactly one arm");
         }
     }

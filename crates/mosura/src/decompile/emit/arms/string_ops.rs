@@ -9,14 +9,15 @@
 //! node suppression ([`covered_by_collapsed`]) and the value answerer ([`strlen_fold`]). The only
 //! textual change is `self.` → `p.` in the three former methods.
 //!
-//! The arm answers THREE seams: `Site::LoopNode` — the collapsed loop prints as the call;
-//! `Site::Node` — a node whose every live op belongs to a collapsed string-op's skip set (the
-//! pair's byte loop, memcmp's `if (!zf) r = …` result block) emits nothing, the call covers it.
-//! That suppression is its own site because it applies to EVERY structured node kind, not only
-//! to the loop the call replaced; `ValueSite::OpRoot` — an add/sub/compare between a `len + 1`
-//! alias and a constant prints with the constant re-adjusted (V3 `strlen`); and `ValueSite::Var`
-//! — a value that is a strlen result or a `len + 1` alias prints as the strlen form
-//! ([`render_var_value`], the rule that sat inline in the port's `render_var` until commit 7b).
+//! The arm answers THREE seams and leaves ONE mark: `Site::LoopNode` — the collapsed loop prints
+//! as the call; `ValueSite::OpRoot` — an add/sub/compare between a `len + 1` alias and a constant
+//! prints with the constant re-adjusted (V3 `strlen`); `ValueSite::Var` — a value that is a strlen
+//! result or a `len + 1` alias prints as the strlen form ([`render_var_value`], the rule that sat
+//! inline in the port's `render_var` until commit 7b); and the mark `covered_nodes` — a node whose
+//! every live op belongs to a collapsed string-op's skip set (the pair's byte loop, memcmp's
+//! `if (!zf) r = …` result block) emits nothing, the call covers it — set at setup by
+//! [`mark_covered`] once the tree exists (until commit 8 a `Node` site asked the same predicate
+//! at print time; a site kind used as a predicate was the smell).
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
@@ -32,7 +33,7 @@ use crate::decompile::varnode::VarnodeId;
 /// The arm, as the [`crate::decompile::ARMS`] table holds it.
 pub const ARM: Arm = Arm {
     name: "string-ops: a lifted REP MOVS/STOS/CMPS/SCAS as memcpy/memset/memcmp/strlen (docs/rep-string-intrinsic-arm.md)",
-    kinds: &[SiteKind::LoopNode, SiteKind::Node],
+    kinds: &[SiteKind::LoopNode],
     try_emit,
 };
 
@@ -54,7 +55,6 @@ pub(crate) fn render_var_value(p: &mut PrintC<'_>, v: VarnodeId) -> Option<(Stri
 fn try_emit(p: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<Answer> {
     match site {
         Site::LoopNode { s, idx, indent } => try_emit_rep_movs(p, s, idx, indent, out).then_some(Answer::Emitted),
-        Site::Node { s, idx } => covered_by_collapsed(p, s, idx).then_some(Answer::Emitted),
         _ => None,
     }
 }
@@ -406,6 +406,20 @@ fn try_emit_rep_movs(p: &mut PrintC<'_>, s: &Structured, idx: usize, indent: usi
     };
     let _ = writeln!(out, "{}{stmt};", "  ".repeat(indent));
     true
+}
+
+/// Arm setup, once the tree exists (review R2, commit 8): MARK every node a collapsed string op
+/// covers into the port's `covered_nodes` service — the mark the port consults at
+/// `emit_structured_body`, where the `Node` site used to ask the same predicate at print time.
+/// The eager mark equals the lazy predicate because nothing writes `rep_skip` after
+/// [`recognize`], nothing on the printer side changes an op's liveness, and the tree is not
+/// mutated after `structure()`.
+pub(crate) fn mark_covered(p: &mut PrintC<'_>, s: &Structured) {
+    for idx in 0..s.blocks.len() {
+        if covered_by_collapsed(p, s, idx) {
+            p.covered_nodes.insert(idx);
+        }
+    }
 }
 
 /// A node whose every live op belongs to a collapsed string-op's skip set (the pair's byte loop,
