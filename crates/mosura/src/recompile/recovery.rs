@@ -101,12 +101,10 @@ pub fn recover(
         // all. The original's order is the SCHEDULER's output, not the source's
         // statement order, and the scheduler does not round-trip its own output
         // (source-sequence tie-breaks). The census and the orders machinery stay
-        // for a model-inverse variant; MOSURA_ILV=1 enables the blind form.
-        ilv_orders: if std::env::var("MOSURA_ILV").as_deref() == Ok("1") {
-            crate::decompile::printc::interleave_orders(f, insns)
-        } else {
-            Default::default()
-        },
+        // for a model-inverse variant; the blind form's switch (`MOSURA_ILV=1`) is gone (review
+        // R6, commit 3b): nothing fills `ilv_orders` today — `printc::interleave_orders` is the
+        // parked groundwork the model-inverse variant would call.
+        ilv_orders: Default::default(),
     };
     // SECOND EVIDENCE ROUND (see print_c_recovered_report): decisions interact — a
     // tier-2 materialization creates the statement-carrying clause cond-form nests —

@@ -574,7 +574,9 @@ impl PrintC<'_> {
         }
     }
 
-    /// MARK `ilv_orders` (witness: the survey's statement-interleave recovery, `ilv_orders`): at
+    /// MARK `ilv_orders` — a mark NOTHING SETS since review R6 commit 3b (the blind form's switch
+    /// went; `RecoveredChoices::ilv_orders` stays `Default` until the model-inverse variant fills
+    /// it), kept as the port's marks are: at
     /// the statement `op` that heads a recovered interleave, the block's statements re-emit in
     /// the ORIGINAL's order; the ops re-emitted here are skipped by the walk (`reordered`).
     /// Returns whether the mark applied (the caller `continue`s).
@@ -4390,6 +4392,10 @@ pub fn interleave_census(f: &Funcdata, insns: &[crate::recompile::insn::NormInsn
 /// bubble-swapping adjacent INDEPENDENT pairs whose anchors invert — every swap is legal
 /// on its own, so the result respects every dependency the census model knows. Keyed by
 /// the block's first statement op (in block order); absent when nothing moves.
+/// PARKED groundwork (review R6, commit 3b): the blind form's switch (`MOSURA_ILV=1`) is gone — the
+/// allocator thread's lever 3 was measured 2026-08-22 as a loser — and the model-inverse variant would
+/// be its next caller. It stays exercised by the survey's interleave census (`MOSURA_DEBUG=recover`,
+/// war2_survey.rs), which reports the orders this would apply next to the census; not dead code.
 pub fn interleave_orders(f: &Funcdata, insns: &[crate::recompile::insn::NormInsn]) -> std::collections::HashMap<OpId, Vec<OpId>> {
     let mut out = std::collections::HashMap::new();
     for stmts in ilv_block_stmts(f, insns) {

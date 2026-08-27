@@ -2147,9 +2147,18 @@ fn main() {
                 }
                 call_arg_orders
             });
-            if std::env::var_os("MOSURA_ILV_CENSUS").is_some() {
+            // the interleave census (was `MOSURA_ILV_CENSUS`): a diagnostic, so under the facility's
+            // `recover` topic like its siblings (review R6, commit 3b); it also reports the orders the
+            // parked lever would apply -- printc::interleave_orders keeps its caller here since the
+            // blind form's switch went
+            if mosura::debug::on(mosura::debug::Topic::Recover) {
                 for (pa, pb, k) in mosura::decompile::printc::interleave_census(&f, &insns) {
-                    eprintln!("[ilv] {name} {pa:#x} {pb:#x} {k}");
+                    mosura::debug!(mosura::debug::Topic::Recover, "ilv {name} {pa:#x} {pb:#x} {k}");
+                }
+                let mut orders: Vec<_> = mosura::decompile::printc::interleave_orders(&f, &insns).into_iter().collect();
+                orders.sort_by_key(|(op, _)| op.0);
+                for (op, order) in orders {
+                    mosura::debug!(mosura::debug::Topic::Recover, "ilv {name} order at op {} -> {:?}", op.0, order.iter().map(|o| o.0).collect::<Vec<_>>());
                 }
             }
             let rc = mosura::decompile::printc::print_c_recovered(&f, &rec_arm, &recovered);
