@@ -13,8 +13,10 @@
 //! `Site::Node` — a node whose every live op belongs to a collapsed string-op's skip set (the
 //! pair's byte loop, memcmp's `if (!zf) r = …` result block) emits nothing, the call covers it.
 //! That suppression is its own site because it applies to EVERY structured node kind, not only
-//! to the loop the call replaced; and `ValueSite::OpRoot` — an add/sub/compare between a
-//! `len + 1` alias and a constant prints with the constant re-adjusted (V3 `strlen`).
+//! to the loop the call replaced; `ValueSite::OpRoot` — an add/sub/compare between a `len + 1`
+//! alias and a constant prints with the constant re-adjusted (V3 `strlen`); and `ValueSite::Var`
+//! — a value that is a strlen result or a `len + 1` alias prints as the strlen form
+//! ([`render_var_value`], the rule that sat inline in the port's `render_var` until commit 7b).
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 
@@ -33,6 +35,21 @@ pub const ARM: Arm = Arm {
     kinds: &[SiteKind::LoopNode, SiteKind::Node],
     try_emit,
 };
+
+/// The arm's answer at `ValueSite::Var` — the value the port is about to render is a strlen
+/// result or a `len + 1` alias: the rendering rule that sat inline in the port's `render_var`
+/// (review R2, commit 7b), verbatim, reading the arm's own maps.
+pub(crate) fn render_var_value(p: &mut PrintC<'_>, v: VarnodeId) -> Option<(String, u8)> {
+    if let Some(&(sv, add)) = p.arms.string_ops.strlen_exprs.get(&v) {
+        let sv = p.strlen_arg(sv);
+        return Some(if add == 0 { (format!("strlen({sv})"), 16) } else { (format!("strlen({sv}) + {add}"), 12) });
+    }
+    if let Some(&(r, add)) = p.arms.string_ops.strlen_alias.get(&v) {
+        let rn = if r == v { p.name_of(v) } else { p.render_var(r).0 };
+        return Some(if add == 0 { (rn, 16) } else { (format!("{rn} + {add}"), 12) });
+    }
+    None
+}
 
 fn try_emit(p: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<Answer> {
     match site {
@@ -293,12 +310,12 @@ fn rep_cmp_chain(f: &Funcdata, r1: VarnodeId, cf_exit: VarnodeId) -> Option<Vec<
 /// constant re-adjusted (`~cnt != 1` → `len != 0`, `~cnt - 2` → `len - 1`, `~cnt + k` →
 /// `len + (k + 1)`) — undoing the fold Ghidra applied to the template's `DEC`.
 pub(crate) fn strlen_fold(p: &mut PrintC<'_>, op: OpId) -> Option<(String, u8)> {
-    if p.strlen_alias.is_empty() {
+    if p.arms.string_ops.strlen_alias.is_empty() {
         return None;
     }
     let o = p.f.op(op);
     let (i0, i1) = (o.input(0)?, o.input(1)?);
-    let (av, kv, alias_left) = match (p.strlen_alias.get(&i0), p.strlen_alias.get(&i1)) {
+    let (av, kv, alias_left) = match (p.arms.string_ops.strlen_alias.get(&i0), p.arms.string_ops.strlen_alias.get(&i1)) {
         (Some(&(r, add)), None) if p.f.vn(i1).is_constant() => ((r, add, i0), i1, true),
         (None, Some(&(r, add))) if p.f.vn(i0).is_constant() => ((r, add, i1), i0, false),
         _ => return None,
@@ -379,7 +396,7 @@ fn try_emit_rep_movs(p: &mut PrintC<'_>, s: &Structured, idx: usize, indent: usi
         }
         (None, None) => {
             let Some((r, add)) = info.strlen_result else { return false };
-            if p.strlen_exprs.contains_key(&r) {
+            if p.arms.string_ops.strlen_exprs.contains_key(&r) {
                 return true; // implied: rendered at its use, the loop prints nothing
             }
             let r = p.lvalue_of(r);
@@ -821,10 +838,10 @@ if p.arms.string_ops.intrinsic {
         if uses != 1 || !aliases.is_empty() {
             p.force_explicit.insert(result);
         } else if !p.is_explicit(result) {
-            p.strlen_exprs.insert(result, (ptr_entry, addend));
+            p.arms.string_ops.strlen_exprs.insert(result, (ptr_entry, addend));
         }
         for (v, add) in aliases {
-            p.strlen_alias.insert(v, (result, add));
+            p.arms.string_ops.strlen_alias.insert(v, (result, add));
         }
         p.arms.string_ops.rep_movs.insert(pc, RepMovs { dst: ptr_entry, src: None, set_val: None, size: RepSize::Const(0), cmp_result: None, strlen_result: Some((result, addend)) });
         for &c in &chain {
@@ -853,6 +870,12 @@ pub(crate) struct State {
     /// The pcs of every op a collapsed string op covers (the pair's byte loop, memcmp's result
     /// block): a node made only of these emits nothing.
     pub(crate) rep_skip: HashSet<u64>,
+    /// V3 `strlen`: the `len + 1` aliases (the template's `~cnt`) with their addend — a value that
+    /// is one prints as `len` / `len + k` ([`render_var_value`]).
+    pub(crate) strlen_alias: HashMap<VarnodeId, (VarnodeId, i64)>,
+    /// V3 `strlen`: the expressions already folded, by their result — a value that is one prints
+    /// as `strlen(s)` / `strlen(s) + k` ([`render_var_value`]).
+    pub(crate) strlen_exprs: HashMap<VarnodeId, (VarnodeId, i64)>,
 }
 
 impl State {

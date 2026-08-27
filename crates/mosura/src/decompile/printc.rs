@@ -411,12 +411,6 @@ pub(crate) struct PrintC<'a> {
     /// The emit arms' state — each arm's configuration and working state (`emit::arms::State`);
     /// the port never reads it, the arms reach it through the seams.
     pub(crate) arms: arms::State,
-    /// PRINTER SERVICES for the arms, written by an arm and READ by the port (like `suppressed` and
-    /// `sparse_consumed`): V3 `strlen`'s `len + 1` aliases (the template's `~cnt`) with their
-    /// addend, and the expressions already folded, by their result — the value renderer prints a
-    /// value that is one of these as the strlen form (emit/arms/string_ops.rs fills them).
-    pub(crate) strlen_alias: HashMap<VarnodeId, (VarnodeId, i64)>,
-    pub(crate) strlen_exprs: HashMap<VarnodeId, (VarnodeId, i64)>,
     /// PRINTER SERVICE: the condition overrides the sparse-switch walk installed, by node — the if
     /// emitter prints the overriding condition (emit/arms/sparse_switch.rs fills it).
     pub(crate) sparse_cond_override: HashMap<usize, usize>,
@@ -1252,13 +1246,10 @@ impl<'a> PrintC<'a> {
         if let Some(n) = self.snapshot_names.get(&v) {
             return (n.clone(), 16);
         }
-        if let Some(&(sv, add)) = self.strlen_exprs.get(&v) {
-            let sv = self.strlen_arg(sv);
-            return if add == 0 { (format!("strlen({sv})"), 16) } else { (format!("strlen({sv}) + {add}"), 12) };
-        }
-        if let Some(&(r, add)) = self.strlen_alias.get(&v) {
-            let rn = if r == v { self.name_of(v) } else { self.render_var(r).0 };
-            return if add == 0 { (rn, 16) } else { (format!("{rn} + {add}"), 12) };
+        // string-ops (emit/arms/string_ops.rs): a value that is a strlen result or a `len + 1`
+        // alias prints as the strlen form — the arm's rendering rule, asked at this point
+        if let Some(r) = arms::render_value(self, ValueSite::Var { v }) {
+            return r;
         }
         let vn = self.f.vn(v);
         if vn.is_constant() {
@@ -5006,8 +4997,6 @@ fn print_c_inner(
         for_loops: HashMap::new(),
         suppressed: HashSet::new(),
         arms: arms::State::new(choices),
-        strlen_alias: HashMap::new(),
-        strlen_exprs: HashMap::new(),
         sparse_cond_override: HashMap::new(),
         array_elem: HashMap::new(),
         gotos: HashMap::new(),

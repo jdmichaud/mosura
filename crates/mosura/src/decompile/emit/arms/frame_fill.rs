@@ -209,7 +209,7 @@ if let Some(agg) = pr.arms.frame_fill.agg.clone() {
 }
             None
         }
-        ValueSite::OpRoot { .. } => None,
+        ValueSite::OpRoot { .. } | ValueSite::Var { .. } => None,
     }
 }
 

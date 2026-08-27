@@ -34,18 +34,21 @@
 //! are `pub(crate)` on `PrintC`. The `ArmCtx` trait (accessor methods, so the compiler itself
 //! refuses a touch outside the list) is R2c, once R2b has stopped touching the port.
 //!
-//! THE STATE RULE (commit 7): state only the ARM reads lives in the arm's own `State` (its choice
-//! flag, its witness maps, its walk cells), composed into [`State`] — the printer's one `arms`
-//! field, which the port never reads. State the PORT reads is not arm state but a PRINTER SERVICE.
+//! THE STATE RULE (commits 7, 7b): state only the ARM reads lives in the arm's own `State` (its
+//! choice flag, its witness maps, its walk cells), composed into [`State`] — the printer's one
+//! `arms` field, which the port never reads. State the PORT reads is not arm state but a PRINTER
+//! SERVICE — and a service is a MARK the port applies generically, never a rendering rule: "skip
+//! this op", "skip this node", "print that node's condition" are marks; "print this value as
+//! `strlen(s)`" is the arm's rule and is asked through the value seam (`ValueSite::Var`, 7b),
+//! with the maps behind it as arm state.
 //!
-//! PRINTER SERVICES — the FIVE port fields an arm WRITES and the port READS (the reverse of a
-//! seam; each documented at its field, all on the surface): `suppressed` (ops an arm covered, the
-//! statement printer skips them), `sparse_consumed` (nodes the switch consumed, the root loop and
-//! component walk skip them), `sparse_cond_override` (the condition the switch walk installed for
-//! a node, the if emitter prints it), `strlen_alias` and `strlen_exprs` (V3 strlen's `len + 1`
-//! aliases and folded expressions, the value renderer prints them as the strlen form). Beside
-//! them, string-ops' `Site::Node` derives a node's coverage at print time (a predicate, not a
-//! mark); commit 8 asks whether that becomes a mark at setup too, leaving one node mechanism.
+//! PRINTER SERVICES — the THREE port fields an arm WRITES and the port READS as a mark (the
+//! reverse of a seam; each documented at its field, all on the surface): `suppressed` (ops an
+//! arm covered, the statement printer skips them), `sparse_consumed` (nodes the switch consumed,
+//! the root loop and component walk skip them), `sparse_cond_override` (the condition the switch
+//! walk installed for a node, the if emitter prints it). Beside them, string-ops' `Site::Node`
+//! derives a node's coverage at print time (a predicate, not a mark); commit 8 asks whether that
+//! becomes a mark at setup too, leaving one node mechanism.
 //!
 //! THE MOVES (one commit each, identity-gated): 0 the skeleton — the seams wired, delegating to
 //! the code then still in printc.rs; 1 string_ops; 2 struct_copy; 3 sparse_switch; 4 frame_fill
@@ -182,18 +185,20 @@ pub fn try_emit(p: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<
 }
 
 /// THE ARM SURFACE (see the module doc): every printer member an arm file may touch, by kind.
+#[cfg_attr(not(test), allow(dead_code))] // the documented list; read by the surface test
 pub const SURFACE_FIELDS: &[&str] = &[
     "arms", "f", "recovered", "report", "h", "force_explicit", "suppressed", "names", "decls",
     "stack_declared", "stack_space", "stack_syms", "high_stack_off", "high_of", "high_members",
     "nonprinting", "labels", "comma_separate", "sparse_consumed", "sparse_cond_override",
-    "strlen_alias", "strlen_exprs",
 ];
+#[cfg_attr(not(test), allow(dead_code))] // the documented list; read by the surface test
 pub const SURFACE_METHODS: &[&str] = &[
     "name_of", "render_var", "lvalue_of", "is_explicit", "strlen_arg", "emit_structured", "render_op",
     "lab_name", "first_pc", "next_flow_after", "plain_if_condition_vn", "spacebase_sym_at", "frame_off",
     "type_of", "stack_slot_name", "declare_stack", "collect_conj_clauses", "render_cond_expr", "emit_basic",
 ];
 /// The free helpers of `printc` an arm file may import.
+#[cfg_attr(not(test), allow(dead_code))] // the documented list; read by the surface test
 pub const SURFACE_HELPERS: &[&str] = &[
     "PrintC", "collect_basics", "entry_basic", "exit_basic", "operand_oriented", "render_const_typed", "strip_copies",
 ];
@@ -273,6 +278,10 @@ pub enum ValueSite<'v> {
     /// The root of an expression (`render_op_inner`): a `len + 1` alias folds to `strlen`'s
     /// value, a witnessed SBB/SAR chain prints as `x / 2^n`.
     OpRoot { op: OpId },
+    /// A value the port is about to render (`render_var`, after its snapshot names): a strlen
+    /// result or a `len + 1` alias prints as the strlen form. Replaces the two inline blocks the
+    /// port kept under a service label until commit 7b (printc.rs:1246-1253 at 3fe8bae).
+    Var { v: VarnodeId },
     /// `partial_symbol`: the piece `v`, `off` bytes into `base` — a piece of a slot the frame
     /// aggregate covers is its field, never `<field expr>._off_size_` (0x66100, COMPILE_FAIL
     /// E1032). Replaces the inline consult the frame-fill landing called seam 6 (printc.rs:861
@@ -299,12 +308,13 @@ pub enum ValueSite<'v> {
 /// The value-render chokepoint — ONE hook with situations, the same shape as [`try_emit`]'s
 /// sites: the rendering and its precedence, or `None` = the port renders the value itself. The
 /// situations are disjoint, so order matters only INSIDE `OpRoot`: string-ops (the strlen fold)
-/// then sdiv-pow2 (a division chain root), as `render_op_inner` had them; every slot situation
-/// has exactly one answerer, frame-fill. The precedence is read for `OpRoot` only; the slot
-/// situations' callers take the text.
+/// then sdiv-pow2 (a division chain root), as `render_op_inner` had them; `Var` has one answerer,
+/// string-ops; every slot situation has exactly one answerer, frame-fill. The precedence is read
+/// for `OpRoot` and `Var`; the slot situations' callers take the text.
 pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, u8)> {
     match site {
         ValueSite::OpRoot { op } => string_ops::strlen_fold(p, op).or_else(|| sdiv_pow2::render(p, op)),
+        ValueSite::Var { v } => string_ops::render_var_value(p, v),
         other => frame_fill::render_value(p, &other),
     }
 }
