@@ -59,6 +59,7 @@ fn try_emit(p: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<Answ
     }
 }
 
+/// How a recognized copy/set call's byte size is rendered.
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum RepSize {
     /// A compile-time constant (a struct copy / `UNMAP_SIZE`): `c1*4 + c2` folded.
@@ -73,10 +74,6 @@ pub(crate) enum RepSize {
 /// 10.0a's intrinsic template always emits the pair, even for a constant length), keyed by the
 /// FIRST loop's instruction pc — the operands to render as `memcpy(dst, src, size)` /
 /// `memset(dst, val, size)`. `src`/`set_val` are exclusive (copy vs set); values are loop-entry.
-/// `frame-fill=aggregate` (docs/compilable-c-remediation.md Phase 10b): the ONE byte aggregate the
-/// frame's stack symbols render through — `[bottom, top)` is the original `SUB ESP` frame below the
-/// pushed registers, `size = top - bottom`.
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct RepMovs {
     pub(crate) dst: VarnodeId,
@@ -177,9 +174,6 @@ fn rep_load_at(f: &Funcdata, v: VarnodeId, pc: u64) -> Option<(VarnodeId, u32)> 
         _ => None,
     }
 }
-
-/// Follow `COPY`/`CAST` chains to the source varnode (`ActionSetCasts` inserts a `CAST` between a
-/// typed pointer phi and the LOAD/STORE that reads it; a rep-string loop's shape is the same).
 
 /// The loop-entry (pre-loop) value of a rep-string induction varnode: if `v` is a `MULTIEQUAL`
 /// whose one input is defined at the loop pc (the back-edge, a `PTRADD`/`INT_ADD`) and the other is

@@ -291,8 +291,8 @@ pub struct RecoveredChoices {
     pub ilv_orders: std::collections::HashMap<OpId, Vec<OpId>>,
 }
 
-/// How a recognized copy/set call's byte size is rendered.
-
+/// Follow `COPY`/`CAST` chains to the source varnode (`ActionSetCasts` inserts a `CAST` between a
+/// typed pointer phi and the LOAD/STORE that reads it; a rep-string loop's shape is the same).
 pub(crate) fn strip_copies(f: &Funcdata, mut v: VarnodeId) -> VarnodeId {
     for _ in 0..8 {
         match f.vn(v).def {
@@ -401,8 +401,6 @@ pub(crate) struct PrintC<'a> {
     /// list `(name, type, initializer)` printed with the locals.
     snapshot_names: HashMap<VarnodeId, String>,
     snapshot_decls: Vec<(String, Datatype, String)>,
-    /// [`EmitChoices::compare_form`] == `Complement`: render constant comparisons in their
-    /// complemented form where value-identical (see `cmp_bin`). Default false.
     /// PER-SITE decisions recovered from the original's bytes by a target profile — the
     /// field-path counterpart of the searched axes (see [`RecoveredChoices`]). Empty under a
     /// plain [`print_c_with`].
@@ -3985,11 +3983,6 @@ impl<'a> PrintC<'a> {
         }
         None
     }
-
-    /// The case values that dispatch to the case block at `case_addr` (Ghidra
-    /// `getLabelByIndex(getIndexByBlock(block,j))`). Each recovered target is attributed to the
-    /// case block it enters — the first case block at or after the target address, since a case
-    /// block can start a few bytes past its recovered target (leading instructions get CSE'd /
 
     /// A label name for a goto target basic block, by its entry address.
     pub(crate) fn lab_name(&self, b: BlockId) -> String {

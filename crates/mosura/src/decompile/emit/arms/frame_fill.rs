@@ -31,6 +31,9 @@ use crate::decompile::varnode::VarnodeId;
 /// name, a field, a statement), only the `OpRoot` answerers' precedence is read.
 const NOMINAL: u8 = 14;
 
+/// `frame-fill=aggregate` (docs/compilable-c-remediation.md Phase 10b): the ONE byte aggregate the
+/// frame's stack symbols render through — `[bottom, top)` is the original `SUB ESP` frame below the
+/// pushed registers, `size = top - bottom`.
 #[derive(Clone, Debug)]
 pub(crate) struct FrameAgg {
     pub(crate) bottom: i64,
