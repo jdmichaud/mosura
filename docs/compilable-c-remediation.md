@@ -396,7 +396,45 @@ declares the fields it sees), so this is an emitter arm: witness = the original 
 `SUB ESP,n` with n ≥ declared + 32 and an escaping stack local (its address is a call argument);
 render = the frame's stack symbols as offsets into one `uint1` aggregate based at the lowest local
 and sized to n, `&local` as `base + delta`, arrays as `base + k`. The naming layer, not a rule.
-Not started; the dead-store half lands first.
+**Built (2026-08-27, axis `frame-fill={ghidra,aggregate}`):** witness
+`buildconfig::frame_from_evidence` reads `(SUB ESP immediate, PUSH count)` off the first eight
+instructions; the printer activates when the arm is on, the alias boundary exists (an escaping
+local) and `frame − Σ(REFERENCED recovered locals inside it) ≥ 32` — referenced = containing a live
+stack varnode or a PTRSUB offset, because the lookup that sizes an indexed array to the frame leaves
+an unreferenced frame-sized symbol behind (0x2dc74: 207 of 208 bytes "declared" by a symbol no
+statement touches, which the C never declares); the aggregate is `[bottom, top)` with
+`top = −4·pushes`, `bottom = top − frame`, named by the bottom offset with the byte-array type.
+Three seams, nothing else: `declare_stack` declares the one aggregate for any slot inside it;
+`stack_slot_name` renders a slot's value as `base[delta]` (bytes) or `*(T *)(base + delta)`;
+`render_spacebase_ptrsub` renders an address as `base + delta` for a byte type, else
+`(T *)(base + delta)` (the W1 cast rule), and an element as the field form. On the 0x2dcd4 fixture
+the output is fable-b's srcform12 text: `xunknown1 axStack_d8 [208]; *(xunknown2 *)(axStack_d8 + 8)
+= param_1; … *(xunknown2 *)(axStack_d8 + 0xc) = func_0x000422b8(param_3, 1); axStack_d8[6] = 0x1f;
+axStack_d8[0] = 0xf; func_0x000570e4(axStack_d8);` (test `frame_aggregate`). Below-frame "locals"
+(fable-b: pushed call arguments rendered as frame stores at 0x507d4/0x45ba0, index-from-1 arrays at
+0x3cccc/0x3e7a0) are outside the aggregate and untouched — stack-args backlog.
+Probe (w4bp vs w4a, the 24-function gate): 6 EXACT flips (0x12dc4 0x2dcd4 0x2dd4c 0x2dda4 0x2de94
+0x2ded0), 4 SAME_SHAPE, every aggregated function up 0.23–0.71, declines flat — and one
+COMPILE_FAIL fable-b caught (0x4e06e: `aiStack_2c[0]` read a swallowed symbol by name): the printer
+has FIVE name-emitting seams, not three — `partial_symbol`'s element (`name[index]`) and split-pair
+piece (`*(T *)&name`) forms and `render_assign`'s fused whole-symbol store (`name = rhs`) also print
+a stack symbol directly; all now route through the field form, and the landing guard is "no TU
+references a stack symbol it does not declare" (fable-b's predictor: 5 TUs on the probe tree).
+The first full round (w4b vs w4a: WGSS 0.5479 → 0.5492, EXACT 841 → 851, SAME_SHAPE 78 → 83, the
+30 targets 25 up / 5 flat / 0 down, 16 guards held, 0 undeclared symbols corpus-wide) still found
+a SIXTH seam and a gate hole: 0x66100 (library) failed with `E1032` on `*(uint4 *)(axStack_534 +
+0x510)._1_1_` — `pushPartialSymbol`'s `base._off_size_` piece form composed on top of a field
+expression; a piece of a covered slot is the field at `base offset + off` with the piece's type.
+And 0x45ba0 (−0.133) aggregated on the strength of an alias boundary that lay BELOW the frame —
+the pushed-argument slots of a stack-convention call — turning five register-allocated scalars
+into memory fields; the escaping local must lie inside `[bottom, top)`.
+**Measured (round w4b2 vs w4a, the six-seam binary, 2026-08-27):** WGSS 0.5479 -> 0.5507 (+345.3 insn-sim, +0.00282); EXACT 841 -> 851 (0x12dc4 0x2dcd4 0x2dd4c 0x2dda4 0x2de94 0x2ded0 in game code, 0x77a3c 0x77a88 0x77abc 0x77b08 in the library zone); SAME_SHAPE 78 -> 83 (0x12e6c 0x12e9c 0x2dd1c 0x2dd74 0x571c8); 15 verdict flips, all upward; 35 TUs moved, 35 up / 0 down; COMPILE_FAIL 1 -> 1 (none new); the 30 under-declared targets 25 up / 5 flat (the no-escaping-local declines) / 0 down; fable-b's 16 EXACT guard TUs all held; 0 TUs referencing an undeclared stack symbol, 0 piece suffixes on field expressions, corpus-wide; game memcpy/memset/memcmp unchanged. Largest movers 0x679ac +0.725 (library), 0x2dcd4 0.286 -> EXACT, 0x2ded0 0.300 -> EXACT, 0x12dc4 0.357 -> EXACT, 0x2df14 0.267 -> 0.867.
+The residual of the near-EXACT group (0x12e40 0x13014 0x2dc14 0x2ddcc at 0.909, 0x12e6c 0x2dd1c
+0x2dd74 SAME_SHAPE 0.692, 0x2df14 0.867) is STATEMENT ORDER: the original stores the register-sourced
+fields first and the constants after, the C prints the constants first — and the oracle on the
+extracted 0x12e6c fixture (`x86_12e6c_order.xml`) prints the same order as mosura (`xStack_ce = 0x14; axStack_d4[0] = 10;
+xStack_cc = param_1; xStack_cb = param_2;`), so it is Ghidra's order, a future pc-order emitter arm
+for independent frame stores, not a defect.
 
 ## CORRECTION — most of the "64-bit problem" is not 64-bit arithmetic
 

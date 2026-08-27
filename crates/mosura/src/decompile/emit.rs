@@ -217,6 +217,7 @@ pub struct EmitChoices {
     pub array_index: ArrayIndex,
     pub string_ops: StringOps,
     pub sdiv_pow2: SdivPow2,
+    pub frame_fill: FrameFill,
 }
 
 /// How an integer extension (INT_ZEXT/INT_SEXT) that C's promotion would perform anyway is
@@ -329,6 +330,19 @@ pub enum SdivPow2 {
     Div,
 }
 
+/// `frame-fill`: Watcom allocates exactly the locals the C declares, so a function whose original
+/// frame (`SUB ESP,n`) is larger than the recovered locals recompiles with a smaller frame and a
+/// different layout. `aggregate` declares the frame's locals as ONE byte aggregate at the frame
+/// bottom sized to `n`, every slot a field access at its byte offset (fable-b's srcform12 form,
+/// EXACT on WAR2 0x2dcd4 with the biased-EBP prologue reproduced); `ghidra` is the reference
+/// per-symbol rendering. Witnessed on the original prologue bytes, gated on an escaping local and
+/// >= 32 bytes of slack (docs/compilable-c-remediation.md Phase 10b).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameFill {
+    Ghidra,
+    Aggregate,
+}
+
 impl Default for EmitChoices {
     fn default() -> Self {
         Self {
@@ -347,6 +361,7 @@ impl Default for EmitChoices {
             array_index: ArrayIndex::Ghidra,
             string_ops: StringOps::Loop,
             sdiv_pow2: SdivPow2::Shift,
+            frame_fill: FrameFill::Ghidra,
         }
     }
 }
@@ -452,6 +467,12 @@ impl EmitChoices {
             doc: "render Watcom's SBB template for a signed division by a power of two as the lifted \
                   shift arithmetic, or as the `x / 2^n` the source wrote (witnessed on the original SBB+SAR)",
         },
+        Axis {
+            name: "frame-fill",
+            values: &["ghidra", "aggregate"],
+            doc: "declare the frame's locals per symbol (Ghidra), or as one byte aggregate sized to the \
+                  original SUB ESP frame with every slot a field at its byte offset (witnessed on the prologue)",
+        },
     ];
 
     /// Every axis, for a search that wants to enumerate rather than hardcode.
@@ -522,6 +543,10 @@ impl EmitChoices {
             "sdiv-pow2" => Some(match self.sdiv_pow2 {
                 SdivPow2::Shift => "shift",
                 SdivPow2::Div => "div",
+            }),
+            "frame-fill" => Some(match self.frame_fill {
+                FrameFill::Ghidra => "ghidra",
+                FrameFill::Aggregate => "aggregate",
             }),
             _ => None,
         }
@@ -635,6 +660,13 @@ impl EmitChoices {
                 self.sdiv_pow2 = match value {
                     "shift" => SdivPow2::Shift,
                     "div" => SdivPow2::Div,
+                    _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
+                }
+            }
+            "frame-fill" => {
+                self.frame_fill = match value {
+                    "ghidra" => FrameFill::Ghidra,
+                    "aggregate" => FrameFill::Aggregate,
                     _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
                 }
             }

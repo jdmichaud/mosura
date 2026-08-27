@@ -1209,3 +1209,25 @@ pub fn sdiv_pow2_from_evidence(cands: &[(u64, u32)], insns: &[NormInsn]) -> std:
     }
     out
 }
+
+/// `frame-fill` (docs/compilable-c-remediation.md Phase 10b): the original prologue's frame —
+/// `(the SUB ESP immediate, the number of PUSHes before it)` — read from the first instructions.
+/// `None` when no `SUB ESP,imm` opens the frame within the first eight instructions (a
+/// frameless function, or one whose frame is built otherwise).
+pub fn frame_from_evidence(insns: &[NormInsn]) -> Option<(u32, u32)> {
+    let mut pushes = 0u32;
+    for insn in insns.iter().take(8) {
+        let b = &insn.bytes;
+        if b.len() == 1 && (0x50..=0x57).contains(&b[0]) {
+            pushes += 1;
+            continue;
+        }
+        if b.len() >= 3 && b[0] == 0x83 && b[1] == 0xEC {
+            return Some((b[2] as u32, pushes));
+        }
+        if b.len() >= 6 && b[0] == 0x81 && b[1] == 0xEC {
+            return Some((u32::from_le_bytes([b[2], b[3], b[4], b[5]]), pushes));
+        }
+    }
+    None
+}

@@ -261,6 +261,8 @@ pub struct RecoveredChoices {
     pub string_op_sites: std::collections::HashSet<u64>,
     /// `sdiv-pow2`: shift pcs to render as `x / 2^n` — witnessed by the original `SBB` + `SAR`.
     pub sdiv_pow2_sites: std::collections::HashSet<u64>,
+    /// `frame-fill`: the original prologue's `(SUB ESP frame, PUSH count)` — witnessed by the bytes.
+    pub frame_fill: Option<(u32, u32)>,
     /// Pointer-context INT_ADD chains print their COMPUTED terms in the ORIGINAL's
     /// computation order (`sum-order`, allocator thread lever 1): each implicit term keyed by
     /// the earliest original address among its inline ops, swapped within the slots such
@@ -294,6 +296,23 @@ enum RepSize {
 /// 10.0a's intrinsic template always emits the pair, even for a constant length), keyed by the
 /// FIRST loop's instruction pc — the operands to render as `memcpy(dst, src, size)` /
 /// `memset(dst, val, size)`. `src`/`set_val` are exclusive (copy vs set); values are loop-entry.
+/// `frame-fill=aggregate` (docs/compilable-c-remediation.md Phase 10b): the ONE byte aggregate the
+/// frame's stack symbols render through — `[bottom, top)` is the original `SUB ESP` frame below the
+/// pushed registers, `size = top - bottom`.
+#[derive(Clone, Debug)]
+struct FrameAgg {
+    bottom: i64,
+    top: i64,
+    size: u32,
+    name: String,
+}
+
+impl FrameAgg {
+    fn covers(&self, off: i64) -> bool {
+        off >= self.bottom && off < self.top
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct RepMovs {
     dst: VarnodeId,
@@ -669,6 +688,10 @@ struct PrintC<'a> {
     /// `REP STOS` loop as a `memcpy`/`memset` call. Recognized loops keyed by their single pc.
     string_ops_intrinsic: bool,
     sdiv_pow2_div: bool,
+    /// `frame-fill=aggregate`, once witnessed and gated: the frame's stack symbols render as fields of
+    /// one byte aggregate `name[size]` at `bottom` (`[bottom, top)` = the SUB ESP frame below the
+    /// pushed registers).
+    frame_agg: Option<FrameAgg>,
     rep_movs: HashMap<u64, RepMovs>,
     /// The SECOND loop of a recognized pair: emits nothing (the first loop's call covers it).
     rep_skip: std::collections::HashSet<u64>,
@@ -1047,6 +1070,23 @@ impl<'a> PrintC<'a> {
         if base == v {
             return None;
         }
+        // frame-fill=aggregate (seam 6): a piece of a slot the aggregate covers is the field at
+        // `base offset + off` with the piece's own type — never `<field expr>._off_size_`
+        // (0x66100: `*(uint4 *)(axStack_534 + 0x510)._1_1_`, COMPILE_FAIL E1032)
+        if let Some(agg) = self.frame_agg.clone() {
+            let bvn = self.f.vn(base);
+            let boff = if Some(bvn.loc.space) == self.stack_space {
+                Some(self.frame_off(bvn.loc.offset))
+            } else {
+                self.high_stack_off.get(&self.high_of[base.0 as usize]).map(|&o| self.frame_off(o))
+            };
+            if let Some(bo) = boff {
+                if agg.covers(bo) {
+                    let pty = self.type_of(v);
+                    return Some(self.frame_field(&agg, bo + off as i64, &pty));
+                }
+            }
+        }
         let ty = self.type_of(v).name();
         let base_name = self.name_of(base);
         Some(if off == 0 && allow_cast {
@@ -1167,6 +1207,17 @@ impl<'a> PrintC<'a> {
             // `axStack_<start>[index]` (the array, not a per-slot scalar, is declared) — the same
             // symbol a `PTRSUB` to this address resolves to, so the two views share one declaration.
             if let Some(sym) = self.spacebase_sym_at(foff) {
+                // frame-fill=aggregate: an element or a split-pair piece of a swallowed symbol is
+                // the field at its slot (0x4e06e's `aiStack_2c[0]` read the symbol by name after
+                // the aggregate had taken its declaration — COMPILE_FAIL E1011 in probe w4bp)
+                if let Some(agg) = self.frame_agg.clone() {
+                    if agg.covers(foff) {
+                        let fty = sym.array_index(foff).map(|(e, _)| e).unwrap_or_else(|| ty.clone());
+                        let field = self.frame_field(&agg, foff, &fty);
+                        self.names.insert(id, field.clone());
+                        return field;
+                    }
+                }
                 if let Some((_, index)) = sym.array_index(foff) {
                     self.declare_stack(sym.start, &sym.name, sym.ty.clone());
                     let elem_name = format!("{}[{index}]", sym.name);
@@ -1826,6 +1877,11 @@ impl<'a> PrintC<'a> {
     /// (varmap.cc:900) — falls through to Ghidra's `ScopeInternal` form `xStack00000004` rather than
     /// being dressed up as a recovered local.
     fn stack_slot_name(&mut self, off: i64, ty: &Datatype) -> String {
+        if let Some(agg) = self.frame_agg.clone() {
+            if agg.covers(off) {
+                return self.frame_field(&agg, off, ty);
+            }
+        }
         if let Some(sym) = self.spacebase_sym_at(off) {
             if sym.start == off {
                 return sym.name;
@@ -2023,6 +2079,24 @@ impl<'a> PrintC<'a> {
     /// `deref` = the PTRSUB is a LOAD/STORE pointer (`valueon`), so the symbol value/element is used;
     /// otherwise the address is taken. The referenced symbol is declared exactly once.
     fn render_spacebase_ptrsub(&mut self, off: i64, deref: bool) -> String {
+        // frame-fill=aggregate: an address inside the frame is `(T *)(base + delta)` (`base` itself for
+        // the byte aggregate's own bottom), an element/value `*(T *)(base + delta)` — T from the
+        // recovered symbol (its element type for an array), the W1 cast rule on the pointer.
+        if let Some(agg) = self.frame_agg.clone() {
+            if agg.covers(off) {
+                let ty = match self.spacebase_sym_at(off) {
+                    Some(sym) => sym.array_index(off).map(|(e, _)| e).unwrap_or(sym.ty.clone()),
+                    None => Datatype::Unknown(1),
+                };
+                if deref {
+                    return self.frame_field(&agg, off, &ty);
+                }
+                self.declare_stack(off, "", Datatype::Unknown(1));
+                let delta = off - agg.bottom;
+                let addr = if delta == 0 { agg.name.clone() } else { format!("{} + {}", agg.name, render_const_typed(delta as u64, 4, false)) };
+                return if ty.size() == 1 { addr } else if delta == 0 { format!("({} *){}", ty.name(), agg.name) } else { format!("({} *)({addr})", ty.name()) };
+            }
+        }
         match self.spacebase_sym_at(off) {
             Some(sym) => {
                 if let Some((_, index)) = sym.array_index(off) {
@@ -2074,8 +2148,32 @@ impl<'a> PrintC<'a> {
     /// correctly rejected the redefinition — the disagreement had been MASKING the duplicate.
     /// Measured: 3 WAR2 functions (FUN_00041290, FUN_000441ec, FUN_0004d794).
     fn declare_stack(&mut self, start: i64, name: &str, ty: Datatype) {
+        // frame-fill=aggregate: a slot inside the frame declares the ONE aggregate instead
+        if let Some(agg) = self.frame_agg.clone() {
+            if agg.covers(start) {
+                if self.stack_declared.insert(agg.bottom) {
+                    self.decls.push((agg.name, Datatype::Array(Box::new(Datatype::Unknown(1)), agg.size as u64), Some(agg.bottom)));
+                }
+                return;
+            }
+        }
         if self.stack_declared.insert(start) {
             self.decls.push((name.to_string(), ty, Some(start)));
+        }
+    }
+
+    /// frame-fill=aggregate: the field expression for the frame slot at `off` holding a `ty` value —
+    /// `base[delta]` for a byte, `*(T *)(base + delta)` otherwise (fable-b's srcform12 form).
+    fn frame_field(&mut self, agg: &FrameAgg, off: i64, ty: &Datatype) -> String {
+        self.declare_stack(off, "", Datatype::Unknown(1));
+        let delta = off - agg.bottom;
+        let base = if delta == 0 { agg.name.clone() } else { format!("{} + {}", agg.name, render_const_typed(delta as u64, 4, false)) };
+        if ty.size() == 1 {
+            if delta == 0 { format!("{}[0]", agg.name) } else { format!("{}[{}]", agg.name, render_const_typed(delta as u64, 4, false)) }
+        } else if delta == 0 {
+            format!("*({} *){}", ty.name(), agg.name)
+        } else {
+            format!("*({} *)({base})", ty.name())
         }
     }
 
@@ -2860,6 +2958,15 @@ impl<'a> PrintC<'a> {
         if let Some(&(start, src)) = self.fused_store.get(&op) {
             // `struct-locals=coalesce`: the two half-stores print as one whole-value assignment.
             if let Some(sym) = self.spacebase_sym_at(start) {
+                // frame-fill=aggregate: the fused whole-symbol store writes the field at its slot
+                if let Some(agg) = self.frame_agg.clone() {
+                    if agg.covers(sym.start) {
+                        let sty = self.type_of(src);
+                        let lhs = self.frame_field(&agg, sym.start, &sty);
+                        let rhs = self.render_var(src).0;
+                        return format!("{lhs} = {rhs}");
+                    }
+                }
                 self.declare_stack(sym.start, &sym.name, sym.ty.clone());
                 let rhs = self.render_var(src).0;
                 return format!("{} = {rhs}", sym.name);
@@ -3402,7 +3509,6 @@ impl<'a> PrintC<'a> {
                 let sv = self.strlen_arg(info.dst);
                 if add == 0 { format!("{r} = strlen({sv})") } else { format!("{r} = strlen({sv}) + {add}") }
             }
-            _ => return false,
         };
         let _ = writeln!(out, "{}{stmt};", "  ".repeat(indent));
         true
@@ -5477,6 +5583,7 @@ fn print_c_inner(
         array_index_temps: HashMap::new(),
         string_ops_intrinsic: choices.string_ops == super::emit::StringOps::Intrinsic,
         sdiv_pow2_div: choices.sdiv_pow2 == super::emit::SdivPow2::Div,
+        frame_agg: None,
         rep_movs: HashMap::new(),
         rep_skip: std::collections::HashSet::new(),
         strlen_exprs: HashMap::new(),
@@ -6118,6 +6225,69 @@ fn print_c_inner(
                 for cd in phi_entry_chain(f, raw, pd) {
                     p.suppressed.insert(cd);
                 }
+            }
+        }
+    }
+    // frame-fill=aggregate: witnessed prologue frame, an escaping local (the alias boundary exists),
+    // and >= 32 bytes of slack between the frame and the recovered locals inside it.
+    if choices.frame_fill == super::emit::FrameFill::Aggregate {
+        if std::env::var_os("MOSURA_FRAME_DEBUG").is_some() {
+            let declared: i64 = p.stack_syms.iter().map(|s| s.size as i64).sum();
+            eprintln!("[frame-fill] {:#x}: witness={:?} alias_boundary={:?} stack_syms={} declared={} syms={:?}",
+                f.addr.offset, p.recovered.frame_fill, f.alias_boundary, p.stack_syms.len(), declared,
+                p.stack_syms.iter().map(|s| (s.start, s.size)).collect::<Vec<_>>());
+        }
+        if let (Some((frame, pushes)), Some(ab)) = (p.recovered.frame_fill, f.alias_boundary) {
+            let top = -(4 * pushes as i64);
+            let bottom = top - frame as i64;
+            // the escaping local must lie INSIDE the frame: an alias boundary below it is the
+            // pushed-argument slots of a stack-convention call (0x45ba0: `aiStack_54` under a 0x50
+            // frame), whose five scalars then lost their registers to a needless aggregate
+            let boundary = p.frame_off(ab as u64);
+            if boundary < bottom {
+                if std::env::var_os("MOSURA_FRAME_DEBUG").is_some() {
+                    eprintln!("[frame-fill] {:#x}: alias boundary {boundary:#x} below the frame bottom {bottom:#x} — declined", f.addr.offset);
+                }
+            } else {
+            // the slack is against the symbols the C will DECLARE — those some live stack varnode or
+            // PTRSUB offset references — not the recovered scope's full extent: the lookup that sizes
+            // an indexed array to the frame leaves an unreferenced frame-sized symbol behind
+            // (0x2dc74: 207 of 208 bytes "declared" by a symbol no statement ever touches).
+            let referenced: std::collections::HashSet<i64> = {
+                let mut set = std::collections::HashSet::new();
+                let stk = p.stack_space;
+                for i in 0..f.num_varnodes() as u32 {
+                    let vn = f.vn(VarnodeId(i));
+                    if Some(vn.loc.space) == stk && (vn.is_written() || vn.is_input() || !vn.descend.is_empty()) {
+                        set.insert(p.frame_off(vn.loc.offset));
+                    }
+                }
+                for op in f.op_ids() {
+                    let o = f.op(op);
+                    if !o.is_dead() && o.code() == OpCode::Ptrsub {
+                        if let (Some(b), Some(k)) = (o.input(0), o.input(1)) {
+                            if f.vn(b).is_spacebase() && !f.vn(b).is_constant() && f.vn(k).is_constant() {
+                                set.insert(p.frame_off(f.vn(k).constant_value()));
+                            }
+                        }
+                    }
+                }
+                set
+            };
+            let declared: i64 = p
+                .stack_syms
+                .iter()
+                .filter(|s| s.start >= bottom && s.start < top && referenced.iter().any(|&r| r >= s.start && r < s.start + s.size as i64))
+                .map(|s| s.size as i64)
+                .sum();
+            if std::env::var_os("MOSURA_FRAME_DEBUG").is_some() {
+                eprintln!("[frame-fill] {:#x}: referenced-declared={declared} slack={}", f.addr.offset, frame as i64 - declared);
+            }
+            if frame > 0 && frame as i64 - declared >= 32 {
+                let ty = Datatype::Array(Box::new(Datatype::Unknown(1)), frame as u64);
+                let name = p.stack_slot_name(bottom, &ty);
+                p.frame_agg = Some(FrameAgg { bottom, top, size: frame, name });
+            }
             }
         }
     }

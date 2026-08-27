@@ -782,6 +782,8 @@ fn main() {
             c.set("string-ops", "intrinsic").expect("known axis");
             // Render a witnessed SBB power-of-two division as `x / 2^n` (docs/sdiv-pow2-arm.md).
             c.set("sdiv-pow2", "div").expect("known axis");
+            // Declare an under-sized frame as one byte aggregate sized to the original SUB ESP frame.
+            c.set("frame-fill", "aggregate").expect("known axis");
             // (historical: zc62 measured the blanket form net-flat
             // (+0.7w) with an EXACT regression (0x2c9a8) — a constant-join whose bytes load the
             // FULL register (MOV EDX,k) not the sub-register (MOV DL,k). The two are IR-identical;
@@ -2207,6 +2209,7 @@ fn main() {
                     &report.sdiv_pow2_candidates,
                     &insns,
                 ),
+                frame_fill: mosura::recompile::buildconfig::frame_from_evidence(&insns),
                 unsigned_cmp_sites: mosura::recompile::buildconfig::unsigned_cmps_from_evidence(
                     &report.allones_cmp_candidates,
                     &insns,
