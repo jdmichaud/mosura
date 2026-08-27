@@ -52,6 +52,10 @@
 //! `sparse_cond_override` (the condition the switch walk installed for a node — the if emitter
 //! prints it). Two node marks, not one: their semantics and their consult points differ, and a
 //! single service with the union of points would change what is skipped in both directions.
+//! A fifth service, of a new kind (R2b, commit 8): `var_counter`, the port's NAME ALLOCATOR — an
+//! arm that invents a temp (entry snapshots) advances it and takes the next `uVarN`, and the
+//! port's own naming continues from there; an arm bumping the port's counter is that service,
+//! not a leak.
 //!
 //! THE MOVES (one commit each, identity-gated): 0 the skeleton — the seams wired, delegating to
 //! the code then still in printc.rs; 1 string_ops; 2 struct_copy; 3 sparse_switch; 4 frame_fill
@@ -98,6 +102,7 @@ pub(crate) struct State {
     pub(crate) join_narrow: join_narrow::State,
     pub(crate) array_index: array_index::State,
     pub(crate) return_split: return_split::State,
+    pub(crate) snapshot: snapshot::State,
 }
 
 impl State {
@@ -114,6 +119,7 @@ impl State {
             join_narrow: join_narrow::State::new(choices),
             array_index: array_index::State::new(choices),
             return_split: return_split::State::new(choices),
+            snapshot: snapshot::State::new(choices),
         }
     }
 }
@@ -127,6 +133,7 @@ pub mod sparse_switch;
 pub mod string_ops;
 pub mod struct_copy;
 pub mod unsigned_cmp;
+pub mod snapshot;
 pub mod return_split;
 pub mod join_narrow;
 pub mod sum_order;
@@ -213,6 +220,7 @@ pub const SURFACE_FIELDS: &[&str] = &[
     "arms", "f", "recovered", "report", "h", "force_explicit", "suppressed", "names", "decls",
     "stack_declared", "stack_space", "stack_syms", "high_stack_off", "high_of", "high_members",
     "nonprinting", "labels", "comma_separate", "sparse_consumed", "sparse_cond_override", "covered_nodes",
+    "var_counter",
 ];
 #[cfg_attr(not(test), allow(dead_code))] // the documented list; read by the surface test
 pub const SURFACE_METHODS: &[&str] = &[
@@ -240,7 +248,7 @@ mod tests {
     /// The arm files, as text, for the surface scan — every `pub mod` of this module must be here
     /// (`arms_touch_only_the_documented_surface` checks that against this file's own source, so a
     /// new arm file cannot slip past the scan).
-    const ARM_SOURCES: [(&str, &str); 13] = [
+    const ARM_SOURCES: [(&str, &str); 14] = [
         ("string_ops.rs", include_str!("string_ops.rs")),
         ("struct_copy.rs", include_str!("struct_copy.rs")),
         ("sparse_switch.rs", include_str!("sparse_switch.rs")),
@@ -248,6 +256,7 @@ mod tests {
         ("sdiv_pow2.rs", include_str!("sdiv_pow2.rs")),
         ("nested_conds.rs", include_str!("nested_conds.rs")),
         ("unsigned_cmp.rs", include_str!("unsigned_cmp.rs")),
+        ("snapshot.rs", include_str!("snapshot.rs")),
         ("return_split.rs", include_str!("return_split.rs")),
         ("array_index.rs", include_str!("array_index.rs")),
         ("join_narrow.rs", include_str!("join_narrow.rs")),
@@ -373,6 +382,10 @@ pub enum ValueSite<'v> {
     /// renders as the subscript. Replaces the inline consult at the head of render_mem (8bd43ce);
     /// R2b, commit 6.
     Deref { addr: VarnodeId },
+    /// `render_var`, before anything else: `v` the value about to render — a snapshotted entry
+    /// value renders as its temp's name. Replaces the inline consult at the head of render_var
+    /// (8bd43ce); R2b, commit 8.
+    VarEntry { v: VarnodeId },
 }
 
 /// The value-render chokepoint — ONE hook with situations, the same shape as [`try_emit`]'s
@@ -391,24 +404,35 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
         ValueSite::Load { out, addr } => testmem::render(p, out, addr),
         ValueSite::Sum { op } => sum_order::render(p, op),
         ValueSite::Deref { addr } => array_index::render(p, addr),
+        ValueSite::VarEntry { v } => snapshot::render(p, v),
         other => frame_fill::render_value(p, &other),
     }
 }
 
-// THE DECLARATIONS SEAMS — one family, two situations, each with exactly one answerer:
+// THE DECLARATIONS SEAMS — one family, three situations, each with exactly one answerer:
 //   * a SLOT's declaration (`declare_slot`: the port is about to declare the stack slot at
 //     `start`; frame-fill answers `true` when its aggregate declares it);
 //   * a LOCAL's declared type (`local_decl_type`: the port is about to declare a genuine local;
-//     join-narrow answers the narrowed type).
-// They are two functions because their answers differ in type (a bool "declared it" vs an
-// `Option<Datatype>`), not because each arm gets its own seam. RULE: a third declaration-level
-// seam needs a design note in the channel first — the family must not grow one function per arm
-// (review R2b, commit 5, fable-b's note).
+//     join-narrow answers the narrowed type);
+//   * the declarations the port does NOT know about (`init_decls`: temps an arm invented, with
+//     their initializers, printed by the port after its own locals; entry snapshots answer).
+// They are separate functions because their answers differ in type (a bool "declared it", an
+// `Option<Datatype>`, a list of `(name, type, initializer)`), not because each arm gets its own
+// seam. RULE: a further declaration-level seam needs a design note in the channel first — the
+// family must not grow one function per arm (review R2b, commits 5 and 8, fable-b's notes).
 /// The declared type of a genuine local `name_of` is about to declare (`v` the varnode, `ty` its
 /// value type): one answerer, join-narrow; `None` = the port's own declaration width. Replaces
 /// the inline consult in name_of (8bd43ce); R2b, commit 5.
 pub(crate) fn local_decl_type(p: &mut PrintC<'_>, v: VarnodeId, ty: &Datatype) -> Option<Datatype> {
     join_narrow::local_decl_type(p, v, ty)
+}
+
+/// The declarations WITH initializers the port prints after the plain locals — the temps an arm
+/// invented, which the port has no declaration of: one answerer, entry snapshots. Asked in the
+/// DECLARATION BLOCK ONLY (print_c_inner reads it twice there, for the printing loop and for the
+/// blank-line condition — one place, one seam). R2b, commit 8.
+pub(crate) fn init_decls<'p>(p: &'p PrintC<'_>) -> &'p [(String, Datatype, String)] {
+    snapshot::init_decls(p)
 }
 
 /// THE DECLARATIONS SEAM — the one arm effect that is neither a statement nor a value, and the

@@ -380,10 +380,6 @@ pub(crate) struct PrintC<'a> {
     /// Choices this print faced, for a target profile to decide from evidence — see
     /// [`EmitReport`].
     pub(crate) report: EmitReport,
-    /// Entry-snapshot temps: value → temp name (uses render the name), plus the declaration
-    /// list `(name, type, initializer)` printed with the locals.
-    snapshot_names: HashMap<VarnodeId, String>,
-    snapshot_decls: Vec<(String, Datatype, String)>,
     /// PER-SITE decisions recovered from the original's bytes by a target profile — the
     /// field-path counterpart of the searched axes (see [`RecoveredChoices`]). Empty under a
     /// plain [`print_c_with`].
@@ -418,7 +414,7 @@ pub(crate) struct PrintC<'a> {
     /// cast IS the mask, value-identically — which is the C shape measured to reproduce
     /// the original selection (EXACT under the corrected argument binding).
     tier2_widen: std::collections::HashMap<VarnodeId, Tier2Widen>,
-    var_counter: u32,
+    pub(crate) var_counter: u32,
     ret_val: Option<VarnodeId>,
     /// WhileDo block index → (initializer value, iterator op, loop variable) for `for`-loops.
     for_loops: HashMap<usize, (Option<VarnodeId>, OpId, VarnodeId)>,
@@ -1144,8 +1140,9 @@ impl<'a> PrintC<'a> {
     }
 
     pub(crate) fn render_var(&mut self, v: VarnodeId) -> (String, u8) {
-        if let Some(n) = self.snapshot_names.get(&v) {
-            return (n.clone(), 16);
+        // entry snapshots (emit/arms/snapshot.rs): a snapshotted value renders as its temp's name
+        if let Some(r) = arms::render_value(self, ValueSite::VarEntry { v }) {
+            return r;
         }
         // string-ops (emit/arms/string_ops.rs): a value that is a strlen result or a `len + 1`
         // alias prints as the strlen form — the arm's rendering rule, asked at this point
@@ -4524,8 +4521,6 @@ fn print_c_inner(
         elide_hw_shift_mask: choices.shift_mask == super::emit::ShiftMask::Hardware,
         widen_narrow_locals: choices.local_width == super::emit::LocalWidth::Storage,
         report: EmitReport::default(),
-        snapshot_names: HashMap::new(),
-        snapshot_decls: Vec::new(),
         recovered: recovered.clone(),
         tier2_widen: std::collections::HashMap::new(),
         var_counter: 0,
@@ -4885,50 +4880,8 @@ fn print_c_inner(
         }
     }
 
-    // Entry-snapshot candidates (see EmitReport::snapshot_candidates): input-flagged narrow
-    // RAM values consumed as call arguments. Recorded on every print; under a recovered
-    // decision the value becomes a declared temp initialized from the global at body top,
-    // with every use reading the temp. The global expression is rendered BEFORE the
-    // substitution registers, so the initializer names the global itself.
-    {
-        let ram = f.spaces.by_name("ram");
-        for i in 0..f.num_varnodes() as u32 {
-            let v = VarnodeId(i);
-            let vn = f.vn(v);
-            if !vn.is_input()
-                || Some(vn.loc.space) != ram
-                || vn.size == 0
-                || vn.size >= f.size_of_int()
-            {
-                continue;
-            }
-            // the probe family's shape: EVERY use is a call argument. A value also stored or
-            // computed with (measured: FUN_00011a50's store use) perturbs allocation when
-            // materialized — outside the validated shape, so not a candidate.
-            let live: Vec<_> = vn
-                .descend
-                .iter()
-                .copied()
-                .filter(|&u| !f.op(u).is_dead() && !f.op(u).is_marker())
-                .collect();
-            let all_call_args = !live.is_empty()
-                && live.iter().all(|&u| {
-                    matches!(f.op(u).code(), OpCode::Call | OpCode::Callind)
-                        && f.op(u).inrefs.iter().skip(1).any(|&a| a == v)
-                });
-            if !all_call_args {
-                continue;
-            }
-            p.report.snapshot_candidates.push((v, vn.loc.offset, vn.size));
-            if let Some(&w) = p.recovered.snapshot_sites.get(&v) {
-                let gexpr = p.render_var(v).0;
-                p.var_counter += 1;
-                let n = format!("uVar{}", p.var_counter);
-                p.snapshot_decls.push((n.clone(), Datatype::Uint(w.max(vn.size)), gexpr));
-                p.snapshot_names.insert(v, n);
-            }
-        }
-    }
+    // entry-snapshot candidates (emit/arms/snapshot.rs): the census is the arm's
+    arms::snapshot::recognize(&mut p, f);
 
     // testmem candidates (emit/arms/testmem.rs): the census is the arm's
     arms::testmem::recognize(&mut p, f);
@@ -5097,12 +5050,12 @@ fn print_c_inner(
             }
         }
     }
-    // entry-snapshot temps: declarations WITH initializers, after the plain locals — the
-    // initializer reads the global at body top, which is the value's SSA entry version
-    for (name, ty, init) in &p.snapshot_decls {
+    // entry snapshots (emit/arms/snapshot.rs): declarations WITH initializers, after the plain
+    // locals — the initializer reads the global at body top, which is the value's SSA entry version
+    for (name, ty, init) in arms::init_decls(&p) {
         let _ = writeln!(out, "  {} {} = {};", ty.name(), name, init);
     }
-    if !p.decls.is_empty() || !p.snapshot_decls.is_empty() {
+    if !p.decls.is_empty() || !arms::init_decls(&p).is_empty() {
         out.push('\n');
     }
     out.push_str(&body);
