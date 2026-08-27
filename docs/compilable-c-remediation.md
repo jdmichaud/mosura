@@ -463,7 +463,8 @@ merges the condition). Found on the way and fixed in the same tree: a reference-
 bug — a short-circuit node standing as a statement whose cut edge is a conditional goto (Ghidra's
 `BlockIfGoto` over a `BlockCondition`) printed as an empty `else { }` (0x4fbcc sent 11..25 to the
 wrong target, 0x46138 lost a test and its body); the record sits on the condition's exit block and
-now prints `if (cond) goto LAB;` with the whole condition. Landing round: `w5a` vs `w4b2`.
+now prints `if (cond) goto LAB;` with the whole condition. Landed on round `w5c` vs `w4b2`: WGSS 0.5507 → 0.5568, EXACT 851 → 856, SAME_SHAPE +6,
+no verdict regression, gated suite 972/0.
 ## CORRECTION — most of the "64-bit problem" is not 64-bit arithmetic
 
 Traced in the IR (`dumpwar2 --raw`) rather than inferred from rendered C, which had misled the
