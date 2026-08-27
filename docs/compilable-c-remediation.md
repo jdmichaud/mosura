@@ -656,3 +656,13 @@ sites on the landed w5c tree to the signed spelling (`== -1`, `!= -3`, `& -2`, `
 IDENTICAL: Watcom picks `83 /x ib` / disp8 from the constant's bit pattern, whatever the C says.
 The 13 dips of the uintlit round have another cause (0x31f24's rows are byte masks `AND r,0xff`
 against the original's `ROL EAX,CL`). No arm to build; the sites stay as Ghidra prints them.
+
+**Phase 12 — W6, the struct-copy arm (built 2026-08-27, axis `struct-copy={ghidra,assign}`,
+docs/struct-copy-arm.md).** A run of k plain `MOVSD` after an ESI/EDI setup is Watcom's struct
+assignment at or below its unroll threshold; Ghidra prints k dword copies, which recompile as k
+`MOV` pairs (`memcpy(d,s,4k)` would give the REP pair instead). Witness = the original's `A5` runs
+(start pc → k); the arm prints `*(struct pN *)dst = *(struct pN *)src` with `struct p8/p12/p16`
+from the prelude, by pc for a load/store run and by shape for the global-to-global runs heritage
+re-homes at the block's exit. Population: 12 runs in 8 game functions (no lone `REP MOVSD` exists
+in compiler-built game code). 0x38158's swap through a stack temp is the follow-up. Landed on round `w6a` vs `w5c`: WGSS 0.5568 →
+0.5576, EXACT 856 → 857, SAME_SHAPE +1, 9 movers all up, suite 974/0.

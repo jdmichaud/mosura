@@ -270,6 +270,8 @@ pub struct RecoveredChoices {
     /// fall-through edge to `3 < x` and `x <= 0xf` to `x < 0x10`, so the IR's constants cannot tell
     /// a pivot's `JB` side from a run's `JBE` bound; the bytes can.
     pub sparse_cmp_sites: std::collections::HashMap<u64, (u64, u8, (u64, u32))>,
+    /// `struct-copy`: runs of plain `MOVSD` in the original — start pc → run length k.
+    pub movsd_runs: std::collections::HashMap<u64, u32>,
     /// Pointer-context INT_ADD chains print their COMPUTED terms in the ORIGINAL's
     /// computation order (`sum-order`, allocator thread lever 1): each implicit term keyed by
     /// the earliest original address among its inline ops, swapped within the slots such
@@ -701,6 +703,8 @@ struct PrintC<'a> {
     frame_agg: Option<FrameAgg>,
     /// `sparse-switch=switch`: print a compare tree on one scrutinee as the sparse `switch`.
     sparse_switch: bool,
+    /// `struct-copy=assign` (see emit.rs)
+    struct_copy: bool,
     /// `sparse-switch`: an `if` whose condition List carried tree compares prints with the List's
     /// last component as its condition (the compares became cases).
     sparse_cond_override: HashMap<usize, usize>,
@@ -4471,9 +4475,61 @@ impl<'a> PrintC<'a> {
                 }
             }
         }
-        for op in block_ops {
+        if self.struct_copy && std::env::var_os("MOSURA_STRUCTCOPY_DEBUG").is_some() && !self.recovered.movsd_runs.is_empty() {
+            for (&rp, &rk) in &self.recovered.movsd_runs {
+                let here: Vec<String> = block_ops.iter().filter(|&&o| { let pc = self.f.op(o).seqnum.pc.offset; pc >= rp && pc < rp + rk as u64 }).map(|&o| { let x = self.f.op(o); format!("{:#x}:{:?}{}", x.seqnum.pc.offset, x.code(), if x.is_dead() { "(dead)" } else { "" }) }).collect();
+                if !here.is_empty() { eprintln!("[structcopy] {:#x} blk{} run @{rp:#x} k {rk}: ops {:?}", self.f.addr.offset, b.0, here); }
+            }
+        }
+        for op in block_ops.clone() {
             if reordered.contains(&op) {
                 continue;
+            }
+            // struct-copy=assign: a witnessed run of k plain MOVSD prints as ONE struct assignment
+            if self.struct_copy && !self.f.op(op).is_dead() && !self.suppressed.contains(&op) {
+                // a global-to-global run: heritage re-homes those copies at the block's exit
+                // (0x20258's `xRam0008faf0 = xRam000a7fe0;` prints at the JMP's pc), so the
+                // witness matches the SHAPE — k consecutive `ram[A+4i] = ram[B+4i]` copies whose k
+                // is a witnessed run length
+                if let Some((stmt, members)) = self.movsd_global_run(&block_ops, op, &reordered) {
+                    for m in members {
+                        reordered.insert(m);
+                    }
+                    if self.comma_separate {
+                        if separator {
+                            let _ = write!(out, ", ");
+                        }
+                        let _ = write!(out, "{stmt}");
+                        separator = true;
+                    } else {
+                        let _ = writeln!(out, "{pad}{stmt};");
+                    }
+                    continue;
+                }
+                let pc = self.f.op(op).seqnum.pc.offset;
+                if let Some(&k) = self.recovered.movsd_runs.get(&pc) {
+                    let fused = self.movsd_run_stmt(&block_ops, pc, k);
+                    if std::env::var_os("MOSURA_STRUCTCOPY_DEBUG").is_some() {
+                        eprintln!("[structcopy] {:#x} run @{pc:#x} k {k} at op {:?} {:?}: {}", self.f.addr.offset, op, self.f.op(op).code(), fused.as_ref().map(|f| f.0.clone()).unwrap_or_else(|| "declined".into()));
+                    }
+                    // fires once, at the run's first member (the other ops of that pc are its
+                    // load and the folded pointer steps)
+                    if let Some((stmt, members)) = fused.filter(|(_, m)| m.first() == Some(&op)) {
+                        for m in members {
+                            reordered.insert(m);
+                        }
+                        if self.comma_separate {
+                            if separator {
+                                let _ = write!(out, ", ");
+                            }
+                            let _ = write!(out, "{stmt}");
+                            separator = true;
+                        } else {
+                            let _ = writeln!(out, "{pad}{stmt};");
+                        }
+                        continue;
+                    }
+                }
             }
             if let Some(order) = self.recovered.ilv_orders.get(&op).cloned() {
                 // interleave re-emission: each op goes through the same printability
@@ -5642,6 +5698,7 @@ fn print_c_inner(
         sdiv_pow2_div: choices.sdiv_pow2 == super::emit::SdivPow2::Div,
         frame_agg: None,
         sparse_switch: choices.sparse_switch == super::emit::SparseSwitch::Switch,
+        struct_copy: choices.struct_copy == super::emit::StructCopy::Assign,
         sparse_cond_override: HashMap::new(),
         sparse_consumed: std::collections::HashSet::new(),
         sparse_hoist_pending: std::cell::RefCell::new(Vec::new()),
@@ -6791,6 +6848,9 @@ fn print_c_inner(
     // only the first drops the others' whole subtrees, which is how WAR2 FUN_00077dcb lost four of
     // its eight basic blocks and a live CALL while its siblings kept jumping to labels in them.
     p.debug_high_classes();
+    if p.struct_copy && std::env::var_os("MOSURA_STRUCTCOPY_DEBUG").is_some() {
+        eprintln!("[structcopy] {:#x} witness runs {:?}", p.f.addr.offset, p.recovered.movsd_runs);
+    }
     for &root in &s.roots {
         if p.sparse_consumed.contains(&root) {
             continue; // walked into the sparse switch an earlier root printed
@@ -7619,6 +7679,170 @@ impl<'a> PrintC<'a> {
         }
         let _ = writeln!(out, "{pad}}}");
         true
+    }
+
+    /// `struct-copy=assign`: the k dword copies a plain-`MOVSD` run lifted to, one per pc
+    /// `pc..pc+k` (a MOVSD is one byte), fused into `*(struct pN *)dst = *(struct pN *)src`
+    /// with the run's first destination and source addresses (the later ones are base + 4i by
+    /// the instruction's own semantics). Each copy is a STORE fed by a LOAD, or the explicit
+    /// assignment the load/store rules made of a global (`xRam.. = xRam..`).
+    fn movsd_run_stmt(&mut self, block_ops: &[OpId], pc: u64, k: u32) -> Option<(String, Vec<OpId>)> {
+        let mut members = Vec::new();
+        let mut first: Option<(String, String)> = None;
+        let dbg = std::env::var_os("MOSURA_STRUCTCOPY_DEBUG").is_some();
+        for i in 0..k as u64 {
+            let op = block_ops.iter().copied().find(|&o| {
+                let x = self.f.op(o);
+                !x.is_dead() && !self.suppressed.contains(&o) && x.seqnum.pc.offset == pc + i
+                    && (x.code() == OpCode::Store || (x.code() == OpCode::Copy && x.output.is_some_and(|v| self.is_explicit(v))))
+            });
+            let Some(op) = op else {
+                if dbg {
+                    let at: Vec<String> = block_ops.iter().filter(|&&o| self.f.op(o).seqnum.pc.offset == pc + i).map(|&o| { let x = self.f.op(o); format!("{:?}{}{}{}", x.code(), if x.is_dead() { "(dead)" } else { "" }, if self.suppressed.contains(&o) { "(supp)" } else { "" }, x.output.map(|v| if self.is_explicit(v) { "(explicit)" } else { "(implied)" }).unwrap_or("")) }).collect();
+                    eprintln!("[structcopy]   element {i} @{:#x}: no printable copy; ops there: {:?}", pc + i, at);
+                }
+                return None;
+            };
+            let shape = self.movsd_copy_shape(op, pc + i)?;
+            if i == 0 {
+                first = Some(shape);
+            }
+            members.push(op);
+        }
+        let (dst, src) = first?;
+        let n = 4 * k;
+        Some((format!("*(struct p{n} *){dst} = *(struct p{n} *){src}"), members))
+    }
+
+    /// A run of consecutive global-to-global dword copies `ram[A+4i] = ram[B+4i]` starting at
+    /// `first`, k >= 2, k a witnessed MOVSD run length: the struct assignment between the two
+    /// addresses.
+    fn movsd_global_run(&mut self, block_ops: &[OpId], first: OpId, reordered: &std::collections::HashSet<OpId>) -> Option<(String, Vec<OpId>)> {
+        // the global's address: the varnode's own when it lives in ram, else the ram member of the
+        // HighVariable it was merged into (heritage writes the re-homed copies to uniques)
+        let ram4 = |me: &Self, v: VarnodeId| -> Option<u64> {
+            let vn = me.f.vn(v);
+            if vn.size != 4 {
+                return None;
+            }
+            if me.f.spaces.get(vn.loc.space).name == "ram" {
+                return Some(vn.loc.offset);
+            }
+            let h = *me.high_of.get(v.0 as usize)?;
+            me.high_members.get(&h)?.iter().copied().find_map(|m| {
+                let mv = me.f.vn(m);
+                (me.f.spaces.get(mv.loc.space).name == "ram" && mv.size == 4).then_some(mv.loc.offset)
+            })
+        };
+        // a printable copy between two DIFFERENT globals (the block-exit `ram[A] = ram[A]` phi
+        // carries are implied and never print)
+        let copy = |me: &Self, o: OpId| -> Option<(u64, u64)> {
+            let x = me.f.op(o);
+            if x.is_dead() || x.code() != OpCode::Copy || me.suppressed.contains(&o) || me.nonprinting.contains(&o) {
+                return None;
+            }
+            let out = x.output?;
+            if !me.is_explicit(out) {
+                return None;
+            }
+            let a = ram4(me, out)?;
+            let b = ram4(me, x.input(0)?)?;
+            (a != b).then_some((a, b))
+        };
+        let (a0, b0) = copy(self, first)?;
+        let start = block_ops.iter().position(|&o| o == first)?;
+        let mut members = vec![first];
+        let mut i = 1u64;
+        for &o in &block_ops[start + 1..] {
+            if reordered.contains(&o) || self.suppressed.contains(&o) {
+                continue;
+            }
+            let x = self.f.op(o);
+            if x.is_dead() || x.is_marker() || x.output.is_some_and(|v| !self.is_explicit(v)) && x.code() != OpCode::Copy {
+                continue; // an implied value in between does not break the run
+            }
+            match copy(self, o) {
+                Some((a, b)) if a == a0 + 4 * i && b == b0 + 4 * i => {
+                    members.push(o);
+                    i += 1;
+                }
+                _ => break,
+            }
+        }
+        let k = members.len();
+        if k < 2 || !self.recovered.movsd_runs.values().any(|&rk| rk as usize == k) {
+            return None;
+        }
+        let n = 4 * k;
+        Some((format!("*(struct p{n} *){a0:#x} = *(struct p{n} *){b0:#x}"), members))
+    }
+
+    /// One dword copy of a MOVSD run: (destination address, source address) as C expressions,
+    /// parenthesized for the cast. A RAM varnode names its own address.
+    fn movsd_copy_shape(&mut self, op: OpId, pc: u64) -> Option<(String, String)> {
+        let o = self.f.op(op);
+        let dbg = std::env::var_os("MOSURA_STRUCTCOPY_DEBUG").is_some();
+        let ram = |me: &Self, v: VarnodeId| -> Option<String> {
+            let vn = me.f.vn(v);
+            let name = &me.f.spaces.get(vn.loc.space).name;
+            if dbg && name != "ram" { eprintln!("[structcopy]   varnode {v:?} in space {name:?} size {} — not ram", vn.size); }
+            (name == "ram" && vn.size == 4).then(|| format!("{:#x}", vn.loc.offset))
+        };
+        let (dst, value) = match o.code() {
+            OpCode::Store => {
+                let (addr, vv) = (o.input(1)?, o.input(2)?);
+                if self.f.vn(vv).size != 4 {
+                    if dbg { eprintln!("[structcopy]   copy @{pc:#x}: store of size {} — declined", self.f.vn(vv).size); }
+                    return None;
+                }
+                let a = self.render_var(addr).0;
+                let a = match a.find(" *)(") {
+                    Some(i) if a.starts_with('(') && a.ends_with(')') && !a[1..i].contains(['(', ' ']) => a[i + 3..].to_string(),
+                    _ => format!("({a})"),
+                };
+                (a, vv)
+            }
+            _ => {
+                let out = o.output?;
+                if self.f.vn(out).size != 4 {
+                    if dbg { eprintln!("[structcopy]   copy @{pc:#x}: assign of size {} — declined", self.f.vn(out).size); }
+                    return None;
+                }
+                let vv = match o.code() {
+                    OpCode::Copy => o.input(0)?,
+                    other => {
+                        if dbg { eprintln!("[structcopy]   copy @{pc:#x}: printable {other:?} is not a copy — declined"); }
+                        return None;
+                    }
+                };
+                (ram(self, out)?, vv)
+            }
+        };
+        // the value must be THIS MOVSD's own load (same pc): a load from an earlier run that
+        // copy-propagation carried here (0x38158's swap through a stack temp) would re-read a
+        // location the run in between overwrote
+        let src = match self.f.vn(value).def {
+            Some(d) if self.f.op(d).code() == OpCode::Load => {
+                if self.f.op(d).seqnum.pc.offset != pc {
+                    if dbg { eprintln!("[structcopy]   copy @{pc:#x}: load from another pc {:#x} — declined", self.f.op(d).seqnum.pc.offset); }
+                    return None;
+                }
+                let a = self.render_var(self.f.op(d).input(1)?).0;
+                match a.find(" *)(") {
+                    Some(i) if a.starts_with('(') && a.ends_with(')') && !a[1..i].contains(['(', ' ']) => a[i + 3..].to_string(),
+                    _ => format!("({a})"),
+                }
+            }
+            Some(d) if self.f.op(d).code() == OpCode::Copy && ram(self, self.f.op(d).input(0)?).is_some() => ram(self, self.f.op(d).input(0)?)?,
+            _ => match ram(self, value) {
+                Some(a) => a,
+                None => {
+                    if dbg { eprintln!("[structcopy]   copy @{pc:#x}: value {:?} def {:?} is not a load/global — declined", value, self.f.vn(value).def.map(|d| self.f.op(d).code())); }
+                    return None;
+                }
+            },
+        };
+        Some((dst, src))
     }
 
     /// The identity of a compare operand across the tree (see [`SparseKey`]).

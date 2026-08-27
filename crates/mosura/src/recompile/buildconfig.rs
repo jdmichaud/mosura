@@ -1301,6 +1301,36 @@ pub fn sparse_cmps_from_evidence(insns: &[NormInsn]) -> std::collections::HashMa
     out
 }
 
+/// `struct-copy`: runs of PLAIN `MOVSD` (opcode A5 with no REP prefix, one byte each) — Watcom's
+/// struct assignment at or below its unroll threshold. Start pc → run length k (k >= 2).
+pub fn movsd_runs_from_evidence(insns: &[NormInsn]) -> std::collections::HashMap<u64, u32> {
+    let mut out = std::collections::HashMap::new();
+    let mut start: Option<(u64, u32)> = None;
+    for insn in insns {
+        let plain = insn.bytes.len() == 1 && insn.bytes[0] == 0xa5;
+        match (plain, start) {
+            (true, Some((pc, k))) if insn.addr == pc + k as u64 => start = Some((pc, k + 1)),
+            (true, _) => {
+                if let Some((pc, k)) = start.filter(|&(_, k)| k >= 2) {
+                    out.insert(pc, k);
+                }
+                start = Some((insn.addr, 1));
+            }
+            (false, Some((pc, k))) => {
+                if k >= 2 {
+                    out.insert(pc, k);
+                }
+                start = None;
+            }
+            (false, None) => {}
+        }
+    }
+    if let Some((pc, k)) = start.filter(|&(_, k)| k >= 2) {
+        out.insert(pc, k);
+    }
+    out
+}
+
 pub fn frame_from_evidence(insns: &[NormInsn]) -> Option<(u32, u32)> {
     let mut pushes = 0u32;
     for insn in insns.iter().take(8) {

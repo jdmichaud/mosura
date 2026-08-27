@@ -219,6 +219,7 @@ pub struct EmitChoices {
     pub sdiv_pow2: SdivPow2,
     pub frame_fill: FrameFill,
     pub sparse_switch: SparseSwitch,
+    pub struct_copy: StructCopy,
 }
 
 /// How an integer extension (INT_ZEXT/INT_SEXT) that C's promotion would perform anyway is
@@ -356,6 +357,16 @@ pub enum SparseSwitch {
     Switch,
 }
 
+/// `struct-copy`: a run of k plain `MOVSD` (no REP, no ECX) after an ESI/EDI setup is Watcom's
+/// struct assignment at or below its unroll threshold (`*(struct pN *)d = *(struct pN *)s`, N = 4k);
+/// Ghidra prints k dword copies, which recompile as k MOV pairs. `assign` prints the assignment
+/// through `struct p8/p12/p16` (prelude types) at the sites a `MOVSD`-run witness names.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StructCopy {
+    Ghidra,
+    Assign,
+}
+
 impl Default for EmitChoices {
     fn default() -> Self {
         Self {
@@ -376,6 +387,7 @@ impl Default for EmitChoices {
             sdiv_pow2: SdivPow2::Shift,
             frame_fill: FrameFill::Ghidra,
             sparse_switch: SparseSwitch::Ghidra,
+            struct_copy: StructCopy::Ghidra,
         }
     }
 }
@@ -488,6 +500,11 @@ impl EmitChoices {
                   original SUB ESP frame with every slot a field at its byte offset (witnessed on the prologue)",
         },
         Axis {
+            name: "struct-copy",
+            values: &["ghidra", "assign"],
+            doc: "a witnessed run of k plain MOVSD prints as a k-dword struct assignment",
+        },
+        Axis {
             name: "sparse-switch",
             values: &["ghidra", "switch"],
             doc: "render a compare tree on one scrutinee as Ghidra's nested if/else, or as the sparse \
@@ -567,6 +584,10 @@ impl EmitChoices {
             "frame-fill" => Some(match self.frame_fill {
                 FrameFill::Ghidra => "ghidra",
                 FrameFill::Aggregate => "aggregate",
+            }),
+            "struct-copy" => Some(match self.struct_copy {
+                StructCopy::Ghidra => "ghidra",
+                StructCopy::Assign => "assign",
             }),
             "sparse-switch" => Some(match self.sparse_switch {
                 SparseSwitch::Ghidra => "ghidra",
@@ -691,6 +712,13 @@ impl EmitChoices {
                 self.frame_fill = match value {
                     "ghidra" => FrameFill::Ghidra,
                     "aggregate" => FrameFill::Aggregate,
+                    _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
+                }
+            }
+            "struct-copy" => {
+                self.struct_copy = match value {
+                    "ghidra" => StructCopy::Ghidra,
+                    "assign" => StructCopy::Assign,
                     _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
                 }
             }

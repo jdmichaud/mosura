@@ -69,6 +69,11 @@ void *memset(void *, int, unsigned);
 int memcmp(const void *, const void *, unsigned);
 unsigned strlen(const char *);
 #pragma intrinsic(memcpy,memset,memcmp,strlen);
+/* struct-copy=assign: a run of k plain MOVSD is Watcom's struct assignment below the unroll
+   threshold; these are the k-dword aggregate types the arm assigns through. */
+struct p8 { unsigned int a; unsigned int b; };
+struct p12 { unsigned int a; unsigned int b; unsigned int c; };
+struct p16 { unsigned int a; unsigned int b; unsigned int c; unsigned int d; };
 typedef unsigned char undefined; typedef unsigned char undefined1; typedef unsigned short undefined2;
 typedef unsigned int undefined4; typedef unsigned char byte;
 /* Integer widths the target CANNOT hold (Watcom 10.0a x86-32 has no 64-bit integer type).
@@ -786,6 +791,7 @@ fn main() {
             c.set("frame-fill", "aggregate").expect("known axis");
             // Print a compare tree on one scrutinee as the sparse switch the source wrote.
             c.set("sparse-switch", "switch").expect("known axis");
+            c.set("struct-copy", "assign").expect("known axis");
             // (historical: zc62 measured the blanket form net-flat
             // (+0.7w) with an EXACT regression (0x2c9a8) — a constant-join whose bytes load the
             // FULL register (MOV EDX,k) not the sub-register (MOV DL,k). The two are IR-identical;
@@ -2213,6 +2219,7 @@ fn main() {
                 ),
                 frame_fill: mosura::recompile::buildconfig::frame_from_evidence(&insns),
                 sparse_cmp_sites: mosura::recompile::buildconfig::sparse_cmps_from_evidence(&insns),
+                movsd_runs: mosura::recompile::buildconfig::movsd_runs_from_evidence(&insns),
                 unsigned_cmp_sites: mosura::recompile::buildconfig::unsigned_cmps_from_evidence(
                     &report.allones_cmp_candidates,
                     &insns,
