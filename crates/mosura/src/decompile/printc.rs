@@ -403,7 +403,6 @@ pub(crate) struct PrintC<'a> {
     snapshot_decls: Vec<(String, Datatype, String)>,
     /// [`EmitChoices::compare_form`] == `Complement`: render constant comparisons in their
     /// complemented form where value-identical (see `cmp_bin`). Default false.
-    complement_compares: bool,
     /// PER-SITE decisions recovered from the original's bytes by a target profile — the
     /// field-path counterpart of the searched axes (see [`RecoveredChoices`]). Empty under a
     /// plain [`print_c_with`].
@@ -1429,7 +1428,7 @@ impl<'a> PrintC<'a> {
     /// Ghidra's `(int4)param_1 < 10`; equality reconciles silently. Other ops (arithmetic, logic)
     /// use Ghidra's lenient default and effectively never cast in the primitive lattice, so they
     /// are left transparent here.
-    fn get_input_cast(&self, op: OpId, slot: usize) -> Option<Datatype> {
+    pub(crate) fn get_input_cast(&self, op: OpId, slot: usize) -> Option<Datatype> {
         // Delegates to the shared `cast::input_cast` (Ghidra `TypeOp::getInputCast`), which reads the
         // committed `Varnode::ty` — the same decision `ActionSetCasts` will use to INSERT the CAST op
         // in-pipeline. The `checkIntPromotionForCompare` gate (cast.cc) is omitted: NO_PROMOTION for
@@ -1912,16 +1911,10 @@ impl<'a> PrintC<'a> {
     /// constant's width and signedness.
     fn cmp_bin(&mut self, op: super::op::OpId, strict: bool) -> (String, u8) {
         let prec = 10u8;
-        let site = self.compare_site(op, strict);
-        if let Some(site) = site {
-            self.report.compare_sites.push(site);
-        }
-        let recovered_here =
-            site.is_some_and(|(pc, _, _)| self.recovered.complement_sites.contains(&pc));
-        if self.complement_compares || recovered_here {
-            if let Some(r) = self.complemented_cmp(op, strict) {
-                return (r, prec);
-            }
+        // compare-form (emit/arms/complement_cmp.rs): a compare the original spelled through
+        // the complemented condition prints complemented — per function or per witnessed site
+        if let Some(r) = arms::render_value(self, ValueSite::Compare { op, strict, prec }) {
+            return r;
         }
         let sym = if strict { "<" } else { "<=" };
         let l = self.cast_operand(op, 0, prec, false);
@@ -1999,86 +1992,6 @@ impl<'a> PrintC<'a> {
             return None; // the mask must stay inside x
         }
         Some((x, shifted, slot))
-    }
-
-    /// `(instruction address, our constant, complemented constant)` for a comparison the
-    /// `compare-form` axis could rewrite — the same gate as [`Self::complemented_cmp`],
-    /// reporting the two spellings instead of rendering one. See [`EmitReport::compare_sites`].
-    fn compare_site(&mut self, op: super::op::OpId, strict: bool) -> Option<(u64, u64, u64)> {
-        let o = self.f.op(op);
-        let pc = o.seqnum.pc.offset;
-        let signed = matches!(o.code(), OpCode::IntSless | OpCode::IntSlessequal);
-        let cslot = if self.f.vn(o.input(1)?).is_constant() {
-            1usize
-        } else if self.f.vn(o.input(0)?).is_constant() {
-            0usize
-        } else {
-            return None;
-        };
-        let cvn = o.input(cslot)?;
-        if self.get_input_cast(op, cslot).is_some() {
-            return None;
-        }
-        let size = self.f.vn(cvn).size;
-        let bits = u64::from(size) * 8;
-        let mask = if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 };
-        let c = self.f.vn(cvn).constant_value() & mask;
-        let dec = (cslot == 1) == strict;
-        let adj = if dec { c.wrapping_sub(1) } else { c.wrapping_add(1) } & mask;
-        let valid = if signed {
-            let smin = 1u64 << (bits - 1);
-            if dec { c != smin } else { c != smin - 1 }
-        } else if dec {
-            c != 0
-        } else {
-            c != mask
-        };
-        valid.then_some((pc, c, adj))
-    }
-
-    fn complemented_cmp(&mut self, op: super::op::OpId, strict: bool) -> Option<String> {
-        let prec = 10u8;
-        let o = self.f.op(op);
-        let signed = matches!(o.code(), OpCode::IntSless | OpCode::IntSlessequal);
-        let (cslot, vslot) = if self.f.vn(o.input(1)?).is_constant() {
-            (1usize, 0usize)
-        } else if self.f.vn(o.input(0)?).is_constant() {
-            (0usize, 1usize)
-        } else {
-            return None;
-        };
-        let cvn = o.input(cslot)?;
-        if self.get_input_cast(op, cslot).is_some() {
-            return None; // a required cast on the constant is not reproducible on the adjusted literal
-        }
-        if !matches!(self.type_of(cvn), Datatype::Int(_) | Datatype::Uint(_) | Datatype::Unknown(_) | Datatype::Bool)
-        {
-            return None;
-        }
-        let size = self.f.vn(cvn).size;
-        let bits = u64::from(size) * 8;
-        let mask = if bits >= 64 { u64::MAX } else { (1u64 << bits) - 1 };
-        let c = self.f.vn(cvn).constant_value() & mask;
-        // `x < c` -> `x <= c-1` and `c <= x` -> `c-1 < x` decrement; the other two increment.
-        let dec = (cslot == 1) == strict;
-        let adj = if dec { c.wrapping_sub(1) } else { c.wrapping_add(1) } & mask;
-        // no wrap at the bound, at the constant's own width and signedness
-        let valid = if signed {
-            let smin = 1u64 << (bits - 1);
-            let smax = smin - 1;
-            if dec { c != smin } else { c != smax }
-        } else if dec {
-            c != 0
-        } else {
-            c != mask
-        };
-        if !valid {
-            return None;
-        }
-        let lit = render_const(adj, size);
-        let other = self.cast_operand(op, vslot, prec, cslot == 0);
-        let sym = if strict { "<=" } else { "<" };
-        Some(if cslot == 1 { format!("{other} {sym} {lit}") } else { format!("{lit} {sym} {other}") })
     }
 
     /// Render an op as a C expression with its precedence.
@@ -4285,7 +4198,7 @@ fn char_hex_escape(cp: u32) -> String {
     }
 }
 
-fn render_const(val: u64, size: u32) -> String {
+pub(crate) fn render_const(val: u64, size: u32) -> String {
     render_const_typed(val, size, true)
 }
 
@@ -4973,7 +4886,6 @@ fn print_c_inner(
         report: EmitReport::default(),
         snapshot_names: HashMap::new(),
         snapshot_decls: Vec::new(),
-        complement_compares: choices.compare_form == super::emit::CompareForm::Complement,
         recovered: recovered.clone(),
         split_bool_returns: choices.return_split == super::emit::ReturnSplit::Paths,
         tier2_widen: std::collections::HashMap::new(),

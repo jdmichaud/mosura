@@ -93,6 +93,7 @@ pub(crate) struct State {
     pub(crate) frame_fill: frame_fill::State,
     pub(crate) sdiv_pow2: sdiv_pow2::State,
     pub(crate) nested_conds: nested_conds::State,
+    pub(crate) complement_cmp: complement_cmp::State,
 }
 
 impl State {
@@ -104,10 +105,12 @@ impl State {
             frame_fill: frame_fill::State::new(choices),
             sdiv_pow2: sdiv_pow2::State::new(choices),
             nested_conds: nested_conds::State::new(choices),
+            complement_cmp: complement_cmp::State::new(choices),
         }
     }
 }
 
+pub mod complement_cmp;
 pub mod frame_fill;
 pub mod nested_conds;
 pub mod sdiv_pow2;
@@ -198,10 +201,12 @@ pub const SURFACE_METHODS: &[&str] = &[
     "lab_name", "first_pc", "next_flow_after", "plain_if_condition_vn", "spacebase_sym_at", "frame_off",
     "type_of", "stack_slot_name", "declare_stack", "collect_conj_clauses", "render_cond_expr", "emit_basic",
     "cast_operand",
+    "get_input_cast",
 ];
 /// The free helpers of `printc` an arm file may import.
 #[cfg_attr(not(test), allow(dead_code))] // the documented list; read by the surface test
 pub const SURFACE_HELPERS: &[&str] = &[
+    "render_const",
     "PrintC", "collect_basics", "entry_basic", "exit_basic", "operand_oriented", "render_const_typed", "strip_copies",
 ];
 
@@ -212,7 +217,7 @@ mod tests {
     /// The arm files, as text, for the surface scan — every `pub mod` of this module must be here
     /// (`arms_touch_only_the_documented_surface` checks that against this file's own source, so a
     /// new arm file cannot slip past the scan).
-    const ARM_SOURCES: [(&str, &str); 7] = [
+    const ARM_SOURCES: [(&str, &str); 8] = [
         ("string_ops.rs", include_str!("string_ops.rs")),
         ("struct_copy.rs", include_str!("struct_copy.rs")),
         ("sparse_switch.rs", include_str!("sparse_switch.rs")),
@@ -220,6 +225,7 @@ mod tests {
         ("sdiv_pow2.rs", include_str!("sdiv_pow2.rs")),
         ("nested_conds.rs", include_str!("nested_conds.rs")),
         ("unsigned_cmp.rs", include_str!("unsigned_cmp.rs")),
+        ("complement_cmp.rs", include_str!("complement_cmp.rs")),
     ];
 
     /// Every `p.`/`pr.`/`me.` member access and every `use crate::decompile::printc::{..}` item in
@@ -323,20 +329,25 @@ pub enum ValueSite<'v> {
     /// prints as `(uintN)x sym 0xffN`. Replaces the inline block at printc.rs:1941-1966 (33d6e37);
     /// R2b, commit 1.
     Equality { op: OpId, sym: &'static str, prec: u8 },
+    /// `cmp_bin`: a `<`/`<=` (`strict`, at the port's precedence `prec`) the port is about to
+    /// render — a compare the original spelled through the complemented condition prints
+    /// complemented. Replaces the inline consult at the head of cmp_bin (33d6e37); R2b, commit 2.
+    Compare { op: OpId, strict: bool, prec: u8 },
 }
 
 /// The value-render chokepoint — ONE hook with situations, the same shape as [`try_emit`]'s
 /// sites: the rendering and its precedence, or `None` = the port renders the value itself. The
 /// situations are disjoint, so order matters only INSIDE `OpRoot`: string-ops (the strlen fold)
 /// then sdiv-pow2 (a division chain root), as `render_op_inner` had them; `Var` has one answerer,
-/// string-ops; `Equality` one, unsigned-cmp; every slot situation has exactly one answerer,
-/// frame-fill. The precedence is read for `OpRoot`, `Var` and `Equality`; the slot situations'
-/// callers take the text.
+/// string-ops; every other situation has exactly one answerer — the match below is the list.
+/// The precedence is read at the expression situations; the slot situations' callers take the
+/// text.
 pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, u8)> {
     match site {
         ValueSite::OpRoot { op } => string_ops::strlen_fold(p, op).or_else(|| sdiv_pow2::render(p, op)),
         ValueSite::Var { v } => string_ops::render_var_value(p, v),
         ValueSite::Equality { op, sym, prec } => unsigned_cmp::render(p, op, sym, prec),
+        ValueSite::Compare { op, strict, prec } => complement_cmp::render(p, op, strict, prec),
         other => frame_fill::render_value(p, &other),
     }
 }
