@@ -1234,15 +1234,13 @@ pub fn sparse_cmps_from_evidence(insns: &[NormInsn]) -> std::collections::HashMa
     const EQ: u8 = 2;
     let mut out = std::collections::HashMap::new();
     let mut last: Option<(u64, u64, bool, (u64, u32))> = None; // (cmp pc, imm, first jump seen, compared register)
-    let dbg = std::env::var_os("MOSURA_SPARSE_DEBUG").is_some();
-    if dbg {
-        eprintln!("[sparse-witness] {} insns; first: {:?}", insns.len(), insns.iter().take(6).map(|i| (format!("{:#x}", i.addr), i.mnemonic.clone(), i.bytes.clone(), i.consts.clone())).collect::<Vec<_>>());
-    }
+    let dbg = crate::debug::on(crate::debug::Topic::SparseSwitch);
+    debug!(crate::debug::Topic::SparseSwitch, "witness: {} insns; first: {:?}", insns.len(), insns.iter().take(6).map(|i| (format!("{:#x}", i.addr), i.mnemonic.clone(), i.bytes.clone(), i.consts.clone())).collect::<Vec<_>>());
     for insn in insns {
         let b = &insn.bytes;
         let m = insn.mnemonic.to_ascii_uppercase();
         if dbg && (m == "CMP" || m == "TEST" || b.first().is_some_and(|&x| (0x70..=0x7f).contains(&x)) || b.first() == Some(&0x0f)) {
-            eprintln!("[sparse-witness]   {:#x} {m} bytes {:02x?} consts {:?} regs {:?}", insn.addr, b, insn.consts, insn.regs);
+            debug!(crate::debug::Topic::SparseSwitch, "witness:   {:#x} {m} bytes {:02x?} consts {:?} regs {:?}", insn.addr, b, insn.consts, insn.regs);
         }
         // the jump's kind from its encoding (`x86enc::jcc`): JB/JAE and JL/JGE fold to LT, JBE/JA
         // and JLE/JG to LE, JE/JNE to EQ — the signed/unsigned distinction is not this witness's
@@ -1280,7 +1278,7 @@ pub fn sparse_cmps_from_evidence(insns: &[NormInsn]) -> std::collections::HashMa
         }
         if dbg {
             if let Some((cpc, imm, _, reg)) = last {
-                if cpc == insn.addr { eprintln!("[sparse-witness]   -> compare at {:#x} imm {imm:#x} reg {reg:?}", insn.addr); }
+                if cpc == insn.addr { debug!(crate::debug::Topic::SparseSwitch, "witness:   -> compare at {:#x} imm {imm:#x} reg {reg:?}", insn.addr); }
             }
         }
     }

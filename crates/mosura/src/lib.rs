@@ -10,6 +10,8 @@
 // where clippy's suggested 4-space indent would misrender the prose as an indented block.
 #![allow(clippy::doc_lazy_continuation)]
 
+#[macro_use]
+pub mod debug;
 pub mod analysis;
 pub mod ccompare;
 pub mod conformance;

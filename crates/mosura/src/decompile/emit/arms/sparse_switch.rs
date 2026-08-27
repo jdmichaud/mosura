@@ -143,9 +143,7 @@ fn try_emit_sparse_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
     let Some(root_cond) = root_cond else { return false };
     let Some((scrut, _, _, _)) = sparse_compare(pr, root_cond) else { return false };
     let scrut_high = sparse_key(pr, scrut);
-    if std::env::var_os("MOSURA_SPARSE_DEBUG").is_some() {
-        eprintln!("[sparse] {:#x} enter root node {idx} key {scrut_high:?} negated {} kind {:?} parent {:?}", pr.f.addr.offset, s.blocks[idx].negated, s.blocks[idx].kind, s.blocks[idx].parent.map(|p| (p, format!("{:?}", s.blocks[p].kind), s.blocks[p].components.clone())));
-    }
+    debug!(crate::debug::Topic::SparseSwitch, "{:#x} enter root node {idx} key {scrut_high:?} negated {} kind {:?} parent {:?}", pr.f.addr.offset, s.blocks[idx].negated, s.blocks[idx].kind, s.blocks[idx].parent.map(|p| (p, format!("{:?}", s.blocks[p].kind), s.blocks[p].components.clone())));
     pr.arms.sparse_switch.hoist_pending.borrow_mut().clear();
     pr.arms.sparse_switch.exit_goto.borrow_mut().clear();
     pr.arms.sparse_switch.head_stmts.borrow_mut().clear();
@@ -179,7 +177,7 @@ fn try_emit_sparse_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
         // a node in the CONDITION list of an enclosing if is that if's tree, never a root
         if let Some(p) = parent {
             if s.blocks[p].parent.is_some_and(|pp| matches!(s.blocks[pp].kind, FlowKind::If | FlowKind::IfElse) && s.blocks[pp].components.first() == Some(&p)) {
-                if std::env::var_os("MOSURA_SPARSE_DEBUG").is_some() { eprintln!("[sparse]   not a root: inside the condition list of node {:?}", s.blocks[p].parent); }
+                debug!(crate::debug::Topic::SparseSwitch, "  not a root: inside the condition list of node {:?}", s.blocks[p].parent);
                 return false;
             }
         }
@@ -194,11 +192,9 @@ fn try_emit_sparse_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
                 };
                 cond.and_then(|v| sparse_compare(me, v)).is_some_and(|(x, _, _, _)| sparse_key(me, x) == scrut_high)
             };
-            if std::env::var_os("MOSURA_SPARSE_DEBUG").is_some() {
-                eprintln!("[sparse]   siblings of node {idx} (parent {parent:?}, pos {pos}): {:?}", comps.iter().map(|&c| (c, format!("{:?}", s.blocks[c].kind), compares_scrut(pr, c))).collect::<Vec<_>>());
-            }
+            debug!(crate::debug::Topic::SparseSwitch, "  siblings of node {idx} (parent {parent:?}, pos {pos}): {:?}", comps.iter().map(|&c| (c, format!("{:?}", s.blocks[c].kind), compares_scrut(pr, c))).collect::<Vec<_>>());
             if comps[..pos].iter().any(|&c| compares_scrut(pr, c)) {
-                if std::env::var_os("MOSURA_SPARSE_DEBUG").is_some() { eprintln!("[sparse]   not a root: an earlier sibling compares the scrutinee"); }
+                debug!(crate::debug::Topic::SparseSwitch, "  not a root: an earlier sibling compares the scrutinee");
                 return false;
             }
             if matches!(s.blocks[idx].kind, FlowKind::If) && comps.get(pos + 1).is_some_and(|&c| compares_scrut(pr, c)) {
@@ -251,7 +247,7 @@ fn try_emit_sparse_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
                     // overflow form `if (C) break;` while it does not
                     let rendered = if s.blocks[p].negated { t.complement(lo, hi) } else { t };
                     reach = if s.blocks[p].has_overflow_syntax() { rendered.complement(lo, hi) } else { rendered };
-                    if std::env::var_os("MOSURA_SPARSE_DEBUG").is_some() { eprintln!("[sparse]   loop condition narrows the root's reach to {:?}", reach.0); }
+                    debug!(crate::debug::Topic::SparseSwitch, "  loop condition narrows the root's reach to {:?}", reach.0);
                     // the loop owns part of the tree (its exit is one of the cases): the switch
                     // the body alone can print recompiles worse than the if-chain (0x1201c,
                     // -0.146 on the w5a round) — decline
@@ -270,7 +266,7 @@ fn try_emit_sparse_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
     if !walked {
         return false;
     }
-    let dbg = std::env::var_os("MOSURA_SPARSE_DEBUG").is_some();
+    let dbg = crate::debug::on(crate::debug::Topic::SparseSwitch);
     // a compared value is a case when compared for equality, or as a pivot (two compares of
     // the same constant at one pc: `CMP p; JB; JBE`)
     // (Ghidra attributes the JB's and the JBE's compares to their own jump pcs, so the pivot
@@ -302,13 +298,13 @@ fn try_emit_sparse_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
         })
     };
     if dbg {
-        eprintln!("[sparse] {:#x} root node {idx}: scrut key {scrut_high:?} depth {depth} consts {consts:?} tail {tail:?}", pr.f.addr.offset);
+        debug!(crate::debug::Topic::SparseSwitch, "{:#x} root node {idx}: scrut key {scrut_high:?} depth {depth} consts {consts:?} tail {tail:?}", pr.f.addr.offset);
         for l in &leaves {
-            eprintln!("[sparse]   leaf node {} kind {:?} vals {:?}", l.node, s.blocks[l.node].kind, l.vals.0);
+            debug!(crate::debug::Topic::SparseSwitch, "  leaf node {} kind {:?} vals {:?}", l.node, s.blocks[l.node].kind, l.vals.0);
         }
     }
     if depth < 2 || leaves.len() < 3 {
-        if dbg { eprintln!("[sparse]   bail: depth {depth} leaves {}", leaves.len()); }
+        debug!(crate::debug::Topic::SparseSwitch, "  bail: depth {depth} leaves {}", leaves.len());
         return false;
     }
     // classify the leaves: a leaf whose values are few is a case (an empty one when it lands on
@@ -377,7 +373,7 @@ fn try_emit_sparse_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
                 match default_body {
                     None => default_body = Some(body),
                     Some(existing) if existing == body => {}
-                    Some(existing) => { if dbg { eprintln!("[sparse]   bail: two defaults: {existing:?} vs {body:?} (leaf node {})", leaf.node); } return false; }
+                    Some(existing) => { debug!(crate::debug::Topic::SparseSwitch, "  bail: two defaults: {existing:?} vs {body:?} (leaf node {})", leaf.node); return false; }
                 }
             }
             continue;
@@ -404,7 +400,7 @@ fn try_emit_sparse_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
             match default_body {
                 None => default_body = Some(body),
                 Some(existing) if existing == body => {}
-                Some(existing) => { if dbg { eprintln!("[sparse]   bail: two defaults: {existing:?} vs {body:?} (wide body leaf node {})", leaf.node); } return false; }
+                Some(existing) => { debug!(crate::debug::Topic::SparseSwitch, "  bail: two defaults: {existing:?} vs {body:?} (wide body leaf node {})", leaf.node); return false; }
             }
             continue;
         }
@@ -412,7 +408,7 @@ fn try_emit_sparse_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
             if !tail_like {
                 if dbg {
                     let ops: Vec<String> = match s.blocks[leaf.node].kind { FlowKind::Basic(b) => pr.f.block(b).ops.iter().filter(|&&op| !pr.f.op(op).is_dead()).map(|&op| format!("{:?}{}", pr.f.op(op).code(), if pr.f.op(op).is_marker() { "*" } else { "" })).collect(), _ => vec![] };
-                    eprintln!("[sparse]   bail: multi-valued non-tail leaf node {} vals {:?} ops {:?} gotos {:?}", leaf.node, leaf.vals.0, ops, s.node_gotos.get(&leaf.node).map(|r| r.len()));
+                    debug!(crate::debug::Topic::SparseSwitch, "  bail: multi-valued non-tail leaf node {} vals {:?} ops {:?} gotos {:?}", leaf.node, leaf.vals.0, ops, s.node_gotos.get(&leaf.node).map(|r| r.len()));
                 }
                 return false;
             }
@@ -420,7 +416,7 @@ fn try_emit_sparse_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
             match default_body {
                 None => default_body = Some(body),
                 Some(existing) if existing == body => {}
-                Some(existing) => { if dbg { eprintln!("[sparse]   bail: two defaults: {existing:?} vs {body:?} (leaf node {})", leaf.node); } return false; }
+                Some(existing) => { debug!(crate::debug::Topic::SparseSwitch, "  bail: two defaults: {existing:?} vs {body:?} (leaf node {})", leaf.node); return false; }
             }
             continue;
         }
@@ -459,7 +455,7 @@ fn try_emit_sparse_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
         }
     }
     let total: usize = cases.iter().map(|c| c.0.len()).sum::<usize>() + with_default.len();
-    if dbg { eprintln!("[sparse]   cases {:?} default {:?}", cases.iter().map(|c| (c.0.clone(), c.1, c.2.clone())).collect::<Vec<_>>(), default_body); }
+    debug!(crate::debug::Topic::SparseSwitch, "  cases {:?} default {:?}", cases.iter().map(|c| (c.0.clone(), c.1, c.2.clone())).collect::<Vec<_>>(), default_body);
     // a pivot (one constant compared twice, at least once by range) is Watcom's tree signature:
     // with it two cases are a switch (0x122b0's `CMP AX,8; JB; JBE; CMP AX,9`); without it a
     // plain equality chain is not
@@ -469,7 +465,7 @@ fn try_emit_sparse_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
     // wrote (0x12360, EXACT as `if (p == 3) .. else if (p == 0) .. else if (p == 2)`)
     let has_pivot = consts.iter().any(|&(_, k, kind)| kind != CMP_EQ && consts.iter().filter(|&&(_, k2, _)| k2 == k).count() >= 2);
     if total < 2 || !has_pivot {
-        if dbg { eprintln!("[sparse]   bail: total cases {total} (pivot {has_pivot})"); }
+        debug!(crate::debug::Topic::SparseSwitch, "  bail: total cases {total} (pivot {has_pivot})");
         return false;
     }
     for (n, c) in pr.arms.sparse_switch.cond_override_pending.borrow_mut().drain(..) {
@@ -753,9 +749,9 @@ fn sparse_signed(pr: &PrintC<'_>, cond: VarnodeId) -> bool {
 /// The value ranges for which `cond` (on the scrutinee, domain `[lo, hi]`) is TRUE.
 fn sparse_true_ranges(pr: &PrintC<'_>, cond: VarnodeId, scrut_high: SparseKey, lo: i64, hi: i64, compares: &mut Vec<OpId>, consts: &mut Vec<(u64, i64, u8)>) -> Option<Ranges> {
     let Some((x, code, k, neg)) = sparse_compare(pr, cond) else {
-        if std::env::var_os("MOSURA_SPARSE_DEBUG").is_some() {
+        if crate::debug::on(crate::debug::Topic::SparseSwitch) {
             let d = pr.f.vn(cond).def.map(|d| { let o = pr.f.op(d); (format!("{:x}", o.seqnum.pc.offset), o.code(), (0..o.num_inputs()).map(|i| o.input(i).map(|v| pr.f.vn(v).def.map(|dd| format!("{:?}", pr.f.op(dd).code())).unwrap_or_else(|| if pr.f.vn(v).is_constant() { format!("#{:x}", pr.f.vn(v).constant_value()) } else { "in".into() }))).collect::<Vec<_>>()) });
-            eprintln!("[sparse]   unreadable compare: cond {cond:?} def {d:?}");
+            debug!(crate::debug::Topic::SparseSwitch, "  unreadable compare: cond {cond:?} def {d:?}");
         }
         return None;
     };
@@ -776,7 +772,7 @@ fn sparse_true_ranges(pr: &PrintC<'_>, cond: VarnodeId, scrut_high: SparseKey, l
                         let end = (start + width) % (top + 1);
                         let t = if width < 0 { Ranges(vec![]) } else if start <= end { Ranges(vec![(start, end)]) } else { Ranges(vec![(start, top), (0, end)]) };
                         let pc = pr.f.vn(cond).def.map(|d| pr.f.op(d).seqnum.pc.offset).unwrap_or(0);
-                        if std::env::var_os("MOSURA_SPARSE_DEBUG").is_some() { eprintln!("[sparse]   meld compare @{pc:#x}: (x + {c}) {:?} {k} -> [{start}, {end}] neg {neg}", code); }
+                        debug!(crate::debug::Topic::SparseSwitch, "  meld compare @{pc:#x}: (x + {c}) {:?} {k} -> [{start}, {end}] neg {neg}", code);
                         consts.push((pc, start, CMP_LT));
                         consts.push((pc, end, CMP_LE));
                         if let Some(d) = pr.f.vn(cond).def {
@@ -792,7 +788,7 @@ fn sparse_true_ranges(pr: &PrintC<'_>, cond: VarnodeId, scrut_high: SparseKey, l
         }
     }
     if sparse_key(pr, x) != scrut_high {
-        if std::env::var_os("MOSURA_SPARSE_DEBUG").is_some() { eprintln!("[sparse]   key mismatch: compare {:?} k {k} key {:?} vs {scrut_high:?}", code, sparse_key(pr, x)); }
+        debug!(crate::debug::Topic::SparseSwitch, "  key mismatch: compare {:?} k {k} key {:?} vs {scrut_high:?}", code, sparse_key(pr, x));
         return None;
     }
     // the compare's instruction: Watcom's pivot is one CMP with two jumps (JB below, JBE the
@@ -818,7 +814,7 @@ fn sparse_true_ranges(pr: &PrintC<'_>, cond: VarnodeId, scrut_high: SparseKey, l
             (_, _) => (k, CMP_LT),
         },
     };
-    if std::env::var_os("MOSURA_SPARSE_DEBUG").is_some() { eprintln!("[sparse]   compare @{pc:#x}: x {:?} {k} neg {neg} mirrored {mirrored} -> ({kc}, kind {kind}) witness {:?}", code, pr.recovered.sparse_cmp_sites.get(&pc)); }
+    debug!(crate::debug::Topic::SparseSwitch, "  compare @{pc:#x}: x {:?} {k} neg {neg} mirrored {mirrored} -> ({kc}, kind {kind}) witness {:?}", code, pr.recovered.sparse_cmp_sites.get(&pc));
     consts.push((pc, kc, kind));
     if let Some(d) = pr.f.vn(cond).def {
         compares.push(d);
@@ -863,9 +859,7 @@ fn sparse_cond_ranges(pr: &PrintC<'_>, s: &Structured, node: usize, scrut_high: 
             let (oa, ob) = (operand_oriented(pr.f, s, comps[0]), operand_oriented(pr.f, s, comps[1]));
             let a2 = if oa ^ fa { a.complement(lo, hi) } else { a.clone() };
             let b2 = if ob ^ fb { b.complement(lo, hi) } else { b.clone() };
-            if std::env::var_os("MOSURA_SPARSE_DEBUG").is_some() {
-                eprintln!("[sparse]   cond {:?} node {node}: a {:?} b {:?} oriented ({oa},{ob}) flip ({fa},{fb}) -> a {:?} b {:?}", s.blocks[node].kind, a.0, b.0, a2.0, b2.0);
-            }
+            debug!(crate::debug::Topic::SparseSwitch, "  cond {:?} node {node}: a {:?} b {:?} oriented ({oa},{ob}) flip ({fa},{fb}) -> a {:?} b {:?}", s.blocks[node].kind, a.0, b.0, a2.0, b2.0);
             Some(if matches!(s.blocks[node].kind, FlowKind::CondAnd) { a2.intersect(&b2) } else { a2.union(&b2) })
         }
         _ => None,
@@ -889,14 +883,14 @@ fn sparse_walk(pr: &PrintC<'_>, s: &Structured, node: usize, scrut_high: SparseK
             // an inner condition block must be nothing but its compare; the root's head may
             // carry the scrutinee load (emitted before the switch)
             if d > 0 && !sparse_cond_accept(pr, s, cond, d) {
-                if std::env::var_os("MOSURA_SPARSE_DEBUG").is_some() { eprintln!("[sparse]   leaf(impure cond) node {node}: cond node {cond} kind {:?} comps {:?}", s.blocks[cond].kind, s.blocks[cond].components); }
+                debug!(crate::debug::Topic::SparseSwitch, "  leaf(impure cond) node {node}: cond node {cond} kind {:?} comps {:?}", s.blocks[cond].kind, s.blocks[cond].components);
                 leaves.push(SparseLeaf { node, vals: reach, join: join.clone(), goto: None, exit_goto: pr.arms.sparse_switch.exit_goto.borrow().last().copied() });
                 return true;
             }
             let Some(t) = sparse_cond_ranges(pr, s, cond, scrut_high, lo, hi, compares, consts) else {
-                if std::env::var_os("MOSURA_SPARSE_DEBUG").is_some() {
+                if crate::debug::on(crate::debug::Topic::SparseSwitch) {
                     let cv = pr.plain_if_condition_vn(s, node);
-                    eprintln!("[sparse]   leaf(no ranges) node {node} cond kind {:?} cond vn {:?} compare {:?}", s.blocks[cond].kind, cv, cv.and_then(|c| sparse_compare(pr, c)).map(|(x, c, k, n)| (pr.high_of[x.0 as usize], c, k, n)));
+                    debug!(crate::debug::Topic::SparseSwitch, "  leaf(no ranges) node {node} cond kind {:?} cond vn {:?} compare {:?}", s.blocks[cond].kind, cv, cv.and_then(|c| sparse_compare(pr, c)).map(|(x, c, k, n)| (pr.high_of[x.0 as usize], c, k, n)));
                 }
                 if d == 0 {
                     return false;
@@ -956,13 +950,13 @@ fn sparse_walk(pr: &PrintC<'_>, s: &Structured, node: usize, scrut_high: SparseK
                                 return true;
                             }
                         }
-                        if std::env::var_os("MOSURA_SPARSE_DEBUG").is_some() { eprintln!("[sparse]   bail: cond-goto node {node} has no structural fall-through"); }
+                        debug!(crate::debug::Topic::SparseSwitch, "  bail: cond-goto node {node} has no structural fall-through");
                         return false;
                     }
                 }
             }
-            if std::env::var_os("MOSURA_SPARSE_DEBUG").is_some() && matches!(s.blocks[node].kind, FlowKind::CondAnd | FlowKind::CondOr) {
-                eprintln!("[sparse]   leaf(cond group) node {node} kind {:?}: cond-goto {:?} node_gotos {:?} pure {}", s.blocks[node].kind, sparse_cond_goto(pr, s, node, true), s.node_gotos.get(&node).map(|r| r.len()), sparse_pure_cond(pr, s, node));
+            if matches!(s.blocks[node].kind, FlowKind::CondAnd | FlowKind::CondOr) {
+                debug!(crate::debug::Topic::SparseSwitch, "  leaf(cond group) node {node} kind {:?}: cond-goto {:?} node_gotos {:?} pure {}", s.blocks[node].kind, sparse_cond_goto(pr, s, node, true), s.node_gotos.get(&node).map(|r| r.len()), sparse_pure_cond(pr, s, node));
             }
             leaves.push(SparseLeaf { node, vals: reach, join: join.clone(), goto: None, exit_goto: pr.arms.sparse_switch.exit_goto.borrow().last().copied() });
             true
@@ -988,7 +982,7 @@ fn sparse_walk_list(pr: &PrintC<'_>, s: &Structured, comps: &[usize], list_node:
 }
 
 fn sparse_walk_list_inner(pr: &PrintC<'_>, s: &Structured, comps: &[usize], list_node: Option<usize>, scrut_high: SparseKey, signed: bool, reach: Ranges, lo: i64, hi: i64, leaves: &mut Vec<SparseLeaf>, compares: &mut Vec<OpId>, consts: &mut Vec<(u64, i64, u8)>, d: usize, depth: &mut usize, join: Option<Vec<usize>>) -> bool {
-    let dbg = std::env::var_os("MOSURA_SPARSE_DEBUG").is_some();
+    let dbg = crate::debug::on(crate::debug::Topic::SparseSwitch);
     let mut cur = reach;
     for (i, &c) in comps.iter().enumerate() {
         let is_last = i + 1 == comps.len();
@@ -1027,7 +1021,7 @@ fn sparse_walk_list_inner(pr: &PrintC<'_>, s: &Structured, comps: &[usize], list
                     }
                 }
             }
-            if dbg { eprintln!("[sparse]   leaf(list ifelse) list {list_node:?}: comp {i} = node {c}"); }
+            debug!(crate::debug::Topic::SparseSwitch, "  leaf(list ifelse) list {list_node:?}: comp {i} = node {c}");
             stmt_leaf(leaves, cur);
             return true;
         }
@@ -1066,7 +1060,7 @@ fn sparse_walk_list_inner(pr: &PrintC<'_>, s: &Structured, comps: &[usize], list
                         *depth = (*depth).max(d + 1);
                         let taken = if when_true { t } else { t.complement(lo, hi) };
                         let tn = sparse_body_node(pr, s, target).unwrap_or(c);
-                        if dbg { eprintln!("[sparse]   cond-goto node {c} -> {target:?} (node {tn}) vals {:?}", cur.intersect(&taken).0); }
+                        debug!(crate::debug::Topic::SparseSwitch, "  cond-goto node {c} -> {target:?} (node {tn}) vals {:?}", cur.intersect(&taken).0);
                         leaves.push(SparseLeaf { node: tn, vals: cur.intersect(&taken), join: join.clone(), goto: Some(target), exit_goto: None });
                         cur = cur.intersect(&taken.complement(lo, hi));
                         continue;
@@ -1078,10 +1072,10 @@ fn sparse_walk_list_inner(pr: &PrintC<'_>, s: &Structured, comps: &[usize], list
                 if matches!(s.blocks[c].kind, FlowKind::If | FlowKind::IfElse) {
                     let cn = s.blocks[c].components[0];
                     let cv = pr.plain_if_condition_vn(s, c);
-                    eprintln!("[sparse]   unwalked if node {c}: cond node {cn} kind {:?} comps {:?} cond vn {:?} compare {:?} pure {}", s.blocks[cn].kind, s.blocks[cn].components.iter().map(|&x| (x, format!("{:?}", s.blocks[x].kind))).collect::<Vec<_>>(), cv, cv.and_then(|v| sparse_compare(pr, v)).map(|(x, code, k, n)| (sparse_key(pr, x), code, k, n)), sparse_pure_cond(pr, s, cn));
+                    debug!(crate::debug::Topic::SparseSwitch, "  unwalked if node {c}: cond node {cn} kind {:?} comps {:?} cond vn {:?} compare {:?} pure {}", s.blocks[cn].kind, s.blocks[cn].components.iter().map(|&x| (x, format!("{:?}", s.blocks[x].kind))).collect::<Vec<_>>(), cv, cv.and_then(|v| sparse_compare(pr, v)).map(|(x, code, k, n)| (sparse_key(pr, x), code, k, n)), sparse_pure_cond(pr, s, cn));
                 }
                 let ops: Vec<String> = match s.blocks[c].kind { FlowKind::Basic(b) => pr.f.block(b).ops.iter().filter(|&&op| !pr.f.op(op).is_dead()).map(|&op| format!("{:?}{}", pr.f.op(op).code(), if pr.f.op(op).is_marker() { "*" } else { "" })).collect(), _ => vec![] };
-                eprintln!("[sparse]   leaf(list stmt) list {list_node:?}: comp {i} = node {c} kind {:?} pure {} ops {:?} gotos {:?}", s.blocks[c].kind, matches!(s.blocks[c].kind, FlowKind::If) && sparse_pure_cond(pr, s, s.blocks[c].components[0]), ops, s.node_gotos.get(&c).map(|r| r.len()));
+                debug!(crate::debug::Topic::SparseSwitch, "  leaf(list stmt) list {list_node:?}: comp {i} = node {c} kind {:?} pure {} ops {:?} gotos {:?}", s.blocks[c].kind, matches!(s.blocks[c].kind, FlowKind::If) && sparse_pure_cond(pr, s, s.blocks[c].components[0]), ops, s.node_gotos.get(&c).map(|r| r.len()));
             }
             stmt_leaf(leaves, cur);
             return true;
@@ -1149,9 +1143,9 @@ fn sparse_if_cond(pr: &PrintC<'_>, s: &Structured, if_node: usize, mut reach: Ra
             pr.arms.sparse_switch.head_stmts.borrow_mut().push(c);
             continue;
         }
-        if std::env::var_os("MOSURA_SPARSE_DEBUG").is_some() {
+        if crate::debug::on(crate::debug::Topic::SparseSwitch) {
             let ops: Vec<String> = match s.blocks[c].kind { FlowKind::Basic(b) => pr.f.block(b).ops.iter().filter(|&&op| !pr.f.op(op).is_dead()).map(|&op| format!("{:?}", pr.f.op(op).code())).collect(), _ => vec![] };
-            eprintln!("[sparse]   leaf(list cond stmt) if {if_node}: comp node {c} kind {:?} pure_stmt {} gotos {:?} ops {:?}", s.blocks[c].kind, sparse_pure_stmt(pr, s, c), matches!(s.blocks[c].kind, FlowKind::Basic(b) if s.gotos.get(&b).is_some()), ops);
+            debug!(crate::debug::Topic::SparseSwitch, "  leaf(list cond stmt) if {if_node}: comp node {c} kind {:?} pure_stmt {} gotos {:?} ops {:?}", s.blocks[c].kind, sparse_pure_stmt(pr, s, c), matches!(s.blocks[c].kind, FlowKind::Basic(b) if s.gotos.get(&b).is_some()), ops);
         }
         return Some((None, reach));
     }
@@ -1208,8 +1202,8 @@ fn sparse_pure_cond(pr: &PrintC<'_>, s: &Structured, node: usize) -> bool {
                 }
                 o.output.map_or(true, |out| pr.f.vn(out).descend.iter().all(|u| ops.contains(u) || pr.f.op(*u).is_dead()))
             });
-            if !pure && std::env::var_os("MOSURA_SPARSE_DEBUG").is_some() {
-                eprintln!("[sparse]   impure cond block {bid:?}: {:?}", ops.iter().map(|&op| pr.f.op(op).code()).collect::<Vec<_>>());
+            if !pure {
+                debug!(crate::debug::Topic::SparseSwitch, "  impure cond block {bid:?}: {:?}", ops.iter().map(|&op| pr.f.op(op).code()).collect::<Vec<_>>());
             }
             pure
         }
