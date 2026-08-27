@@ -43,7 +43,10 @@
 //!   `sparse_head_stmts`, `sparse_hoist_pending`, `sparse_cond_override`,
 //!   `sparse_cond_override_pending` (commit 7 moves it), the field `labels`; the methods
 //!   `emit_structured`, `render_op`, `lab_name`, `first_pc`, `next_flow_after`,
-//!   `plain_if_condition_vn`; the free helpers `entry_basic`, `exit_basic`, `operand_oriented`.
+//!   `plain_if_condition_vn`; the free helpers `entry_basic`, `exit_basic`, `operand_oriented`;
+//! - frame_fill (commit 4): the arm's own state `frame_agg` (commit 7 moves it), the fields
+//!   `stack_syms`, `stack_space`, `high_stack_off`, `names`, `decls`, `stack_declared`; the
+//!   methods `spacebase_sym_at`, `frame_off`, `type_of`, `stack_slot_name`, `declare_stack`.
 //!
 //! THREE NODE-LEVEL MECHANISMS, side by side, so a reader sees why there are two shapes:
 //! - `suppressed` — a printer SERVICE: the OPS an arm has covered (marked at arm setup or while
@@ -77,7 +80,11 @@
 use super::super::op::OpId;
 use super::super::printc::PrintC;
 use super::super::structure::Structured;
+use super::super::types::Datatype;
+use super::super::varmap::StackSymbol;
+use super::super::varnode::VarnodeId;
 
+pub mod frame_fill;
 pub mod sparse_switch;
 pub mod string_ops;
 pub mod struct_copy;
@@ -184,18 +191,54 @@ mod tests {
     }
 }
 
-/// One call of the value-render chokepoint.
-pub enum ValueSite {
-    /// The root of an expression the port is about to render (`render_op_inner`): a `len + 1`
-    /// alias folds to `strlen`'s value, a witnessed SBB/SAR chain prints as `x / 2^n`.
+/// One call of the value-render chokepoint: the situation the port is about to render.
+pub enum ValueSite<'v> {
+    /// The root of an expression (`render_op_inner`): a `len + 1` alias folds to `strlen`'s
+    /// value, a witnessed SBB/SAR chain prints as `x / 2^n`.
     OpRoot { op: OpId },
+    /// `partial_symbol`: the piece `v`, `off` bytes into `base` — a piece of a slot the frame
+    /// aggregate covers is its field, never `<field expr>._off_size_` (0x66100, COMPILE_FAIL
+    /// E1032). Replaces the inline consult the frame-fill landing called seam 6 (printc.rs:861
+    /// at 6b6533b).
+    SlotPiece { base: VarnodeId, off: u64, v: VarnodeId },
+    /// `name_of`: the stack slot `foff` inside the recovered symbol `sym` — an element or a
+    /// split-pair piece of a swallowed symbol is the field at its slot (0x4e06e's
+    /// `aiStack_2c[0]`, COMPILE_FAIL E1011 in probe w4bp). Replaces the inline consult of seams 4/5
+    /// (printc.rs:998 at 6b6533b).
+    SlotName { id: u32, foff: i64, sym: &'v StackSymbol, ty: &'v Datatype },
+    /// `stack_slot_name`: a slot by frame offset is its field. Replaces the inline consult at the
+    /// head of the slot namer (printc.rs:1667 at 6b6533b).
+    SlotOffset { off: i64, ty: &'v Datatype },
+    /// `render_spacebase_ptrsub`: an address inside the frame is `(T *)(base + delta)` (`base`
+    /// itself for the aggregate's own bottom), a value (`deref`) `*(T *)(base + delta)`. Replaces
+    /// the inline consult at printc.rs:1870 (6b6533b).
+    SlotAddress { off: i64, deref: bool },
+    /// `render_assign`: the coalesced whole-symbol store (`struct-locals=coalesce`) of `sym` from
+    /// `src` writes the field at its slot. Replaces the inline consult at printc.rs:2707 (6b6533b).
+    /// The sixth consult, the declaration (printc.rs:1939), is the [`declare_slot`] seam.
+    FusedStore { sym: &'v StackSymbol, src: VarnodeId },
 }
 
-/// The value-render chokepoint: the rendering and its precedence, or `None` = the port renders
-/// the value itself. Answerers in order: string-ops (the strlen fold), sdiv-pow2 (a division
-/// chain root); frame-fill joins in its move commit (a value rooted in a swallowed stack slot).
-pub fn render_value(p: &mut PrintC<'_>, site: ValueSite) -> Option<(String, u8)> {
+/// The value-render chokepoint — ONE hook with situations, the same shape as [`try_emit`]'s
+/// sites: the rendering and its precedence, or `None` = the port renders the value itself. The
+/// situations are disjoint, so order matters only INSIDE `OpRoot`: string-ops (the strlen fold)
+/// then sdiv-pow2 (a division chain root), as `render_op_inner` had them; every slot situation
+/// has exactly one answerer, frame-fill. The precedence is read for `OpRoot` only; the slot
+/// situations' callers take the text.
+pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, u8)> {
     match site {
         ValueSite::OpRoot { op } => string_ops::strlen_fold(p, op).or_else(|| p.sdiv_pow2_render(op)),
+        other => frame_fill::render_value(p, &other),
     }
+}
+
+/// THE DECLARATIONS SEAM — the one arm effect that is neither a statement nor a value, and the
+/// ONLY declaration-level seam: a slot inside the frame aggregate declares the ONE aggregate
+/// instead of itself. WHY it is not setup state: the port declares a frame offset on its FIRST
+/// USE, while it prints, and any offset of the frame may be that first use — the aggregate's
+/// declaration effect is therefore decided at that moment, at the port's `declare_stack`, not
+/// from a list built beforehand. So it is an explicit seam (fable-b, seq 217), never an inline
+/// consult; `true` = an arm declared it, the port declares nothing.
+pub fn declare_slot(p: &mut PrintC<'_>, start: i64) -> bool {
+    frame_fill::declare_slot(p, start)
 }
