@@ -305,82 +305,6 @@ pub(crate) fn strip_copies(f: &Funcdata, mut v: VarnodeId) -> VarnodeId {
     v
 }
 
-/// `sdiv-pow2`: is `op` an `INT_SRIGHT(a, n)` that is Watcom's signed power-of-two division?
-/// Returns `(x, n, exact)`: `exact` when `a` is the lifted SBB chain
-/// `INT_SUB(INT_ADD(x, INT_MULT(s, -2^n)), ZEXT(SLESS(LEFT(s, n-1), 0)))` with `s = SRIGHT(x, bits-1)`,
-/// else the bare shift (its dividend proven non-negative, the chain folded) — both `x / 2^n`.
-fn sdiv_pow2_shape(f: &Funcdata, op: OpId) -> Option<(VarnodeId, u32, bool)> {
-    let o = f.op(op);
-    // the exact chain roots at an arithmetic shift; the folded bare shift may have become a
-    // logical one once its dividend was proven non-negative (`(uint1)x * 0x4d >> 8`, 0x2d520)
-    if o.is_dead() || !matches!(o.code(), OpCode::IntSright | OpCode::IntRight) {
-        return None;
-    }
-    let (a, k) = (o.input(0)?, o.input(1)?);
-    if !f.vn(k).is_constant() {
-        return None;
-    }
-    let n = f.vn(k).constant_value() as u32;
-    let size = f.vn(a).size;
-    if n == 0 || n >= 8 * size || size > 8 {
-        return None;
-    }
-    let mask = if size >= 8 { u64::MAX } else { (1u64 << (8 * size)) - 1 };
-    let konst = |v: VarnodeId, val: u64| f.vn(v).is_constant() && (f.vn(v).constant_value() & mask) == (val & mask);
-    let def = |v: VarnodeId, code: OpCode| -> Option<OpId> {
-        let d = f.vn(strip_copies(f, v)).def?;
-        (!f.op(d).is_dead() && f.op(d).code() == code).then_some(d)
-    };
-    let exact = (|| -> Option<VarnodeId> {
-        if o.code() != OpCode::IntSright {
-            return None;
-        }
-        let sub = def(a, OpCode::IntSub)?;
-        let (b, z) = (f.op(sub).input(0)?, f.op(sub).input(1)?);
-        let zext = def(z, OpCode::IntZext)?;
-        let sless = def(f.op(zext).input(0)?, OpCode::IntSless)?;
-        if !konst(f.op(sless).input(1)?, 0) {
-            return None;
-        }
-        let left = def(f.op(sless).input(0)?, OpCode::IntLeft)?;
-        if !konst(f.op(left).input(1)?, (n - 1) as u64) {
-            return None;
-        }
-        let s = strip_copies(f, f.op(left).input(0)?);
-        let sr = def(s, OpCode::IntSright)?;
-        if !konst(f.op(sr).input(1)?, (8 * size - 1) as u64) {
-            return None;
-        }
-        let x = strip_copies(f, f.op(sr).input(0)?);
-        let add = def(b, OpCode::IntAdd)?;
-        let (p, q) = (f.op(add).input(0)?, f.op(add).input(1)?);
-        let neg = (1u64 << n).wrapping_neg();
-        let mult_of = |m: VarnodeId| -> bool {
-            def(m, OpCode::IntMult).is_some_and(|md| {
-                let mo = f.op(md);
-                mo.input(0).is_some_and(|s2| strip_copies(f, s2) == s) && mo.input(1).is_some_and(|c| konst(c, neg))
-            })
-        };
-        let x2 = strip_copies(f, if mult_of(q) { p } else if mult_of(p) { q } else { return None });
-        // the sign shift reads the dividend itself, or the value it was arithmetically pre-shifted
-        // from (`(v >> 0x10) / 8` takes its sign from `v`: the same sign) — 0x27298
-        let same_sign = x2 == x
-            || def(x2, OpCode::IntSright).is_some_and(|pd| f.op(pd).input(0).is_some_and(|v| strip_copies(f, v) == x));
-        same_sign.then_some(x2)
-    })();
-    match exact {
-        Some(x) => Some((x, n, true)),
-        None => {
-            // (b) a shift over a chain that did NOT match is never the bare shape (rendering it
-            // `chain / 2^n` would apply the rounding correction twice — 0x4f5e0)
-            let chainlike = def(a, OpCode::IntSub).is_some_and(|sd| f.op(sd).input(1).is_some_and(|z| def(z, OpCode::IntZext).is_some()));
-            if chainlike {
-                return None;
-            }
-            Some((a, n, false))
-        }
-    }
-}
 
 /// The basic blocks under a structured node (its `Basic` leaves), recursively.
 pub(crate) fn collect_basics(s: &Structured, idx: usize, acc: &mut Vec<BlockId>) {
@@ -443,7 +367,7 @@ pub(crate) struct PrintC<'a> {
     /// `EmitChoices::string_ops == Intrinsic` (EMISSION ARM): render a witnessed lifted `REP MOVS`/
     /// `REP STOS` loop as a `memcpy`/`memset` call. Recognized loops keyed by their single pc.
     string_ops_intrinsic: bool,
-    sdiv_pow2_div: bool,
+    pub(crate) sdiv_pow2_div: bool,
     /// `frame-fill=aggregate`, once witnessed and gated: the frame's stack symbols render as fields of
     /// one byte aggregate `name[size]` at `bottom` (`[bottom, top)` = the SUB ESP frame below the
     /// pushed registers).
@@ -2220,24 +2144,6 @@ impl<'a> PrintC<'a> {
         r
     }
 
-    /// `sdiv-pow2`: report a candidate shift and, at a witnessed site under the `div` arm, render
-    /// `x / 2^n` — the dividend through the signed cast rule the arithmetic shift already carries.
-    pub(crate) fn sdiv_pow2_render(&mut self, op: OpId) -> Option<(String, u8)> {
-        let (x, n, exact) = sdiv_pow2_shape(self.f, op)?;
-        let pc = self.f.op(op).seqnum.pc.offset;
-        self.report.sdiv_pow2_candidates.push((pc, n));
-        if !self.sdiv_pow2_div || !self.recovered.sdiv_pow2_sites.contains(&pc) {
-            return None;
-        }
-        let size = self.f.vn(x).size;
-        let _ = exact;
-        // the dividend is SIGNED in the source (the template is the signed division): an operand
-        // Ghidra typed unsigned prints with the `(int4)` cast, else Watcom compiles `x / 2` as SHR
-        let (t, prec) = self.render_var(x);
-        let t = if prec < 13 { format!("({t})") } else { t };
-        let l = if matches!(self.type_of(x), Datatype::Int(_)) { t } else { format!("({}){t}", Datatype::Int(size).name()) };
-        Some((format!("{l} / {}", render_const_typed(1u64 << n, size, true)), 13))
-    }
 
     fn render_op_inner(&mut self, op: super::op::OpId) -> (String, u8) {
         if let Some(v) = arms::render_value(self, ValueSite::OpRoot { op }) {
