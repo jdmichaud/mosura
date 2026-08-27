@@ -118,6 +118,7 @@ pub mod sparse_switch;
 pub mod string_ops;
 pub mod struct_copy;
 pub mod unsigned_cmp;
+pub mod testmem;
 
 /// The kinds of site the statement-level hook is called from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -201,6 +202,7 @@ pub const SURFACE_METHODS: &[&str] = &[
     "lab_name", "first_pc", "next_flow_after", "plain_if_condition_vn", "spacebase_sym_at", "frame_off",
     "type_of", "stack_slot_name", "declare_stack", "collect_conj_clauses", "render_cond_expr", "emit_basic",
     "cast_operand",
+    "render_mem",
     "get_input_cast",
 ];
 /// The free helpers of `printc` an arm file may import.
@@ -217,7 +219,7 @@ mod tests {
     /// The arm files, as text, for the surface scan — every `pub mod` of this module must be here
     /// (`arms_touch_only_the_documented_surface` checks that against this file's own source, so a
     /// new arm file cannot slip past the scan).
-    const ARM_SOURCES: [(&str, &str); 8] = [
+    const ARM_SOURCES: [(&str, &str); 9] = [
         ("string_ops.rs", include_str!("string_ops.rs")),
         ("struct_copy.rs", include_str!("struct_copy.rs")),
         ("sparse_switch.rs", include_str!("sparse_switch.rs")),
@@ -225,6 +227,7 @@ mod tests {
         ("sdiv_pow2.rs", include_str!("sdiv_pow2.rs")),
         ("nested_conds.rs", include_str!("nested_conds.rs")),
         ("unsigned_cmp.rs", include_str!("unsigned_cmp.rs")),
+        ("testmem.rs", include_str!("testmem.rs")),
         ("complement_cmp.rs", include_str!("complement_cmp.rs")),
     ];
 
@@ -333,6 +336,10 @@ pub enum ValueSite<'v> {
     /// render — a compare the original spelled through the complemented condition prints
     /// complemented. Replaces the inline consult at the head of cmp_bin (33d6e37); R2b, commit 2.
     Compare { op: OpId, strict: bool, prec: u8 },
+    /// `render_op_inner`'s `Load` arm: `out` the loaded value, `addr` its address — a witnessed
+    /// masked narrow load prints its deref at int width. Replaces the inline width consult
+    /// (33d6e37); R2b, commit 3.
+    Load { out: VarnodeId, addr: VarnodeId },
 }
 
 /// The value-render chokepoint — ONE hook with situations, the same shape as [`try_emit`]'s
@@ -348,6 +355,7 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
         ValueSite::Var { v } => string_ops::render_var_value(p, v),
         ValueSite::Equality { op, sym, prec } => unsigned_cmp::render(p, op, sym, prec),
         ValueSite::Compare { op, strict, prec } => complement_cmp::render(p, op, strict, prec),
+        ValueSite::Load { out, addr } => testmem::render(p, out, addr),
         other => frame_fill::render_value(p, &other),
     }
 }

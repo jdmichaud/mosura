@@ -1633,7 +1633,7 @@ impl<'a> PrintC<'a> {
     /// for a detected array base (non-zero index), else `*addr`, with a `(vty *)` cast on the
     /// address when it is not already a pointer to a value of the right size (Ghidra's
     /// `TypeOpLoad`/`TypeOpStore::getInputCast` on the pointer operand → `*(xunknown4 *)(addr)`).
-    fn render_mem(&mut self, addr: VarnodeId, size: u32, vty: &Datatype) -> (String, u8) {
+    pub(crate) fn render_mem(&mut self, addr: VarnodeId, size: u32, vty: &Datatype) -> (String, u8) {
         // N3: an inlined scaled-index pointer temp renders as the array subscript at each deref.
         if let Some((base, idx, pointee)) = self.array_index_temps.get(&addr).cloned() {
             let bs = self.operand(base, 14, false);
@@ -2214,18 +2214,13 @@ impl<'a> PrintC<'a> {
             OpCode::Load => {
                 let out = o.output.unwrap();
                 let (addr, sz) = (a(1), self.f.vn(out).size);
-                // testmem (see EmitReport::testmem_candidates): the original's memory-direct
-                // TEST proves the source read the wider element and masked, so the deref
-                // prints at int width — the mask keeps the value identical, and this
-                // compiler shrinks the wide masked test back to the original's byte TEST.
-                if self.recovered.testmem_sites.contains(&out) {
-                    let w = self.f.size_of_int();
-                    let vty = Datatype::Uint(w);
-                    self.render_mem(addr, w, &vty)
-                } else {
-                    let vty = self.type_of(out);
-                    self.render_mem(addr, sz, &vty)
+                // testmem (emit/arms/testmem.rs): a witnessed masked narrow load prints its
+                // deref at int width
+                if let Some(r) = arms::render_value(self, ValueSite::Load { out, addr }) {
+                    return r;
                 }
+                let vty = self.type_of(out);
+                self.render_mem(addr, sz, &vty)
             }
             // PTRADD/PTRSUB used as a value (not a LOAD/STORE pointer): C pointer arithmetic
             // scales by the element implicitly, so `base + index` (Ghidra `opPtradd` non-value
@@ -5367,52 +5362,8 @@ fn print_c_inner(
         }
     }
 
-    // testmem candidates (see EmitReport::testmem_candidates): masked narrow loads feeding a
-    // zero-equality — the shape whose original-instruction readout distinguishes an int-wide
-    // source access from a narrow one.
-    for opid in f.op_ids() {
-        let o = f.op(opid);
-        if o.is_dead() || o.code() != OpCode::Load {
-            continue;
-        }
-        let Some(out) = o.output else { continue };
-        if f.vn(out).size == 0 || f.vn(out).size >= f.size_of_int() {
-            continue;
-        }
-        // the value, looked through a single ZEXT if present
-        let mut val = out;
-        let uses: Vec<_> = f.vn(val).descend.iter().copied().filter(|&u| !f.op(u).is_dead()).collect();
-        if uses.len() == 1 && f.op(uses[0]).code() == OpCode::IntZext {
-            if let Some(z) = f.op(uses[0]).output {
-                val = z;
-            }
-        }
-        let anduse: Vec<_> = f.vn(val).descend.iter().copied().filter(|&u| !f.op(u).is_dead()).collect();
-        if anduse.len() != 1 || f.op(anduse[0]).code() != OpCode::IntAnd {
-            continue;
-        }
-        let ao = f.op(anduse[0]);
-        let narrow_bits = u64::from(f.vn(out).size) * 8;
-        let narrow_mask = if narrow_bits >= 64 { u64::MAX } else { (1u64 << narrow_bits) - 1 };
-        let const_fits = ao.input(1).is_some_and(|k| {
-            f.vn(k).is_constant() && f.vn(k).constant_value() & !narrow_mask == 0
-        });
-        if !const_fits {
-            continue;
-        }
-        let cmp0 = ao.output.is_some_and(|av| {
-            f.vn(av).descend.iter().all(|&u| {
-                let uo = f.op(u);
-                matches!(uo.code(), OpCode::IntEqual | OpCode::IntNotequal)
-                    && uo.input(1).is_some_and(|k| f.vn(k).is_constant() && f.vn(k).constant_value() == 0)
-                    || uo.code() == OpCode::BoolNegate
-            })
-        });
-        if !cmp0 {
-            continue;
-        }
-        p.report.testmem_candidates.push((out, o.seqnum.pc.offset));
-    }
+    // testmem candidates (emit/arms/testmem.rs): the census is the arm's
+    arms::testmem::recognize(&mut p, f);
 
     // store-run candidates (see EmitReport::store_runs): per block, maximal runs of
     // consecutive statement ops that are pure stores to distinct constant globals.
