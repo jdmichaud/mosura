@@ -114,6 +114,7 @@ pub mod sdiv_pow2;
 pub mod sparse_switch;
 pub mod string_ops;
 pub mod struct_copy;
+pub mod unsigned_cmp;
 
 /// The kinds of site the statement-level hook is called from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +197,7 @@ pub const SURFACE_METHODS: &[&str] = &[
     "name_of", "render_var", "lvalue_of", "is_explicit", "strlen_arg", "emit_structured", "render_op",
     "lab_name", "first_pc", "next_flow_after", "plain_if_condition_vn", "spacebase_sym_at", "frame_off",
     "type_of", "stack_slot_name", "declare_stack", "collect_conj_clauses", "render_cond_expr", "emit_basic",
+    "cast_operand",
 ];
 /// The free helpers of `printc` an arm file may import.
 #[cfg_attr(not(test), allow(dead_code))] // the documented list; read by the surface test
@@ -207,14 +209,17 @@ pub const SURFACE_HELPERS: &[&str] = &[
 mod tests {
     use super::*;
 
-    /// The arm files, as text, for the surface scan.
-    const ARM_SOURCES: [(&str, &str); 6] = [
+    /// The arm files, as text, for the surface scan — every `pub mod` of this module must be here
+    /// (`arms_touch_only_the_documented_surface` checks that against this file's own source, so a
+    /// new arm file cannot slip past the scan).
+    const ARM_SOURCES: [(&str, &str); 7] = [
         ("string_ops.rs", include_str!("string_ops.rs")),
         ("struct_copy.rs", include_str!("struct_copy.rs")),
         ("sparse_switch.rs", include_str!("sparse_switch.rs")),
         ("frame_fill.rs", include_str!("frame_fill.rs")),
         ("sdiv_pow2.rs", include_str!("sdiv_pow2.rs")),
         ("nested_conds.rs", include_str!("nested_conds.rs")),
+        ("unsigned_cmp.rs", include_str!("unsigned_cmp.rs")),
     ];
 
     /// Every `p.`/`pr.`/`me.` member access and every `use crate::decompile::printc::{..}` item in
@@ -224,6 +229,16 @@ mod tests {
         let access = regex::Regex::new(r"\b(?:p|pr|me)\.([a-z_][a-z_0-9]*)\s*(\()?").unwrap();
         let import = regex::Regex::new(r"use crate::decompile::printc::(?:\{([^}]*)\}|([A-Za-z_][A-Za-z_0-9]*));").unwrap();
         let mut violations = Vec::new();
+        // every arm module is scanned: the `pub mod x;` lines of this file against ARM_SOURCES
+        let this = include_str!("mod.rs");
+        for line in this.lines() {
+            if let Some(name) = line.strip_prefix("pub mod ").and_then(|r| r.strip_suffix(';')) {
+                let file = format!("{name}.rs");
+                if !ARM_SOURCES.iter().any(|(n, _)| *n == file) {
+                    violations.push(format!("arm module `{name}` is not in ARM_SOURCES — the surface scan does not see it"));
+                }
+            }
+        }
         let mut used_fields = std::collections::BTreeSet::new();
         let mut used_methods = std::collections::BTreeSet::new();
         let mut used_helpers = std::collections::BTreeSet::new();
@@ -303,18 +318,25 @@ pub enum ValueSite<'v> {
     /// `src` writes the field at its slot. Replaces the inline consult at printc.rs:2707 (6b6533b).
     /// The sixth consult, the declaration (printc.rs:1939), is the [`declare_slot`] seam.
     FusedStore { sym: &'v StackSymbol, src: VarnodeId },
+    /// `eq_bin`: an `==`/`!=` (`sym`, at the port's precedence `prec`) the port is about to
+    /// render — an all-ones narrow equality whose original immediate is the zero-extended spelling
+    /// prints as `(uintN)x sym 0xffN`. Replaces the inline block at printc.rs:1941-1966 (33d6e37);
+    /// R2b, commit 1.
+    Equality { op: OpId, sym: &'static str, prec: u8 },
 }
 
 /// The value-render chokepoint — ONE hook with situations, the same shape as [`try_emit`]'s
 /// sites: the rendering and its precedence, or `None` = the port renders the value itself. The
 /// situations are disjoint, so order matters only INSIDE `OpRoot`: string-ops (the strlen fold)
 /// then sdiv-pow2 (a division chain root), as `render_op_inner` had them; `Var` has one answerer,
-/// string-ops; every slot situation has exactly one answerer, frame-fill. The precedence is read
-/// for `OpRoot` and `Var`; the slot situations' callers take the text.
+/// string-ops; `Equality` one, unsigned-cmp; every slot situation has exactly one answerer,
+/// frame-fill. The precedence is read for `OpRoot`, `Var` and `Equality`; the slot situations'
+/// callers take the text.
 pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, u8)> {
     match site {
         ValueSite::OpRoot { op } => string_ops::strlen_fold(p, op).or_else(|| sdiv_pow2::render(p, op)),
         ValueSite::Var { v } => string_ops::render_var_value(p, v),
+        ValueSite::Equality { op, sym, prec } => unsigned_cmp::render(p, op, sym, prec),
         other => frame_fill::render_value(p, &other),
     }
 }

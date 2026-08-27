@@ -1493,7 +1493,7 @@ impl<'a> PrintC<'a> {
     /// time (Stage 3 of the IR-cast-model port). What stays a pure print concern is Ghidra's
     /// `markExplicitUnsigned`: a constant that adopts an explicit `U` suffix ([`mark_explicit_unsigned`])
     /// rather than a cast op.
-    fn cast_operand(&mut self, op: OpId, slot: usize, prec: u8, right: bool) -> String {
+    pub(crate) fn cast_operand(&mut self, op: OpId, slot: usize, prec: u8, right: bool) -> String {
         let v = self.f.op(op).input(slot).unwrap();
         if self.f.vn(v).is_constant() && self.mark_explicit_unsigned(op, slot) {
             let vn = self.f.vn(v);
@@ -1936,33 +1936,10 @@ impl<'a> PrintC<'a> {
     /// original's wider-register compare against the zero-extended immediate.
     fn eq_bin(&mut self, op: super::op::OpId, sym: &'static str) -> (String, u8) {
         let prec = 9u8;
-        let o = self.f.op(op);
-        let pc = o.seqnum.pc.offset;
-        let site = o.input(0).zip(o.input(1)).and_then(|(x, y)| {
-            let cslot = if self.f.vn(y).is_constant() {
-                1usize
-            } else if self.f.vn(x).is_constant() {
-                0usize
-            } else {
-                return None;
-            };
-            let cvn = if cslot == 0 { x } else { y };
-            let size = self.f.vn(cvn).size;
-            if !(size == 1 || size == 2) {
-                return None;
-            }
-            let mask = (1u64 << (u64::from(size) * 8)) - 1;
-            (self.f.vn(cvn).constant_value() & mask == mask).then_some((cslot, size, mask))
-        });
-        if let Some((cslot, size, mask)) = site {
-            self.report.allones_cmp_candidates.push((pc, size));
-            if self.recovered.unsigned_cmp_sites.contains(&pc) {
-                let other = self.cast_operand(op, 1 - cslot, 13, false);
-                return (
-                    format!("({}){other} {sym} 0x{mask:x}", Datatype::Uint(size).name()),
-                    prec,
-                );
-            }
+        // unsigned-cmp (emit/arms/unsigned_cmp.rs): an all-ones narrow equality whose original
+        // immediate is the zero-extended spelling prints as `(uintN)x sym 0xffN`
+        if let Some(r) = arms::render_value(self, ValueSite::Equality { op, sym, prec }) {
+            return r;
         }
         // A5 (`narrow-tests=rewiden`): `((x >> 8k) & m) sym 0` — the lifter's spelling of a
         // byte-of-word test — prints as `(x & (m << 8k)) sym 0`. Value-identical for the boolean
