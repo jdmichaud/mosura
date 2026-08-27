@@ -510,6 +510,156 @@ impl PrintC<'_> {
 
 }
 
+// THE MARKS (review R2b, commit 9). A MARK is a generic transformation the port applies keyed by
+// a witness the survey recovered from the original's bytes — skip, reorder, swap, declare at this
+// width — as opposed to a RULE, a text form the port would never print on its own (those live in
+// emit/arms/). Each mark is applied by exactly one named helper below; its doc names the witness
+// (the `RecoveredChoices` field and its `buildconfig::*_from_evidence` producer) and the
+// transformation. The helpers hold the code that sat inline at their call sites, verbatim; a new
+// mark gets a helper here, never an inline consult.
+impl PrintC<'_> {
+    /// MARK `widen_local_reps` (witness `buildconfig::widened_sites_from_evidence`): the narrow local
+    /// `id` declares at its register's width — under the `local-width=storage` axis, at a witnessed
+    /// site, or for a tier-2 widened value (`tier2_widen`). The caller declares it that way.
+    fn apply_widen_local_reps(&self, id: u32, v: VarnodeId) -> bool {
+        self.widen_narrow_locals
+            || self.recovered.widen_local_reps.contains(&id)
+            || self.tier2_widen.contains_key(&v)
+    }
+
+    /// MARK `call_arg_orders` (witness `buildconfig::param_orders_from_evidence`): the rendered
+    /// arguments of the call `op` permuted into the original's evaluation order — CONSTANTS ONLY
+    /// (the candidacy recorded here says which slots are safe). Returns the args to print.
+    fn apply_call_arg_orders(&mut self, op: OpId, mut args: Vec<String>) -> Vec<String> {
+        let o = self.f.op(op);
+        let a = |i: usize| o.input(i).unwrap();
+                // Argument-order candidates and the recovered permutation (`call_arg_orders`):
+                // C argument order is a recoverable choice — see EmitReport::call_order_candidates.
+                // Candidacy is recorded on every print, in the REFERENCE order the permutation
+                // will index into. Safety per argument: CONSTANTS ONLY. A constant's
+                // materialization is local to the call; permuting register-held variables
+                // re-orders their whole shuffle and ripples the compiler's allocation through
+                // the function (measured: three SAME_SHAPE siblings — FUN_00019e38/e98/ef8 —
+                // fell to MISMATCH under an identifier permutation, a pure regalloc cascade).
+                if let Some(t) = o.input(0) {
+                    let safe: Vec<bool> =
+                        (1..o.num_inputs()).map(|i| self.f.vn(a(i)).is_constant()).collect();
+                    if !safe.is_empty() {
+                        self.report.call_order_candidates.push((
+                            o.seqnum.pc.offset,
+                            self.f.vn(t).loc.offset,
+                            safe,
+                        ));
+                    }
+                }
+                if let Some(perm) = self.recovered.call_arg_orders.get(&o.seqnum.pc.offset) {
+                    if perm.len() == args.len() {
+                        args = perm.iter().map(|&j| args[j].clone()).collect();
+                    }
+                }
+        args
+    }
+
+    /// MARK `arm_swap_sites` (witness `buildconfig::arm_swaps_from_evidence`): the two constant
+    /// arms of the if at `pc` (assigning `k1`/`k2`) swap when the original placed the other arm
+    /// first — unless the address arm (`arm-order=address`) already decided this site.
+    fn apply_arm_swap(&mut self, pc: u64, k1: u64, k2: u64, swapped: bool, comps: &mut Vec<usize>, negated: &mut bool) {
+        self.report.arm_swap_candidates.push((pc, k1, k2));
+        // D3b's per-site recovered decision applies only when the address
+        // arm has not already decided this site (the two witnesses agree
+        // where both exist; applying both would undo the swap).
+        if !swapped && !self.arm_order_address && self.recovered.arm_swap_sites.contains(&pc) {
+            comps.swap(1, 2);
+            *negated = !*negated;
+        }
+    }
+
+    /// MARK `ilv_orders` (witness: the survey's statement-interleave recovery, `ilv_orders`): at
+    /// the statement `op` that heads a recovered interleave, the block's statements re-emit in
+    /// the ORIGINAL's order; the ops re-emitted here are skipped by the walk (`reordered`).
+    /// Returns whether the mark applied (the caller `continue`s).
+    fn apply_ilv_orders(&mut self, op: OpId, pad: &str, separator: &mut bool, reordered: &mut std::collections::HashSet<OpId>, out: &mut String) -> bool {
+        let Some(order) = self.recovered.ilv_orders.get(&op).cloned() else { return false };
+                // interleave re-emission: each op goes through the same printability
+                // tests as the walk below (a non-explicit output is an inline value and
+                // emits nothing; suppressed/nonprinting ops likewise), rendered as the
+                // walk would render it.
+                for ro in order {
+                    reordered.insert(ro);
+                    if self.suppressed.contains(&ro) || self.nonprinting.contains(&ro) {
+                        continue;
+                    }
+                    let o = self.f.op(ro);
+                    let stmtxt = match o.code() {
+                        OpCode::Store => {
+                            let (addr, vv) = (o.input(1).unwrap(), o.input(2).unwrap());
+                            let sz = self.f.vn(vv).size;
+                            let vty = self.type_of(vv);
+                            let lhs = self.render_mem(addr, sz, &vty).0;
+                            let val = self.render_var(vv).0;
+                            format!("{lhs} = {val}")
+                        }
+                        _ => match o.output {
+                            Some(outv) if self.is_explicit(outv) => self.render_assign(ro),
+                            _ => continue,
+                        },
+                    };
+                    if self.comma_separate {
+                        if *separator {
+                            let _ = write!(out, ", ");
+                        }
+                        let _ = write!(out, "{stmtxt}");
+                        *separator = true;
+                    } else {
+                        let _ = writeln!(out, "{pad}{stmtxt};");
+                    }
+                }
+        true
+    }
+
+    /// MARK `store_orders` (witness `buildconfig::store_orders_from_evidence`): at the store `op`
+    /// that heads a recovered run, the run's stores re-emit in the ORIGINAL's order; the ops
+    /// re-emitted here are skipped by the walk (`reordered`). Returns whether the mark applied.
+    fn apply_store_orders(&mut self, op: OpId, pad: &str, separator: &mut bool, reordered: &mut std::collections::HashSet<OpId>, out: &mut String) -> bool {
+        let Some(order) = self.recovered.store_orders.get(&op).cloned() else { return false };
+                for ro in order {
+                    reordered.insert(ro);
+                    let stmtxt = self.render_assign(ro);
+                    if self.comma_separate {
+                        if *separator {
+                            let _ = write!(out, ", ");
+                        }
+                        let _ = write!(out, "{stmtxt}");
+                        *separator = true;
+                    } else {
+                        if std::env::var_os("MOSURA_STMT_PC").is_some() {
+                            let _ = writeln!(out, "{pad}{stmtxt}; /*pc {:x} op {:?}*/", self.f.op(op).seqnum.pc.offset, self.f.op(op).code());
+                        } else {
+                            let _ = writeln!(out, "{pad}{stmtxt};");
+                        }
+                    }
+                }
+        true
+    }
+
+    /// MARK `narrow_return` (witness `buildconfig::narrow_return_from_evidence`): the function's
+    /// return type at the returned value's own width instead of the storage-widened one.
+    fn apply_narrow_return(&self, f: &Funcdata, vn: &super::varnode::Varnode, choices: &EmitChoices) -> u32 {
+        if self.recovered.narrow_return { vn.size } else { return_width(f, vn, choices) }
+    }
+
+    /// MARK `tier2_sites` (witness: the survey's tier-2 recovery over `tier2_candidates`): the
+    /// narrow value `out` (a narrow load, or an extract of `kind`'s width) becomes an explicit
+    /// local widened per `kind` — under the `local-width=storage` axis or at a witnessed site.
+    fn apply_tier2_sites(&mut self, out: VarnodeId, pc: u64, kind: Tier2Widen) {
+        self.report.tier2_candidates.push((out, pc));
+        if self.widen_narrow_locals || self.recovered.tier2_sites.contains(&out) {
+            self.force_explicit.insert(out);
+            self.tier2_widen.insert(out, kind);
+        }
+    }
+}
+
 impl<'a> PrintC<'a> {
     /// Whether a varnode is printed as its own named variable (vs inlined into its use).
     ///
@@ -919,10 +1069,7 @@ impl<'a> PrintC<'a> {
     /// the original program's own def-site widening produced (the measured probes:
     /// FUN_00031044, FUN_0001562c — docs/byte-exact-families.md, the local-width design).
     fn storage_widened_local(&self, id: u32, v: VarnodeId) -> Option<Datatype> {
-        if !(self.widen_narrow_locals
-            || self.recovered.widen_local_reps.contains(&id)
-            || self.tier2_widen.contains_key(&v))
-        {
+        if !self.apply_widen_local_reps(id, v) {
             return None;
         }
         self.local_width_candidate(id, v)
@@ -2043,31 +2190,9 @@ impl<'a> PrintC<'a> {
                         .collect();
                     eprintln!("CALLARGS {name} op={} args=[{}]", op.0, facts.join(" | "));
                 }
-                let mut args: Vec<String> = (1..o.num_inputs()).map(|i| self.render_var(a(i)).0).collect();
-                // Argument-order candidates and the recovered permutation (`call_arg_orders`):
-                // C argument order is a recoverable choice — see EmitReport::call_order_candidates.
-                // Candidacy is recorded on every print, in the REFERENCE order the permutation
-                // will index into. Safety per argument: CONSTANTS ONLY. A constant's
-                // materialization is local to the call; permuting register-held variables
-                // re-orders their whole shuffle and ripples the compiler's allocation through
-                // the function (measured: three SAME_SHAPE siblings — FUN_00019e38/e98/ef8 —
-                // fell to MISMATCH under an identifier permutation, a pure regalloc cascade).
-                if let Some(t) = o.input(0) {
-                    let safe: Vec<bool> =
-                        (1..o.num_inputs()).map(|i| self.f.vn(a(i)).is_constant()).collect();
-                    if !safe.is_empty() {
-                        self.report.call_order_candidates.push((
-                            o.seqnum.pc.offset,
-                            self.f.vn(t).loc.offset,
-                            safe,
-                        ));
-                    }
-                }
-                if let Some(perm) = self.recovered.call_arg_orders.get(&o.seqnum.pc.offset) {
-                    if perm.len() == args.len() {
-                        args = perm.iter().map(|&j| args[j].clone()).collect();
-                    }
-                }
+                let args: Vec<String> = (1..o.num_inputs()).map(|i| self.render_var(a(i)).0).collect();
+                // call-arg-orders MARK: the candidacy report and the recovered permutation
+                let args = self.apply_call_arg_orders(op, args);
                 (format!("{name}({})", args.join(", ")), 16)
             }
             OpCode::Callind => {
@@ -3230,14 +3355,7 @@ impl<'a> PrintC<'a> {
             {
                 if h1 == h2 && k1 != k2 {
                     if let Some(pc) = site {
-                        self.report.arm_swap_candidates.push((pc, k1, k2));
-                        // D3b's per-site recovered decision applies only when the address
-                        // arm has not already decided this site (the two witnesses agree
-                        // where both exist; applying both would undo the swap).
-                        if !swapped && !self.arm_order_address && self.recovered.arm_swap_sites.contains(&pc) {
-                            comps.swap(1, 2);
-                            negated = !negated;
-                        }
+                        self.apply_arm_swap(pc, k1, k2, swapped, &mut comps, &mut negated);
                     }
                 }
             }
@@ -3356,61 +3474,10 @@ impl<'a> PrintC<'a> {
                     continue;
                 }
             }
-            if let Some(order) = self.recovered.ilv_orders.get(&op).cloned() {
-                // interleave re-emission: each op goes through the same printability
-                // tests as the walk below (a non-explicit output is an inline value and
-                // emits nothing; suppressed/nonprinting ops likewise), rendered as the
-                // walk would render it.
-                for ro in order {
-                    reordered.insert(ro);
-                    if self.suppressed.contains(&ro) || self.nonprinting.contains(&ro) {
-                        continue;
-                    }
-                    let o = self.f.op(ro);
-                    let stmtxt = match o.code() {
-                        OpCode::Store => {
-                            let (addr, vv) = (o.input(1).unwrap(), o.input(2).unwrap());
-                            let sz = self.f.vn(vv).size;
-                            let vty = self.type_of(vv);
-                            let lhs = self.render_mem(addr, sz, &vty).0;
-                            let val = self.render_var(vv).0;
-                            format!("{lhs} = {val}")
-                        }
-                        _ => match o.output {
-                            Some(outv) if self.is_explicit(outv) => self.render_assign(ro),
-                            _ => continue,
-                        },
-                    };
-                    if self.comma_separate {
-                        if separator {
-                            let _ = write!(out, ", ");
-                        }
-                        let _ = write!(out, "{stmtxt}");
-                        separator = true;
-                    } else {
-                        let _ = writeln!(out, "{pad}{stmtxt};");
-                    }
-                }
+            if self.apply_ilv_orders(op, &pad, &mut separator, &mut reordered, out) {
                 continue;
             }
-            if let Some(order) = self.recovered.store_orders.get(&op).cloned() {
-                for ro in order {
-                    reordered.insert(ro);
-                    let stmtxt = self.render_assign(ro);
-                    if self.comma_separate {
-                        if separator {
-                            let _ = write!(out, ", ");
-                        }
-                        let _ = write!(out, "{stmtxt}");
-                        separator = true;
-                    } else {
-                        if std::env::var_os("MOSURA_STMT_PC").is_some() {
-                            let _ = writeln!(out, "{pad}{stmtxt}; /*pc {:x} op {:?}*/", self.f.op(op).seqnum.pc.offset, self.f.op(op).code());
-                        } else {
-                            let _ = writeln!(out, "{pad}{stmtxt};");
-                        }
-                    }
-                }
+            if self.apply_store_orders(op, &pad, &mut separator, &mut reordered, out) {
                 continue;
             }
             if self.suppressed.contains(&op) {
@@ -4693,7 +4760,7 @@ fn print_c_inner(
                 }
             }
         }
-        let w = if p.recovered.narrow_return { vn.size } else { return_width(f, vn, choices) };
+        let w = p.apply_narrow_return(f, vn, choices);
         widen_to_storage(&p.type_of(v), w).name()
     });
     // Signature parameters in convention order, each typed from its backing input Varnode.
@@ -4815,11 +4882,7 @@ fn print_c_inner(
                             })
                     });
                     if cmp_pos_const {
-                        p.report.tier2_candidates.push((out, o.seqnum.pc.offset));
-                        if p.widen_narrow_locals || p.recovered.tier2_sites.contains(&out) {
-                            p.force_explicit.insert(out);
-                            p.tier2_widen.insert(out, Tier2Widen::NarrowLoad);
-                        }
+                        p.apply_tier2_sites(out, o.seqnum.pc.offset, Tier2Widen::NarrowLoad);
                     }
                 }
                 OpCode::IntAnd => {
@@ -4841,11 +4904,7 @@ fn print_c_inner(
                     if p.is_explicit(out) {
                         continue; // already a named variable; only the rendering would change
                     }
-                    p.report.tier2_candidates.push((out, o.seqnum.pc.offset));
-                    if p.widen_narrow_locals || p.recovered.tier2_sites.contains(&out) {
-                        p.force_explicit.insert(out);
-                        p.tier2_widen.insert(out, Tier2Widen::Extract(width));
-                    }
+                    p.apply_tier2_sites(out, o.seqnum.pc.offset, Tier2Widen::Extract(width));
                 }
                 _ => {}
             }
