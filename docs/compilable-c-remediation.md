@@ -308,7 +308,7 @@ resolver may cross only *single-use* COPY/CAST links (crossing a local's own `pT
 COPY inlined the call into the memcpy — a second call, wrong code, 10 sites), and with correctly
 typed pointers Ghidra's cleanup `RuleExpandLoad` (ruleaction.cc:10909, a faithful port) widens a
 byte copy's LOAD to the pointee width — the recognizers read `SUBPIECE(LOAD:4, 0)` at the pc
-as the byte load. Fixtures `x86_memcpy_stackdst.xml`, `x86_32c00.xml` (the specimen, extracted).
+as the byte load. Fixtures `x86_memcpy_stackdst.xml`, `x86_32c00.xml` (a self-compiled MVE of the specimen's shape).
 The typed-pointer compare variant (`x86_repe_cmpsb_typed.xml`, both operands widened) still
 renders `memcmp`. **Measured (round w1e vs uintlit2): WGSS 0.5428 → 0.5430 (+33.5 insn-sim);
 EXACT 839 → 840 (0x4db68 SAME_SHAPE → EXACT); 0 EXACT lost; 63 affected TUs, 11 up / 47 flat /
@@ -432,7 +432,7 @@ into memory fields; the escaping local must lie inside `[bottom, top)`.
 The residual of the near-EXACT group (0x12e40 0x13014 0x2dc14 0x2ddcc at 0.909, 0x12e6c 0x2dd1c
 0x2dd74 SAME_SHAPE 0.692, 0x2df14 0.867) is STATEMENT ORDER: the original stores the register-sourced
 fields first and the constants after, the C prints the constants first — and the oracle on the
-extracted 0x12e6c fixture (`x86_12e6c_order.xml`) prints the same order as mosura (`xStack_ce = 0x14; axStack_d4[0] = 10;
+0x12e6c specimen (a scratch fixture, not committed) prints the same order as mosura (`xStack_ce = 0x14; axStack_d4[0] = 10;
 xStack_cc = param_1; xStack_cb = param_2;`), so it is Ghidra's order, a future pc-order emitter arm
 for independent frame stores, not a defect.
 
