@@ -1,6 +1,7 @@
 <!-- SELF-COMPILED fixture: wcc386 10.0a (in-house), flags -5r -fpi87 -s -onatx -d1+ -zq. No third-party
      bytes — the source is this comment; regenerate with examples/watcom_mve_fixtures.rs.
-     Externs: code from 0x9000 (one RET stub per callee, 0x10 apart), data from 0xa000 (0x100 apart).
+     Externs: code from 0x171000 (one RET stub per callee, 0x10 apart), data from 0x172000 (0x100 apart).
+     externs: f4=0x171000 fc=0x171010 ff=0x171020 f11=0x171030 f12=0x171040 f13=0x171050 f14=0x171060 f15=0x171070 f19=0x171080 tbl=0x172000 g11=0x172100 g13=0x172200
   extern void f4(unsigned char *p);
   extern void fc(unsigned char *q);
   extern void ff(unsigned char *q);
@@ -31,34 +32,34 @@
   }
 -->
 <binaryimage arch="x86:LE:32:default:watcom">
-  <bytechunk space="ram" offset="0x8000" readonly="true">
-53525589e589c28a40068d5a083c11723f0f86830000003c1472280f86cf0000003c1972120f86db0000003c1a0f84df0000005d5a5bc33c150f84bc0000005d5a5bc33c120f8684000000e98a0000003c0d72120f86c40000003c0f0f82bc000000762beb123c040f82b000000076083c0c740f5d5a5bc389d0e8810f00005d5a5bc38d4208e8850f00005d5a5bc389d8e88a0f00005d5a5bc331db8a5a018d04dd0000000001d88a048500a0000025ff00000083f801756588daa100a1000081e2ff000000e8650f00005d5a5bc389d0e86a0f00005d5a5bc3803d00a2000000753b89d831d2e8640f00005d5a5bc389d0e8690f00005d5a5bc389d0e86e0f00005d5a5bc331c08a4201ba01000000eb0731c08a420131d2e8620f00005d5a5bc3
+  <bytechunk space="ram" offset="0x170000" readonly="true">
+53525589e589c28a40068d5a083c11723f0f86830000003c1472280f86cf0000003c1972120f86db0000003c1a0f84df0000005d5a5bc33c150f84bc0000005d5a5bc33c120f8684000000e98a0000003c0d72120f86c40000003c0f0f82bc000000762beb123c040f82b000000076083c0c740f5d5a5bc389d0e8810f00005d5a5bc38d4208e8850f00005d5a5bc389d8e88a0f00005d5a5bc331db8a5a018d04dd0000000001d88a04850020170025ff00000083f801756588daa10021170081e2ff000000e8650f00005d5a5bc389d0e86a0f00005d5a5bc3803d0022170000753b89d831d2e8640f00005d5a5bc389d0e8690f00005d5a5bc389d0e86e0f00005d5a5bc331c08a4201ba01000000eb0731c08a420131d2e8620f00005d5a5bc3
   </bytechunk>
-  <bytechunk space="ram" offset="0x9000" readonly="true">
+  <bytechunk space="ram" offset="0x171000" readonly="true">
 c3
   </bytechunk>
-  <bytechunk space="ram" offset="0x9010" readonly="true">
+  <bytechunk space="ram" offset="0x171010" readonly="true">
 c3
   </bytechunk>
-  <bytechunk space="ram" offset="0x9020" readonly="true">
+  <bytechunk space="ram" offset="0x171020" readonly="true">
 c3
   </bytechunk>
-  <bytechunk space="ram" offset="0x9030" readonly="true">
+  <bytechunk space="ram" offset="0x171030" readonly="true">
 c3
   </bytechunk>
-  <bytechunk space="ram" offset="0x9040" readonly="true">
+  <bytechunk space="ram" offset="0x171040" readonly="true">
 c3
   </bytechunk>
-  <bytechunk space="ram" offset="0x9050" readonly="true">
+  <bytechunk space="ram" offset="0x171050" readonly="true">
 c3
   </bytechunk>
-  <bytechunk space="ram" offset="0x9060" readonly="true">
+  <bytechunk space="ram" offset="0x171060" readonly="true">
 c3
   </bytechunk>
-  <bytechunk space="ram" offset="0x9070" readonly="true">
+  <bytechunk space="ram" offset="0x171070" readonly="true">
 c3
   </bytechunk>
-  <bytechunk space="ram" offset="0x9080" readonly="true">
+  <bytechunk space="ram" offset="0x171080" readonly="true">
 c3
   </bytechunk>
 </binaryimage>

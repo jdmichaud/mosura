@@ -30,9 +30,9 @@ fn under_sized_frame_declares_one_aggregate_with_field_offsets() {
     assert!(c.contains("xunknown1 axStack_d8 [208];"), "one aggregate sized to the frame:\n{c}");
     assert!(!c.contains("xStack_d0;") && !c.contains("xStack_cc;"), "no sibling scalar declarations:\n{c}");
     assert!(c.contains("*(xunknown2 *)(axStack_d8 + 8) = param_1;"), "field store at +8:\n{c}");
-    assert!(c.contains("*(xunknown2 *)(axStack_d8 + 0xc) = func_0x0000e000(param_3, 1);"), "the kept call-result store at +0xc:\n{c}");
+    assert!(c.contains("*(xunknown2 *)(axStack_d8 + 0xc) = func_0x001c1000(param_3, 1);"), "the kept call-result store at +0xc:\n{c}");
     assert!(c.contains("axStack_d8[6] = 0x1f;") && c.contains("axStack_d8[0] = 0xf;"), "byte fields index the aggregate:\n{c}");
-    assert!(c.contains("func_0x0000e010(axStack_d8);"), "the escaping base decays to the aggregate:\n{c}");
+    assert!(c.contains("func_0x001c1010(axStack_d8);"), "the escaping base decays to the aggregate:\n{c}");
 }
 
 /// Seam 4/5 (probe w4bp, fable-b's hold): an element read of a symbol the aggregate swallowed
@@ -60,7 +60,7 @@ fn swallowed_symbol_elements_render_as_fields() {
     assert!(c.contains("xunknown1 axStack_dc [204];"), "one aggregate sized to the frame:\n{c}");
     // seam 4: the constant-index element read is the field at its slot, not the vanished array
     assert!(c.contains("*(int4 *)(axStack_dc + 0x50)"), "the element read renders as the field at +0x50:\n{c}");
-    assert!(c.contains("func_0x0000f000((int4 *)(axStack_dc + 0x50));"), "the escaping array base is the field's address:\n{c}");
+    assert!(c.contains("func_0x001d1000((int4 *)(axStack_dc + 0x50));"), "the escaping array base is the field's address:\n{c}");
     assert!(c.contains("(int4 *)(axStack_dc + 0x50) + iVar"), "the indexed element read goes through the field's address:\n{c}");
     let stack_decls = c
         .lines()

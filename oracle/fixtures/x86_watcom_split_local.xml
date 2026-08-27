@@ -1,6 +1,7 @@
 <!-- SELF-COMPILED fixture: wcc386 10.0a (in-house), flags -5r -fpi87 -s -onatx -d1+ -zq. No third-party
      bytes — the source is this comment; regenerate with examples/watcom_mve_fixtures.rs.
-     Externs: code from 0x6000 (one RET stub per callee, 0x10 apart), data from 0x7000 (0x100 apart).
+     Externs: code from 0x141000 (one RET stub per callee, 0x10 apart), data from 0x142000 (0x100 apart).
+     externs: getp=0x141000 use=0x141010
   typedef struct { short x, y; } GPOINT;
   extern GPOINT getp(void);
   extern int use(int x, int y, int k);
@@ -13,13 +14,13 @@
   }
 -->
 <binaryimage arch="x86:LE:32:default:watcom">
-  <bytechunk space="ram" offset="0x5000" readonly="true">
+  <bytechunk space="ram" offset="0x140000" readonly="true">
 53525589e583ec04e8f30f00008945fc0fbf55fe0fbf45fcbb01000000e8ee0f000085c07407b801000000eb120fbf55fe0fbf45fcbb02000000e8d10f000089ec5d5a5bc3
   </bytechunk>
-  <bytechunk space="ram" offset="0x6000" readonly="true">
+  <bytechunk space="ram" offset="0x141000" readonly="true">
 c3
   </bytechunk>
-  <bytechunk space="ram" offset="0x6010" readonly="true">
+  <bytechunk space="ram" offset="0x141010" readonly="true">
 c3
   </bytechunk>
 </binaryimage>

@@ -31,15 +31,15 @@ fn render(fixture: &str) -> (String, String) {
 fn movsd_run_into_a_pointer_prints_the_struct_assignment() {
     let (reference, c) = render("x86_40470_struct_copy.xml");
     assert!(!reference.contains("struct p8"), "the reference rendering is the dword copies:\n{reference}");
-    assert!(c.contains("*(struct p8 *)(param_1 + 0xc) = *(struct p8 *)0xc000;"), "the 2-dword run is one assignment:\n{c}");
-    assert_eq!(c.matches("0xc004").count(), 0, "the second dword copy is folded into the assignment:\n{c}");
+    assert!(c.contains("*(struct p8 *)(param_1 + 0xc) = *(struct p8 *)0x192000;"), "the 2-dword run is one assignment:\n{c}");
+    assert_eq!(c.matches("0x192004").count(), 0, "the second dword copy is folded into the assignment:\n{c}");
 }
 
 #[test]
 fn global_to_global_runs_print_the_struct_assignments() {
     let (reference, c) = render("x86_20258_struct_copy_globals.xml");
     assert!(!reference.contains("struct p12"), "the reference rendering is the dword copies:\n{reference}");
-    assert!(c.contains("*(struct p12 *)0xb000 = *(struct p12 *)0xb100;"), "the first 3-dword run:\n{c}");
-    assert!(c.contains("*(struct p12 *)0xb200 = *(struct p12 *)0xb300;"), "the second 3-dword run:\n{c}");
-    assert!(!c.contains("xRam0000b004 = "), "no per-dword copies remain:\n{c}");
+    assert!(c.contains("*(struct p12 *)0x182000 = *(struct p12 *)0x182100;"), "the first 3-dword run:\n{c}");
+    assert!(c.contains("*(struct p12 *)0x182200 = *(struct p12 *)0x182300;"), "the second 3-dword run:\n{c}");
+    assert!(!c.contains("xRam00182004 = "), "no per-dword copies remain:\n{c}");
 }

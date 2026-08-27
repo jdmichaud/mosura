@@ -34,7 +34,7 @@ fn witnessed_scaled_index_access_spells_as_a_subscript() {
     // Reference: address arithmetic through a pointer temp (no recovered witness yet).
     let reference = print_c(&f);
     assert!(
-        reference.contains("* 4 + 0x9000") && !reference.contains(")[param_1]"),
+        reference.contains("* 4 + 0x162000") && !reference.contains(")[param_1]"),
         "the reference keeps the pointer arithmetic:\n{reference}"
     );
 
@@ -48,7 +48,7 @@ fn witnessed_scaled_index_access_spells_as_a_subscript() {
     let recovered = RecoveredChoices { array_index_sites: sites, ..Default::default() };
     let c = print_c_recovered(&f, &choices, &recovered);
     assert!(
-        c.contains("0x9000)[param_1]") && !c.contains("* 4 + 0x9000"),
+        c.contains("0x162000)[param_1]") && !c.contains("* 4 + 0x162000"),
         "the witnessed access spells the subscript:\n{c}"
     );
 }

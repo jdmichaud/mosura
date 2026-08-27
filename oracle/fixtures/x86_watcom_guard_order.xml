@@ -1,6 +1,7 @@
 <!-- SELF-COMPILED fixture: wcc386 10.0a (in-house), flags -5r -fpi87 -s -onatx -d1+ -zq. No third-party
      bytes — the source is this comment; regenerate with examples/watcom_mve_fixtures.rs.
-     Externs: code from 0x5000 (one RET stub per callee, 0x10 apart), data from 0x6000 (0x100 apart).
+     Externs: code from 0x131000 (one RET stub per callee, 0x10 apart), data from 0x132000 (0x100 apart).
+     externs: tbl=0x132000
   extern unsigned char tbl[];
   int mve(unsigned flags, unsigned t)
   {
@@ -12,10 +13,10 @@
   }
 -->
 <binaryimage arch="x86:LE:32:default:watcom">
-  <bytechunk space="ram" offset="0x4000" readonly="true">
-535589e589c389d0f6c304740a8a82006000002402eb1283fa09760531d05d5bc38a8200600000240125ff0000005d5bc3
+  <bytechunk space="ram" offset="0x130000" readonly="true">
+535589e589c389d0f6c304740a8a82002013002402eb1283fa09760531d05d5bc38a8200201300240125ff0000005d5bc3
   </bytechunk>
-  <bytechunk space="ram" offset="0x5000" readonly="true">
+  <bytechunk space="ram" offset="0x131000" readonly="true">
 c3
   </bytechunk>
 </binaryimage>

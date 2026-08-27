@@ -23,10 +23,10 @@ fn store_of_call_result_into_escaping_frame_is_kept() {
     let mut f = build::raw_funcdata_flow_image_arch(spec, "func", &image, entry, ctx, &dt.arch);
     pipeline::decompile(&mut f);
     let (c, _) = print_c_report(&f, &EmitChoices::default());
-    assert!(c.contains("xStack_cc = func_0x0000e000(param_3, 1);"), "the store of the call result must be kept (oracle form):\n{c}");
+    assert!(c.contains("xStack_cc = func_0x001c1000(param_3, 1);"), "the store of the call result must be kept (oracle form):\n{c}");
     assert!(c.contains("xunknown2 xStack_cc;"), "the stored slot is declared:\n{c}");
-    // the return-address pushes must not surface as kept stores: the MVE's function sits at 0xd000
-    // (its callees' stubs at 0xe000..), so a leaked return address would print as a stored `0xd0..`
-    let leaked = c.split("= 0xd0").skip(1).any(|r| r.len() >= 2 && r[..2].chars().all(|ch| ch.is_ascii_hexdigit()));
+    // the return-address pushes must not surface as kept stores: the MVE's function sits at 0x1c0000
+    // (its callees' stubs at 0x1c1000..), so a leaked return address would print as a stored `0x1c00..`
+    let leaked = c.split("= 0x1c0").skip(1).any(|r| r.len() >= 3 && r[..3].chars().all(|ch| ch.is_ascii_hexdigit()));
     assert!(!leaked, "no return-address store leaked:\n{c}");
 }

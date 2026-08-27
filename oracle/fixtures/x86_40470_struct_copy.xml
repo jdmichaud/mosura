@@ -1,6 +1,7 @@
 <!-- SELF-COMPILED fixture: wcc386 10.0a (in-house), flags -5r -fpi87 -s -onatx -d1+ -zq. No third-party
      bytes — the source is this comment; regenerate with examples/watcom_mve_fixtures.rs.
-     Externs: code from 0xb000 (one RET stub per callee, 0x10 apart), data from 0xc000 (0x100 apart).
+     Externs: code from 0x191000 (one RET stub per callee, 0x10 apart), data from 0x192000 (0x100 apart).
+     externs: gpair=0x192000
   struct p8 { unsigned a; unsigned b; };
   extern struct p8 gpair;
   void mve(char *p)
@@ -9,10 +10,10 @@
   }
 -->
 <binaryimage arch="x86:LE:32:default:watcom">
-  <bytechunk space="ram" offset="0xa000" readonly="true">
-56575589e5be00c000008d780ca5a55d5f5ec3
+  <bytechunk space="ram" offset="0x190000" readonly="true">
+56575589e5be002019008d780ca5a55d5f5ec3
   </bytechunk>
-  <bytechunk space="ram" offset="0xb000" readonly="true">
+  <bytechunk space="ram" offset="0x191000" readonly="true">
 c3
   </bytechunk>
 </binaryimage>
