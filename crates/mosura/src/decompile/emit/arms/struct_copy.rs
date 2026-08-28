@@ -72,7 +72,7 @@ fn debug_dump_block(p: &PrintC<'_>, block_ops: &[OpId], op: OpId) {
         return;
     }
     let Some(b) = p.f.op(op).parent else { return };
-    if p.arms.struct_copy.assign && !p.recovered.movsd_runs.is_empty() {
+    if p.arms.struct_copy.assign && crate::debug::on(crate::debug::Topic::StructCopy) && !p.recovered.movsd_runs.is_empty() {
     for (&rp, &rk) in &p.recovered.movsd_runs {
         let here: Vec<String> = block_ops.iter().filter(|&&o| { let pc = p.f.op(o).seqnum.pc.offset; pc >= rp && pc < rp + rk as u64 }).map(|&o| { let x = p.f.op(o); format!("{:#x}:{:?}{}", x.seqnum.pc.offset, x.code(), if x.is_dead() { "(dead)" } else { "" }) }).collect();
         if !here.is_empty() { debug!(crate::debug::Topic::StructCopy, "{:#x} blk{} run @{rp:#x} k {rk}: ops {:?}", p.f.addr.offset, b.0, here); }
