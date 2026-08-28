@@ -195,9 +195,7 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
         let mut restarts = 0;
         while f.restart_pending && restarts < crate::decompile::pipeline::MAX_RESTARTS {
             restarts += 1;
-            if std::env::var("MOSURA_RESTART_DEBUG").is_ok() {
-                eprintln!("RESTART re-running decompile (attempt {restarts})");
-            }
+            debug!(crate::debug::Topic::Heritage, "re-running decompile (attempt {restarts})");
             f = build_one(Some(&f));
             crate::decompile::pipeline::decompile(&mut f);
         }
@@ -311,9 +309,7 @@ fn record_callee_effects(
     let Some(reg) = f.spaces.by_name("register") else { return };
     let calls: Vec<crate::decompile::op::OpId> =
         f.op_ids().filter(|&op| f.op(op).code() == OpCode::Call).collect();
-    if std::env::var_os("MOSURA_EFFECTS_DEBUG").is_some() {
-        eprintln!("record_callee_effects: {} ops, {} direct calls", f.op_ids().count(), calls.len());
-    }
+    debug!(crate::debug::Topic::Effects, "record_callee_effects: {} ops, {} direct calls", f.op_ids().count(), calls.len());
     type Effects = Option<(
         Vec<(crate::decompile::space::Address, u32)>,
         Vec<(crate::decompile::space::Address, u32)>,
@@ -467,16 +463,14 @@ fn record_callee_effects(
             let cl = *cleanup_cache
                 .entry(target)
                 .or_insert_with(|| callee_cleanup(program, spec, ctx, target, sp));
-            if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
-                eprintln!("[cdecl-evd] callee {target:#x} callee_cleanup={cl:?}");
-            }
+            debug!(crate::debug::Topic::Args, "callee {target:#x} callee_cleanup={cl:?}");
             if let Some(n) = cl {
                 f.call_specs.entry(call).or_default().extrapop = Some(4 + n as i32);
                 // SHADOW CENSUS (stack-args frontier): a callee popping its own stack
                 // bytes (`RET n`, n>0) declares n/4 stack argument slots — the watcall
                 // overflow family the trial chain currently starves.
-                if n > 0 && std::env::var_os("MOSURA_STACKARG_SHADOW").is_some() {
-                    eprintln!("[stackarg] call@{:#x} callee {target:#x} pops {n}", f.op(call).seqnum.pc.offset);
+                if n > 0 {
+                    debug!(crate::debug::Topic::Args, "call@{:#x} callee {target:#x} pops {n}", f.op(call).seqnum.pc.offset);
                 }
             }
             // PER-CALL MODEL EVIDENCE: the caller popping this call's arguments itself. Only
@@ -488,9 +482,7 @@ fn record_callee_effects(
             if cl == Some(0) {
                 let pc = f.op(call).seqnum.pc.offset;
                 let n = caller_cleanup_after(program, spec, ctx, pc, sp);
-                if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
-                    eprintln!("[cdecl-evd] call@{pc:#x} target={target:#x} caller_cleans={n:?}");
-                }
+                debug!(crate::debug::Topic::Args, "call@{pc:#x} target={target:#x} caller_cleans={n:?}");
                 if let Some(n) = n {
                     // The callee's clobber contract for the caller-pops pragma — the
                     // LANDED sb98 semantics: body writes with nested calls as the
@@ -587,13 +579,11 @@ fn record_callee_effects(
             .get(&target)
             .filter(|_| program.proto_scope.as_ref().is_none_or(|s| s.contains(&target)))
         {
-            if std::env::var_os("MOSURA_EFFECTS_DEBUG").is_some() {
-                eprintln!(
+            debug!(crate::debug::Topic::Effects,
                     "callee {target:08x} recovered proto: params={:?} out={:?}",
                     proto.params.iter().map(|p| (f.spaces.get(p.addr.space).name.clone(), p.addr.offset, p.size)).collect::<Vec<_>>(),
                     proto.output.as_ref().map(|o| (f.spaces.get(o.addr.space).name.clone(), o.addr.offset, o.size))
                 );
-            }
             // A recovered parameter's size is the width the CALLEE READS, which is not the width
             // of the slot it arrives in. This callee reads DX and BX, two bytes each, while the
             // caller writes whole 4-byte registers — and a 4-byte trial cannot justify into an
@@ -639,9 +629,7 @@ fn record_callee_effects(
             continue;
         }
         let Some((regs, reads)) = eff else { continue }; // scan bailed — claim nothing
-        if std::env::var_os("MOSURA_EFFECTS_DEBUG").is_some() {
-            eprintln!("callee {target:08x} overwrites {regs:?} reads {reads:?}");
-        }
+        debug!(crate::debug::Topic::Effects, "callee {target:08x} overwrites {regs:?} reads {reads:?}");
         let cs = f.call_specs.entry(call).or_default();
         cs.overwrites = regs;
         cs.reads = Some(reads);
@@ -1154,9 +1142,8 @@ fn callee_writes_cfg(
             frontier.push(pc + insn.bytes.len() as u64);
         }
     }
-    if std::env::var_os("MOSURA_MODIFY").is_some() {
-        eprintln!(
-            "MODIFY entry={entry:#x} writes={:x?} restored={:x?} nested={}",
+    debug!(crate::debug::Topic::Effects,
+            "entry={entry:#x} writes={:x?} restored={:x?} nested={}",
             writes,
             restored,
             match nested {
@@ -1165,7 +1152,6 @@ fn callee_writes_cfg(
                 NestedCalls::Transitive => "transitive",
             }
         );
-    }
     writes.retain(|o| !restored.contains(o));
     Some((writes, restored))
 }
@@ -1224,14 +1210,14 @@ fn callee_effects(
                     // SHADOW CENSUS (missing-args thread): reads collected BEFORE the exit
                     // are valid reads-before-write whatever follows — count what the bail
                     // discards.
-                    if std::env::var_os("MOSURA_SCAN_SHADOW").is_some() && !reads.is_empty() {
+                    if crate::debug::on(crate::debug::Topic::Args) && !reads.is_empty() {
                         let rs: Vec<String> = reads
                             .iter()
                             .filter(|(a, _)| !push_reads.contains(&a.offset))
                             .map(|(a, sz)| format!("{:#x}/{sz}", a.offset))
                             .collect();
                         if !rs.is_empty() {
-                            eprintln!("[scanbail] callee {entry:#x} at {:?} prefix-reads [{}]",
+                            debug!(crate::debug::Topic::Args, "callee {entry:#x} at {:?} prefix-reads [{}]",
                                 OpCode::from_u32(o.opcode), rs.join(" "));
                         }
                     }

@@ -280,7 +280,7 @@ impl AutoAnalysisManager {
     /// queue is a fixpoint, so a mis-scheduled analyzer shows up as an endless repeating
     /// cycle rather than as a wrong answer — this makes that visible directly.
     pub fn run(&mut self, program: &mut Program) {
-        let trace = std::env::var_os("MOSURA_ANALYSIS_TRACE").is_some();
+        let trace = crate::debug::on(crate::debug::Topic::Analysis);
         while let Some((&(prio, seq), _)) = self.sched.queue.first_key_value() {
             let cmd = self.sched.queue.remove(&(prio, seq)).expect("just observed");
             self.sched.active_priority = Some(prio);
@@ -290,8 +290,8 @@ impl AutoAnalysisManager {
                 // Printed on ENTRY as well as exit, so an entry that never returns names
                 // itself. With only the exit line, a hang shows up as the *previous* entry
                 // having finished and nothing after it, which points at the wrong one.
-                eprintln!(
-                    "[trace] {:>40} set={} ranges={} ...",
+                debug!(crate::debug::Topic::Analysis,
+                    "{:>40} set={} ranges={} ...",
                     name,
                     set.num_addresses(),
                     set.ranges().count()
@@ -329,7 +329,7 @@ impl AutoAnalysisManager {
                 }
             }
             if let Some((name, t)) = t {
-                eprintln!("[trace] {:>40} took={:?}", name, t.elapsed());
+                debug!(crate::debug::Topic::Analysis, "{:>40} took={:?}", name, t.elapsed());
             }
         }
         self.sched.active_priority = None;

@@ -59,6 +59,18 @@ pub enum Topic {
     GroundTruth,
     /// analysis/cspec.
     Cspec,
+    /// analysis/manager and analysis/analyzers (was `MOSURA_ANALYSIS_TRACE`, `_CP_PROBE`).
+    Analysis,
+    /// decompile/merge (was `MOSURA_IMPLIED_DEBUG`).
+    Merge,
+    /// the survey's own env-gated diagnostics (examples/war2_survey.rs: was `MOSURA_KERNEL_SHADOW`,
+    /// `_SHARED_RET_DEBUG`, `_SHADOW_DEBUG`, `_RAW_IR`, `_EXTENT`, `_AUX_DEBUG`, `_AGG_DEBUG`,
+    /// `_ZAP_DEBUG`) — its normal output (the manifest, the summaries) is not a diagnostic and
+    /// stays plain.
+    Survey,
+    /// decompile/action's timing accumulator and its `perf::dump` table (was `MOSURA_PERF`); its own
+    /// topic so a timing run does not switch the pipeline diagnostics on.
+    Perf,
 }
 
 impl Topic {
@@ -66,7 +78,7 @@ impl Topic {
         Topic::SparseSwitch, Topic::StructCopy, Topic::FrameFill, Topic::SumOrder, Topic::Printc, Topic::Recover,
         Topic::Structure, Topic::JumpTable, Topic::Args, Topic::Varargs, Topic::RetSplit, Topic::Effects,
         Topic::Varmap, Topic::StackVars, Topic::Heritage, Topic::Pointers, Topic::Pipeline, Topic::Watsched,
-        Topic::GroundTruth, Topic::Cspec,
+        Topic::GroundTruth, Topic::Cspec, Topic::Analysis, Topic::Merge, Topic::Survey, Topic::Perf,
     ];
     /// The kebab-case name used in `MOSURA_DEBUG` and as the print prefix.
     pub fn name(self) -> &'static str {
@@ -91,6 +103,10 @@ impl Topic {
             Topic::Watsched => "watsched",
             Topic::GroundTruth => "ground-truth",
             Topic::Cspec => "cspec",
+            Topic::Analysis => "analysis",
+            Topic::Merge => "merge",
+            Topic::Survey => "survey",
+            Topic::Perf => "perf",
         }
     }
 }

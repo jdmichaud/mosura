@@ -954,9 +954,7 @@ impl Analyzer for ConstantPropagationAnalyzer {
                 }
             }
         }
-        if std::env::var_os("MOSURA_CP_PROBE").is_some() {
-            eprintln!("[cp] entries={:?} rfb={__rfb:?} floc={__floc:?} flow={:?}", __ent, __t2.elapsed());
-        }
+        debug!(crate::debug::Topic::Analysis, "entries={:?} rfb={__rfb:?} floc={__floc:?} flow={:?}", __ent, __t2.elapsed());
         if !new_funcs.is_empty() {
             sched.function_defined(&new_funcs);
         }
