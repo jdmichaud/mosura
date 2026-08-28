@@ -187,6 +187,13 @@ something upstream changed size — and it never indicates a cause.
 
 ## Environment knobs
 
+The suite has one plan-closure test: `arm_enabled_emit_passes_wherever_plain_passes_in_the_32bit_column`
+(tests/ground_truth_recompile_arms.rs, the gcc ground-truth oracle over the arm-enabled emit). It is
+`#[ignore]`d, so the per-commit iteration suite (`cargo test --release --no-fail-fast`) does not run it
+and its `ignored` count is the visible sign; the closure suite at the end of a plan -- the acceptance
+chain -- runs it alone with `cargo test --release --test ground_truth_recompile_arms -- --ignored`, as
+does any commit that changes what it tests: the gt oracle, the emit plan or an arm (JD, 2026-08-28).
+
 | variable | effect |
 | --- | --- |
 | `MOSURA_PROTO_PASS=1` | whole-program callee prototype recovery before the emit |
