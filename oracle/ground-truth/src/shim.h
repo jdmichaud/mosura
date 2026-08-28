@@ -1,7 +1,7 @@
 /* Per-arch freestanding entry shim for the ground-truth corpus (task #3). The arithmetic /
  * switch / data helpers in each program are arch-NEUTRAL C; only the process-exit syscall is
  * arch-specific, isolated here so one source compiles across the gcc ELF matrix (x86-64,
- * AArch64, RISC-V, m68k). `_start` calls the helpers and passes the result to sys_exit so no
+ * i386 (`-m32`), AArch64, RISC-V, m68k). `_start` calls the helpers and passes the result to sys_exit so no
  * call is a tail-jump (a tail-jump target has no direct call site and flow analysis folds it
  * into the caller — see docs/ground-truth-corpus.md). Not used by the z80 (CP/M crt0) or
  * Watcom (wasm _cstart_ stub) columns, which have their own entry conventions. */
@@ -12,6 +12,9 @@ static inline void sys_exit(long code) {
 #if defined(__x86_64__)
     register long rax asm("rax") = 60, rdi asm("rdi") = code; /* Linux x86-64 exit */
     asm volatile("syscall" : : "r"(rax), "r"(rdi) : "memory");
+#elif defined(__i386__)
+    register long eax asm("eax") = 1, ebx asm("ebx") = code;  /* Linux i386 exit */
+    asm volatile("int $0x80" : : "r"(eax), "r"(ebx) : "memory");
 #elif defined(__aarch64__)
     register long x8 asm("x8") = 93, x0 asm("x0") = code;     /* Linux aarch64 exit */
     asm volatile("svc 0" : : "r"(x8), "r"(x0) : "memory");
@@ -22,8 +25,7 @@ static inline void sys_exit(long code) {
     register long d0 asm("d0") = 1, d1 asm("d1") = code;      /* Linux m68k exit */
     asm volatile("trap #0" : : "r"(d0), "r"(d1) : "memory");
 #else
-    (void)code;
-    for (;;) { }
+#error "sys_exit: no exit syscall for this target -- an unported column must fail to build, never spin into a vacuous verdict"
 #endif
 }
 

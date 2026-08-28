@@ -9,8 +9,11 @@
 //! exists to catch — listed here as a finding for JD, never baselined silently, not fixed here.
 //!
 //! What this test does NOT assert: the plain-32 verdicts. The i386 SysV path through the ELF
-//! analysis has never been measured (every existing baseline is the 64-bit host column); plain-32
-//! is REPORTED per program, and a plain-32 FAIL is its own finding, outside this invariant.
+//! analysis is measured here for the first time (every existing baseline is the 64-bit host
+//! column); plain-32 is REPORTED per program, and a plain-32 FAIL is its own finding, outside this
+//! invariant. Until gt speed commit 3 the 32-bit originals never terminated (the exit shim had no
+//! i386 branch), so every "PASS" of this column was `timeout` matching `timeout`; the real
+//! verdicts are in docs/ground-truth-findings.md ("The 32-bit column, measured").
 //! COVERAGE is reported too: the ARM TUs of a program are the functions whose arm-enabled text
 //! differs from the plain text — the only functions the arms touched; gcc rarely emits the Watcom
 //! idioms the witnesses look for, so most witness-gated arms fire on few or no gcc functions, and
@@ -18,30 +21,37 @@
 //! candidate rendered as if witnessed executes a rendering the measured configuration never
 //! produces, and some arms are value-identical only because of their witness).
 //!
-//! COST: 27 programs x 2 passes, each a `gcc -m32` build, decompile, recompile and run -- about
-//! 7 minutes on master. It is a PLAN-CLOSURE test (JD, 2026-08-28), `#[ignore]`d so that no
-//! per-commit iteration suite pays for it: the attribute is the mechanism (no environment variable
-//! to remember) and the `ignored` count in every suite summary is the visible sign. It runs alone,
-//! `cargo test --release --test ground_truth_recompile_arms -- --ignored`, at the end of a plan (the
-//! acceptance chain's closure suite) and for any commit that changes what it tests -- the gt
-//! oracle, the emit plan or an arm -- where the contract "a wrong-code arm fails the suite" is held.
-use mosura::recompile::groundtruth::{gcc_available, gcc_programs, recompile_program, EmitPlan, GtTimings, Target};
+//! COST: 27 programs, one analysis each (build, symbols, decompile) and two renderings (plain,
+//! arms), the programs in parallel -- about 4 s on five cores with the machine idle (3.9 s wall for the 27 programs, measured 2026-08-28 on this AMD Ryzen 5 4500U) (it was 430 s: the 32-bit originals spun
+//! until `timeout 5` killed them, twice per plan per program). It is a PLAN-CLOSURE test (JD,
+//! 2026-08-28), `#[ignore]`d so that no per-commit iteration suite pays for it: the attribute is the
+//! mechanism (no environment variable to remember) and the `ignored` count in every suite summary
+//! is the visible sign. It runs alone, `cargo test --release --test ground_truth_recompile_arms --
+//! --ignored`, at the end of a plan (the acceptance chain's closure suite) and for any commit that
+//! changes what it tests -- the gt oracle, the emit plan or an arm -- where the contract "a
+//! wrong-code arm fails the suite" is held.
+use mosura::recompile::groundtruth::{default_workers, gcc_available, gcc_programs, recompile_programs, EmitPlan, GtTimings, Target};
 
 #[test]
-#[ignore = "plan-closure test (~7 min on master): run with `cargo test --release --test ground_truth_recompile_arms -- --ignored` at the end of a plan or when a commit changes the gt oracle, the emit plan or an arm"]
+#[ignore = "plan-closure test (~5 s since gt speed commit 3; opt-in per JD's rule, 2026-08-28, until decided otherwise): run with `cargo test --release --test ground_truth_recompile_arms -- --ignored` at the end of a plan or when a commit changes the gt oracle, the emit plan or an arm"]
 fn arm_enabled_emit_passes_wherever_plain_passes_in_the_32bit_column() {
     assert!(gcc_available(), "gcc is required by the development environment (ground-truth recompile gate)");
     let workdir = mosura::paths::workspace_root().join("build/gt-recompile");
     std::fs::create_dir_all(&workdir).unwrap();
     let mut findings: Vec<String> = Vec::new();
     let (mut programs, mut plain_pass, mut arm_tus_total, mut fns_total) = (0usize, 0usize, 0usize, 0usize);
-    let (mut t_plain, mut t_arms) = (GtTimings::default(), GtTimings::default());
+    let (mut t_analysis, mut t_plain, mut t_arms) = (GtTimings::default(), GtTimings::default(), GtTimings::default());
     let wall = std::time::Instant::now();
-    for src in gcc_programs() {
-        let plain = recompile_program(&src, &workdir, Target::Gcc32, &EmitPlan::plain())
-            .unwrap_or_else(|e| panic!("{} (plain-32): {e}", src.display()));
-        let arms = recompile_program(&src, &workdir, Target::Gcc32, &EmitPlan::arms())
-            .unwrap_or_else(|e| panic!("{} (arms-32): {e}", src.display()));
+    // One analysis (build, symbols, decompile) per program, each plan rendering and checking it;
+    // the programs run in parallel, the lines below come in program order.
+    let srcs = gcc_programs();
+    let workers = default_workers();
+    let results = recompile_programs(&srcs, &workdir, Target::Gcc32, &[EmitPlan::plain(), EmitPlan::arms()], workers);
+    for (src, result) in srcs.iter().zip(results) {
+        let mut pr = result.unwrap_or_else(|e| panic!("{} (32-bit): {e}", src.display()));
+        let arms = pr.reports.pop().expect("arms report");
+        let plain = pr.reports.pop().expect("plain report");
+        t_analysis.add(&pr.analysis);
         // the arm TUs: the functions whose arm-enabled text differs from the plain text
         let arm_tus: Vec<&str> = arms
             .functions
@@ -80,9 +90,10 @@ fn arm_enabled_emit_passes_wherever_plain_passes_in_the_32bit_column() {
         "gt-arms summary: {programs} programs, plain-32 PASS {plain_pass}, arm TUs {arm_tus_total}/{fns_total} functions"
     );
     // The per-stage census (gt speed, commit 0): where the wall time goes, per pass.
+    println!("gt-arms timing analysis: {}", t_analysis.line());
     println!("gt-arms timing plain-32: {}", t_plain.line());
     println!("gt-arms timing arms-32:  {}", t_arms.line());
-    println!("gt-arms timing wall: {:.1}s", wall.elapsed().as_secs_f64());
+    println!("gt-arms timing wall: {:.1}s on {workers} workers", wall.elapsed().as_secs_f64());
     assert!(
         findings.is_empty(),
         "WRONG-CODE ARM findings (a program that PASSes plain fails arm-enabled) -- for JD, not to be baselined:\n  {}",

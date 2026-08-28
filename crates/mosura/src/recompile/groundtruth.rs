@@ -15,7 +15,9 @@ use std::time::{Duration, Instant};
 use object::{Object, ObjectSection, ObjectSymbol, SymbolKind};
 
 use super::verify::{emitted_symbol_address, verify, Subject};
+use crate::analysis::program::Program;
 use crate::analysis::{self, decompiler::decompile_function};
+use crate::decompile::funcdata::Funcdata;
 use crate::decompile::space::Address;
 use crate::decompile::types::Datatype;
 
@@ -53,6 +55,14 @@ impl Target {
         match self {
             Target::Gcc64 => LANG,
             Target::Gcc32 => LANG32,
+        }
+    }
+    /// The workdir suffix of the per-target ANALYSIS dir (the original's build, its symbols, the
+    /// decompilation): empty for the host column, so its ELF stays where it always was.
+    pub fn dir_suffix(self) -> &'static str {
+        match self {
+            Target::Gcc64 => "",
+            Target::Gcc32 => ".gcc32",
         }
     }
     pub fn tag(self) -> &'static str {
@@ -130,7 +140,9 @@ pub struct GtReport {
     pub original_bytes: Vec<(String, u64, Vec<u8>)>,
     /// The functional check: every recompiled function linked into one program and RUN; the
     /// exit status is the program's result. `PASS` (same status as the original), `FAIL(o,n)`,
-    /// `NOLINK` (an object failed or the link did), `NORUN` (the original could not be run).
+    /// `FAIL(timeout)` (ours was killed by `timeout 5`), `NOLINK` (an object failed or the link
+    /// did), `NORUN` / `NORUN(timeout)` (the original could not be run, or was killed — 124 is
+    /// `timeout`'s own status and is never compared as a result).
     pub functional: String,
     /// The column ([`Target::tag`]) and the plan ([`EmitPlan::name`]) this report measured.
     pub target: &'static str,
@@ -563,11 +575,46 @@ fn signature(c: &str) -> Option<(String, String)> {
 }
 
 /// Run the loop over one program source; every function gets a verdict.
-pub fn recompile_program(src: &Path, workdir: &Path, target: Target, plan: &EmitPlan) -> Result<GtReport, String> {
+/// One function's plan-independent analysis: the ELF symbol, its decompilation (kept alive so every
+/// plan renders from the same `Funcdata`), and the two Funcdata-only walks the TU assembly needs —
+/// global widths/types by address, address-of widths by emitted name (see `analyze_program`).
+pub struct AnalyzedFn {
+    sym: ElfSymbol,
+    f: Option<Funcdata>,
+    globals: BTreeMap<u64, (u32, Datatype)>,
+    /// Address-of references by emitted name (`&xRam…`), at the PTRSUB's pointee width.
+    addr_of: BTreeMap<String, (u32, Datatype)>,
+}
+
+/// Everything about a program that no emit plan changes (gt speed, commit 1): the gcc build of the
+/// original, its symbols, the analysis, every function's decompilation. Built once by
+/// [`analyze_program`], rendered and checked per plan by [`render_and_check`] — the arms are
+/// emit-time choices and the recovery reads the function's own bytes, so the second plan of the
+/// arms oracle used to repeat all of this for nothing.
+pub struct Analyzed {
+    pub program_name: String,
+    pub src: PathBuf,
+    pub target: Target,
+    /// The original, built in the per-target analysis dir (`workdir/<program><Target::dir_suffix>`).
+    pub bin_path: PathBuf,
+    program: Program,
+    symmap: BTreeMap<String, u64>,
+    data_syms: BTreeMap<String, u64>,
+    data_sizes: BTreeMap<u64, u64>,
+    syms_by_name_sizes: BTreeMap<String, u64>,
+    fn_bytes: BTreeMap<u64, Vec<u8>>,
+    functions: Vec<AnalyzedFn>,
+    /// `build`, `analyze`, `decompile` — the stages this step performed.
+    pub timings: GtTimings,
+}
+
+/// The plan-independent half of the oracle: build the original, read its symbols, analyze it and
+/// decompile every function. See [`Analyzed`].
+pub fn analyze_program(src: &Path, workdir: &Path, target: Target) -> Result<Analyzed, String> {
     let program_name = src.file_stem().and_then(|s| s.to_str()).unwrap_or("prog").to_string();
-    let dir = workdir.join(format!("{program_name}{}", plan.dir_suffix(target)));
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let bin_path = dir.join(format!("{program_name}.elf"));
+    let adir = workdir.join(format!("{program_name}{}", target.dir_suffix()));
+    std::fs::create_dir_all(&adir).map_err(|e| e.to_string())?;
+    let bin_path = adir.join(format!("{program_name}.elf"));
     let mut t = GtTimings::default();
     let t0 = Instant::now();
     build_program(src, &bin_path, target)?;
@@ -585,47 +632,17 @@ pub fn recompile_program(src: &Path, workdir: &Path, target: Target, plan: &Emit
     t.analyze = t0.elapsed();
     let ram = program.default_space;
 
-    // Decompile everything first: the callee prototypes come from the callees' own signatures.
-    struct Dec {
-        sym: ElfSymbol,
-        c: Option<String>,
-        self_name: String,
-        sig: String,
-        globals: BTreeMap<u64, (u32, Datatype)>,
-        /// Address-of references by emitted name (`&xRam…`), at the PTRSUB's pointee width.
-        addr_of: BTreeMap<String, (u32, Datatype)>,
-    }
-    let mut decs: Vec<Dec> = Vec::new();
+    // Decompile everything (the callee prototypes come from the callees' own signatures).
+    let mut functions: Vec<AnalyzedFn> = Vec::new();
     for s in syms.into_iter().filter(|s| s.is_func && fn_bytes.contains_key(&s.addr)) {
         let t0 = Instant::now();
         let f = decompile_function(&program, Address::new(ram, s.addr));
         t.decompile += t0.elapsed();
-        let (c, self_name, sig, globals, addr_of) = match f {
+        let (f, globals, addr_of) = match f {
             Some(f) => {
                 if std::env::var("MOSURA_GT_RAW").is_ok_and(|v| v == s.name) {
                     eprint!("{}", f.print_raw());
                 }
-                let t0 = Instant::now();
-                let c = if plan.recover {
-                    // the survey's recovery over THIS program's instructions (recompile::recovery)
-                    let insns = crate::recompile::insn::normalize(
-                        target.lang(),
-                        &fn_bytes[&s.addr],
-                        s.addr,
-                        &crate::recompile::insn::NoReloc,
-                    )
-                    .unwrap_or_default();
-                    // `call_arg_orders` is the survey's CROSS-FUNCTION derivation (its site_orders /
-                    // order_excluded / arg_reg_offs tables over the whole binary's call sites); it has
-                    // no counterpart over a gcc program, so no argument order is recovered here — a
-                    // stated absence, not an omission (review R5 b, fable-b's note).
-                    let recovered = crate::recompile::recovery::recover(&f, &insns, &plan.choices, &plan.rec_choices, |_| Default::default());
-                    crate::decompile::printc::print_c_recovered(&f, &plan.rec_choices, &recovered)
-                } else {
-                    crate::decompile::printc::print_c_with(&f, &plan.choices)
-                };
-                t.render += t0.elapsed();
-                let (n, sig) = signature(&c).unwrap_or((String::from("func"), String::from("int func()")));
                 let mut globals = BTreeMap::new();
                 let mut addr_of: BTreeMap<String, (u32, Datatype)> = BTreeMap::new();
                 for i in 0..f.num_varnodes() as u32 {
@@ -661,11 +678,82 @@ pub fn recompile_program(src: &Path, workdir: &Path, target: Target, plan: &Emit
                     addr_of.entry(name).or_insert((pointee.size().max(1), pointee.clone()));
                     globals.entry(addr).or_insert((pointee.size().max(1), pointee));
                 }
-                (Some(c), n, sig, globals, addr_of)
+                (Some(f), globals, addr_of)
             }
-            None => (None, String::new(), String::new(), BTreeMap::new(), BTreeMap::new()),
+            None => (None, BTreeMap::new(), BTreeMap::new()),
         };
-        decs.push(Dec { sym: s, c, self_name, sig, globals, addr_of });
+        functions.push(AnalyzedFn { sym: s, f, globals, addr_of });
+    }
+    Ok(Analyzed {
+        program_name,
+        src: src.to_path_buf(),
+        target,
+        bin_path,
+        program,
+        symmap,
+        data_syms,
+        data_sizes,
+        syms_by_name_sizes,
+        fn_bytes,
+        functions,
+        timings: t,
+    })
+}
+
+/// The per-plan half of the oracle: render every function under the plan, assemble and compile
+/// the TUs, verify, link and run. The report's `timings` cover this half only (`render` .. `run`);
+/// [`recompile_program`] adds the analysis stages. See [`Analyzed`].
+pub fn render_and_check(a: &Analyzed, workdir: &Path, plan: &EmitPlan) -> Result<GtReport, String> {
+    let program_name = a.program_name.clone();
+    let target = a.target;
+    let src = a.src.as_path();
+    let bin_path = a.bin_path.as_path();
+    let program = &a.program;
+    let dir = workdir.join(format!("{program_name}{}", plan.dir_suffix(target)));
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let mut t = GtTimings::default();
+    let (data_syms, data_sizes, syms_by_name_sizes, fn_bytes) = (&a.data_syms, &a.data_sizes, &a.syms_by_name_sizes, &a.fn_bytes);
+    let symmap = a.symmap.clone();
+    // The plan's rendering of every function, with what the TU assembly reads of it.
+    struct Dec<'a> {
+        sym: &'a ElfSymbol,
+        c: Option<String>,
+        self_name: String,
+        sig: String,
+        globals: &'a BTreeMap<u64, (u32, Datatype)>,
+        addr_of: &'a BTreeMap<String, (u32, Datatype)>,
+    }
+    let mut decs: Vec<Dec<'_>> = Vec::new();
+    for af in &a.functions {
+        let s = &af.sym;
+        let (c, self_name, sig) = match &af.f {
+            Some(f) => {
+                let t0 = Instant::now();
+                let c = if plan.recover {
+                    // the survey's recovery over THIS program's instructions (recompile::recovery)
+                    let insns = crate::recompile::insn::normalize(
+                        target.lang(),
+                        &fn_bytes[&s.addr],
+                        s.addr,
+                        &crate::recompile::insn::NoReloc,
+                    )
+                    .unwrap_or_default();
+                    // `call_arg_orders` is the survey's CROSS-FUNCTION derivation (its site_orders /
+                    // order_excluded / arg_reg_offs tables over the whole binary's call sites); it has
+                    // no counterpart over a gcc program, so no argument order is recovered here — a
+                    // stated absence, not an omission (review R5 b, fable-b's note).
+                    let recovered = crate::recompile::recovery::recover(&f, &insns, &plan.choices, &plan.rec_choices, |_| Default::default());
+                    crate::decompile::printc::print_c_recovered(&f, &plan.rec_choices, &recovered)
+                } else {
+                    crate::decompile::printc::print_c_with(&f, &plan.choices)
+                };
+                t.render += t0.elapsed();
+                let (n, sig) = signature(&c).unwrap_or((String::from("func"), String::from("int func()")));
+                (Some(c), n, sig)
+            }
+            None => (None, String::new(), String::new()),
+        };
+        decs.push(Dec { sym: s, c, self_name, sig, globals: &af.globals, addr_of: &af.addr_of });
     }
     let by_addr: BTreeMap<u64, usize> = decs.iter().enumerate().map(|(i, d)| (d.sym.addr, i)).collect();
     let sym_addrs: std::collections::BTreeSet<u64> = symmap.values().copied().collect();
@@ -726,7 +814,7 @@ pub fn recompile_program(src: &Path, workdir: &Path, target: Target, plan: &Emit
                     // DEFINED here from the original image's bytes, as the original did.
                     let named = data_syms.values().any(|&x| x == a) || symmap_has(&a);
                     if !named {
-                        if let Some(bytes) = image_bytes(&program, a, d.globals.get(&a).map(|(w, _)| *w as u64).unwrap_or(8)) {
+                        if let Some(bytes) = image_bytes(program, a, d.globals.get(&a).map(|(w, _)| *w as u64).unwrap_or(8)) {
                             let width = bytes.len() as u64;
                             let ty = match id.find("Ram") {
                                 Some(pos) if pos <= 3 => prefix_type(&id[..pos], width),
@@ -1004,7 +1092,7 @@ pub fn recompile_program(src: &Path, workdir: &Path, target: Target, plan: &Emit
     let data_names: Vec<(String, u64)> = data_syms.iter().map(|(n, a)| (n.clone(), *a)).collect();
     let data_name_sizes: BTreeMap<String, u64> = syms_by_name_sizes.clone();
     let (functional, link, run) =
-        functional_check(&dir, &program_name, src, &bin_path, &functions, &data_names, &data_name_sizes, target);
+        functional_check(&dir, &program_name, src, bin_path, &functions, &data_names, &data_name_sizes, target);
     t.link = link;
     t.run = run;
     let original_bytes: Vec<(String, u64, Vec<u8>)> =
@@ -1019,6 +1107,70 @@ pub fn recompile_program(src: &Path, workdir: &Path, target: Target, plan: &Emit
         plan: plan.name,
         timings: t,
     })
+}
+
+/// The oracle over one program under one plan: [`analyze_program`] then [`render_and_check`], the
+/// report carrying every stage's time. The arms oracle analyzes once and renders twice instead.
+pub fn recompile_program(src: &Path, workdir: &Path, target: Target, plan: &EmitPlan) -> Result<GtReport, String> {
+    let a = analyze_program(src, workdir, target)?;
+    let mut r = render_and_check(&a, workdir, plan)?;
+    r.timings.add(&a.timings);
+    Ok(r)
+}
+
+/// One program's results from [`recompile_programs`]: the analysis stages' time and one report per
+/// plan, in the plans' order.
+pub struct ProgramReports {
+    pub analysis: GtTimings,
+    pub reports: Vec<GtReport>,
+}
+
+/// The worker count the tests use: every core (`available_parallelism`), one program per worker.
+pub fn default_workers() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1)
+}
+
+/// The oracle over many programs on `workers` threads (gt speed, commit 2): each program is
+/// analyzed once and rendered under every plan, in its own directories, and the results come back
+/// in program order. Programs are independent of each other: the crate's process-wide state is
+/// read-only caches (the language/cspec/spec caches behind `OnceLock` + `Mutex`, the regexes, the
+/// debug topics) and its `thread_local!`s are per-run scratch set and read within one decompile
+/// (the merge phase, the return-split arm's flag, the analyzers' body cache, the perf accumulator,
+/// the trace suppressor) — with one exception: the `analysis::overrides` hooks are per-thread
+/// configuration, so a caller that sets them must run serially (`workers = 1`), which the tests do
+/// not (they read the environment, visible from every thread). `workers = 1` is the serial order.
+pub fn recompile_programs(
+    srcs: &[PathBuf],
+    workdir: &Path,
+    target: Target,
+    plans: &[EmitPlan],
+    workers: usize,
+) -> Vec<Result<ProgramReports, String>> {
+    let workers = workers.max(1).min(srcs.len().max(1));
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let results: std::sync::Mutex<Vec<Option<Result<ProgramReports, String>>>> =
+        std::sync::Mutex::new((0..srcs.len()).map(|_| None).collect());
+    std::thread::scope(|sc| {
+        for _ in 0..workers {
+            sc.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if i >= srcs.len() {
+                    break;
+                }
+                let one = || -> Result<ProgramReports, String> {
+                    let a = analyze_program(&srcs[i], workdir, target)?;
+                    let mut reports = Vec::with_capacity(plans.len());
+                    for plan in plans {
+                        reports.push(render_and_check(&a, workdir, plan)?);
+                    }
+                    Ok(ProgramReports { analysis: a.timings, reports })
+                };
+                let r = one();
+                results.lock().unwrap()[i] = Some(r);
+            });
+        }
+    });
+    results.into_inner().unwrap().into_iter().map(|r| r.expect("every program ran")).collect()
 }
 
 /// Link every per-function object into one program and run it against the original: the
@@ -1135,12 +1287,19 @@ fn functional_verdict(
         }
         Err(_) => return ("NOLINK".into(), Duration::ZERO),
     }
+    // `timeout 5`: its own exit status 124 means the program was killed, so 124 is RESERVED — it is
+    // never compared as a result. The 32-bit column's exit shim once spun forever and every PASS
+    // there was 124 == 124 (gt speed, commit 3); a hang can no longer match a hang.
     let run = |p: &Path| -> Option<i32> {
         Command::new("timeout").arg("5").arg(p).output().ok().map(|o| o.status.code().unwrap_or(-1))
     };
     let t_run = Instant::now();
     let Some(orig_code) = run(original) else { return ("NORUN".into(), t_run.elapsed()) };
+    if orig_code == 124 {
+        return ("NORUN(timeout)".into(), t_run.elapsed());
+    }
     let verdict = match run(&ours) {
+        Some(124) => "FAIL(timeout)".into(),
         Some(c) if c == orig_code => "PASS".into(),
         Some(c) => format!("FAIL(orig={orig_code},ours={c})"),
         None => "FAIL(no run)".into(),

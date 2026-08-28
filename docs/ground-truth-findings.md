@@ -199,6 +199,57 @@ sweep named the gap and two more ports followed: `PrintC::opIntZext/opIntSext` w
 makes the promotion cast implied on `uRam + 0x80248`. Sweep vs the pre-session baseline: **up
 1013 / down 216, +938 weighted (mean 0.9036 → 0.9115)**. Corpus: **27 programs, 27/27 PASS**.
 
+## The 32-bit column, measured (2026-08-28, gt speed commit 3): the "21/21 PASS" was vacuous
+
+The per-stage census of the arms oracle (gt speed commit 0) put 212 s of a 214 s plain-32 pass in
+`run`: `oracle/ground-truth/src/shim.h`'s `sys_exit` had x86-64, AArch64, RISC-V and m68k branches
+and an `#else` that spun forever, so under `-m32` every original never terminated, `timeout 5`
+returned 124 for the original AND for ours, and `124 == 124` was the "PASS". Review R5 (b)'s
+"21/21 PASS plain-32 => arms-32" measured nothing (its six NOLINKs were real: they never reached
+the run). Fixed in that commit: an `__i386__` branch (`int $0x80`, exit = 1), the `#else` is now
+`#error` (an unported column fails to build, never spins into a verdict), and the oracle reserves
+124 -- an original that times out is `NORUN(timeout)`, ours `FAIL(timeout)` -- so a hang can never
+match a hang again. The test dropped from 430 s to seconds.
+
+The real plain-32 verdicts, first measurement of the i386 SysV path (findings, outside the arms
+invariant; the arms-32 verdict equals the plain-32 one in every program, so the invariant holds):
+**3 PASS** (fixed, tailcall, varargs), **11 FAIL** -- arith (orig 51, ours 0), arith64 (3, 0),
+bitfields (236, 0), bitops (166, 96), deepchain (93, 69), fallthrough (86, 6), irreducible (27, 2),
+nestedloop (3, 0), recursion (7, 1), sparseswitch (29, 254), structval (39, -1 = SIGSEGV) -- and
+**13 NOLINK** (compgoto, dispatch, floats, fnptr, globals, ladder, linklist, ptrarith, strbuf,
+strdata, strloop, structs, tables: the i386 callee-resolution class below, seven more than before
+because the exit shim changed every program's code and its clone addresses). Not PIC: the build is
+`-static -no-pie -nostdlib` and the 32-bit ELFs carry no PC thunks.
+
+ONE cause for all eleven (a hypothesis for JD, read off the objdump and the emitted TUs): gcc
+`-m32 -O2` passes the arguments of LOCAL functions (static, not address-taken) in EAX/EDX/ECX --
+its register convention for local i386 functions -- while the i386 cspec models the stack cdecl
+only. In every FAIL program the failing callees are called with those registers loaded right
+before the `call`, read them in their first instruction, and are decompiled with a `(void)`
+signature: arith `square` (`imul %eax,%eax`), `cube`, `sum_to` (`test %eax,%eax`); arith64
+`mul64` (`imul %edx,%eax`), `divmod64`, `rot64`; bitfields `pack`, `pun`; bitops `popcount`,
+`sar_mix.constprop.0`, `extract.constprop.0`; deepchain `l1`; fallthrough `ft` (`cmp $2,%eax`);
+irreducible `sm`; nestedloop `nest`; recursion `fact`, `fib`; sparseswitch `classify`
+(`cmp $0x3e8,%eax`); structval `mk` (its `dot` takes the stack). The argument then appears in the
+body as a local the function never assigns (`sum_to`: `if (0 < iVar1)` with `iVar1` uninitialized)
+-- so ours computes on whatever the register or slot holds: 0 in six programs, garbage routed
+through the switch in sparseswitch (254), and in structval a struct-by-value return on top of it
+(the SIGSEGV; the twin build's split-local / struct-return class). No `in_EAX`/`in_EDX`/`in_ECX`
+appears in any of the 32-bit TUs: Ghidra renders a register read at entry that no parameter covers
+as an `in_<REG>` input, and such a local in an emitted TU is by construction a wrong-code sign in a
+gcc column (the oracle doing its job, not a defect of the TU assembly); that mosura prints an
+uninitialized ordinary local instead is a second, separate finding on the printer. The question for
+JD, not a diagnosis: Ghidra's `in_<REG>` needs three things -- heritage marks a free varnode read
+before written at entry as an input (`Funcdata::setInputVarnode`, the `Varnode::input` flag),
+`ScopeInternal::buildVariableName` spells the `in_` prefix from that flag, and when the input
+varnode is merged into a HighVariable the name representative prefers the input varnode
+(`HighVariable`'s representative comparison ranks `isInput()` first), which is why the prefix
+survives merging. The 64-bit column does print `in_RAX`, so the representative choice on this path
+is the first suspect -- but the way to know is an oracle trace on one of these functions
+(`scripts/trace-diff.sh`, CLAUDE.md), not a source-reading chain. Eleven wrong-code programs in the
+32-bit column are the decompiler's i386 path, plain, no arm involved -- owner: JD's call, not
+baselined, not fixed in the gt speed series.
+
 ## i386 callee resolution: a call the ELF symbol table does not name (2026-08-27, review R5 b)
 
 In the 32-bit gcc column (`Target::Gcc32`, `-m32`) six of the 27 ground-truth programs are

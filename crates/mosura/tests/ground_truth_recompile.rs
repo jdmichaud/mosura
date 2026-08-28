@@ -8,7 +8,7 @@
 //! WGSS drop over 0.01, and `MOSURA_GT_BASELINE=update` rewrites it after an accepted change.
 use std::collections::BTreeMap;
 
-use mosura::recompile::groundtruth::{gcc_available, gcc_programs, recompile_program, EmitPlan, GtReport, GtTimings, Target};
+use mosura::recompile::groundtruth::{default_workers, gcc_available, gcc_programs, recompile_programs, EmitPlan, GtReport, GtTimings, Target};
 
 fn rank(v: &str) -> u8 {
     match v {
@@ -27,17 +27,20 @@ fn decompile_recompile_does_not_regress_against_the_local_baseline() {
     assert!(gcc_available(), "gcc is required by the development environment (ground-truth recompile gate)");
     let workdir = mosura::paths::workspace_root().join("build/gt-recompile");
     std::fs::create_dir_all(&workdir).unwrap();
-    let mut reports: Vec<GtReport> = Vec::new();
     let wall = std::time::Instant::now();
-    for src in gcc_programs() {
-        reports.push(
-            recompile_program(&src, &workdir, Target::Gcc64, &EmitPlan::plain())
-                .unwrap_or_else(|e| panic!("{}: {e}", src.display())),
-        );
-    }
+    // The programs run in parallel (gt speed, commit 2); the reports come back in program order.
+    let srcs = gcc_programs();
+    let workers = default_workers();
     let mut t = GtTimings::default();
-    reports.iter().for_each(|r| t.add(&r.timings));
-    println!("gt timing plain-64: {} | wall {:.1}s", t.line(), wall.elapsed().as_secs_f64());
+    let mut reports: Vec<GtReport> = Vec::new();
+    for (src, result) in srcs.iter().zip(recompile_programs(&srcs, &workdir, Target::Gcc64, &[EmitPlan::plain()], workers)) {
+        let mut pr = result.unwrap_or_else(|e| panic!("{}: {e}", src.display()));
+        t.add(&pr.analysis);
+        let r = pr.reports.pop().expect("plain report");
+        t.add(&r.timings);
+        reports.push(r);
+    }
+    println!("gt timing plain-64: {} | wall {:.1}s on {workers} workers", t.line(), wall.elapsed().as_secs_f64());
     let mut current: BTreeMap<(String, String), (String, f64, usize)> = BTreeMap::new();
     for r in &reports {
         println!("{}", r.summary());
