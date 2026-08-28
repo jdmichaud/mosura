@@ -1104,31 +1104,27 @@ fn backup2switch(data: &Funcdata, mut output: u64, outvn: VarnodeId, invn: Varno
 /// `findSmallestNormal` prefers (early-stops on) a candidate whose range matches it
 /// (jumptable.cc:1178). `0` on an initial recovery.
 pub fn recover_jumpbasic(data: &mut Funcdata, indop: OpId, usenzmask: bool, matchsize: u64) -> Option<JumpTable> {
-    if std::env::var("MOSURA_JT_DEBUG").is_ok() {
-        eprintln!("[jtrec] {:x}: try (nzmask {} matchsize {})", data.op(indop).seqnum.pc.offset, usenzmask, matchsize);
-    }
-    let jtdbg0 = std::env::var("MOSURA_JT_DEBUG").is_ok();
+    debug!(crate::debug::Topic::JumpTable, "jtrec {:x}: try (nzmask {} matchsize {})", data.op(indop).seqnum.pc.offset, usenzmask, matchsize);
     let Some(target_vn) = data.op(indop).input(0) else {
-        if jtdbg0 { eprintln!("[jtrec] {:x}: FAIL no input0", data.op(indop).seqnum.pc.offset); }
+        debug!(crate::debug::Topic::JumpTable, "jtrec {:x}: FAIL no input0", data.op(indop).seqnum.pc.offset);
         return None;
     };
     let Some(rootbl) = data.op(indop).parent else {
-        if jtdbg0 { eprintln!("[jtrec] {:x}: FAIL no parent block", data.op(indop).seqnum.pc.offset); }
+        debug!(crate::debug::Topic::JumpTable, "jtrec {:x}: FAIL no parent block", data.op(indop).seqnum.pc.offset);
         return None;
     };
 
-    let jtdbg = std::env::var("MOSURA_JT_DEBUG").is_ok();
     // recoverModel: pathMeld + guards + normalized switch variable & range.
     let path_meld = find_determining_varnodes(data, indop, 0);
     if path_meld.empty() {
-        if jtdbg { eprintln!("[jtrec] {:x}: FAIL meld empty", data.op(indop).seqnum.pc.offset); }
+        debug!(crate::debug::Topic::JumpTable, "jtrec {:x}: FAIL meld empty", data.op(indop).seqnum.pc.offset);
         return None;
     }
     let guards = analyze_guards(data, rootbl, -1, indop, usenzmask);
     let (_varnode_index, range, start_vn, _start_op) = find_smallest_normal(data, &path_meld, &guards, matchsize);
     let count = range.get_size();
     if count == 0 || count > MAX_TABLE_SIZE {
-        if jtdbg { eprintln!("[jtrec] {:x}: FAIL range size {} (min {:x})", data.op(indop).seqnum.pc.offset, count, range.get_min()); }
+        debug!(crate::debug::Topic::JumpTable, "jtrec {:x}: FAIL range size {} (min {:x})", data.op(indop).seqnum.pc.offset, count, range.get_min());
         return None; // range too big / empty — Ghidra rejects ranges over maxtablesize
     }
 
@@ -1141,11 +1137,11 @@ pub fn recover_jumpbasic(data: &mut Funcdata, indop: OpId, usenzmask: bool, matc
     let mut curval = range.get_min();
     loop {
         let Some(addr) = jumptable::emulate(data, target_vn, start_vn, curval, 0) else {
-            if jtdbg { eprintln!("[jtrec] {:x}: FAIL emulate at val {:x}", data.op(indop).seqnum.pc.offset, curval); }
+            debug!(crate::debug::Topic::JumpTable, "jtrec {:x}: FAIL emulate at val {:x}", data.op(indop).seqnum.pc.offset, curval);
             return None;
         };
         if !jumptable::in_image(data, addr) {
-            if jtdbg { eprintln!("[jtrec] {:x}: FAIL target {:x} not in image (val {:x})", data.op(indop).seqnum.pc.offset, addr, curval); }
+            debug!(crate::debug::Topic::JumpTable, "jtrec {:x}: FAIL target {:x} not in image (val {:x})", data.op(indop).seqnum.pc.offset, addr, curval);
             return None; // sanityCheck: every target must be a real address in the image
         }
         targets.push(addr);
@@ -1154,7 +1150,7 @@ pub fn recover_jumpbasic(data: &mut Funcdata, indop: OpId, usenzmask: bool, matc
         }
     }
 
-    if jtdbg { eprintln!("[jtrec] {:x}: OK {} targets", data.op(indop).seqnum.pc.offset, targets.len()); }
+    debug!(crate::debug::Topic::JumpTable, "jtrec {:x}: OK {} targets", data.op(indop).seqnum.pc.offset, targets.len());
     // foldInGuards geometry: the out-of-range edge of the bounds guard is the default case.
     let path = jumptable::backtrace_set(data, target_vn);
     let default = jumptable::find_default(data, indop, &path);
@@ -1324,10 +1320,8 @@ fn fold_in_one_guard(
     if !no_intervening_statement(data, switchbl) {
         return false;
     }
-    if std::env::var("MOSURA_JT_DEBUG").is_ok() {
-        eprintln!("[jtfold] cbranch {:x} indpath {} pos {:?} flags {:#x}",
+    debug!(crate::debug::Topic::JumpTable, "jtfold cbranch {:x} indpath {} pos {:?} flags {:#x}",
             data.op(cbranch).seqnum.pc.offset, indpath, pos, data.op(cbranch).flags);
-    }
     match pos {
         None => {
             // addBlockToSwitch + setLastAsDefault + pushBranch: the guard's exit edge becomes the
@@ -1382,10 +1376,7 @@ fn push_branch(data: &mut Funcdata, cb: BlockId, slot: usize, switchbl: BlockId)
         let anno = data.new_code_ref(target);
         data.op_set_input(cbranch, 0, anno);
     }
-    let jtdbg = std::env::var("MOSURA_JT_DEBUG").is_ok();
-    if jtdbg {
-        eprintln!("[jtpush] cb {:?} slot {} moved {:?} switchbl {:?}", cb, slot, moved, switchbl);
-    }
+    debug!(crate::debug::Topic::JumpTable, "jtpush cb {:?} slot {} moved {:?} switchbl {:?}", cb, slot, moved, switchbl);
     data.block_mut(cb).out_edges.remove(slot);
     // The moved block's in-edge is REPLACED in place, keeping its MULTIEQUAL slot order intact.
     let ins = &mut data.block_mut(moved).in_edges;
@@ -1393,10 +1384,8 @@ fn push_branch(data: &mut Funcdata, cb: BlockId, slot: usize, switchbl: BlockId)
         ins[i] = switchbl;
     }
     data.block_mut(switchbl).out_edges.push(moved);
-    if std::env::var("MOSURA_JT_DEBUG").is_ok() {
-        eprintln!("[jtpush] after: cb outs {:?} switch outs {:?} moved ins {:?}",
+    debug!(crate::debug::Topic::JumpTable, "jtpush after: cb outs {:?} switch outs {:?} moved ins {:?}",
             data.block(cb).out_edges, data.block(switchbl).out_edges, data.block(moved).in_edges);
-    }
 }
 
 /// Ghidra `BlockBasic::noInterveningStatement` (block.cc:2712): the switch block must contain no

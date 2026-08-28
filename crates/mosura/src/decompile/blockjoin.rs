@@ -392,7 +392,6 @@ mod tests {
 /// Ghidra `ActionReturnSplit::isSplittable` (blockaction.cc:2241): a block ending in RETURN can be
 /// split only if nothing substantive else happens in it.
 fn is_splittable(data: &Funcdata, b: BlockId) -> bool {
-    let dbg = std::env::var("MOSURA_RETSPLIT_DEBUG").is_ok();
     for &op in &data.block(b).ops {
         match data.op(op).code() {
             OpCode::Multiequal => continue,
@@ -407,17 +406,13 @@ fn is_splittable(data: &Funcdata, b: BlockId) -> bool {
                         continue;
                     }
                     if data.vn(vn).is_free() {
-                        if dbg {
-                            eprintln!("RETSPLIT   free input on {:?}@{:x}", data.op(op).code(), data.op(op).seqnum.pc.offset);
-                        }
+                        debug!(crate::debug::Topic::RetSplit, "free input on {:?}@{:x}", data.op(op).code(), data.op(op).seqnum.pc.offset);
                         return false;
                     }
                 }
             }
             other => {
-                if dbg {
-                    eprintln!("RETSPLIT   non-copy op {:?}@{:x}", other, data.op(op).seqnum.pc.offset);
-                }
+                debug!(crate::debug::Topic::RetSplit, "non-copy op {:?}@{:x}", other, data.op(op).seqnum.pc.offset);
                 return false;
             }
         }
@@ -496,7 +491,6 @@ impl Action for ActionReturnSplit {
         // through `node_split`'s own `structure_reset`. (A `take()` without restore here made
         // every fullloop round consume the cache, whose rebuild then counted as a change — an
         // infinite fullloop.)
-        let dbg = std::env::var("MOSURA_RETSPLIT_DEBUG").is_ok();
         // MOSURA_RETSPLIT=0: measurement switch for the shared-return arm investigation
         // (renders the pre-41a1665 unsplit shape); NOT a doctrine change — the action stays
         // on by default.
@@ -504,9 +498,7 @@ impl Action for ActionReturnSplit {
             return 0;
         }
         let Some(s) = data.structure.as_ref() else {
-            if dbg {
-                eprintln!("RETSPLIT skip: no structure cache");
-            }
+            debug!(crate::debug::Topic::RetSplit, "skip: no structure cache");
             return 0; // some other restructuring happened first
         };
         // Collect every edge to split first, then split — Ghidra accumulates across all RETURNs
@@ -519,34 +511,30 @@ impl Action for ActionReturnSplit {
         for op in returns {
             let Some(parent) = data.op(op).parent else { continue };
             if data.block(parent).in_edges.len() <= 1 {
-                if dbg {
-                    eprintln!("RETSPLIT ret@{:x}: in-degree {} <= 1", data.op(op).seqnum.pc.offset, data.block(parent).in_edges.len());
-                }
+                debug!(crate::debug::Topic::RetSplit, "ret@{:x}: in-degree {} <= 1", data.op(op).seqnum.pc.offset, data.block(parent).in_edges.len());
                 continue;
             }
             if !is_splittable(data, parent) {
-                if dbg {
-                    eprintln!("RETSPLIT ret@{:x}: not splittable", data.op(op).seqnum.pc.offset);
-                }
+                debug!(crate::debug::Topic::RetSplit, "ret@{:x}: not splittable", data.op(op).seqnum.pc.offset);
                 continue;
             }
             let n = data.block(parent).in_edges.len();
             let marked: Vec<bool> = (0..n)
                 .map(|i| in_edge_gotos_to(&s, data.block(parent).in_edges[i], parent))
                 .collect();
-            if std::env::var("MOSURA_RETSPLIT_DEBUG").is_ok() {
-                eprintln!("RETSPLIT candidate ret@{:x}: {} in-edges, {} marked", data.op(op).seqnum.pc.offset, n, marked.iter().filter(|&&m| m).count());
+            if crate::debug::on(crate::debug::Topic::RetSplit) {
+                debug!(crate::debug::Topic::RetSplit, "candidate ret@{:x}: {} in-edges, {} marked", data.op(op).seqnum.pc.offset, n, marked.iter().filter(|&&m| m).count());
                 for i in 0..n {
                     let pred = data.block(parent).in_edges[i];
                     let node = s.blocks.iter().position(|fb| fb.kind == super::structure::FlowKind::Basic(pred));
-                    eprintln!("RETSPLIT   edge {i}: pred {:?} node {:?} gotos_here {:?} parent_blk {:?}",
+                    debug!(crate::debug::Topic::RetSplit, "edge {i}: pred {:?} node {:?} gotos_here {:?} parent_blk {:?}",
                         pred, node,
                         s.gotos.get(&pred).map(|v| v.iter().map(|g| g.target).collect::<Vec<_>>()),
                         parent);
                     if let Some(mut nd) = node {
                         loop {
                             if let Some(v) = s.node_gotos.get(&nd) {
-                                eprintln!("RETSPLIT     node {nd} records {:?}", v.iter().map(|g| (g.target, g.conditional)).collect::<Vec<_>>());
+                                debug!(crate::debug::Topic::RetSplit, "node {nd} records {:?}", v.iter().map(|g| (g.target, g.conditional)).collect::<Vec<_>>());
                             }
                             match s.blocks[nd].parent { Some(p) if p != nd => nd = p, _ => break }
                         }
