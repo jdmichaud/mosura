@@ -64,8 +64,8 @@ pub enum Topic {
     /// decompile/merge (was `MOSURA_IMPLIED_DEBUG`).
     Merge,
     /// the survey's own env-gated diagnostics (examples/war2_survey.rs: was `MOSURA_KERNEL_SHADOW`,
-    /// `_SHARED_RET_DEBUG`, `_SHADOW_DEBUG`, `_RAW_IR`, `_EXTENT`, `_AUX_DEBUG`, `_AGG_DEBUG`,
-    /// `_ZAP_DEBUG`) — its normal output (the manifest, the summaries) is not a diagnostic and
+    /// `_SHARED_RET_DEBUG`, `_SHADOW_DEBUG`, `_EXTENT`, `_AUX_DEBUG`, `_AGG_DEBUG`; the raw-IR dump is `raw-ir`,
+    /// the survey's zapcheck driver prints under `watsched` with the mechanism it exercises) — its normal output (the manifest, the summaries) is not a diagnostic and
     /// stays plain.
     Survey,
     /// decompile/action's timing accumulator and its `perf::dump` table (was `MOSURA_PERF`); its own
@@ -77,6 +77,9 @@ pub enum Topic {
     /// decompile/subvarflow's replacement trace (was `MOSURA_SUBVAR`): one line per node -- its own
     /// topic for the same reason.
     Subvar,
+    /// the survey's raw-IR dump (was `MOSURA_RAW_IR`): every function's raw IR on stdout -- its own
+    /// topic so `survey` alone stays readable.
+    RawIr,
 }
 
 impl Topic {
@@ -84,7 +87,7 @@ impl Topic {
         Topic::SparseSwitch, Topic::StructCopy, Topic::FrameFill, Topic::SumOrder, Topic::Printc, Topic::Recover,
         Topic::Structure, Topic::JumpTable, Topic::Args, Topic::Varargs, Topic::RetSplit, Topic::Effects,
         Topic::Varmap, Topic::StackVars, Topic::Heritage, Topic::Pointers, Topic::Pipeline, Topic::Watsched,
-        Topic::GroundTruth, Topic::Cspec, Topic::Analysis, Topic::Merge, Topic::Survey, Topic::Perf, Topic::Types, Topic::Subvar,
+        Topic::GroundTruth, Topic::Cspec, Topic::Analysis, Topic::Merge, Topic::Survey, Topic::Perf, Topic::Types, Topic::Subvar, Topic::RawIr,
     ];
     /// The kebab-case name used in `MOSURA_DEBUG` and as the print prefix.
     pub fn name(self) -> &'static str {
@@ -115,6 +118,7 @@ impl Topic {
             Topic::Perf => "perf",
             Topic::Types => "types",
             Topic::Subvar => "subvar",
+            Topic::RawIr => "raw-ir",
         }
     }
 }

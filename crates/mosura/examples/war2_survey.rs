@@ -1443,7 +1443,7 @@ fn main() {
                         let stack_kernel = std::env::var("MOSURA_KERNEL_STACKAPP").as_deref() != Ok("0");
                         let mut consts2: Vec<(u64, u32, u64)> = Vec::new();
                         let mut stacks: Vec<(u64, u32)> = Vec::new();
-                        if (stack_kernel || std::env::var_os("MOSURA_KERNEL_SHADOW").is_some())
+                        if (stack_kernel || mosura::debug::on(mosura::debug::Topic::Survey))
                             && pass_through_report(&lt, &ct, *va, Some(&mut consts2), Some(&mut stacks))
                             && !stacks.is_empty()
                         {
@@ -1470,9 +1470,7 @@ fn main() {
                             if need.iter().all(|(c, n)| push_ev.get(c).copied().unwrap_or(0) >= *n)
                                 && sig_of2(&lt) == sig_of2(&ct)
                             {
-                                if std::env::var_os("MOSURA_KERNEL_SHADOW").is_some() {
-                                    eprintln!("[shadow-stack] {name} appends {:?}", need.iter().map(|(c, n)| (format!("{c:#x}"), *n)).collect::<Vec<_>>());
-                                }
+                                mosura::debug!(mosura::debug::Topic::Survey, "shadow-stack {name} appends {:?}", need.iter().map(|(c, n)| (format!("{c:#x}"), *n)).collect::<Vec<_>>());
                                 if stack_kernel {
                                     ok = true;
                                     passthrough = true;
@@ -1488,7 +1486,7 @@ fn main() {
                 // its `modify` clause (its `parm [..]`/`parm caller []` half must be
                 // verbatim), killing the 3925c order-inversion hazard that sank the old
                 // precise-network relaxation (1da00/2d1f0).
-                if (std::env::var_os("MOSURA_KERNEL_SHADOW").is_some() || net_kernel)
+                if (mosura::debug::on(mosura::debug::Topic::Survey) || net_kernel)
                     && !ok
                     && sig_stable
                     && networked
@@ -1554,10 +1552,10 @@ fn main() {
                         .collect();
                     let (sv_l, sv_c) = (spec_view(fl), spec_view(&f2));
                     let pragmas_equal = sv_l == sv_c;
-                    if std::env::var_os("MOSURA_SHADOW_DEBUG").is_some() && !pragmas_equal {
+                    if mosura::debug::on(mosura::debug::Topic::Survey) && !pragmas_equal {
                         for (k, v) in &sv_c {
                             if sv_l.get(k) != Some(v) {
-                                eprintln!("[shadow-diff] {name} callee {k:#x} landed {:?} cand {:?}", sv_l.get(k), v);
+                                mosura::debug!(mosura::debug::Topic::Survey, "shadow-diff {name} callee {k:#x} landed {:?} cand {:?}", sv_l.get(k), v);
                                 break;
                             }
                         }
@@ -1616,7 +1614,7 @@ fn main() {
                             ok = true;
                             passthrough = true;
                         } else {
-                            eprintln!("[shadow] {name} network-eligible consts={}", appended_consts.len());
+                            mosura::debug!(mosura::debug::Topic::Survey, "{name} network-eligible consts={}", appended_consts.len());
                         }
                     } else if pragmas_equal && sig_of(&lt) == sig_of(&ct) {
                         // ORDER-ONLY deltas stay REFUSED — measured 2026-08-21: the whole
@@ -1626,10 +1624,10 @@ fn main() {
                         // the prototype-ordered permutation changed renders with sims
                         // UNMOVED at 0.636 — the recorded 3925c inversion wart, confirmed
                         // live. The census classifier stays for future shadow runs.
-                        if std::env::var_os("MOSURA_KERNEL_SHADOW").is_some() {
+                        if mosura::debug::on(mosura::debug::Topic::Survey) {
                             if let Some(cs2) = order_only_delta(&lt, &ct) {
                                 let list: Vec<String> = cs2.iter().map(|c| format!("{c:#x}")).collect();
-                                eprintln!("[shadow-order] {name} callees [{}]", list.join(" "));
+                                mosura::debug!(mosura::debug::Topic::Survey, "shadow-order {name} callees [{}]", list.join(" "));
                             }
                         }
                     }
@@ -1786,7 +1784,7 @@ fn main() {
                         }
                     }
                 }
-                if std::env::var_os("MOSURA_ZAP_DEBUG").is_some() {
+                if mosura::debug::on(mosura::debug::Topic::Watsched) {
                     let reason = if consistency_forced {
                         "adopted:consistency"
                     } else if passthrough {
@@ -1806,7 +1804,7 @@ fn main() {
                     } else {
                         "refused:allocation"
                     };
-                    eprintln!("[zapcheck] {name}: {reason}");
+                    mosura::debug!(mosura::debug::Topic::Watsched, "zapcheck {name}: {reason}");
                 }
                 if ok {
                     f = Some(f_forced.unwrap_or(f2));
@@ -1883,7 +1881,7 @@ fn main() {
         // INSTRUMENT (`MOSURA_EXTENT=1`): the three candidate answers to "where does this
         // function end" -- the next-entry heuristic actually used, mosura's own recorded body, and
         // the decompiler's instruction coverage -- so the choice between them is a measurement.
-        if std::env::var("MOSURA_EXTENT").is_ok() {
+        if mosura::debug::on(mosura::debug::Topic::Survey) {
             println!(
                 "EXTENT\t{:08x}\t{}\t{}\t{}",
                 *va,
@@ -2220,9 +2218,7 @@ fn main() {
                 if va == 0 {
                     continue;
                 }
-                if std::env::var_os("MOSURA_AUX_DEBUG").is_some() {
-                    eprintln!("[auxdbg] callee {va:#x} caller_cleans={:?} cdecl_modify={:?}", cs.caller_cleans, cs.cdecl_modify.as_ref().map(|m| m.len()));
-                }
+                mosura::debug!(mosura::debug::Topic::Survey, "callee {va:#x} caller_cleans={:?} cdecl_modify={:?}", cs.caller_cleans, cs.cdecl_modify.as_ref().map(|m| m.len()));
                 let e = merged.entry(va).or_default();
                 e.0 |= cs.caller_cleans.unwrap_or(0) > 0;
                 if let Some(m) = cs.cdecl_modify.as_ref() {
@@ -2273,9 +2269,9 @@ fn main() {
                 })
                 .collect();
             let (rc, aggregates) = aggregate_ram_globals(&rc, &insns, &gsizes, &volatiles);
-            if std::env::var_os("MOSURA_AGG_DEBUG").is_some() && !aggregates.is_empty() {
+            if mosura::debug::on(mosura::debug::Topic::Survey) && !aggregates.is_empty() {
                 for (_, d) in &aggregates {
-                    eprintln!("[agg] {name}: {d}");
+                    mosura::debug!(mosura::debug::Topic::Survey, "agg {name}: {d}");
                 }
             }
             let (rtu, _) = build_tu(&rc, *va, false, &gsizes, &volatiles, &vararg_callees, &aggregates);
@@ -2311,9 +2307,7 @@ fn main() {
                     Ok(Some(fa)) => {
                         let t = render(&fa);
                         let structured = !t.contains("goto ") && !t.contains("LAB_");
-                        if std::env::var_os("MOSURA_SHARED_RET_DEBUG").is_some() {
-                            eprintln!("[sharedret] {name}: splits={} unsplit structured={structured} -> {}", f.return_splits, if structured { "UNSPLIT" } else { "split" });
-                        }
+                        mosura::debug!(mosura::debug::Topic::Survey, "sharedret {name}: splits={} unsplit structured={structured} -> {}", f.return_splits, if structured { "UNSPLIT" } else { "split" });
                         if structured { t } else { rtu }
                     }
                     _ => rtu,
@@ -2349,7 +2343,7 @@ fn main() {
             // question about what the op graph holds — here, whether a value the original widens is
             // still four bytes wide by the time the printer sees it. Answering that from the C is
             // guesswork; the graph states it.
-            if std::env::var("MOSURA_RAW_IR").is_ok() {
+            if mosura::debug::on(mosura::debug::Topic::RawIr) {
                 println!("{}", f.print_raw());
             }
             // The recovered parameter STORAGE alongside the C, so a signature question ("why is
