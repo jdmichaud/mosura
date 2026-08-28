@@ -10,6 +10,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
 use object::{Object, ObjectSection, ObjectSymbol, SymbolKind};
 
@@ -134,6 +135,49 @@ pub struct GtReport {
     /// The column ([`Target::tag`]) and the plan ([`EmitPlan::name`]) this report measured.
     pub target: &'static str,
     pub plan: &'static str,
+    /// Where the time went, per stage (the census that sizes the speed work; gt speed, commit 0).
+    pub timings: GtTimings,
+}
+
+/// Wall time per stage of one `recompile_program` pass. `build` covers the gcc build of the
+/// original and its symbol table; `decompile` every `decompile_function`; `render` the C text
+/// (plain print or recovery + recovered print); `compile` every per-TU `gcc -c` including the
+/// prototype retries; `verify` the SLEIGH alignment; `link` the harness build and the link; `run`
+/// the two executions.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct GtTimings {
+    pub build: Duration,
+    pub analyze: Duration,
+    pub decompile: Duration,
+    pub render: Duration,
+    pub compile: Duration,
+    pub verify: Duration,
+    pub link: Duration,
+    pub run: Duration,
+}
+
+impl GtTimings {
+    pub fn add(&mut self, o: &GtTimings) {
+        self.build += o.build;
+        self.analyze += o.analyze;
+        self.decompile += o.decompile;
+        self.render += o.render;
+        self.compile += o.compile;
+        self.verify += o.verify;
+        self.link += o.link;
+        self.run += o.run;
+    }
+    pub fn total(&self) -> Duration {
+        self.build + self.analyze + self.decompile + self.render + self.compile + self.verify + self.link + self.run
+    }
+    /// One line, seconds per stage, for a test's summary.
+    pub fn line(&self) -> String {
+        let s = |d: Duration| d.as_secs_f64();
+        format!(
+            "build {:.1}s analyze {:.1}s decompile {:.1}s render {:.1}s gcc-c {:.1}s verify {:.1}s link {:.1}s run {:.1}s (stages {:.1}s)",
+            s(self.build), s(self.analyze), s(self.decompile), s(self.render), s(self.compile), s(self.verify), s(self.link), s(self.run), s(self.total())
+        )
+    }
 }
 
 impl GtReport {
@@ -524,16 +568,21 @@ pub fn recompile_program(src: &Path, workdir: &Path, target: Target, plan: &Emit
     let dir = workdir.join(format!("{program_name}{}", plan.dir_suffix(target)));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let bin_path = dir.join(format!("{program_name}.elf"));
+    let mut t = GtTimings::default();
+    let t0 = Instant::now();
     build_program(src, &bin_path, target)?;
     let bin = std::fs::read(&bin_path).map_err(|e| e.to_string())?;
     let (syms, fn_bytes) = elf_symbols(&bin)?;
+    t.build = t0.elapsed();
     let symmap: BTreeMap<String, u64> = syms.iter().map(|s| (s.name.clone(), s.addr)).collect();
     let data_syms: BTreeMap<String, u64> =
         syms.iter().filter(|s| !s.is_func).map(|s| (s.name.clone(), s.addr)).collect();
     let data_sizes: BTreeMap<u64, u64> = syms.iter().filter(|s| !s.is_func).map(|s| (s.addr, s.size)).collect();
     let syms_by_name_sizes: BTreeMap<String, u64> =
         syms.iter().filter(|s| !s.is_func).map(|s| (s.name.clone(), s.size)).collect();
+    let t0 = Instant::now();
     let program = analysis::analyze_file(&bin_path).map_err(|e| format!("analyze: {e:?}"))?;
+    t.analyze = t0.elapsed();
     let ram = program.default_space;
 
     // Decompile everything first: the callee prototypes come from the callees' own signatures.
@@ -548,12 +597,15 @@ pub fn recompile_program(src: &Path, workdir: &Path, target: Target, plan: &Emit
     }
     let mut decs: Vec<Dec> = Vec::new();
     for s in syms.into_iter().filter(|s| s.is_func && fn_bytes.contains_key(&s.addr)) {
+        let t0 = Instant::now();
         let f = decompile_function(&program, Address::new(ram, s.addr));
+        t.decompile += t0.elapsed();
         let (c, self_name, sig, globals, addr_of) = match f {
             Some(f) => {
                 if std::env::var("MOSURA_GT_RAW").is_ok_and(|v| v == s.name) {
                     eprint!("{}", f.print_raw());
                 }
+                let t0 = Instant::now();
                 let c = if plan.recover {
                     // the survey's recovery over THIS program's instructions (recompile::recovery)
                     let insns = crate::recompile::insn::normalize(
@@ -572,6 +624,7 @@ pub fn recompile_program(src: &Path, workdir: &Path, target: Target, plan: &Emit
                 } else {
                     crate::decompile::printc::print_c_with(&f, &plan.choices)
                 };
+                t.render += t0.elapsed();
                 let (n, sig) = signature(&c).unwrap_or((String::from("func"), String::from("int func()")));
                 let mut globals = BTreeMap::new();
                 let mut addr_of: BTreeMap<String, (u32, Datatype)> = BTreeMap::new();
@@ -784,6 +837,7 @@ pub fn recompile_program(src: &Path, workdir: &Path, target: Target, plan: &Emit
         let mut fixed: BTreeMap<String, String> = BTreeMap::new();
         let mut attempts: Vec<(bool, BTreeMap<String, String>)> = vec![(false, BTreeMap::new())];
         let mut first_error = String::new();
+        let t0 = Instant::now();
         while let Some((kr, fx)) = attempts.pop() {
             let tu = make_tu(kr, &fx);
             std::fs::write(&c_path, &tu).map_err(|e| e.to_string())?;
@@ -896,6 +950,7 @@ pub fn recompile_program(src: &Path, workdir: &Path, target: Target, plan: &Emit
                 _ => attempts.push((true, BTreeMap::new())),
             }
         }
+        t.compile += t0.elapsed();
         let Some(obj) = obj else {
             functions.push(GtFunction {
                 symbol: d.sym.name.clone(),
@@ -913,7 +968,10 @@ pub fn recompile_program(src: &Path, workdir: &Path, target: Target, plan: &Emit
         };
         let subject = Subject { name: d.self_name.clone(), va: d.sym.addr, len: weight_bytes.len() };
         let tu_text = std::fs::read_to_string(&c_path).unwrap_or_default();
-        match verify(target.lang(), &weight_bytes, &subject, &obj, &resolver) {
+        let t0 = Instant::now();
+        let verified = verify(target.lang(), &weight_bytes, &subject, &obj, &resolver);
+        t.verify += t0.elapsed();
+        match verified {
             Ok(checked) => {
                 let diff = &checked.diff;
                 functions.push(GtFunction {
@@ -945,10 +1003,22 @@ pub fn recompile_program(src: &Path, workdir: &Path, target: Target, plan: &Emit
     }
     let data_names: Vec<(String, u64)> = data_syms.iter().map(|(n, a)| (n.clone(), *a)).collect();
     let data_name_sizes: BTreeMap<String, u64> = syms_by_name_sizes.clone();
-    let functional = functional_check(&dir, &program_name, src, &bin_path, &functions, &data_names, &data_name_sizes, target);
+    let (functional, link, run) =
+        functional_check(&dir, &program_name, src, &bin_path, &functions, &data_names, &data_name_sizes, target);
+    t.link = link;
+    t.run = run;
     let original_bytes: Vec<(String, u64, Vec<u8>)> =
         decs.iter().map(|d| (d.sym.name.clone(), d.sym.addr, fn_bytes[&d.sym.addr].clone())).collect();
-    Ok(GtReport { program: program_name, functions, workdir: dir, functional, original_bytes, target: target.tag(), plan: plan.name })
+    Ok(GtReport {
+        program: program_name,
+        functions,
+        workdir: dir,
+        functional,
+        original_bytes,
+        target: target.tag(),
+        plan: plan.name,
+        timings: t,
+    })
 }
 
 /// Link every per-function object into one program and run it against the original: the
@@ -964,9 +1034,26 @@ fn functional_check(
     data_syms: &[(String, u64)],
     data_sizes: &BTreeMap<String, u64>,
     target: Target,
-) -> String {
+) -> (String, Duration, Duration) {
+    let t0 = Instant::now();
+    let (verdict, run) = functional_verdict(dir, program, src, original, functions, data_syms, data_sizes, target);
+    (verdict, t0.elapsed().saturating_sub(run), run)
+}
+
+/// The verdict itself; `run` (the two executions) is reported apart from the harness + link time.
+#[allow(clippy::too_many_arguments)]
+fn functional_verdict(
+    dir: &Path,
+    program: &str,
+    src: &Path,
+    original: &Path,
+    functions: &[GtFunction],
+    data_syms: &[(String, u64)],
+    data_sizes: &BTreeMap<String, u64>,
+    target: Target,
+) -> (String, Duration) {
     if functions.iter().any(|f| f.verdict == "COMPILE_FAIL" || f.verdict == "DECOMPILE_FAIL") {
-        return "NOLINK".into();
+        return ("NOLINK".into(), Duration::ZERO);
     }
     // The HARNESS: the original source compiled with `static` stripped, so its functions are
     // interposable; it supplies `_start` (whose `syscall` we cannot yet emit), the data, and the
@@ -986,7 +1073,7 @@ fn functional_check(
         .arg(src)
         .output();
     if !h.is_ok_and(|o| o.status.success()) {
-        return "NOLINK (harness)".into();
+        return ("NOLINK (harness)".into(), Duration::ZERO);
     }
     let objs: Vec<PathBuf> = functions
         .iter()
@@ -1044,17 +1131,19 @@ fn functional_check(
         Ok(o) => {
             let err = String::from_utf8_lossy(&o.stderr);
             let first = err.lines().find(|l| l.contains("error") || l.contains("undefined")).unwrap_or("").trim();
-            return format!("NOLINK ({})", first.chars().take(80).collect::<String>());
+            return (format!("NOLINK ({})", first.chars().take(80).collect::<String>()), Duration::ZERO);
         }
-        Err(_) => return "NOLINK".into(),
+        Err(_) => return ("NOLINK".into(), Duration::ZERO),
     }
     let run = |p: &Path| -> Option<i32> {
         Command::new("timeout").arg("5").arg(p).output().ok().map(|o| o.status.code().unwrap_or(-1))
     };
-    let Some(orig_code) = run(original) else { return "NORUN".into() };
-    match run(&ours) {
+    let t_run = Instant::now();
+    let Some(orig_code) = run(original) else { return ("NORUN".into(), t_run.elapsed()) };
+    let verdict = match run(&ours) {
         Some(c) if c == orig_code => "PASS".into(),
         Some(c) => format!("FAIL(orig={orig_code},ours={c})"),
         None => "FAIL(no run)".into(),
-    }
+    };
+    (verdict, t_run.elapsed())
 }

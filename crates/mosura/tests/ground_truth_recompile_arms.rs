@@ -25,7 +25,7 @@
 //! `cargo test --release --test ground_truth_recompile_arms -- --ignored`, at the end of a plan (the
 //! acceptance chain's closure suite) and for any commit that changes what it tests -- the gt
 //! oracle, the emit plan or an arm -- where the contract "a wrong-code arm fails the suite" is held.
-use mosura::recompile::groundtruth::{gcc_available, gcc_programs, recompile_program, EmitPlan, Target};
+use mosura::recompile::groundtruth::{gcc_available, gcc_programs, recompile_program, EmitPlan, GtTimings, Target};
 
 #[test]
 #[ignore = "plan-closure test (~7 min on master): run with `cargo test --release --test ground_truth_recompile_arms -- --ignored` at the end of a plan or when a commit changes the gt oracle, the emit plan or an arm"]
@@ -35,6 +35,8 @@ fn arm_enabled_emit_passes_wherever_plain_passes_in_the_32bit_column() {
     std::fs::create_dir_all(&workdir).unwrap();
     let mut findings: Vec<String> = Vec::new();
     let (mut programs, mut plain_pass, mut arm_tus_total, mut fns_total) = (0usize, 0usize, 0usize, 0usize);
+    let (mut t_plain, mut t_arms) = (GtTimings::default(), GtTimings::default());
+    let wall = std::time::Instant::now();
     for src in gcc_programs() {
         let plain = recompile_program(&src, &workdir, Target::Gcc32, &EmitPlan::plain())
             .unwrap_or_else(|e| panic!("{} (plain-32): {e}", src.display()));
@@ -58,6 +60,8 @@ fn arm_enabled_emit_passes_wherever_plain_passes_in_the_32bit_column() {
             arm_tus.join(" ")
         );
         programs += 1;
+        t_plain.add(&plain.timings);
+        t_arms.add(&arms.timings);
         arm_tus_total += arm_tus.len();
         fns_total += arms.functions.len();
         if plain.functional == "PASS" {
@@ -75,6 +79,10 @@ fn arm_enabled_emit_passes_wherever_plain_passes_in_the_32bit_column() {
     println!(
         "gt-arms summary: {programs} programs, plain-32 PASS {plain_pass}, arm TUs {arm_tus_total}/{fns_total} functions"
     );
+    // The per-stage census (gt speed, commit 0): where the wall time goes, per pass.
+    println!("gt-arms timing plain-32: {}", t_plain.line());
+    println!("gt-arms timing arms-32:  {}", t_arms.line());
+    println!("gt-arms timing wall: {:.1}s", wall.elapsed().as_secs_f64());
     assert!(
         findings.is_empty(),
         "WRONG-CODE ARM findings (a program that PASSes plain fails arm-enabled) -- for JD, not to be baselined:\n  {}",

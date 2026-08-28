@@ -8,7 +8,7 @@
 //! WGSS drop over 0.01, and `MOSURA_GT_BASELINE=update` rewrites it after an accepted change.
 use std::collections::BTreeMap;
 
-use mosura::recompile::groundtruth::{gcc_available, gcc_programs, recompile_program, EmitPlan, GtReport, Target};
+use mosura::recompile::groundtruth::{gcc_available, gcc_programs, recompile_program, EmitPlan, GtReport, GtTimings, Target};
 
 fn rank(v: &str) -> u8 {
     match v {
@@ -28,12 +28,16 @@ fn decompile_recompile_does_not_regress_against_the_local_baseline() {
     let workdir = mosura::paths::workspace_root().join("build/gt-recompile");
     std::fs::create_dir_all(&workdir).unwrap();
     let mut reports: Vec<GtReport> = Vec::new();
+    let wall = std::time::Instant::now();
     for src in gcc_programs() {
         reports.push(
             recompile_program(&src, &workdir, Target::Gcc64, &EmitPlan::plain())
                 .unwrap_or_else(|e| panic!("{}: {e}", src.display())),
         );
     }
+    let mut t = GtTimings::default();
+    reports.iter().for_each(|r| t.add(&r.timings));
+    println!("gt timing plain-64: {} | wall {:.1}s", t.line(), wall.elapsed().as_secs_f64());
     let mut current: BTreeMap<(String, String), (String, f64, usize)> = BTreeMap::new();
     for r in &reports {
         println!("{}", r.summary());
