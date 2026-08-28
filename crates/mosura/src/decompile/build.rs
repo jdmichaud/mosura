@@ -210,9 +210,7 @@ fn build_from_instrs(
     // per call by `input_list_for_call` when the call site's own evidence says the CALLER pops
     // the arguments.
     f.cdecl_input = cspec.cdecl_input;
-    if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
-        eprintln!("[cdecl-load] cdecl_input loaded: {}", f.cdecl_input.is_some());
-    }
+    debug!(crate::debug::Topic::Args, "cdecl_input loaded: {}", f.cdecl_input.is_some());
     // The stack pointer register from the compiler spec's `<stackpointer>`; keyed on by stack
     // recovery, the alias probe and ActionDirectWrite. Target-specific, hence never a constant.
     f.stack_pointer = cspec.stack_pointer.map(|(a, _)| a);

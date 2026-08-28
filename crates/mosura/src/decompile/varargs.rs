@@ -45,9 +45,7 @@ impl super::action::Action for ActionVarargsRecovery {
     }
     fn apply(&mut self, data: &mut Funcdata) -> u32 {
         let n = unpush_spacebase_phis(data);
-        if std::env::var_os("MOSURA_VARARGS_DEBUG").is_some() {
-            eprintln!("[varargs] unpushed {n}");
-        }
+        debug!(crate::debug::Topic::Varargs, "unpushed {n}");
         n
     }
 }
@@ -76,9 +74,9 @@ fn unpush_spacebase_phis(f: &mut Funcdata) -> u32 {
             continue;
         }
         let desc = f.vn(out).descend.clone();
-        if std::env::var_os("MOSURA_VARARGS_DEBUG").is_some() {
+        if crate::debug::on(crate::debug::Topic::Varargs) {
             let d: Vec<String> = desc.iter().map(|&o| format!("{:?}@{:#x}", f.op(o).code(), f.op(o).seqnum.pc.offset)).collect();
-            eprintln!("[varargs] phi@{:#x} spacebase input; readers [{}]", f.op(phi).seqnum.pc.offset, d.join(" "));
+            debug!(crate::debug::Topic::Varargs, "phi@{:#x} spacebase input; readers [{}]", f.op(phi).seqnum.pc.offset, d.join(" "));
         }
         if desc.len() != 1 {
             continue;
@@ -191,9 +189,9 @@ pub fn recognize(f: &Funcdata, rendered: &[RenderedParam]) -> Option<VarargsInfo
         }
         by_off.entry(off).or_default().push(op);
     }
-    if std::env::var_os("MOSURA_VARARGS_DEBUG").is_some() {
+    if crate::debug::on(crate::debug::Topic::Varargs) {
         let pr: Vec<String> = f.proto_model.paramrange.iter().map(|r| format!("{:?}:{:#x}-{:#x}", r.spc, r.first, r.last)).collect();
-        eprintln!("[varargs] base={base:#x} ptr_size={ptr_size} candidates={:?} paramrange=[{}]", by_off.keys().collect::<Vec<_>>(), pr.join(","));
+        debug!(crate::debug::Topic::Varargs, "base={base:#x} ptr_size={ptr_size} candidates={:?} paramrange=[{}]", by_off.keys().collect::<Vec<_>>(), pr.join(","));
     }
     let (&off, ops) = by_off.iter().next()?;
     // No recovered stack parameter may sit at or beyond the anonymous area.

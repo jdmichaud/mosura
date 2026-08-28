@@ -392,7 +392,7 @@ impl ParamList {
             return;
         }
         let dump = |tag: &str, active: &ParamActive| {
-            if std::env::var_os("MOSURA_FILLIN_DEBUG").is_some() {
+            if crate::debug::on(crate::debug::Topic::Args) {
                 let v: Vec<String> = active
                     .trial
                     .iter()
@@ -407,7 +407,7 @@ impl ParamList {
                         )
                     })
                     .collect();
-                eprintln!("[fillin:{tag}] {}", v.join(" "));
+                debug!(crate::debug::Topic::Args, "[fillin:{tag}] {}", v.join(" "));
             }
         };
         self.build_trial_map(active);
@@ -1676,10 +1676,10 @@ pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
     // INSTRUMENT (`MOSURA_PROTO=1`): 579 emitted WAR2 TUs declare a local that is never assigned
     // and none are byte-clean; several are DROPPED PARAMETERS (FUN_0004d95c uses EDX and EBX,
     // recovers only EAX). Which rule drops a trial is a measurement, not a guess.
-    if std::env::var_os("MOSURA_PROTO").is_some() {
+    if crate::debug::on(crate::debug::Topic::Args) {
         for t in &default_run.trial {
-            eprintln!(
-                "PROTO trial {:#x}/{} active={} used={} unref={} dnu={} entry={:?}",
+            debug!(crate::debug::Topic::Args,
+                "trial {:#x}/{} active={} used={} unref={} dnu={} entry={:?}",
                 t.addr.offset, t.size, t.is_active(), t.is_used(), t.is_unref(),
                 t.is_definitely_not_used(), t.entry
             );
@@ -1798,9 +1798,7 @@ pub fn recover_func_proto(f: &Funcdata) -> FuncProto {
 /// resolve, and that depends on the folding rules collapsing `(sp_input + delta) + 0` before the
 /// stack pass clears them — a claim only the running pipeline can settle.
 fn ph_log(ev: &str, call: OpId, extra: &str) {
-    if std::env::var("MOSURA_PLACEHOLDER").is_ok() {
-        eprintln!("PH {ev} call={} {extra}", call.0);
-    }
+    debug!(crate::debug::Topic::Args, "PH {ev} call={} {extra}", call.0);
 }
 
 /// Ghidra `FuncCallSpecs::getSpacebaseOffset` (fspec.hh:1689): the stack-pointer offset at `call`

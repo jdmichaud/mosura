@@ -342,8 +342,6 @@ impl AliasChecker {
         for i in 0..self.add_base.len() {
             // (`AddrSpace::addressToByte`: mosura's stack space is byte-addressed.)
             let offset = gather_offset(f, self.add_base[i].base);
-            if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
-            }
             self.alias.push(offset);
             if self.direction == 1 {
                 if offset < self.local_boundary {

@@ -628,7 +628,7 @@ fn only_op_use(
         i += 1;
         for op in f.vn(vn).descend.clone() {
             if trace {
-                eprintln!("[oou] vn {}+{:#x} reader {:?}@{:#x} (opmatch slot{opslot} inputmatch={})",
+                debug!(crate::debug::Topic::Args, "vn {}+{:#x} reader {:?}@{:#x} (opmatch slot{opslot} inputmatch={})",
                     f.spaces.get(f.vn(vn).loc.space).name, f.vn(vn).loc.offset,
                     f.op(op).code(), f.op(op).seqnum.pc.offset,
                     f.op(op).input(opslot) == Some(vn));
@@ -1152,31 +1152,22 @@ pub fn init_active_input(f: &mut Funcdata) {
 /// A prototype naming STACK storage keeps the plain trial path (whose stack handling is measured
 /// and fixed — the anchored placeholder); porting the `opStackLoad` arm is the follow-on.
 fn locked_register_inputs(f: &mut Funcdata, call: OpId) -> bool {
-    let dbg = std::env::var_os("MOSURA_ARG_DEBUG").is_some();
     let pc = f.op(call).seqnum.pc.offset;
     let Some(cs) = f.call_specs.get(&call) else {
-        if dbg {
-            eprintln!("[locked] call@{pc:#x} no call_spec");
-        }
+        debug!(crate::debug::Topic::Args, "call@{pc:#x} no call_spec");
         return false;
     };
     if !cs.reads_recovered {
-        if dbg {
-            eprintln!("[locked] call@{pc:#x} reads_recovered=false");
-        }
+        debug!(crate::debug::Topic::Args, "call@{pc:#x} reads_recovered=false");
         return false;
     }
     let Some(reads) = cs.reads.clone() else { return false };
     let Some(reg) = f.spaces.by_name("register") else { return false };
     if reads.is_empty() || !reads.iter().all(|(a, _)| a.space == reg) {
-        if dbg {
-            eprintln!("[locked] call@{pc:#x} reads empty or non-register");
-        }
+        debug!(crate::debug::Topic::Args, "call@{pc:#x} reads empty or non-register");
         return false;
     }
-    if dbg {
-        eprintln!("[locked] call@{pc:#x} locking {} register params", reads.len());
-    }
+    debug!(crate::debug::Topic::Args, "call@{pc:#x} locking {} register params", reads.len());
     for (addr, sz) in reads {
         let ti = {
             let active = f.active_inputs.get_mut(&call).expect("container inserted first");
@@ -1370,14 +1361,14 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId, aliascheck: &mut AliasChe
     // `build_input_from_trials` and the two must agree: a trial registered after the evaluation
     // has run is never given a verdict, and an unevaluated trial is dropped from the argument
     // list. The two counts disagreeing is the whole diagnosis for a silently missing argument.
-    if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
+    if crate::debug::on(crate::debug::Topic::Args) {
         let seen: Vec<String> = f.active_inputs[&call]
             .trial
             .iter()
             .map(|t| format!("{}+{:#x}/{}", f.spaces.get(t.addr.space).name, t.addr.offset, t.size))
             .collect();
-        eprintln!(
-            "[check] call@{:#x} ntrials={ntrials} [{}]",
+        debug!(crate::debug::Topic::Args,
+            "call@{:#x} ntrials={ntrials} [{}]",
             f.op(call).seqnum.pc.offset,
             seen.join(" ")
         );
@@ -1397,7 +1388,7 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId, aliascheck: &mut AliasChe
         // INSTRUMENT: the trial's actual input varnode and its def, so a wrong verdict names
         // its evidence (the flags alone cannot distinguish "wrong input wired" from "right
         // input judged wrong").
-        if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
+        if crate::debug::on(crate::debug::Topic::Args) {
             let d = f.op(call).input(slot).map(|v| {
                 let vn = f.vn(v);
                 let def = vn.def.map(|d| format!("{:?}@{:#x}:{}", f.op(d).code(), f.op(d).seqnum.pc.offset, f.op(d).seqnum.uniq));
@@ -1406,8 +1397,8 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId, aliascheck: &mut AliasChe
                     f.spaces.get(vn.loc.space).name, vn.loc.offset, vn.size, vn.is_written(), def
                 )
             });
-            eprintln!(
-                "[eval] call@{:#x} trial#{ti} slot={slot} kbc={killed_by_call} input={:?}",
+            debug!(crate::debug::Topic::Args,
+                "call@{:#x} trial#{ti} slot={slot} kbc={killed_by_call} input={:?}",
                 f.op(call).seqnum.pc.offset, d
             );
         }
@@ -1440,16 +1431,14 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId, aliascheck: &mut AliasChe
                     None
                 };
                 if let Some((verdict, why)) = stack_pretest {
-                    if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
-                        eprintln!(
-                            "[stack-pretest] call@{:#x} trial#{ti} slot={slot} vn=stack+{:#x} {why} callee_pop={callee_pop} expop={expop} alias_boundary={:#x} alias={:x?} -> {}",
+                    debug!(crate::debug::Topic::Args,
+                            "call@{:#x} trial#{ti} slot={slot} vn=stack+{:#x} {why} callee_pop={callee_pop} expop={expop} alias_boundary={:#x} alias={:x?} -> {}",
                             f.op(call).seqnum.pc.offset,
                             f.vn(v).loc.offset,
                             aliascheck.alias_boundary(),
                             aliascheck.alias(),
                             match verdict { Verdict::Active => "active", Verdict::Inactive => "inactive", Verdict::NoUse => "nouse" }
                         );
-                    }
                     verdict
                 } else {
                 let realistic = AncestorRealistic::new().execute(f, call, slot, &mut trial, !is_stack);
@@ -1461,9 +1450,7 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId, aliascheck: &mut AliasChe
                     let aou = ancestor_op_use(
                         f, TRIM_RECURSE_MAX, v, call, slot, 0, 0, addr, false, &mut HashSet::new(),
                     );
-                    if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
-                        eprintln!("[aou] call@{:#x} trial#{ti} slot={slot} -> {aou}", f.op(call).seqnum.pc.offset);
-                    }
+                    debug!(crate::debug::Topic::Args, "call@{:#x} trial#{ti} slot={slot} -> {aou}", f.op(call).seqnum.pc.offset);
                     if aou {
                         if trial.has_cond_exe_effect() {
                             f.active_inputs.get_mut(&call).unwrap().mark_needs_final_check();
@@ -1511,7 +1498,7 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId, aliascheck: &mut AliasChe
             Verdict::NoUse => active.trial[ti].mark_no_use(),
         }
     }
-    if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
+    if crate::debug::on(crate::debug::Topic::Args) {
         let v: Vec<String> = f.active_inputs[&call]
             .trial
             .iter()
@@ -1527,7 +1514,7 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId, aliascheck: &mut AliasChe
                 )
             })
             .collect();
-        eprintln!("[verdict] call@{:#x} [{}]", f.op(call).seqnum.pc.offset, v.join(" "));
+        debug!(crate::debug::Topic::Args, "call@{:#x} [{}]", f.op(call).seqnum.pc.offset, v.join(" "));
     }
     let active = f.active_inputs.get_mut(&call).unwrap();
     active.finish_pass();
@@ -1661,7 +1648,7 @@ fn derive_input_map(f: &mut Funcdata, call: OpId) {
     // INSTRUMENT (`MOSURA_MONO=1`): what propagation did to this call's trials. Prints the trial
     // container AFTER the recovered list was applied, alongside the set the convention's own list
     // would have marked used, so a demotion (used by the model, unused here) is visible directly.
-    if std::env::var("MOSURA_MONO").is_ok() {
+    if crate::debug::on(crate::debug::Topic::Args) {
         let show: Vec<String> = active
             .trial
             .iter()
@@ -1677,8 +1664,8 @@ fn derive_input_map(f: &mut Funcdata, call: OpId) {
                 )
             })
             .collect();
-        eprintln!(
-            "[mono] call@{call_pc:#x} committed={committed} recovered_entries={} model_used={} trials=[{}]",
+        debug!(crate::debug::Topic::Args,
+            "call@{call_pc:#x} committed={committed} recovered_entries={} model_used={} trials=[{}]",
             input.entry.len(),
             model_used.as_ref().map_or(0, |s| s.len()),
             show.join(" ")
@@ -1744,7 +1731,7 @@ fn build_input_from_trials(f: &mut Funcdata, call: OpId) {
         .map(|t| (t.op_slot as usize, t.size, t.is_unref(), t.addr))
         .collect();
     let n = f.op(call).num_inputs();
-    if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
+    if crate::debug::on(crate::debug::Topic::Args) {
         // EVERY trial, not just the used ones. A trial that exists and is not marked used looks
         // exactly like a trial that was never registered if only the used ones are printed, and
         // those two have completely different causes.
@@ -1767,9 +1754,9 @@ fn build_input_from_trials(f: &mut Funcdata, call: OpId) {
                 )
             })
             .collect();
-        eprintln!("[trials] call@{:#x} {}", f.op(call).seqnum.pc.offset, all.join(" "));
+        debug!(crate::debug::Topic::Args, "call@{:#x} {}", f.op(call).seqnum.pc.offset, all.join(" "));
     }
-    if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
+    if crate::debug::on(crate::debug::Topic::Args) {
         for (slot, sz, unref, addr) in &used {
             let vn = if *slot > 0 && *slot < n { f.op(call).input(*slot) } else { None };
             // The WHOLE input list and the placeholder slot alongside the trial's recorded slot:
@@ -1786,8 +1773,8 @@ fn build_input_from_trials(f: &mut Funcdata, call: OpId) {
                     None => format!("{i}:?"),
                 })
                 .collect();
-            eprintln!(
-                "[arg] call@{:#x} slot={slot} size={sz} unref={unref} addr={}+{:#x} vn={:?} inputs=[{}]",
+            debug!(crate::debug::Topic::Args,
+                "call@{:#x} slot={slot} size={sz} unref={unref} addr={}+{:#x} vn={:?} inputs=[{}]",
                 f.op(call).seqnum.pc.offset,
                 f.spaces.get(addr.space).name,
                 addr.offset,
