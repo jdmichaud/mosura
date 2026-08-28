@@ -116,8 +116,8 @@ fn ptrfit_probe(data: &Funcdata, op: OpId) {
             let vt = data.vn(o.input(0).unwrap()).get_type();
             let vt_fits = matches!(&vt, Datatype::Pointer(_, pt) if pt.size() as u64 == sz);
             let chan = if vt_fits == fits { "same" } else { "CHANNELS_DISAGREE" };
-            eprintln!(
-                "PTRFIT\t{}\tptradd\tfits={fits}\tvn_fits={vt_fits}\t{chan}\telem_sz={sz}\tptr={ct:?}\tvn_ty={vt:?}",
+            debug!(crate::debug::Topic::Pointers,
+                "ptrfit\t{}\tptradd\tfits={fits}\tvn_fits={vt_fits}\t{chan}\telem_sz={sz}\tptr={ct:?}\tvn_ty={vt:?}",
                 data.name
             );
         }
@@ -127,7 +127,7 @@ fn ptrfit_probe(data: &Funcdata, op: OpId) {
             // needs the composite lattice, so a `ptr_off0=false` row is REACH, not a verdict.
             let ct = high_type_read_facing(data, o.input(0).unwrap());
             let off = data.vn(o.input(1).unwrap()).constant_value();
-            eprintln!("PTRFIT\t{}\tptrsub\tis_ptr={}\toff={off}\tty={ct:?}", data.name, ct.is_pointer());
+            debug!(crate::debug::Topic::Pointers, "ptrfit\t{}\tptrsub\tis_ptr={}\toff={off}\tty={ct:?}", data.name, ct.is_pointer());
         }
         _ => {}
     }
@@ -136,7 +136,7 @@ fn ptrfit_probe(data: &Funcdata, op: OpId) {
 fn ptrfit_probe_on() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("MOSURA_PTRFIT").is_some())
+    *ON.get_or_init(|| crate::debug::on(crate::debug::Topic::Pointers))
 }
 
 fn apply(data: &mut Funcdata) {

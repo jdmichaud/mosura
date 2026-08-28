@@ -494,7 +494,7 @@ impl AddTreeState {
                                 // it could equally mean the mechanism is never a candidate. Both
                                 // numbers together say which.
                                 if distrib_probe_on() {
-                                    eprintln!("DISTRIB\t{}\tcandidate", f.name);
+                                    debug!(crate::debug::Topic::Pointers, "distrib\t{}\tcandidate", f.name);
                                 }
                                 self.distribute_op = Some(op);
                             }
@@ -872,7 +872,7 @@ impl AddTreeState {
             // `*(T *)(p + k)` where Ghidra would reach `p[i]` / `p->field` — that is the deferral's
             // actual cost, and it is invisible in any gate we run.
             if distrib_probe_on() {
-                eprintln!("DISTRIB\t{}\tdecline", f.name);
+                debug!(crate::debug::Topic::Pointers, "distrib\t{}\tdecline", f.name);
             }
             return false;
         }
@@ -1315,7 +1315,7 @@ impl Rule for RulePtraddUndo {
 fn distrib_probe_on() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("MOSURA_DISTRIB").is_some())
+    *ON.get_or_init(|| crate::debug::on(crate::debug::Topic::Pointers))
 }
 
 

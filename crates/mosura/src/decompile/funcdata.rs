@@ -888,7 +888,7 @@ impl Funcdata {
         if size < 8 && value > (1u64 << (size * 8)) - 1 && Self::const_check_enabled() {
             // Name the FUNCTION, not just the value: a bare total cannot say how many functions a
             // class reaches, and per-function reach is the unit every gate here is quoted in.
-            eprintln!("CONSTCHECK\t{}\t{value:#x}\t{size}", self.name);
+            debug!(crate::debug::Topic::Pipeline, "constcheck\t{}\t{value:#x}\t{size}", self.name);
         }
         let loc = Address::new(self.spaces.constant(), value);
         self.alloc_varnode(size, loc, flags::CONSTANT)
@@ -897,7 +897,7 @@ impl Funcdata {
     /// Whether `MOSURA_CONSTCHECK` selects the oversized-constant invariant check (cached once).
     fn const_check_enabled() -> bool {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ON.get_or_init(|| std::env::var_os("MOSURA_CONSTCHECK").is_some())
+        *ON.get_or_init(|| crate::debug::on(crate::debug::Topic::Pipeline))
     }
 
     /// Ghidra `Funcdata::spacebaseConstant` (funcdata.cc:358): rewrite the constant read by
@@ -2152,8 +2152,8 @@ impl Funcdata {
                     == self.op(op).input(0).map(|t| self.vn(t).loc.offset)
                 && inputs.len() != self.op(op).num_inputs()
             {
-                eprintln!(
-                    "[watchcall] set_all_input op@{:#x} {} -> {} inputs\n{}",
+                debug!(crate::debug::Topic::Pipeline,
+                    "watchcall set_all_input op@{:#x} {} -> {} inputs\n{}",
                     self.op(op).seqnum.pc.offset,
                     self.op(op).num_inputs(),
                     inputs.len(),
@@ -2184,8 +2184,8 @@ impl Funcdata {
                 && u64::from_str_radix(w.trim_start_matches("0x"), 16).ok()
                     == self.op(op).input(0).map(|t| self.vn(t).loc.offset)
             {
-                eprintln!(
-                    "[watchcall] remove_input op@{:#x} slot={slot} now {} inputs\n{}",
+                debug!(crate::debug::Topic::Pipeline,
+                    "watchcall remove_input op@{:#x} slot={slot} now {} inputs\n{}",
                     self.op(op).seqnum.pc.offset,
                     self.op(op).num_inputs() - 1,
                     std::backtrace::Backtrace::force_capture()

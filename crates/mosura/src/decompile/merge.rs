@@ -93,7 +93,7 @@ impl HighVariables {
             });
             if let Ok(w) = u32::from_str_radix(watch.trim_start_matches("0x"), 16) {
                 if self.find(a) == self.find(w) || self.find(b) == self.find(w) || a == w || b == w {
-                    MERGE_PHASE.with(|ph| eprintln!("[union] {a} <- {b} (watch {w}) phase {}", ph.get()));
+                    MERGE_PHASE.with(|ph| debug!(crate::debug::Topic::Merge, "union {a} <- {b} (watch {w}) phase {}", ph.get()));
                 }
             }
         }
@@ -748,7 +748,7 @@ fn implied_cover_ok(
                     continue;
                 }
                 if covers.get(&b).is_some_and(|bc| bc.intersects(vcov)) {
-                    if std::env::var_os("MOSURA_IMPLIED_DEBUG").is_some() {
+                    if crate::debug::on(crate::debug::Topic::Merge) {
                         let pc = |x: VarnodeId| f.vn(x).def.map_or(0, |d| f.op(d).seqnum.pc.offset);
                         let blk = |x: VarnodeId| f.vn(x).def.and_then(|d| f.op(d).parent).map_or(9999, |b| b.0);
                         let bc = covers.get(&b).unwrap();
@@ -762,8 +762,8 @@ fn implied_cover_ok(
                             let g = if f.op(r).code() == OpCode::Indirect { f.op(r).guarded_op().map(|g| format!("g={:?}@{:#x}/blk{}", f.op(g).code(), f.op(g).seqnum.pc.offset, f.op(g).parent.map_or(9999, |x| x.0))).unwrap_or_default() } else { String::new() };
                             format!("{:?}@{:#x}/blk{}<-{:?} {}", f.op(r).code(), f.op(r).seqnum.pc.offset, rb, ins, g)
                         }).collect();
-                        eprintln!(
-                            "[implied] v={:?}@{:#x} blk{} defvn={:?}@{:#x}/{:#x} intersects b={:?}@{:#x}/{:#x} blk{} ({}) readers=[{}] [{}]",
+                        debug!(crate::debug::Topic::Merge,
+                            "implied v={:?}@{:#x} blk{} defvn={:?}@{:#x}/{:#x} intersects b={:?}@{:#x}/{:#x} blk{} ({}) readers=[{}] [{}]",
                             f.op(def).code(), f.op(def).seqnum.pc.offset, blk(v), defvn, pc(defvn), f.vn(defvn).loc.offset, b, pc(b), f.vn(b).loc.offset, blk(b),
                             f.vn(b).def.map_or("input".into(), |d| format!("{:?}", f.op(d).code())), readers.join(","), shared.join(" ")
                         );
@@ -1341,7 +1341,7 @@ fn merge_addrtied(f: &Funcdata, h: &mut HighVariables) -> VariablePieces {
             && f.spaces.get(vn.loc.space).kind == crate::decompile::space::SpaceKind::Processor
             && f.spaces.get(vn.loc.space).delay == 0
         {
-            eprintln!("[addrtied-reg] v{} {}+{:#x}:{} flags {:#x}", v.0, f.spaces.get(vn.loc.space).name, vn.loc.offset, vn.size, vn.flags);
+            debug!(crate::debug::Topic::Merge, "addrtied-reg v{} {}+{:#x}:{} flags {:#x}", v.0, f.spaces.get(vn.loc.space).name, vn.loc.offset, vn.size, vn.flags);
         }
         by_storage.entry((vn.loc.space, vn.loc.offset, vn.size)).or_default().push(v);
     }

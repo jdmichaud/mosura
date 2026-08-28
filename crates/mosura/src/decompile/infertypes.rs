@@ -703,15 +703,15 @@ fn propagation_debug(f: &Funcdata, vn: VarnodeId, newtype: &Datatype, op: Option
         return;
     }
     match op {
-        None => eprintln!("TYPEPROP {}#{} : {newtype:?} init", f.vn_str(vn), vn.0),
-        Some(o) => eprintln!("TYPEPROP {}#{} : {newtype:?} from {} slot={inslot}", f.vn_str(vn), vn.0, f.op_str(o)),
+        None => debug!(crate::debug::Topic::Types, "{}#{} : {newtype:?} init", f.vn_str(vn), vn.0),
+        Some(o) => debug!(crate::debug::Topic::Types, "{}#{} : {newtype:?} from {} slot={inslot}", f.vn_str(vn), vn.0, f.op_str(o)),
     }
 }
 
 fn typeprop_debug_on() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("MOSURA_TYPEPROP").is_some())
+    *ON.get_or_init(|| crate::debug::on(crate::debug::Topic::Types))
 }
 
 /// Ghidra `TypeOp::propagateToPointer`: build a pointer (of width `sz`) to the value type.

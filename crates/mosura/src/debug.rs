@@ -71,6 +71,12 @@ pub enum Topic {
     /// decompile/action's timing accumulator and its `perf::dump` table (was `MOSURA_PERF`); its own
     /// topic so a timing run does not switch the pipeline diagnostics on.
     Perf,
+    /// decompile/infertypes' propagation trace (was `MOSURA_TYPEPROP`): one line per propagation
+    /// step -- its own topic so it does not drown the sparse `pointers` prints.
+    Types,
+    /// decompile/subvarflow's replacement trace (was `MOSURA_SUBVAR`): one line per node -- its own
+    /// topic for the same reason.
+    Subvar,
 }
 
 impl Topic {
@@ -78,7 +84,7 @@ impl Topic {
         Topic::SparseSwitch, Topic::StructCopy, Topic::FrameFill, Topic::SumOrder, Topic::Printc, Topic::Recover,
         Topic::Structure, Topic::JumpTable, Topic::Args, Topic::Varargs, Topic::RetSplit, Topic::Effects,
         Topic::Varmap, Topic::StackVars, Topic::Heritage, Topic::Pointers, Topic::Pipeline, Topic::Watsched,
-        Topic::GroundTruth, Topic::Cspec, Topic::Analysis, Topic::Merge, Topic::Survey, Topic::Perf,
+        Topic::GroundTruth, Topic::Cspec, Topic::Analysis, Topic::Merge, Topic::Survey, Topic::Perf, Topic::Types, Topic::Subvar,
     ];
     /// The kebab-case name used in `MOSURA_DEBUG` and as the print prefix.
     pub fn name(self) -> &'static str {
@@ -107,6 +113,8 @@ impl Topic {
             Topic::Merge => "merge",
             Topic::Survey => "survey",
             Topic::Perf => "perf",
+            Topic::Types => "types",
+            Topic::Subvar => "subvar",
         }
     }
 }

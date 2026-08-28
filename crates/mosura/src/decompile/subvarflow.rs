@@ -1867,7 +1867,7 @@ impl<'a> SubvariableFlow<'a> {
 /// every replacement varnode); this names the op mosura stopped at.
 fn subvar_debug(msg: &str) {
     if subvar_debug_on() {
-        eprintln!("{msg}");
+        debug!(crate::debug::Topic::Subvar, "{msg}");
     }
 }
 
@@ -1877,15 +1877,15 @@ fn subvar_debug_node(fd: &Funcdata, tag: &str, rvn: usize, rvnodes: &[ReplaceVar
     }
     let node = &rvnodes[rvn];
     match node.vn {
-        Some(v) => eprintln!(" {tag} {} mask={:#x}", fd.vn_str(v), node.mask),
-        None => eprintln!(" {tag} <new> mask={:#x}", node.mask),
+        Some(v) => debug!(crate::debug::Topic::Subvar, " {tag} {} mask={:#x}", fd.vn_str(v), node.mask),
+        None => debug!(crate::debug::Topic::Subvar, " {tag} <new> mask={:#x}", node.mask),
     }
 }
 
 fn subvar_debug_on() -> bool {
     use std::sync::OnceLock;
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("MOSURA_SUBVAR").is_some())
+    *ON.get_or_init(|| crate::debug::on(crate::debug::Topic::Subvar))
 }
 
 /// Ghidra `TypeOpFloatInt2Float::preferredZextSize` (`typeop.cc`).

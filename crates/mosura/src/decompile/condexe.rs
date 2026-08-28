@@ -1130,8 +1130,8 @@ impl super::action::Action for ActionConditionalExe {
                 let mut condexe = ConditionalExecution::new(data);
                 condexe.iblock = BlockId(i as u32);
                 let ok = condexe.verify(data);
-                if std::env::var("MOSURA_CONDEXE_DEBUG").is_ok() && ok {
-                    eprintln!("CONDEXE verify ok at block {i}");
+                if ok {
+                    debug!(crate::debug::Topic::Pipeline, "condexe verify ok at block {i}");
                 }
                 if ok && condexe.execute(data, &dom) {
                     numhits += 1;

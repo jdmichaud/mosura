@@ -61,11 +61,11 @@ pub fn mark_addrtied(f: &mut Funcdata, unmapped_alias_check: bool) {
         (Some(alias), Some(stack)) => Some(StackAliasCtx::build(f, stack, alias.clone())),
         _ => None,
     };
-    if std::env::var_os("MOSURA_ALIAS_DEBUG").is_some() {
+    if crate::debug::on(crate::debug::Topic::Pointers) {
         let nstack = (0..f.num_varnodes() as u32)
             .filter(|&i| Some(f.vn(VarnodeId(i)).loc.space) == stack && !f.vn(VarnodeId(i)).is_free())
             .count();
-        eprintln!("[alias] boundary={boundary:?} stack_vns={nstack}");
+        debug!(crate::debug::Topic::Pointers, "alias boundary={boundary:?} stack_vns={nstack}");
     }
     for i in 0..f.num_varnodes() as u32 {
         let id = VarnodeId(i);
