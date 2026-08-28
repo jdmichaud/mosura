@@ -135,6 +135,13 @@ pub struct Program {
     /// treat absence as "no evidence" rather than as "no parameters" — an empty prototype is a
     /// claim, and the wrong one.
     pub recovered_protos: std::collections::HashMap<u64, crate::decompile::fspec::FuncProto>,
+    /// The hidden struct-return FACTS the same pass records per function (`analysis::sret`): the
+    /// slot-0 shape and the bytes the function pops on return. Consulted like `recovered_protos`
+    /// (under `proto_scope`) when a call to the function is analyzed.
+    pub recovered_sret: std::collections::HashMap<u64, crate::analysis::sret::SretFact>,
+    /// The call-site EVIDENCE the pass collected per CALLEE: what every analyzed call to it says
+    /// about its returned pointer and slot-0 argument (`analysis::sret::CallEvidence`).
+    pub sret_callers: std::collections::HashMap<u64, Vec<crate::analysis::sret::CallEvidence>>,
     /// Restrict which entries of `recovered_protos` the analysis may CONSULT: `None` = all (the
     /// normal prototype-informed world), `Some(set)` = only these callees — the surgical
     /// injection the consistency doctrine uses (memory `consistency-over-score`): re-decompile
@@ -211,6 +218,8 @@ impl Program {
             comments: std::collections::BTreeMap::new(),
             indirect_branches: std::collections::HashSet::new(),
             recovered_protos: std::collections::HashMap::new(),
+            recovered_sret: std::collections::HashMap::new(),
+            sret_callers: std::collections::HashMap::new(),
             proto_scope: None,
             noreturn_functions: std::collections::HashSet::new(),
             defined_data: Vec::new(),

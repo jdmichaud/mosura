@@ -128,6 +128,46 @@ pub fn recover(
     recovered
 }
 
+/// The hidden struct-return DECISION for `f` — the shape (`analysis::sret::sret_shape`) plus its
+/// byte witness: on the cdecl side the function's own `ret $4` (it pops exactly the pointer's
+/// slot, which gcc emits on i386 only for a memory-returned struct); on the register side (the
+/// pointer in slot 0 = EAX, gcc's local convention, no pop) EVERY known call site's evidence — the
+/// returned pointer dead, the slot-0 argument the address of a caller local. No call site and no
+/// pop is no witness. The shape alone is byte-identical to `int *fill(int *p, ..) { ..; return p; }`;
+/// the caller-side witness can still match such a function whose callers drop the result, and the
+/// rendering is then value-preserving either way (`local = fill(..)` performs the same stores) — a
+/// false positive changes form, never values (docs/struct-return-arm.md).
+pub fn struct_return(f: &Funcdata) -> Option<StructReturnFact> {
+    let shape = crate::analysis::sret::sret_shape(f)?;
+    let ptr = f.vn(crate::decompile::printc::rendered_param_slots(f).first()?.vn?).size;
+    let on_stack = f.spaces.by_name("stack") == Some(shape.slot.space);
+    let witness = if on_stack && f.ret_pop == Some(ptr) {
+        SretWitness::CalleePop
+    } else if !on_stack && !f.sret_callers.is_empty() && f.sret_callers.iter().all(|e| e.supports_sret()) {
+        SretWitness::Callers(f.sret_callers.len())
+    } else {
+        debug!(crate::debug::Topic::Args, "{:#x}: struct-return shape without a witness (on_stack={on_stack} ret_pop={:?} callers={:?})", f.addr.offset, f.ret_pop, f.sret_callers);
+        return None;
+    };
+    debug!(crate::debug::Topic::Args, "{:#x}: struct-return {} bytes, {} fields, witness {witness:?}", f.addr.offset, shape.size, shape.fields.len());
+    Some(StructReturnFact { shape, witness })
+}
+
+/// A witnessed hidden struct return: the shape and what witnessed it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StructReturnFact {
+    pub shape: crate::analysis::sret::SretShape,
+    pub witness: SretWitness,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SretWitness {
+    /// The function pops the pointer's slot on return (`ret $4`).
+    CalleePop,
+    /// Every one of its n known call sites drops the returned pointer and passes a local's address.
+    Callers(usize),
+}
+
 /// The Watcom-32 CANONICAL ARM SET — the survey's flagless arm, verbatim from war2_survey.rs
 /// (review R5, commit b moved it here so the oracle and the survey build the same set; the
 /// survey's `--arms` override and its own shift-mask rule stay the survey's).

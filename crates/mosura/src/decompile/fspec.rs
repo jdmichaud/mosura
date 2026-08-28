@@ -1335,6 +1335,9 @@ impl ParamTrial {
 /// (fspec.cc:5940) reads it too. So it gets its own map, keyed the same way.
 #[derive(Clone, Debug, Default)]
 pub struct CallSpec {
+    /// The callee's hidden struct-return SHAPE, copied from `Program::recovered_sret` with the
+    /// prototype (`analysis::sret`); the `struct-return` emit arm reads it. mosura-only.
+    pub sret: Option<crate::analysis::sret::SretShape>,
     /// Ghidra `FuncCallSpecs::stackoffset` (fspec.hh:1651): "Relative offset of stack-pointer at
     /// time of this call". `None` is Ghidra's `offset_unknown` (fspec.hh:1677, the 0xBADBEEF
     /// sentinel) — the state in which `guardCalls` refuses to register a spacebase range as a

@@ -429,6 +429,11 @@ fn record_callee_effects(
         .spaces
         .by_name("stack")
         .and_then(|st| f.spaces.get(st).spacebase.first().map(|&(a, _)| a.offset));
+    // The function's OWN return pop and its callers' evidence (`analysis::sret`): the callee-pop
+    // half and the caller half of a hidden struct return, read here where `RET n` is read for
+    // callees, and handed to the printer's `struct-return` arm on the Funcdata.
+    f.ret_pop = esp_off.and_then(|sp| callee_cleanup(program, spec, ctx, f.addr.offset, sp));
+    f.sret_callers = program.sret_callers.get(&f.addr.offset).cloned().unwrap_or_default();
     for &call in &calls {
         let Some(t) = f.op(call).input(0) else { continue };
         // A CALL's input 0 carries its target in the varnode's LOCATION, not as a constant
@@ -624,6 +629,7 @@ fn record_callee_effects(
             cs.reads = Some(slots);
             cs.reads_recovered = true;
             cs.model = proto.model.clone();
+            cs.sret = program.recovered_sret.get(&target).and_then(|s| s.shape.clone());
             if let Some((regs, _)) = eff {
                 cs.overwrites = regs;
             }

@@ -50,6 +50,47 @@ pub enum Datatype {
 }
 
 impl Datatype {
+    /// The tag of an anonymous struct of `size` bytes with `fields` = `(byte offset, type)`,
+    /// ascending: `s<size>` for the contiguous all-`int4` layout (gcc's common case), else
+    /// `s<size>_<sig>` with every field as `<kind><bytes>` (`i` int, `u` uint, `x` unknown, `c`
+    /// char, `b` bool, `f` float, `r` pointer, `k` code, `a` array, `s` struct) and every gap as
+    /// `p<bytes>` — `s12_i4p4u2p2`. A function of the layout only: two layouts of one size never
+    /// share a tag, and the same layout in two TUs always does.
+    pub fn struct_tag(size: u32, fields: &[(u64, Datatype)]) -> String {
+        let contiguous_int4 = !fields.is_empty()
+            && size as u64 == 4 * fields.len() as u64
+            && fields.iter().enumerate().all(|(i, (off, ty))| *off == 4 * i as u64 && matches!(ty, Datatype::Int(4)));
+        if contiguous_int4 {
+            return format!("s{size}");
+        }
+        let kind = |ty: &Datatype| match ty {
+            Datatype::Int(_) => 'i',
+            Datatype::Uint(_) => 'u',
+            Datatype::Unknown(_) => 'x',
+            Datatype::Char => 'c',
+            Datatype::Bool => 'b',
+            Datatype::Float(_) => 'f',
+            Datatype::Pointer(..) => 'r',
+            Datatype::Code => 'k',
+            Datatype::Array(..) => 'a',
+            Datatype::Struct(..) => 's',
+            Datatype::Void | Datatype::Spacebase(_) => 'v',
+        };
+        let mut sig = String::new();
+        let mut at = 0u64;
+        for (off, ty) in fields {
+            if *off > at {
+                sig += &format!("p{}", off - at);
+            }
+            sig += &format!("{}{}", kind(ty), ty.size());
+            at = off + ty.size() as u64;
+        }
+        if size as u64 > at {
+            sig += &format!("p{}", size as u64 - at);
+        }
+        format!("s{size}_{sig}")
+    }
+
     pub fn size(&self) -> u32 {
         match self {
             Datatype::Void => 0,
@@ -317,7 +358,12 @@ impl Datatype {
             Datatype::Code => "code".to_string(),
             Datatype::Pointer(_, to) => format!("{} *", to.name()),
             Datatype::Array(elem, count) => format!("{}[{}]", elem.name(), count),
-            Datatype::Struct(n, _) => format!("struct_{n}"),
+            // The tag the `struct-return` arm declares (`analysis::sret::struct_declaration`) —
+            // the one producer of this variant, at PRINT time only (the census in cast.rs). Ghidra
+            // names a struct by its symbol; this is the port's spelling of an anonymous one, a
+            // function of the LAYOUT alone (`struct_tag`), so a definition and its callers'
+            // externs in other TUs spell the same struct the same way.
+            Datatype::Struct(n, fields) => format!("struct {}", Datatype::struct_tag(*n, fields)),
         }
     }
 }

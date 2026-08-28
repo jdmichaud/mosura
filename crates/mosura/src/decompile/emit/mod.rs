@@ -221,6 +221,8 @@ pub struct EmitChoices {
     pub string_ops: StringOps,
     pub sdiv_pow2: SdivPow2,
     pub frame_fill: FrameFill,
+    /// `struct-return`: see [`StructReturn`].
+    pub struct_return: StructReturn,
     pub sparse_switch: SparseSwitch,
     pub struct_copy: StructCopy,
     pub sum_order: SumOrder,
@@ -349,6 +351,17 @@ pub enum FrameFill {
     Aggregate,
 }
 
+/// `struct-return`: a function whose slot-0 parameter is a hidden return pointer (only stored
+/// through, returned unchanged — `analysis::sret`) prints as Ghidra does, or as the
+/// struct-returning C function the source wrote, when its byte witness holds (the callee's
+/// `ret $4`, or every call site passing a local's address and dropping the returned pointer);
+/// a call to such a callee prints `local = f(..)` (docs/struct-return-arm.md).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StructReturn {
+    Ghidra,
+    Witness,
+}
+
 /// `sparse-switch`: Watcom compiles a sparse `switch` into a balanced compare tree (pivot = the
 /// lower median of the sorted cases), which Ghidra structures as nested if/else on one scrutinee.
 /// `switch` recognizes that tree and prints the `switch` the source wrote — the case set from the
@@ -410,6 +423,7 @@ impl Default for EmitChoices {
             string_ops: StringOps::Loop,
             sdiv_pow2: SdivPow2::Shift,
             frame_fill: FrameFill::Ghidra,
+            struct_return: StructReturn::Ghidra,
             sparse_switch: SparseSwitch::Ghidra,
             struct_copy: StructCopy::Ghidra,
             sum_order: SumOrder::Ghidra,
@@ -530,6 +544,14 @@ impl EmitChoices {
             doc: "a witnessed run of k plain MOVSD prints as a k-dword struct assignment",
         },
         Axis {
+            name: "struct-return",
+            values: &["ghidra", "witness"],
+            doc: "print a hidden-return-pointer function as Ghidra does (the pointer an explicit \
+                  parameter, returned), or as the struct-returning function the source wrote when \
+                  the byte witness holds (callee `ret $4`, or every call site passing a local's \
+                  address and dropping the pointer); calls to it print `local = f(..)`",
+        },
+        Axis {
             name: "sparse-switch",
             values: &["ghidra", "switch"],
             doc: "render a compare tree on one scrutinee as Ghidra's nested if/else, or as the sparse \
@@ -615,6 +637,10 @@ impl EmitChoices {
             "frame-fill" => Some(match self.frame_fill {
                 FrameFill::Ghidra => "ghidra",
                 FrameFill::Aggregate => "aggregate",
+            }),
+            "struct-return" => Some(match self.struct_return {
+                StructReturn::Ghidra => "ghidra",
+                StructReturn::Witness => "witness",
             }),
             "struct-copy" => Some(match self.struct_copy {
                 StructCopy::Ghidra => "ghidra",
@@ -747,6 +773,13 @@ impl EmitChoices {
                 self.frame_fill = match value {
                     "ghidra" => FrameFill::Ghidra,
                     "aggregate" => FrameFill::Aggregate,
+                    _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
+                }
+            }
+            "struct-return" => {
+                self.struct_return = match value {
+                    "ghidra" => StructReturn::Ghidra,
+                    "witness" => StructReturn::Witness,
                     _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
                 }
             }

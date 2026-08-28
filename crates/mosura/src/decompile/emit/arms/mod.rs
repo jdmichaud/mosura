@@ -6,7 +6,8 @@
 //!
 //! THE SEAMS — every arm effect passes through one of these, nothing else:
 //! - [`try_emit`], the statement-level hook: the port calls it at the [`Site`]s — a structured loop
-//!   node, the head of an if, an if without an else, one op of a block's statement list — and the
+//!   node, the head of an if, an if without an else, one op of a block's statement list, a RETURN
+//!   statement (struct-return, 2026-08-28) — and the
 //!   arms answer in one FIXED order ([`ARMS`]), first match wins; no two arms declare the same site
 //!   kind (a unit test over the table holds it), so a future overlap fails loudly instead of being
 //!   resolved by list order. At this skeleton the table is the documented order and `try_emit`
@@ -103,6 +104,7 @@ pub(crate) struct State {
     pub(crate) array_index: array_index::State,
     pub(crate) return_split: return_split::State,
     pub(crate) snapshot: snapshot::State,
+    pub(crate) struct_return: struct_return::State,
 }
 
 impl State {
@@ -120,6 +122,7 @@ impl State {
             array_index: array_index::State::new(choices),
             return_split: return_split::State::new(choices),
             snapshot: snapshot::State::new(choices),
+            struct_return: struct_return::State::new(choices),
         }
     }
 }
@@ -138,6 +141,7 @@ pub mod return_split;
 pub mod join_narrow;
 pub mod sum_order;
 pub mod testmem;
+pub mod struct_return;
 
 /// The kinds of site the statement-level hook is called from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -154,6 +158,10 @@ pub enum SiteKind {
     /// The last two components of a structured list (`emit_structured_body`, `FlowKind::List`):
     /// a plain if + a bool-returning basic may print as per-path returns. R2b, commit 7.
     ListTail,
+    /// A RETURN op of a block's statement list, after the block-op site declined: a hidden
+    /// struct return whose RETURN carries no value prints `return __ret` (struct-return,
+    /// 2026-08-28).
+    Return,
 }
 
 /// One call of the statement-level hook.
@@ -163,6 +171,7 @@ pub enum Site<'s> {
     IfWithoutElse { s: &'s Structured, idx: usize, indent: usize },
     BlockOp { block_ops: &'s [OpId], op: OpId, pc: u64, reordered: &'s std::collections::HashSet<OpId> },
     ListTail { s: &'s Structured, c: usize, tail: usize, indent: usize },
+    Return { op: OpId },
 }
 
 impl Site<'_> {
@@ -173,6 +182,7 @@ impl Site<'_> {
             Site::IfWithoutElse { .. } => SiteKind::IfWithoutElse,
             Site::BlockOp { .. } => SiteKind::BlockOp,
             Site::ListTail { .. } => SiteKind::ListTail,
+            Site::Return { .. } => SiteKind::Return,
         }
     }
 }
@@ -198,12 +208,13 @@ pub struct Arm {
 /// The arms in the order they are tried, each with the site kinds it declares. First match wins;
 /// no two arms declare the same kind (`tests::arms_declare_disjoint_site_kinds`). An arm not yet
 /// moved out of printc.rs sits here as a thin delegate.
-pub const ARMS: [Arm; 5] = [
+pub const ARMS: [Arm; 6] = [
     string_ops::ARM,
     sparse_switch::ARM,
     struct_copy::ARM,
     nested_conds::ARM,
     return_split::ARM,
+    struct_return::ARM,
 ];
 
 /// The statement-level hook: the first arm of [`ARMS`] that declares the site's kind answers;
@@ -233,6 +244,7 @@ pub const SURFACE_METHODS: &[&str] = &[
     "operand",
     "render_mem",
     "get_input_cast",
+    "callee_name",
 ];
 /// The free helpers of `printc` an arm file may import.
 #[cfg_attr(not(test), allow(dead_code))] // the documented list; read by the surface test
@@ -248,7 +260,7 @@ mod tests {
     /// The arm files, as text, for the surface scan — every `pub mod` of this module must be here
     /// (`arms_touch_only_the_documented_surface` checks that against this file's own source, so a
     /// new arm file cannot slip past the scan).
-    const ARM_SOURCES: [(&str, &str); 14] = [
+    const ARM_SOURCES: [(&str, &str); 15] = [
         ("string_ops.rs", include_str!("string_ops.rs")),
         ("struct_copy.rs", include_str!("struct_copy.rs")),
         ("sparse_switch.rs", include_str!("sparse_switch.rs")),
@@ -263,6 +275,7 @@ mod tests {
         ("sum_order.rs", include_str!("sum_order.rs")),
         ("testmem.rs", include_str!("testmem.rs")),
         ("complement_cmp.rs", include_str!("complement_cmp.rs")),
+        ("struct_return.rs", include_str!("struct_return.rs")),
     ];
 
     /// Every `p.`/`pr.`/`me.` member access and every `use crate::decompile::printc::{..}` item in
@@ -314,6 +327,24 @@ mod tests {
         assert!(violations.is_empty(), "arm surface violations:\n{}", violations.join("\n"));
     }
 
+    /// The declarations family's answerers are exactly the documented ones, in the documented
+    /// order: each seam's body names its answerer modules (`<arm>::<seam>(`) as `DECLARATION_SEAMS`
+    /// lists them, and nothing else.
+    #[test]
+    fn declaration_seams_have_the_documented_answerers() {
+        let this = include_str!("mod.rs");
+        for (seam, answerers) in DECLARATION_SEAMS {
+            let head = format!("fn {seam}");
+            let start = this.find(&head).unwrap_or_else(|| panic!("seam `{seam}` not found"));
+            let body = &this[start..];
+            let end = body.find("\n}\n").expect("seam body end");
+            let body = &body[..end];
+            let re = regex::Regex::new(&format!(r"([a-z_]+)::{seam}\(")).unwrap();
+            let found: Vec<&str> = re.captures_iter(body).map(|c| c.get(1).unwrap().as_str()).collect();
+            assert_eq!(&found, answerers, "seam `{seam}` answerers (in order)");
+        }
+    }
+
     /// The at-most-one-arm-per-site-kind rule is a static property of the table: every pair of
     /// arms declares disjoint kinds, so "first match wins" never has two candidates.
     #[test]
@@ -325,7 +356,7 @@ mod tests {
                 }
             }
         }
-        for kind in [SiteKind::LoopNode, SiteKind::IfEntry, SiteKind::IfWithoutElse, SiteKind::BlockOp] {
+        for kind in [SiteKind::LoopNode, SiteKind::IfEntry, SiteKind::IfWithoutElse, SiteKind::BlockOp, SiteKind::Return] {
             assert_eq!(ARMS.iter().filter(|a| a.kinds.contains(&kind)).count(), 1, "{kind:?} has exactly one arm");
         }
     }
@@ -396,30 +427,73 @@ pub enum ValueSite<'v> {
 /// The precedence is read at the expression situations; the slot situations' callers take the
 /// text.
 pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, u8)> {
+    // THE ORDERED ANSWERERS (explicit, documented here; a site with two answerers lists them in
+    // the order they are asked, first answer wins):
+    //   OpRoot:      string-ops, sdiv-pow2, struct-return (a witnessed CALL)
+    //   Var:         struct-return (the hidden pointer -> `__ret`), string-ops
+    //   Deref:       struct-return (a field write through the hidden pointer), array-index
+    //   SlotName / SlotOffset / SlotAddress / SlotPiece / FusedStore:
+    //                struct-return (a typed struct local's slot), frame-fill
+    // struct-return's slot answers decline by frame-fill's SETUP state (`declined_by_frame_fill`,
+    // decided at recognize), never by this order.
     match site {
-        ValueSite::OpRoot { op } => string_ops::strlen_fold(p, op).or_else(|| sdiv_pow2::render(p, op)),
-        ValueSite::Var { v } => string_ops::render_var_value(p, v),
+        ValueSite::OpRoot { op } => string_ops::strlen_fold(p, op)
+            .or_else(|| sdiv_pow2::render(p, op))
+            .or_else(|| struct_return::render_value(p, &ValueSite::OpRoot { op })),
+        ValueSite::Var { v } => struct_return::render_value(p, &ValueSite::Var { v }).or_else(|| string_ops::render_var_value(p, v)),
         ValueSite::Equality { op, sym, prec } => unsigned_cmp::render(p, op, sym, prec),
         ValueSite::Compare { op, strict, prec } => complement_cmp::render(p, op, strict, prec),
         ValueSite::Load { out, addr } => testmem::render(p, out, addr),
         ValueSite::Sum { op } => sum_order::render(p, op),
-        ValueSite::Deref { addr } => array_index::render(p, addr),
+        ValueSite::Deref { addr } => struct_return::render_value(p, &ValueSite::Deref { addr }).or_else(|| array_index::render(p, addr)),
         ValueSite::VarEntry { v } => snapshot::render(p, v),
-        other => frame_fill::render_value(p, &other),
+        other => struct_return::render_value(p, &other).or_else(|| frame_fill::render_value(p, &other)),
     }
 }
 
-// THE DECLARATIONS SEAMS — one family, three situations, each with exactly one answerer:
+// THE DECLARATIONS SEAMS — one family, four situations, each with its answerer(s) listed here
+// (`DECLARATION_SEAMS`, held by a test):
 //   * a SLOT's declaration (`declare_slot`: the port is about to declare the stack slot at
-//     `start`; frame-fill answers `true` when its aggregate declares it);
+//     `start`; struct-return answers `true` when a typed struct local declares it, then frame-fill
+//     when its aggregate does — the order is explicit below, and struct-return's answer is decided
+//     by frame-fill's SETUP state, never by the order);
 //   * a LOCAL's declared type (`local_decl_type`: the port is about to declare a genuine local;
 //     join-narrow answers the narrowed type);
 //   * the declarations the port does NOT know about (`init_decls`: temps an arm invented, with
-//     their initializers, printed by the port after its own locals; entry snapshots answer).
+//     their initializers, printed by the port after its own locals; entry snapshots answer);
+//   * the function's own SIGNATURE (`signature`: the port is about to assemble the return type
+//     and the parameter list; struct-return answers a preamble of struct declarations, the struct
+//     return type and the hidden parameter to drop — the design note of 2026-08-28, seq 527/528).
 // They are separate functions because their answers differ in type (a bool "declared it", an
-// `Option<Datatype>`, a list of `(name, type, initializer)`), not because each arm gets its own
-// seam. RULE: a further declaration-level seam needs a design note in the channel first — the
-// family must not grow one function per arm (review R2b, commits 5 and 8, fable-b's notes).
+// `Option<Datatype>`, a list of `(name, type, initializer)`, a `Signature`), not because each arm
+// gets its own seam. RULE: a further declaration-level seam needs a design note in the channel
+// first — the family must not grow one function per arm (review R2b, commits 5 and 8, fable-b's
+// notes).
+
+/// The family, as a table: each seam with its answerers in the order they are asked. The test
+/// `declaration_seams_have_the_documented_answerers` holds this against the functions' bodies.
+#[cfg_attr(not(test), allow(dead_code))]
+pub const DECLARATION_SEAMS: &[(&str, &[&str])] = &[
+    ("declare_slot", &["struct_return", "frame_fill"]),
+    ("local_decl_type", &["join_narrow"]),
+    ("init_decls", &["snapshot"]),
+    ("signature", &["struct_return"]),
+];
+
+/// What the signature seam answers: the lines printed BEFORE the definition (struct
+/// declarations), the return type when it changes, the parameter varnode to drop when one does.
+pub(crate) struct Signature {
+    pub(crate) preamble: Vec<String>,
+    pub(crate) ret_ty: Option<String>,
+    pub(crate) drop: Option<VarnodeId>,
+}
+
+/// The function's own signature, about to be assembled by the port (consulted exactly once, at
+/// the assembly of `ret_ty`/`plist` in print_c_inner): one answerer, struct-return; `None` = the
+/// port's own signature. R-struct-return, 2026-08-28.
+pub(crate) fn signature(p: &mut PrintC<'_>) -> Option<Signature> {
+    struct_return::signature(p)
+}
 /// The declared type of a genuine local `name_of` is about to declare (`v` the varnode, `ty` its
 /// value type): one answerer, join-narrow; `None` = the port's own declaration width. Replaces
 /// the inline consult in name_of (8bd43ce); R2b, commit 5.
@@ -443,5 +517,5 @@ pub(crate) fn init_decls<'p>(p: &'p PrintC<'_>) -> &'p [(String, Datatype, Strin
 /// from a list built beforehand. So it is an explicit seam (fable-b, seq 217), never an inline
 /// consult; `true` = an arm declared it, the port declares nothing.
 pub fn declare_slot(p: &mut PrintC<'_>, start: i64) -> bool {
-    frame_fill::declare_slot(p, start)
+    struct_return::declare_slot(p, start) || frame_fill::declare_slot(p, start)
 }

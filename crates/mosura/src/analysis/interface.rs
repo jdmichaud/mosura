@@ -71,12 +71,36 @@ pub fn recover_prototypes_fixpoint(program: &mut Program, entries: Vec<u64>, max
         v.sort();
         v
     };
+    // the struct-return facts and evidence are part of the state the rounds converge on
+    let sret_key = |m: &HashMap<u64, super::sret::SretFact>| -> Vec<(u64, Option<(u32, Vec<(u32, u32)>)>, Option<u32>)> {
+        let mut v: Vec<_> = m
+            .iter()
+            .map(|(e, s)| {
+                (
+                    *e,
+                    s.shape.as_ref().map(|sh| (sh.size, sh.fields.iter().map(|&(o, z, _)| (o, z)).collect())),
+                    s.ret_pop,
+                )
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    let callers_key = |m: &HashMap<u64, Vec<super::sret::CallEvidence>>| -> Vec<(u64, Vec<(bool, bool)>)> {
+        let mut v: Vec<_> = m.iter().map(|(e, c)| (*e, c.iter().map(|x| (x.output_dead, x.arg0_local_addr)).collect())).collect();
+        v.sort();
+        v
+    };
     let mut rounds = 0;
     loop {
-        let next = recover_prototypes_of(program, entries.clone());
+        let next = recover_pass(program, entries.clone());
         rounds += 1;
-        let same = key(&next) == key(&program.recovered_protos);
-        program.recovered_protos = next;
+        let same = key(&next.protos) == key(&program.recovered_protos)
+            && sret_key(&next.sret) == sret_key(&program.recovered_sret)
+            && callers_key(&next.callers) == callers_key(&program.sret_callers);
+        program.recovered_protos = next.protos;
+        program.recovered_sret = next.sret;
+        program.sret_callers = next.callers;
         if same || rounds >= max_rounds {
             return rounds;
         }
@@ -86,16 +110,44 @@ pub fn recover_prototypes_fixpoint(program: &mut Program, entries: Vec<u64>, max
 /// The same pass over an explicit list of function entries — for a program whose functions come
 /// from elsewhere than the analysis' function manager (the gt oracle's ELF symbol table).
 pub fn recover_prototypes_of(program: &Program, entries: Vec<u64>) -> HashMap<u64, FuncProto> {
+    recover_pass(program, entries).protos
+}
+
+/// One round of the pass: the prototypes, and the hidden struct-return facts and call-site
+/// evidence (`analysis::sret`) the same decompilations show.
+pub struct ProtoPass {
+    pub protos: HashMap<u64, FuncProto>,
+    pub sret: HashMap<u64, super::sret::SretFact>,
+    pub callers: HashMap<u64, Vec<super::sret::CallEvidence>>,
+}
+
+/// The pass over `entries`, recording per function its prototype and its struct-return fact, and
+/// per CALLEE what each analyzed call says about it — the two facts the `struct-return` arm's
+/// witness needs, carried by the same fixpoint as the prototypes.
+pub fn recover_pass(program: &Program, entries: Vec<u64>) -> ProtoPass {
     let ram = program.default_space;
-    let mut out = HashMap::with_capacity(entries.len());
+    let mut protos = HashMap::with_capacity(entries.len());
+    let mut sret = HashMap::with_capacity(entries.len());
+    let mut callers: HashMap<u64, Vec<super::sret::CallEvidence>> = HashMap::new();
     for entry in entries {
         let Some(f) = super::decompiler::decompile_function(program, crate::decompile::space::Address::new(ram, entry))
         else {
             continue;
         };
-        out.insert(entry, prototype_of(&f));
+        protos.insert(entry, prototype_of(&f));
+        sret.insert(entry, super::sret::SretFact { shape: super::sret::sret_shape(&f), ret_pop: f.ret_pop });
+        let mut calls: Vec<_> = f.call_specs.keys().copied().collect();
+        calls.sort();
+        for call in calls {
+            let Some(t) = f.op(call).input(0) else { continue };
+            let target = f.vn(t).loc.offset;
+            if target == 0 {
+                continue;
+            }
+            callers.entry(target).or_default().push(super::sret::call_evidence(&f, call));
+        }
     }
-    out
+    ProtoPass { protos, sret, callers }
 }
 
 /// The prototype a decompiled function presents: its recovered inputs, and the storage it returns

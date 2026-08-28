@@ -445,11 +445,12 @@ impl StackSolver {
                         if f.call_specs.contains_key(&call) {
                             // Ghidra double-checks the CALLEE prototype's extrapop here, because
                             // `ActionDeindirect` may have resolved an indirect call to a known
-                            // callee and filled it in since. mosura carries one prototype model per
-                            // function rather than per call site, so the check reads that; under
+                            // callee and filled it in since. mosura's calls start on the CALLED
+                            // model (`Funcdata::called_model`, the `evalfp_called` of
+                            // ActionDefaultParams), so the check reads that; under
                             // `analyze_extra_pop`'s gate it is UNKNOWN by construction and this
                             // branch is inert until per-call-site models land.
-                            let ep = f.proto_model.extrapop;
+                            let ep = f.called_model().extrapop;
                             if ep != super::fspec::EXTRAPOP_UNKNOWN {
                                 self.eqs.push(StackEqn { var1: i, var2, rhs: ep });
                                 continue;
@@ -523,8 +524,9 @@ impl StackSolver {
 /// into concrete adds; each such INDIRECT also yields its call's recovered `effectiveExtraPop`.
 fn analyze_extra_pop(f: &mut Funcdata, sb_addr: Address, sb_size: u32) {
     // Ghidra gates on the *evaluation* model for called functions (`evalfp_called`, falling back to
-    // `defaultfp`): the analysis is only needed when that model's extrapop is unknown.
-    if f.proto_model.extrapop != super::fspec::EXTRAPOP_UNKNOWN {
+    // `defaultfp`; coreaction.cc:264): the analysis is only needed when that model's extrapop is
+    // unknown — `Funcdata::called_model`, the model a call starts on.
+    if f.called_model().extrapop != super::fspec::EXTRAPOP_UNKNOWN {
         return;
     }
     let mut solver = StackSolver::default();

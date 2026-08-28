@@ -193,6 +193,13 @@ pub struct Funcdata {
     /// offset is read by `guardCalls` on every later heritage pass, long after the arguments
     /// commit and the `ParamActive` is dropped.
     pub call_specs: std::collections::HashMap<OpId, super::fspec::CallSpec>,
+    /// The bytes THIS function pops on return (`RET n`; `analysis::decompiler::callee_cleanup`
+    /// over its own body), `None` when unknown or inconsistent. mosura-only: the callee-pop half
+    /// of a hidden struct return (`analysis::sret`).
+    pub ret_pop: Option<u32>,
+    /// What every analyzed call to THIS function says about its slot-0 argument and returned
+    /// pointer (`Program::sret_callers`, through the prototype pass). mosura-only.
+    pub sret_callers: Vec<crate::analysis::sret::CallEvidence>,
 
     /// Register offsets THIS function destroys — written somewhere in its reachable body and not
     /// restored — or `None` when that could not be established
@@ -430,6 +437,8 @@ impl Funcdata {
             laned: super::transform::LanedRegisterSet::default(),
             proto_model,
             called_model: None,
+            ret_pop: None,
+            sret_callers: Vec::new(),
             cdecl_input: None,
             stack_pointer: None,
             aggressive_ext_trim: false,

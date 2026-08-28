@@ -445,7 +445,9 @@ fn fold_in_first(name: &str, model: &ProtoModel) -> ProtoModel {
 /// of the same minsize replaces it, one the existing subsumes is dropped, anything else is added),
 /// `extrapop` becomes unknown when they differ, the effect lists are intersected, `likelytrash`
 /// intersected, the local and parameter ranges unioned. The output lists are assumed equal
-/// (Ghidra does not check either).
+/// (Ghidra does not check either). mosura's `ProtoModel` carries no `internalstorage` list and no
+/// inject ids, so Ghidra's `intersectRegisters(internalstorage)` and its throw on differing
+/// injects (fspec.cc:2860-2870) have no counterpart here.
 fn fold_in(mut acc: ProtoModel, model: &ProtoModel) -> ProtoModel {
     if let (Some(pl), Some(other)) = (acc.input.as_mut(), model.input.as_ref()) {
         for opentry in &other.entry {

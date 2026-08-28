@@ -374,3 +374,148 @@ response codes (fspec.cc:1583–1610), mirrored onto the symbol as `Varnode::hid
 fspec.cc:3455). Without a struct return type Ghidra prints exactly our `void mk(undefined4 *, ...)`
 and its caller would be equally wrong; the fix is a struct-return recovery (the twin build's
 SPLIT class above: `GPOINT getp(void)` returned in EAX), not the model. Open item; owner: JD's call.
+
+## Update (2026-08-28, structval): the hidden struct return -- what Ghidra does, and the arm
+
+The regparm round left structval as the one plain-32 FAIL (39 vs 24: the harness's cdecl caller
+expects the callee-pop `ret $4` of the hidden return pointer, ours returns with `ret`). Step 1 of
+the order was the instrument: Ghidra's own console (`decomp_dbg`, built from the shipped 12.0.3
+source; `map function <addr> <name>` + `parse line` lock the return type through
+`Architecture::setPrototype`, grammar.cc:3151) on a global cdecl twin of `mk` (`gcc -m32 -O2`;
+`ret $4`), its caller, the original regparm3 `mk`, and the harness's `_start`:
+
+    ##### A: cdecl twin mk (mk_cdecl.elf 0x8049000), return LOCKED pt mk(int4,int4)
+    /data/r6-scratch/gt/sv/mk_cdecl.elf successfully loaded: Intel/AMD 32-bit x86
+    Function mk: 0x08049000
+
+    pt * mk(pt *rethidden,int4 a,int4 b)
+
+    {
+      rethidden->x = a;
+      rethidden->y = b;
+      return rethidden;
+    }
+    ##### A2: cdecl twin mk, no lock
+    /data/r6-scratch/gt/sv/mk_cdecl.elf successfully loaded: Intel/AMD 32-bit x86
+    Function mk: 0x08049000
+
+    void mk(xunknown4 *param_1,xunknown4 param_2,xunknown4 param_3)
+
+    {
+      *param_1 = param_2;
+      param_1[1] = param_3;
+      return;
+    }
+    ##### C: cdecl twin call site use() (0x8049040), mk/dot locked
+    /data/r6-scratch/gt/sv/mk_cdecl.elf successfully loaded: Intel/AMD 32-bit x86
+    Function use: 0x08049040
+
+    void use(void)
+
+    {
+      pt p;
+      pt q;
+      pt *rethidden;
+      int4 iVar1;
+      int4 iVar2;
+      int4 iVar3;
+      pt pStack_14;
+
+      iVar2 = 4;
+      iVar1 = 3;
+      mk(&pStack_14,3,4);
+      iVar3 = iVar2;
+      mk(rethidden,5,6);
+      p.y = pStack_14.x;
+      p.x = iVar2;
+      q.y = iVar3;
+      q.x = iVar1;
+      dot(p,q);
+      return;
+    }
+    ##### B: original regparm3 mk (structval.elf 0x8049000), LOCKED pt __regparm3 mk(int4,int4)
+    /data/mosura-gt/build/gt-recompile/structval.gcc32/structval.elf successfully loaded: Intel/AMD 32-bit x86
+    Function mk: 0x08049000
+
+    pt __regparm3 mk(int4 a,int4 b)
+
+    {
+      xunknown4 in_ECX;
+      pt pVar1;
+
+      *(int4 *)a = b;
+      *(xunknown4 *)(a + 4) = in_ECX;
+      pVar1.y = b;
+      pVar1.x = a;
+      return pVar1;
+    }
+    ##### B2: harness _start (structval.ours 0x8049080), mk/dot locked cdecl
+    /data/mosura-gt/build/gt-recompile/structval.gcc32.plain/structval.ours successfully loaded: Intel/AMD 32-bit x86
+    Function _start: 0x08049080
+
+    void _start(void)
+
+    {
+      code *pcVar1;
+      pt p;
+      pt q;
+      int4 iVar2;
+      int4 iVar3;
+      int4 iVar4;
+      pt pStack_14;
+
+      iVar3 = 4;
+      iVar2 = 3;
+      mk(&pStack_14,3,4);
+      iVar4 = iVar3;
+      mk(&pStack_14,5,6);
+      p.y = pStack_14.x;
+      p.x = iVar3;
+      q.y = iVar4;
+      q.x = iVar2;
+      dot(p,q);
+      pcVar1 = (code *)swi(0x80);
+      (*pcVar1)();
+      return;
+    }
+
+What it establishes: the C++ recovers nothing from these bytes (A2 = our TU); with the type locked
+it prints the hidden pointer as an explicit first parameter and returns it (A: the output becomes
+the POINTER type -- `<hidden_return/>` without a strategy is `hiddenret_specialreg`,
+modelrules.cc:1386-1400; fspec.cc:1583-1610 types the output `pointertp` and adds the extra
+input, assignMap places it through `assignAddressFallback(TYPECLASS_HIDDENRET)` -- no hiddenret
+pentry in `__cdecl`'s input list, so the TYPECLASS_GENERAL stack entry takes it, fspec.cc:792-805;
+printc.cc has no `isHiddenReturn` check at all -- `__return_storage_ptr__` is the Java GUI's
+name, DecompilerConcepts.html "Auto-Parameters"); the call site renders with the pointer
+argument, not `local = f(..)`, and goes wrong-code because `__cdecl`'s extrapop=4 ignores the
+callee's `ret $4` (in Ghidra proper the Java analyzer computes the function's stack purge from
+`RET imm` -- `FunctionPurgeAnalysisCmd`, `findPurgeInstruction`/`getPurgeValue` -- and ships
+`extrapop = purge + stackshift`, FunctionPrototype.java:168-178; the standalone C++ has none of
+it); and `__regparm3` has no hidden_return rule at all (B: an 8-byte struct goes to its EDX:EAX
+join pentry), so the cspec cannot express gcc's local convention (pointer in EAX = regparm slot 0,
+returned unchanged, no pop).
+
+Ruling (fable-b, seq 526/528/530): a witnessed RECOVERY plus an EMIT ARM, the frame-fill/
+struct-copy layer, behind `struct-return=ghidra|witness`, `witness` in the gt ARMS plan only --
+`plain()` is the reference rendering by contract; the faithful substrate (the `<rule>` decode at
+cspec.rs:787, `TYPECLASS_HIDDENRET`, `assignParameterStorage`'s hidden input, the dead
+`HIDDENRETPARM` flag at varnode.rs:46) is DEFERRED until a typed struct return exists to feed it.
+The design is docs/struct-return-arm.md: the fact (`analysis::sret`: slot 0 only stored through
+inside [0, N) and returned unchanged -- including the void form, slot 0 = the untouched return
+register), the witness (`recompile::recovery::struct_return`: the callee's own `ret $4`, or every
+known call site dropping the pointer and passing a local's address, through the prototype
+fixpoint), the arm (the fourth declarations-family seam `signature`, the `Return` statement site,
+the ordered second answerers ahead of frame-fill with the decline rule on frame-fill's setup
+state, the layout-derived tag `Datatype::struct_tag`). The caller side needs no extrapop plumbing:
+callers already carry `4 + n` from `callee_cleanup` (analysis/decompiler.rs).
+
+Result: arms-32 structval FAIL(39/24) -> PASS -- `struct s8_x4x4 __regparm3 FUN_08049000(xunknown4
+param_2, xunknown4 param_3) { struct s8_x4x4 __ret; __ret.f0 = param_2; __ret.f4 = param_3; return
+__ret; }` and, in our `_start`, `struct s8_x4x4 xStack_14; xStack_14 = func_0x08049000(3, 4);
+xVar1 = xStack_14.f4; ..` (our `_start.c` is compiled, though not linked, so the caller half is
+on the PASS path). The per-program table and the column totals are in the READY of the round
+(plain-32 unchanged at 13 / 1 / 13; arms-32 14 / 0 / 13; the gt-arms invariant holds with
+structval its one plain-FAIL/arms-PASS line). Open beside it: `dot`'s struct-by-value ARGUMENTS
+(right as rendered, `int4 __regparm2 dot(p1, p2, p3, p4)`), and the two regparm nits landed with
+this round (stackvars.rs reads the CALLED model's extrapop, coreaction.cc:264; `fold_in`'s doc
+names the absent internalstorage/inject ids).

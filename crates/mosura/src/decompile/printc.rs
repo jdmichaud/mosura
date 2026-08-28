@@ -1284,6 +1284,16 @@ impl<'a> PrintC<'a> {
         }
     }
 
+    /// The name a direct CALL's target prints as: input 0 is the (constant) call target — named
+    /// `func_0x<addr>`, like Ghidra; `func` when there is none. The one spelling of a callee, for
+    /// the port's CALL rendering and for an arm that renders a call itself (struct-return).
+    pub(crate) fn callee_name(&self, op: OpId) -> String {
+        match self.f.op(op).input(0) {
+            Some(t) => format!("func_0x{:08x}", self.f.vn(t).loc.offset),
+            None => "func".to_string(),
+        }
+    }
+
     pub(crate) fn render_var(&mut self, v: VarnodeId) -> (String, u8) {
         // entry snapshots (emit/arms/snapshot.rs): a snapshotted value renders as its temp's name
         if let Some(r) = arms::render_value(self, ValueSite::VarEntry { v }) {
@@ -2165,11 +2175,7 @@ impl<'a> PrintC<'a> {
             // stack local / struct field) or none (an array decay), so it is used verbatim.
             OpCode::Ptrsub => (self.render_ptrsub(op, false), 15),
             OpCode::Call => {
-                // input 0 is the (constant) call target — name it func_0x<addr>, like Ghidra
-                let name = match o.input(0) {
-                    Some(t) => format!("func_0x{:08x}", self.f.vn(t).loc.offset),
-                    None => "func".to_string(),
-                };
+                let name = self.callee_name(op);
                 if crate::debug::on(crate::debug::Topic::Printc) {
                     let facts: Vec<String> = (1..o.num_inputs())
                         .map(|i| {
@@ -3433,9 +3439,12 @@ impl<'a> PrintC<'a> {
             // assignment — the arm answers at the block-op site, the port writes its statement form
             if !self.f.op(op).is_dead() && !self.suppressed.contains(&op) {
                 let pc = self.f.op(op).seqnum.pc.offset;
-                if let Some(Answer::Fused { stmt, members }) =
-                    arms::try_emit(self, Site::BlockOp { block_ops: &block_ops, op, pc, reordered: &reordered }, out)
-                {
+                let mut answer = arms::try_emit(self, Site::BlockOp { block_ops: &block_ops, op, pc, reordered: &reordered }, out);
+                // struct-return (emit/arms/struct_return.rs): a RETURN statement is its own site
+                if answer.is_none() && self.f.op(op).code() == OpCode::Return {
+                    answer = arms::try_emit(self, Site::Return { op }, out);
+                }
+                if let Some(Answer::Fused { stmt, members }) = answer {
                     for m in members {
                         reordered.insert(m);
                     }
@@ -4705,6 +4714,9 @@ fn print_c_inner(
     arms::struct_copy::recognize(&p);
     // frame-fill=aggregate: the arm's gate (emit/arms/frame_fill.rs) — arm setup
     arms::frame_fill::recognize(&mut p, f, choices);
+    // struct-return=witness: the arm's setup (emit/arms/struct_return.rs), after frame-fill's
+    // (its decline rule reads frame-fill's aggregate)
+    arms::struct_return::recognize(&mut p, f);
     let t0 = std::time::Instant::now();
     p.array_elem = p.detect_arrays();
     p.ret_val = p.return_value();
@@ -5053,6 +5065,22 @@ fn print_c_inner(
         super::action::perf::record("print", "emit", t0.elapsed());
     }
     let mut out = String::new();
+    // The declarations family's fourth seam (emit/arms/mod.rs `signature`), consulted exactly
+    // once: struct-return answers a preamble (struct declarations printed before the definition),
+    // the struct return type and the hidden parameter dropped from the list.
+    let sig = arms::signature(&mut p);
+    let (mut ret_ty, mut plist) = (ret_ty, plist);
+    if let Some(s) = &sig {
+        if let Some(h) = s.drop {
+            plist = sig_params.iter().zip(plist).filter(|((_, v, _), _)| *v != Some(h)).map(|(_, t)| t).collect();
+        }
+        if let Some(t) = &s.ret_ty {
+            ret_ty = t.clone();
+        }
+        for l in &s.preamble {
+            let _ = writeln!(out, "{l}");
+        }
+    }
     // An empty parameter list renders `(void)`, not `()` — Ghidra `PrintC::emitPrototypeInputs`
     // (printc.cc:2227): when `numParams() == 0` it prints the `void` keyword.
     let mut params = if plist.is_empty() { "void".to_string() } else { plist.join(", ") };

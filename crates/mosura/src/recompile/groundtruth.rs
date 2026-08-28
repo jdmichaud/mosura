@@ -95,7 +95,11 @@ impl EmitPlan {
         EmitPlan { name: "plain", choices: d.clone(), rec_choices: d, recover: false }
     }
     pub fn arms() -> Self {
-        let (choices, rec_choices) = crate::recompile::recovery::measured_arms();
+        let (mut choices, mut rec_choices) = crate::recompile::recovery::measured_arms();
+        // The gcc column's own arm (docs/struct-return-arm.md): the survey's canonical set does not
+        // carry it (Watcom's tree is measured without it; the identity emit proves it cannot move).
+        choices.set("struct-return", "witness").expect("known axis");
+        rec_choices.set("struct-return", "witness").expect("known axis");
         EmitPlan { name: "arms", choices, rec_choices, recover: true }
     }
     /// The workdir suffix that keeps the columns and plans apart; empty for the host plain run,
@@ -546,6 +550,12 @@ fn call_site_arity(c: &str, name: &str) -> Option<usize> {
     best
 }
 
+/// The struct declarations the struct-return arm prints before a definition: the leading lines
+/// of the emitted text of the form `struct sN { .. };` (before the signature line).
+fn struct_preamble(c: &str) -> Vec<&str> {
+    c.lines().take_while(|l| !l.contains('(')).filter(|l| l.starts_with("struct s") && l.ends_with("};")).collect()
+}
+
 /// The parameter declarations of a signature line (`int4 f(int4 a, uint8 b)` → the two).
 fn signature_params(sig: &str) -> Vec<String> {
     let Some(open) = sig.find('(') else { return Vec::new() };
@@ -824,6 +834,15 @@ pub fn render_and_check(a: &Analyzed, workdir: &Path, plan: &EmitPlan) -> Result
                     } else if kr || callee.c.is_none() {
                         tu += &format!("extern int4 {id}();\n");
                     } else {
+                        // a struct-returning callee's `struct sN { .. };` (the struct-return arm's
+                        // preamble) travels with its extern, once per TU, unless this TU's own
+                        // text already declares that layout
+                        for l in struct_preamble(callee.c.as_deref().unwrap_or("")) {
+                            if !c.contains(l) && !tu.contains(l) {
+                                tu += l;
+                                tu += "\n";
+                            }
+                        }
                         tu += &format!("{};\n", callee.sig.replacen(&callee.self_name, id, 1));
                     }
                     continue;
