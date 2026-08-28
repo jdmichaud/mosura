@@ -75,14 +75,12 @@ impl Action for ActionRestrictLocal {
             }
         }
         for (off, sz) in marks {
-            if std::env::var_os("MOSURA_VARMAP").is_some() {
-                eprintln!(
-                    "MARKNOTMAPPED[{}] off={} size={}",
+            debug!(crate::debug::Topic::Varmap,
+                    "marknotmapped [{}] off={} size={}",
                     data.name,
                     super::varmap::sx32(off),
                     sz
                 );
-            }
             data.mark_not_mapped(stack, off, sz);
         }
         // Ghidra returns 0: this is scope maintenance, never a change that should drive a

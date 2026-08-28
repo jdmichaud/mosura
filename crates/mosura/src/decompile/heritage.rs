@@ -1105,10 +1105,10 @@ fn analyze_new_load_guards(f: &mut Funcdata, dom: &Dominators) {
             }
         }
     }
-    if std::env::var_os("MOSURA_LOADGUARD").is_some() {
+    if crate::debug::on(crate::debug::Topic::Heritage) {
         for g in f.load_guard.iter().chain(f.store_guard.iter()) {
-            eprintln!(
-                "[loadguard] {:?}@{:#x} base={:#x} range=[{:#x},{:#x}] step={} state={}",
+            debug!(crate::debug::Topic::Heritage,
+                "{:?}@{:#x} base={:#x} range=[{:#x},{:#x}] step={} state={}",
                 f.op(g.op).code(),
                 f.op(g.op).seqnum.pc.offset,
                 g.pointer_base,
@@ -1459,13 +1459,11 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
             // INSTRUMENT (`MOSURA_STACKARG=1`): 423 WAR2 functions pass call arguments on the
             // stack (`push imm ; call ; add esp,4`) and only 5 are byte-clean, so whether a stack
             // range ever reaches the trial branch is a measurement, not a guess.
-            if std::env::var("MOSURA_STACKARG").is_ok() {
-                eprintln!(
-                    "STACKARG call@{:#x} (op {}) range={:#x}+{} sp_off={:?} trans={:#x} tryregister={tryregister}",
+            debug!(crate::debug::Topic::Args,
+                    "call@{:#x} (op {}) range={:#x}+{} sp_off={:?} trans={:#x} tryregister={tryregister}",
                     f.op(call).seqnum.pc.offset, call.0, off, size,
                     super::fspec::spacebase_offset(f, call), trans_off
                 );
-            }
         }
         let trans_addr = super::space::Address::new(spc, trans_off);
 
@@ -1530,27 +1528,24 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
                             ov.loc.space == spc && ov.loc.offset == off && ov.size == size
                         })
                 });
-                if std::env::var_os("MOSURA_SAVEDSLOT").is_some() {
-                    eprintln!(
-                        "[savedslot] call@{:#x} slot={}+{:#x}/{} src={}+{:#x} preserved={preserved} saved_here={saved_here} copy_found={copy_found} ndesc={}",
+                debug!(crate::debug::Topic::Heritage,
+                        "call@{:#x} slot={}+{:#x}/{} src={}+{:#x} preserved={preserved} saved_here={saved_here} copy_found={copy_found} ndesc={}",
                         f.op(call).seqnum.pc.offset,
                         f.spaces.get(spc).name, off, size,
                         f.spaces.get(src.loc.space).name, src.loc.offset,
                         src.descend.len()
                     );
-                }
                 copy_found
             })
         };
-        if std::env::var_os("MOSURA_ARG_DEBUG").is_some()
-            && f.spaces.get(spc).kind != super::space::SpaceKind::Spacebase
+        if f.spaces.get(spc).kind != super::space::SpaceKind::Spacebase
             && f.is_input_active(call)
         {
             // Which register ranges are even OFFERED as argument trials, and what the convention
             // says about each. A trial that is never registered looks identical, in every later
             // instrument, to one registered and then rejected — and the two have opposite fixes.
-            eprintln!(
-                "[offer] call@{:#x} range={}+{:#x}/{} tryregister={tryregister} saved={is_saved_slot} char={:?}",
+            debug!(crate::debug::Topic::Args,
+                "offer call@{:#x} range={}+{:#x}/{} tryregister={tryregister} saved={is_saved_slot} char={:?}",
                 f.op(call).seqnum.pc.offset,
                 f.spaces.get(spc).name,
                 off,
@@ -1563,15 +1558,13 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
                 super::fspec::Containment::ContainsJustified => {
                     let active = f.active_inputs.get_mut(&call).unwrap();
                     if active.which_trial(trans_addr, size).is_none() {
-                        if std::env::var_os("MOSURA_ARG_DEBUG").is_some() {
-                            eprintln!(
-                                "[register] call@{:#x} {}+{:#x}/{}",
+                        debug!(crate::debug::Topic::Args,
+                                "register call@{:#x} {}+{:#x}/{}",
                                 f.op(call).seqnum.pc.offset,
                                 f.spaces.get(trans_addr.space).name,
                                 trans_addr.offset,
                                 size
                             );
-                        }
                         let active = f.active_inputs.get_mut(&call).unwrap();
                         let ti = active.register_trial(trans_addr, size);
                         let invn = f.new_varnode(size, addr);
@@ -2510,9 +2503,7 @@ pub fn bump_deadcode_delay(f: &mut Funcdata, spc: SpaceId) {
     if f.deadcode_delay_override.contains_key(&spc) {
         return; // a delay has already been installed
     }
-    if std::env::var("MOSURA_RESTART_DEBUG").is_ok() {
-        eprintln!("RESTART bump on space {}", f.spaces.get(spc).name);
-    }
+    debug!(crate::debug::Topic::Heritage, "bump on space {}", f.spaces.get(spc).name);
     let bumped = f.spaces.get(spc).deadcodedelay + 1;
     f.deadcode_delay_override.insert(spc, bumped);
     f.restart_pending = true;
@@ -2635,7 +2626,7 @@ pub fn heritage_pass(f: &mut Funcdata, dom: &Dominators) -> u32 {
                 // a recovery partial is throwaway, so restarting the real decompile for it would
                 // be wrong.
                 if dead_removed(f, space) && !f.table_recovery_probe {
-                    if std::env::var("MOSURA_RESTART_DEBUG").is_ok() {
+                    if crate::debug::on(crate::debug::Topic::Heritage) {
                         // Name the read that re-heritages an old range after dead removal: the
                         // varnode, its one-line provenance, and its readers.
                         let v = f.vn(vid);
@@ -2644,8 +2635,8 @@ pub fn heritage_pass(f: &mut Funcdata, dom: &Dominators) -> u32 {
                             .iter()
                             .map(|&o| format!("{:?}@{:#x}", f.op(o).code(), f.op(o).seqnum.pc.offset))
                             .collect();
-                        eprintln!(
-                            "RESTART trigger {}+{:#x}/{} input={} written={} pass={} readers={}",
+                        debug!(crate::debug::Topic::Heritage,
+                            "trigger {}+{:#x}/{} input={} written={} pass={} readers={}",
                             f.spaces.get(v.loc.space).name, v.loc.offset, v.size, v.is_input(), v.is_written(),
                             f.heritage_pass, readers.join(",")
                         );

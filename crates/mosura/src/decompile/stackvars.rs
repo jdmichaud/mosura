@@ -124,9 +124,7 @@ fn call_push_restores(f: &Funcdata) -> HashMap<OpId, (OpId, OpId, i64)> {
                 _ => {}
             }
         }
-        if std::env::var("MOSURA_RSDEBUG").is_ok() {
-            eprintln!("RS match call@{:x} store={:?} push={:?}", pc.offset, store.is_some(), push.is_some());
-        }
+        debug!(crate::debug::Topic::StackVars, "match call@{:x} store={:?} push={:?}", pc.offset, store.is_some(), push.is_some());
         if let (Some(s), Some((p, amt))) = (store, push) {
             out.insert(call, (s, p, amt));
         }
@@ -189,9 +187,7 @@ pub fn recover_stack(f: &mut Funcdata) {
                 OpCode::Store if retaddr_stores.contains(&op) => {
                     if let (Some(addr), Some(val)) = (o.input(1), o.input(2)) {
                         if let Some(&c) = sval.get(&loc_of(f, addr)) {
-                            if std::env::var("MOSURA_RSDEBUG").is_ok() {
-                                eprintln!("RS store@{:x} slot={:x}", o.seqnum.pc.offset, c);
-                            }
+                            debug!(crate::debug::Topic::StackVars, "store@{:x} slot={:x}", o.seqnum.pc.offset, c);
                             let size = f.vn(val).size;
                             f.op_set_all_input(op, &[val]);
                             f.op_set_opcode(op, OpCode::Copy);
@@ -475,9 +471,9 @@ impl StackSolver {
                         .and_then(|cs| cs.push_neutralized)
                         .unwrap_or(0);
                     let rhs = 4 - neutralized as i32;
-                    if std::env::var("MOSURA_SPFLOW_DEBUG").is_ok() {
+                    if crate::debug::on(crate::debug::Topic::StackVars) {
                         let d2 = f.vn(othervn).def.map(|d| (f.op(d).code(), f.op(d).seqnum.pc.offset));
-                        eprintln!("SPFLOW-GUESS var{i} = var{var2} + {rhs} (var2 def={d2:x?})");
+                        debug!(crate::debug::Topic::StackVars, "guess var{i} = var{var2} + {rhs} (var2 def={d2:x?})");
                     }
                     self.guess.push(StackEqn { var1: i, var2, rhs });
                 }
@@ -553,9 +549,7 @@ fn analyze_extra_pop(f: &mut Funcdata, sb_addr: Address, sb_size: u32) {
             continue;
         }
         let op = f.vn(vn).def.expect("solver variables past 0 are written");
-        if std::env::var("MOSURA_SPFLOW_DEBUG").is_ok() {
-            eprintln!("SPFLOW var{i} def={:?}@{:x} soln={soln}", f.op(op).code(), f.op(op).seqnum.pc.offset);
-        }
+        debug!(crate::debug::Topic::StackVars, "var{i} def={:?}@{:x} soln={soln}", f.op(op).code(), f.op(op).seqnum.pc.offset);
         if f.op(op).code() == OpCode::Indirect {
             if let Some(call) = f.op(op).guarded_op() {
                 if f.call_specs.contains_key(&call) {

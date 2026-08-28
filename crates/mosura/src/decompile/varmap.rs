@@ -859,10 +859,10 @@ pub fn recover_scope(f: &Funcdata) -> Vec<StackSymbol> {
     // function — the counterpart to `MOSURA_CFG`. Frame-layout divergences are otherwise only
     // visible as their third-order symptom (a declared array of the wrong length, hence a wrong
     // `sub esp,N`), which is how the FUN_0005118c over-extension went unnoticed.
-    if std::env::var_os("MOSURA_VARMAP").is_some() {
+    if crate::debug::on(crate::debug::Topic::Varmap) {
         let rl = map_state_range(f);
         for r in rl.iter() {
-            eprintln!("VARMAP[{}] range first={} last={}", f.name, r.first as i64, r.last as i64);
+            debug!(crate::debug::Topic::Varmap, "[{}] range first={} last={}", f.name, r.first as i64, r.last as i64);
         }
         for v in (0..f.num_varnodes() as u32).map(VarnodeId) {
             if f.vn(v).loc.space != stack {
@@ -870,8 +870,8 @@ pub fn recover_scope(f: &Funcdata) -> Vec<StackSymbol> {
             }
             let off = sign_extend(f.vn(v).loc.offset, 31);
             let def = f.vn(v).def.map(|d| format!("{:?}", f.op(d).code()));
-            eprintln!(
-                "VARMAP[{}] stackvn off={} size={} free={} def={:?} ndescend={}",
+            debug!(crate::debug::Topic::Varmap,
+                "[{}] stackvn off={} size={} free={} def={:?} ndescend={}",
                 f.name,
                 off,
                 f.vn(v).size,
@@ -881,8 +881,8 @@ pub fn recover_scope(f: &Funcdata) -> Vec<StackSymbol> {
             );
         }
         for h in &state.maplist {
-            eprintln!(
-                "VARMAP[{}] hint sstart={} size={} type={:?}",
+            debug!(crate::debug::Topic::Varmap,
+                "[{}] hint sstart={} size={} type={:?}",
                 f.name, h.sstart, h.size, h.range_type
             );
         }
@@ -890,9 +890,9 @@ pub fn recover_scope(f: &Funcdata) -> Vec<StackSymbol> {
     let mut out = Vec::new();
     restructure(&mut state, &mut out);
     coalesce_guarded_regions(f, &state, &mut out);
-    if std::env::var_os("MOSURA_VARMAP").is_some() {
+    if crate::debug::on(crate::debug::Topic::Varmap) {
         for sym in &out {
-            eprintln!("VARMAP[{}] sym start={} size={} name={}", f.name, sym.start, sym.size, sym.name);
+            debug!(crate::debug::Topic::Varmap, "[{}] sym start={} size={} name={}", f.name, sym.start, sym.size, sym.name);
         }
     }
     out
