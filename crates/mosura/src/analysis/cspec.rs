@@ -330,6 +330,42 @@ pub fn default_proto_model(
     })
 }
 
+/// The model a function STARTS with — Ghidra `ActionPrototypeTypes::apply` (coreaction.cc:4608):
+/// the compiler spec's `<eval_current_prototype>` model when it declares one (x86gcc, x86win and
+/// x86borland name their `<resolveprototype>` merged model there), else the `<default_proto>`
+/// model. The merged placeholder is resolved to one constituent by [`crate::decompile::fspec::resolve_model`]
+/// once the function's input trials are known (coreaction.cc:4731). Every other spec — Watcom and
+/// High C included, which declare neither tag — gets its default model, unchanged.
+/// The model a CALL starts with — Ghidra `ActionDefaultParams` (coreaction.cc:2316): the compiler
+/// spec's `<eval_called_prototype>` model when it declares one, else the `<default_proto>` model.
+/// None of the shipped x86 specs declares it, so a callee is `__cdecl` under x86gcc until its own
+/// prototype is known (and copied onto the call, `record_callee_effects`).
+pub fn called_proto_model(
+    spec: &Spec,
+    language_id: &str,
+    compiler_spec_id: &str,
+    spaces: &SpaceManager,
+) -> Option<ProtoModel> {
+    static CACHE: OnceLock<CspecCache<Option<ProtoModel>>> = OnceLock::new();
+    cspec_cached(&CACHE, language_id, compiler_spec_id, || {
+        let path = crate::lang::resolve_cspec(language_id, compiler_spec_id)?;
+        let text = std::fs::read_to_string(path).ok()?;
+        let doc = roxmltree::Document::parse(&text).ok()?;
+        let default = decode_prototype_node(spec, compiler_spec_id, spaces, &doc, default_prototype(&doc)?)?;
+        let Some(eval) = doc
+            .descendants()
+            .find(|n| n.is_element() && n.tag_name().name() == "eval_called_prototype")
+            .and_then(|n| n.attribute("name"))
+        else {
+            return Some(default);
+        };
+        if eval == default.name {
+            return Some(default);
+        }
+        decode_named_model(spec, compiler_spec_id, spaces, &doc, eval, &default).or(Some(default))
+    })
+}
+
 fn decode_default_proto_model(
     spec: &Spec,
     language_id: &str,
@@ -339,7 +375,142 @@ fn decode_default_proto_model(
     let path = crate::lang::resolve_cspec(language_id, compiler_spec_id)?;
     let text = std::fs::read_to_string(path).ok()?;
     let doc = roxmltree::Document::parse(&text).ok()?;
-    let proto = default_prototype(&doc)?;
+    let default = decode_prototype_node(spec, compiler_spec_id, spaces, &doc, default_prototype(&doc)?)?;
+    // Ghidra `Architecture::decodeProtoEval` (architecture.cc:769): `<eval_current_prototype name>`
+    // names a model decoded earlier in the spec — a `<prototype>` or a `<resolveprototype>`.
+    let Some(eval) = doc
+        .descendants()
+        .find(|n| n.is_element() && n.tag_name().name() == "eval_current_prototype")
+        .and_then(|n| n.attribute("name"))
+    else {
+        return Some(default);
+    };
+    if eval == default.name {
+        return Some(default);
+    }
+    decode_named_model(spec, compiler_spec_id, spaces, &doc, eval, &default).or(Some(default))
+}
+
+/// A model by name: a `<prototype name>` (decoded like the default, printed in declarations), or a
+/// `<resolveprototype name>` — Ghidra `ProtoModelMerged::decode` (fspec.cc:2904): every `<model
+/// name>` folded in, in order (`foldIn`, fspec.cc:2834).
+fn decode_named_model(
+    spec: &Spec,
+    compiler_spec_id: &str,
+    spaces: &SpaceManager,
+    doc: &roxmltree::Document,
+    name: &str,
+    default: &ProtoModel,
+) -> Option<ProtoModel> {
+    if let Some(node) = doc.descendants().find(|n| {
+        n.is_element()
+            && n.tag_name().name() == "prototype"
+            && n.attribute("name") == Some(name)
+            && !n.ancestors().any(|a| a.tag_name().name() == "default_proto")
+    }) {
+        return decode_prototype_node(spec, compiler_spec_id, spaces, doc, node);
+    }
+    let node = doc
+        .descendants()
+        .find(|n| n.is_element() && n.tag_name().name() == "resolveprototype" && n.attribute("name") == Some(name))?;
+    let mut merged: Option<ProtoModel> = None;
+    for m in node.children().filter(|n| n.is_element() && n.tag_name().name() == "model") {
+        let mname = m.attribute("name")?;
+        let model = if mname == default.name {
+            default.clone()
+        } else {
+            decode_named_model(spec, compiler_spec_id, spaces, doc, mname, default)?
+        };
+        merged = Some(match merged {
+            None => fold_in_first(name, &model),
+            Some(acc) => fold_in(acc, &model),
+        });
+    }
+    merged
+}
+
+/// `ProtoModelMerged::foldIn` for the FIRST constituent (fspec.cc:2834-2847): the merged model
+/// takes its output list, extrapop, effects, likelytrash and ranges; its input list starts as a
+/// copy of the constituent's (`ParamListMerged::foldIn` with an empty list, fspec.cc:1796-1799).
+fn fold_in_first(name: &str, model: &ProtoModel) -> ProtoModel {
+    let mut acc = model.clone();
+    acc.name = name.to_string();
+    acc.print_in_decl = true;
+    acc.merged = vec![model.clone()];
+    acc
+}
+
+/// `ProtoModelMerged::foldIn` for a LATER constituent (fspec.cc:2848-2874): the input entries are
+/// unioned (`ParamListMerged::foldIn`, fspec.cc:1800-1829 — an entry that subsumes an existing one
+/// of the same minsize replaces it, one the existing subsumes is dropped, anything else is added),
+/// `extrapop` becomes unknown when they differ, the effect lists are intersected, `likelytrash`
+/// intersected, the local and parameter ranges unioned. The output lists are assumed equal
+/// (Ghidra does not check either).
+fn fold_in(mut acc: ProtoModel, model: &ProtoModel) -> ProtoModel {
+    if let (Some(pl), Some(other)) = (acc.input.as_mut(), model.input.as_ref()) {
+        for opentry in &other.entry {
+            let mut typeint = 0;
+            let mut at = None;
+            for (i, e) in pl.entry.iter().enumerate() {
+                if e.subsumes_definition(opentry) {
+                    typeint = 2;
+                    at = Some(i);
+                    break;
+                }
+                if opentry.subsumes_definition(e) {
+                    typeint = 1;
+                    at = Some(i);
+                    break;
+                }
+            }
+            match (typeint, at) {
+                (2, Some(i)) => {
+                    if pl.entry[i].minsize != opentry.minsize {
+                        pl.entry.push(opentry.clone());
+                    }
+                }
+                (1, Some(i)) => {
+                    if pl.entry[i].minsize != opentry.minsize {
+                        pl.entry.push(opentry.clone());
+                    } else {
+                        pl.entry[i] = opentry.clone();
+                    }
+                }
+                _ => pl.entry.push(opentry.clone()),
+            }
+        }
+        pl.finalize_after_fold();
+    }
+    if acc.extrapop != model.extrapop {
+        acc.extrapop = crate::decompile::fspec::EXTRAPOP_UNKNOWN;
+    }
+    // intersectEffects (fspec.cc:2782): keep only the records both lists carry, equal
+    acc.effectlist.retain(|e| {
+        model.effectlist.iter().any(|o| o.space == e.space && o.offset == e.offset && o.size == e.size && o.effect == e.effect)
+    });
+    acc.likelytrash.retain(|t| model.likelytrash.contains(t));
+    for r in model.localrange.iter() {
+        acc.localrange.insert_range(r.spc, r.first, r.last);
+    }
+    for r in model.paramrange.iter() {
+        acc.paramrange.insert_range(r.spc, r.first, r.last);
+    }
+    acc.merged.push(model.clone());
+    acc
+}
+
+/// Decode one `<prototype>` element into a [`ProtoModel`] (Ghidra `ProtoModel::decode`,
+/// fspec.cc:2552). `print_in_decl` is set for a named model and cleared for the default one
+/// (`Architecture::setDefaultModel`, architecture.cc:326-328).
+fn decode_prototype_node(
+    spec: &Spec,
+    compiler_spec_id: &str,
+    spaces: &SpaceManager,
+    doc: &roxmltree::Document,
+    proto: roxmltree::Node,
+) -> Option<ProtoModel> {
+    let name = proto.attribute("name").unwrap_or("").to_string();
+    let is_default = proto.ancestors().any(|a| a.tag_name().name() == "default_proto");
 
     let mut input = None;
     let mut output = None;
@@ -449,6 +620,9 @@ fn decode_default_proto_model(
         .collect();
     likelytrash.sort_by_key(|&(a, sz)| (a.space.0, a.offset, sz));
     Some(ProtoModel {
+        name,
+        print_in_decl: !is_default,
+        merged: Vec::new(),
         input,
         output,
         effectlist,

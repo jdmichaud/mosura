@@ -283,3 +283,94 @@ PLAIN (the reference rendering, no arm involved):
   the binding rule (a wrongly recovered signature is a finding, never hidden) working as written.
 
 Both are decompiler findings, outside review R5; owner: JD's call.
+
+## Update (2026-08-28): the `__cdecl/__regparm` merged model -- plain-32 3 PASS / 11 FAIL -> 13 / 1
+
+The hypothesis above held and the fix is Ghidra's own mechanism, ported (branch `regparm`). gcc's
+register convention for local i386 functions is what `x86gcc.cspec` models with
+`<resolveprototype name="__cdecl/__regparm">` over the constituents `__cdecl`, `__regparm3`,
+`__regparm2`, `__regparm1`, named by `<eval_current_prototype>`; in Ghidra:
+
+- `Architecture::decodeProto` (architecture.cc:740) builds a `ProtoModelMerged` whose input list
+  is the UNION of the constituents' entries (`ProtoModelMerged::foldIn` fspec.cc:2834,
+  `ParamListMerged::foldIn` fspec.cc:1794 with `ParamEntry::subsumesDefinition`), and
+  `decodeProtoEval` (:769) records it as `evalfp_current`; `setDefaultModel` (:326) marks every
+  non-default model `printInDecl`.
+- `ActionPrototypeTypes` (coreaction.cc:4608) starts each function on `evalfp_current`, so the
+  trials of the union list are all collected; `ActionInputPrototype` (coreaction.cc:4731,
+  "fixateproto", after the cleanup pool and before `ActionNameVars`/`ActionSetCasts`, :5731–5735)
+  calls `FuncProto::resolveModel` (fspec.cc:3767) -> `ProtoModelMerged::selectModel`
+  (fspec.cc:2877): each constituent is scored against the ACTIVE trials by `ScoreProtoModel`
+  (fspec.cc:2705/2717/2738 -- an empty slot before a used one costs 16, 10, 7, 5 then 3 each; a
+  slot used twice 20; a trial no entry of the model can place 20, `possibleParamWithSlot`
+  fspec.cc:1360); the lowest score wins, ties go to the first constituent (`__cdecl`), a score of
+  0 stops the search; no fit at all -> "No model matches" (fspec.cc:2901).
+- The chosen model's name is printed in the declaration (`emitFunctionDeclaration`,
+  printc.cc:2577/2584): `int __regparm3 sum_to(int param_1)`.
+- Calls never see the merged model: `ActionDefaultParams` (coreaction.cc:2309–2327) gives a call
+  the callee's prototype when the callee is known (`fc->copy(otherfunc->getFuncProto())`), else
+  `evalfp_called`, which no shipped x86 spec names -- the default `__cdecl`.
+
+mosura (13 files, +645/-26): `analysis::cspec` decodes `<resolveprototype>` and the two
+`<eval_*_prototype>` tags (`decode_named_model`, `fold_in`), `ProtoModel { name, print_in_decl,
+merged }`, `ScoreProtoModel`, `ProtoModel::select_model`, `fspec::resolve_model` run by the new
+`ActionInputPrototype` at Ghidra's position in `pipeline.rs`; the call-side model is a separate
+`Funcdata::called_model` (the union list's overlapping register+stack entries have no usable
+`resource_start`, and a call must start `__cdecl` as in Ghidra); the recovered callee prototype
+carries its model onto the call (`CallSpec::model`, `analysis::decompiler`), and the ground-truth
+analysis iterates the prototype pass to a fixpoint (`recover_prototypes_fixpoint`: deepchain's
+pass-through chain `l1 -> ... -> l8` resolves one level per round; Ghidra's analyzer iterates too).
+The gt prelude defines the model keywords empty (`#define __regparm3` ...): the harness calls our
+functions `cdecl`, so the keyword must vanish from our TU. Trace evidence: the oracle on a
+self-compiled `sum_to` fixture (`x86:LE:32:default:gcc`; the fixture arch in `gt_recompile.rs` was
+the fix) selects `__regparm3` in `resolveModel` and prints `int __regparm3 sum_to(int param_1)`;
+ours prints the same text.
+
+Before -> after (`gt_recompile --m32`, orig exit / ours; every callee below was `(void)` or a
+stack signature before, `__regparm3` unless noted):
+
+| program | before | after | callees whose signature changed |
+|---|---|---|---|
+| arith | 51 / 0 | PASS | `square(int)`, `cube(int)`, `sum_to(int)` |
+| arith64 | 3 / 0 | PASS | `mul64(int,int)`, `divmod64(int,int)`, `rot64(uint,uint1)` |
+| bitfields | 236 / 0 | PASS | `pack(uint)`, `pun(uint)` |
+| bitops | 166 / 96 | PASS | `popcount(uint)`, `swap16(uint)` (the `.constprop` clones take no argument) |
+| deepchain | 93 / 69 | PASS | `l1` .. `l8`, one argument each (fixpoint rounds) |
+| fallthrough | 86 / 6 | PASS | `ft(int,int)` |
+| irreducible | 27 / 2 | PASS | `sm(int,int)` |
+| nestedloop | 3 / 0 | PASS | `nest(int)` |
+| recursion | 7 / 1 | PASS | `fact(int)`, `fib(uint)` |
+| sparseswitch | 29 / 254 | PASS | `classify(int)` |
+| structval | 39 / -1 | FAIL 39 / 24 | `mk(ptr,a,b)` `__regparm3`, `dot(p1,p2,p3,p4)` `__regparm2` |
+
+fixed, tailcall, varargs stay PASS (fixed's `fmul`, tailcall's `is_even`/`is_odd` gained
+`__regparm3` and still pass: the two-argument callees are the argument-ORDER evidence -- EAX then
+EDX is `param_1, param_2`). The 13 NOLINKs are unchanged (the callee-resolution class, out of this
+order); their TUs also gained regparm signatures (compgoto 1, dispatch 3, fnptr 1, globals 2,
+ladder 3, linklist 3, ptrarith 2, strbuf 4, strdata 2, structs 2, tables 2; floats and strloop 0)
+-- movement only, unmeasured. gt-arms alone: 27 programs, plain-32 PASS 13, arms-32 = plain-32
+in every program (4.0 s); the 64-bit baseline test alone: ok against master's baseline. WAR2:
+identity, 0 differing entries in recovered/ and raw/ (3,023 files each), corpus gates OK --
+Watcom's cspec has no `<resolveprototype>`, so every Watcom function keeps its default model and
+the call-side split reproduces the model every call had before.
+
+**structval, the remaining FAIL, is another class -- the struct-by-value return.** Read off the
+objects: the harness's `_start` calls `mk` with the hidden return pointer pushed first
+(`push $4; push $3; push %ebx; call mk`) and then reads the result from `0x8(%esp)`/`0xc(%esp)` --
+offsets that are only right if the CALLEE popped the hidden pointer (`ret $4`, the i386 SysV rule
+for a memory-returned struct). Ours is `void __regparm3 mk(xunknown4 *param_1, ...)` -- a plain
+pointer parameter -- and returns with `ret`; every later stack read of the harness is shifted by
+one word, and `dot` is called as `dot(4, 3, 3, 4)` = 24 exactly. `dot` itself is right: gcc's
+IPA-SRA scalarized `p` into EAX/EDX and left the aggregate `q` on the stack, our
+`int __regparm2 dot(p1, p2, p3, p4) = p1 * p3 + p2 * p4` is the original under regparm2 and the
+four-word cdecl call under the harness. The regparm selection is also right for `mk`: the
+original passes the sret pointer in EAX. What is missing is Ghidra's hidden-return mechanism,
+which is TYPE-driven: `ParameterPieces::hiddenretparm` (fspec.hh:363) is assigned when the return
+data type needs memory storage -- `ProtoModel::assignParameterStorage` inserts the hidden pointer
+into the input storage (fspec.cc:2420/2451), `ParamListStandard::assignAddressFallback` with
+`TYPECLASS_HIDDENRET` (fspec.cc:792–805), the `hiddenret_ptrparam`/`hiddenret_specialreg`
+response codes (fspec.cc:1583–1610), mirrored onto the symbol as `Varnode::hiddenretparm`
+(fspec.cc:3156/3176/3193) and skipped by the declaration printer (`isHiddenReturn`,
+fspec.cc:3455). Without a struct return type Ghidra prints exactly our `void mk(undefined4 *, ...)`
+and its caller would be equally wrong; the fix is a struct-return recovery (the twin build's
+SPLIT class above: `GPOINT getp(void)` returned in EAX), not the model. Open item; owner: JD's call.

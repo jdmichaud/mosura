@@ -623,6 +623,7 @@ fn record_callee_effects(
             cs.param_widths = Some(proto.params.iter().map(|p| p.size).collect());
             cs.reads = Some(slots);
             cs.reads_recovered = true;
+            cs.model = proto.model.clone();
             if let Some((regs, _)) = eff {
                 cs.overwrites = regs;
             }
@@ -1083,7 +1084,7 @@ fn callee_writes_cfg(
                         }
                         continue;
                     }
-                    for e in f.proto_model.effectlist.iter() {
+                    for e in f.called_model().effectlist.iter() {
                         if e.space == reg && e.effect == crate::decompile::fspec::effect::KILLEDBYCALL
                             && !writes.contains(&e.offset)
                         {
@@ -1288,7 +1289,7 @@ fn callee_effects(
                 // `recovered_output_list` gives each recovered register its own resource group, so
                 // a flag landed ahead of the real return register and `derive_output_map` picked
                 // it — the regout MVE stopped capturing its call's result.
-                let e = f.proto_model.has_effect(addr, out.size);
+                let e = f.called_model().has_effect(addr, out.size);
                 let known = e == crate::decompile::fspec::effect::UNAFFECTED
                     || e == crate::decompile::fspec::effect::KILLEDBYCALL;
                 if !known {

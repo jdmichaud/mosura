@@ -57,7 +57,8 @@ fn main() {
             for (sym, va, bytes) in &rep.original_bytes {
                 let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
                 let xml = format!(
-                    "<binaryimage arch=\"x86:LE:64:default:gcc\">\n  <bytechunk space=\"ram\" offset=\"{va:#x}\" readonly=\"true\">\n{hex}\n  </bytechunk>\n</binaryimage>\n"
+                    "<binaryimage arch=\"{}:gcc\">\n  <bytechunk space=\"ram\" offset=\"{va:#x}\" readonly=\"true\">\n{hex}\n  </bytechunk>\n</binaryimage>\n",
+                    target.lang()
                 );
                 std::fs::write(dir.join(format!("gt_{}_{}.xml", rep.program, sym.replace('.', "_"))), xml).ok();
             }

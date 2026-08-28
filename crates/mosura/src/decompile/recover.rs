@@ -867,7 +867,7 @@ pub fn init_active_output(f: &mut Funcdata) {
     let reg = f.spaces.by_name("register");
     let mut active = ParamActive::new(reg);
     // funcdata_varnode.cc:588 — a nonzero delay is capped at 3 passes.
-    let maxdelay = f.proto_model.max_output_delay(&f.spaces);
+    let maxdelay = f.called_model().max_output_delay(&f.spaces);
     active.set_max_pass(if maxdelay > 0 { 3 } else { 0 });
     f.active_output = Some(active);
 }
@@ -1074,7 +1074,7 @@ fn live_returns(f: &Funcdata) -> Vec<OpId> {
 /// ranges no instruction writes.
 pub fn init_active_input(f: &mut Funcdata) {
     let reg = f.spaces.by_name("register");
-    let maxdelay = f.proto_model.max_input_delay(&f.spaces);
+    let maxdelay = f.called_model().max_input_delay(&f.spaces);
     let calls: Vec<OpId> = f
         .op_ids()
         .filter(|&op| !f.op(op).is_dead() && matches!(f.op(op).code(), OpCode::Call | OpCode::Callind))
@@ -1083,7 +1083,7 @@ pub fn init_active_input(f: &mut Funcdata) {
     // convention's input list is exactly the signal "this call site needs a stack-pointer
     // placeholder" — i.e. the convention can pass parameters on the stack, so the offset of the stack
     // pointer at each call has to be recovered before any stack range can be tried as an argument.
-    let spacebase = f.proto_model.input.as_ref().and_then(|pl| pl.get_spacebase(&f.spaces));
+    let spacebase = f.called_model().input.as_ref().and_then(|pl| pl.get_spacebase(&f.spaces));
     for call in calls {
         // Ghidra `ActionFuncLink::funcLinkInput`'s INPUT-LOCKED branch (coreaction.cc:1485-1509):
         // a call whose callee's prototype is KNOWN builds its inputs directly from that prototype
@@ -1349,7 +1349,7 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId, aliascheck: &mut AliasChe
     // mean that there are no parameters.) mosura's `CallSpec::extrapop` is the callee's `RET n`
     // plus the return-address slot, `None` when unknown — Ghidra's `extrapop_unknown`.
     // (`hasModel()`: mosura's function always carries a model.)
-    let mut callee_pop = f.proto_model.extrapop == EXTRAPOP_UNKNOWN;
+    let mut callee_pop = f.called_model().extrapop == EXTRAPOP_UNKNOWN;
     let mut expop: i32 = 0;
     if callee_pop {
         expop = f.call_specs.get(&call).and_then(|cs| cs.extrapop).unwrap_or(EXTRAPOP_UNKNOWN);
@@ -1553,7 +1553,9 @@ fn final_input_check(f: &mut Funcdata, call: OpId) {
 /// order coincide with parameter order. It does not coincide once the candidates come from
 /// heritage, which walks the register space in ADDRESS order (`RDX` at `0x10` before `RDI` at
 /// `0x38`). (Ghidra calls `resolveModel` first, coreaction.cc:1752, to pick between the models of a
-/// `ProtoModelMerged`; mosura carries a single model per function, so there is nothing to resolve.)
+/// `ProtoModelMerged`; mosura resolves the CURRENT function's merged model in `ActionInputPrototype`
+/// (`fspec::resolve_model`), and a call's model is the callee's — never merged under the specs
+/// that declare one (they set no `<eval_called_prototype>`), so nothing is resolved here.)
 fn derive_input_map(f: &mut Funcdata, call: OpId) {
     // The callee's OWN input storage where its body could be read (`CallSpec::reads`) — the input
     // half of the per-call prototype, and the twin of [`recovered_output_list`]. It must REPLACE the
@@ -1938,7 +1940,7 @@ pub fn resolve_call_output(f: &mut Funcdata) -> u32 {
     }
     let reg = f.spaces.by_name("register");
     // The convention's output (return) list, decoded from the compiler spec's `<default_proto>`.
-    let Some(outlist) = f.proto_model.output.clone() else { return 0 };
+    let Some(outlist) = f.called_model().output.clone() else { return 0 };
     // Live calls only: Ghidra's `numCalls()`/`getCallSpecs(i)` loop can never see a destroyed call —
     // `PcodeOpBank::destroy` (op.cc:989) removes the op from the per-opcode code lists (op.cc:997)
     // and `deleteCallSpecs` (funcdata.hh:128) prunes its call spec. mosura's `op_ids()` is a flat

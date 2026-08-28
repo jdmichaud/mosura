@@ -5059,7 +5059,15 @@ fn print_c_inner(
     if varargs.is_some() {
         params = if plist.is_empty() { "...".to_string() } else { format!("{params}, ...") };
     }
-    let _ = writeln!(out, "{ret_ty} {}({})", f.name, params);
+    // Ghidra `PrintC::emitFunctionDeclaration` (printc.cc:2584): the prototype model's name between
+    // the return type and the function name when it is not the compiler spec's default
+    // (`FuncProto::printModelInDecl`, fspec.hh:1395) — `int4 __regparm3 func(int4 param_1)`.
+    let model_kw = if f.proto_model.print_in_decl && !f.proto_model.name.is_empty() {
+        format!("{} ", f.proto_model.name)
+    } else {
+        String::new()
+    };
+    let _ = writeln!(out, "{ret_ty} {model_kw}{}({})", f.name, params);
     out.push_str("{\n");
     // Ghidra emits local declarations in storage-Address order (`emitScopeVarDecls`); for stack
     // locals that is ascending frame address — most-negative offset first. A stable sort orders the

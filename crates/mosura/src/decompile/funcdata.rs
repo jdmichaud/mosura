@@ -303,6 +303,14 @@ pub struct Funcdata {
     /// `guardCalls` all read it. Empty ([`super::fspec::ProtoModel::empty`]) for a hand-built
     /// `Funcdata`, so a test graph with no compiler spec recovers no convention.
     pub proto_model: super::fspec::ProtoModel,
+    /// The model a CALL starts with — Ghidra `Architecture::evalfp_called`, else `defaultfp`
+    /// (`ActionDefaultParams`, coreaction.cc:2316-2318): what a callee's inputs, outputs, effects
+    /// and extrapop are assumed to be until its own prototype is known. Distinct from
+    /// [`Self::proto_model`], the CURRENT function's model, which under a `<resolveprototype>`
+    /// spec is the merged placeholder until `ActionInputPrototype` resolves it — a placeholder a
+    /// call must never see (its list is the union; Ghidra's `ParamListMerged` refuses to fill it).
+    /// `None` (hand-built Funcdatas, the tests) means the same model as the function's.
+    pub called_model: Option<super::fspec::ProtoModel>,
     /// The compiler spec's named `__cdecl` prototype's INPUT list, when the spec declares one
     /// ([`crate::analysis::cspec::named_input_paramlist`]) — the model
     /// [`input_list_for_call`](Self::input_list_for_call) substitutes for `proto_model.input` at
@@ -349,6 +357,13 @@ pub struct Funcdata {
     /// and their rendered \e before state.
     modify_list: Vec<OpId>,
     modify_before: Vec<String>,
+}
+
+impl Funcdata {
+    /// The model this function's CALLS start with (see [`Self::called_model`]).
+    pub fn called_model(&self) -> &super::fspec::ProtoModel {
+        self.called_model.as_ref().unwrap_or(&self.proto_model)
+    }
 }
 
 impl Funcdata {
@@ -414,6 +429,7 @@ impl Funcdata {
             nonprinting: None,
             laned: super::transform::LanedRegisterSet::default(),
             proto_model,
+            called_model: None,
             cdecl_input: None,
             stack_pointer: None,
             aggressive_ext_trim: false,
@@ -669,6 +685,13 @@ impl Funcdata {
     /// whose kill-chain strips the real stack argument (`ActiveParam::fillin_map`'s
     /// `force_inactive_chain` — the measured blocker on FUN_000191b8's cluster).
     pub fn input_list_for_call(&self, call: OpId) -> Option<&super::fspec::ParamList> {
+        // A callee whose recovered prototype was copied onto this call brings its MODEL with it
+        // (Ghidra `ActionDefaultParams`, coreaction.cc:2327 `fc->copy`): the fill-in runs under
+        // that model's list — `__regparm3`'s EAX/EDX/ECX slots for a gcc -m32 local function,
+        // which the spec's default `__cdecl` list does not know.
+        if let Some(l) = self.call_specs.get(&call).and_then(|c| c.model.as_ref()).and_then(|m| m.input.as_ref()) {
+            return Some(l);
+        }
         if self.call_specs.get(&call).and_then(|c| c.caller_cleans).unwrap_or(0) > 0 {
             if let Some(l) = self.cdecl_input.as_ref() {
                 return Some(l);

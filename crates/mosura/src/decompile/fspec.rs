@@ -72,6 +72,24 @@ impl ParamEntry {
     pub fn is_exclusion_slot(&self) -> bool {
         self.is_exclusion()
     }
+    /// Ghidra `ParamEntry::subsumesDefinition` (fspec.cc): does this entry's definition contain
+    /// `op2`'s — same type class (or this one general), same space, `op2`'s range inside this
+    /// one's, same alignment.
+    pub fn subsumes_definition(&self, op2: &ParamEntry) -> bool {
+        if self.type_class != type_class::GENERAL && op2.type_class != self.type_class {
+            return false;
+        }
+        if self.space != op2.space {
+            return false;
+        }
+        if op2.addressbase < self.addressbase {
+            return false;
+        }
+        if op2.addressbase + op2.size as u64 - 1 > self.addressbase + self.size as u64 - 1 {
+            return false;
+        }
+        self.alignment == op2.alignment
+    }
 
     /// Ghidra `ParamEntry::justifiedContain` (fspec.cc:248): if `[addr,addr+sz)` lies within
     /// this entry (and `sz` is in `[minsize,size]`), return the endian-justified byte offset of
@@ -282,6 +300,32 @@ impl ParamList {
     /// `ParamList::possibleParam`).
     pub fn possible_param(&self, loc: Address, size: u32) -> bool {
         self.find_entry(loc, size).is_some()
+    }
+    /// Ghidra `ParamListStandard::possibleParamWithSlot` (fspec.cc:1360): is `(loc, size)` a
+    /// justified parameter of this list, and which slot does it occupy — `(slot, slotsize)`, the
+    /// slot from the entry (`ParamEntry::getSlot`), the size in slots: an exclusion entry occupies
+    /// its group (one), an aligned entry `(size-1)/align + 1`.
+    /// After `ParamListMerged::foldIn` (`finalize`, fspec.hh:717 `populateResolver`): rebuild the
+    /// per-class resource starts from the entries in their (folded) order, as
+    /// `decode_param_list` builds them.
+    pub fn finalize_after_fold(&mut self) {
+        let mut starts = Vec::new();
+        let mut last_class: Option<u8> = None;
+        for e in &self.entry {
+            if last_class != Some(e.type_class) {
+                starts.push(e.group);
+                last_class = Some(e.type_class);
+            }
+        }
+        // the trailing sentinel `decode_param_list` pushes (fspec.cc:1502): one past the last group
+        starts.push(self.entry.iter().map(|e| e.group + 1).max().unwrap_or(0));
+        self.resource_start = starts;
+    }
+    pub fn possible_param_with_slot(&self, loc: Address, size: u32) -> Option<(u32, u32)> {
+        let (e, _) = self.find_entry(loc, size)?;
+        let slot = e.get_slot(loc, 0);
+        let slotsize = if e.is_exclusion_slot() { 1 } else { (size - 1) / e.alignment + 1 };
+        Some((slot, slotsize))
     }
 
     /// Ghidra `ParamListStandard::characterizeAsParam` (fspec.cc:682): classify how `[loc,loc+size)`
@@ -876,6 +920,20 @@ pub fn lookup_effect(efflist: &[EffectRecord], addr: Address, size: u32) -> u8 {
 /// side effects (every range reads back `unknown_effect`).
 #[derive(Clone, Debug, Default)]
 pub struct ProtoModel {
+    /// Ghidra `ProtoModel::name` (fspec.hh:751): the cspec's `<prototype name>` /
+    /// `<resolveprototype name>`; empty for a hand-built model.
+    pub name: String,
+    /// Ghidra `ProtoModel::isPrinted` (fspec.hh:981 `printInDecl`): the model's name is printed in
+    /// a function's declaration unless it is the compiler spec's default model —
+    /// `Architecture::setDefaultModel` (architecture.cc:326-328) clears it on the default and sets
+    /// it on the model it replaces; `ProtoModel::decode` starts every model printed (fspec.cc:2365).
+    pub print_in_decl: bool,
+    /// Ghidra `ProtoModelMerged::modellist` (fspec.hh:1078): the constituent models of a
+    /// `<resolveprototype>` model, in the cspec's order; empty for an ordinary model. A merged
+    /// model is a placeholder until parameter recovery — its `input` is the fold-in union of the
+    /// constituents' lists (`ParamListMerged::foldIn`, fspec.cc:1794) so every potential trial is
+    /// registered, and [`ProtoModel::select_model`] picks the constituent the trials fit best.
+    pub merged: Vec<ProtoModel>,
     pub input: Option<ParamList>,
     pub output: Option<ParamList>,
     pub effectlist: Vec<EffectRecord>,
@@ -1067,6 +1125,96 @@ pub mod trial_flags {
 }
 
 /// Ghidra `ParamTrial` (fspec.hh:210): one candidate parameter at a storage location.
+/// Ghidra `ScoreProtoModel` (fspec.hh:1040, fspec.cc:2705-2775): how well a set of parameter trials
+/// fits one prototype model. Each trial maps to the model's slot (`addParameter`, fspec.cc:2717 —
+/// a trial the model cannot place is a `mismatch`); `doScore` (fspec.cc:2738) sorts the placed
+/// trials by slot and charges a hole before slot n `penalty[n]` = 16, 10, 7, 5 then 3, a duplicate
+/// slot `mismatchpenalty` = 20, and every mismatch 20; the lower the better.
+#[derive(Debug)]
+pub struct ScoreProtoModel {
+    /// `(slot, size in slots)` of every trial the model placed, sorted by `do_score`.
+    entry: Vec<(u32, u32)>,
+    mismatch: u32,
+    finalscore: i32,
+}
+
+impl ScoreProtoModel {
+    pub fn new() -> ScoreProtoModel {
+        ScoreProtoModel { entry: Vec::new(), mismatch: 0, finalscore: -1 }
+    }
+    /// `ScoreProtoModel::addParameter` (fspec.cc:2717), scoring against the model's input list.
+    pub fn add_parameter(&mut self, model: &ProtoModel, addr: Address, sz: u32) {
+        match model.input.as_ref().and_then(|pl| pl.possible_param_with_slot(addr, sz)) {
+            Some((slot, slotsize)) => self.entry.push((slot, slotsize)),
+            None => self.mismatch += 1,
+        }
+    }
+    /// `ScoreProtoModel::doScore` (fspec.cc:2738).
+    pub fn do_score(&mut self) {
+        self.entry.sort();
+        let mut nextfree: u32 = 0;
+        let mut basescore: i32 = 0;
+        let penalty = [16, 10, 7, 5];
+        let penaltyfinal = 3;
+        let mismatchpenalty = 20;
+        for &(slot, size) in &self.entry {
+            if slot > nextfree {
+                // a hole in the slot coverage
+                while nextfree < slot {
+                    basescore += if nextfree < 4 { penalty[nextfree as usize] } else { penaltyfinal };
+                    nextfree += 1;
+                }
+                nextfree += size;
+            } else if nextfree > slot {
+                // some kind of slot duplication
+                basescore += mismatchpenalty;
+                if slot + size > nextfree {
+                    nextfree = slot + size;
+                }
+            } else {
+                nextfree = slot + size;
+            }
+        }
+        self.finalscore = basescore + mismatchpenalty * self.mismatch as i32;
+    }
+    pub fn score(&self) -> i32 {
+        self.finalscore
+    }
+}
+
+impl ProtoModel {
+    /// Ghidra `ProtoModelMerged::isMerged` (fspec.hh:1088).
+    pub fn is_merged(&self) -> bool {
+        !self.merged.is_empty()
+    }
+    /// Ghidra `ProtoModelMerged::selectModel` (fspec.cc:2877): the constituent the ACTIVE trials fit
+    /// best — each constituent scored by [`ScoreProtoModel`], the lowest score wins, the first on a
+    /// tie (`score < bestscore`), stopping at 0. `None` when nothing scores under 500 ("No model
+    /// matches : missing default").
+    pub fn select_model(&self, active: &ParamActive) -> Option<&ProtoModel> {
+        let mut bestscore = 500;
+        let mut best: Option<&ProtoModel> = None;
+        for m in &self.merged {
+            let mut sm = ScoreProtoModel::new();
+            for t in &active.trial {
+                if t.is_active() {
+                    sm.add_parameter(m, t.addr, t.size);
+                }
+            }
+            sm.do_score();
+            let score = sm.score();
+            if score < bestscore {
+                bestscore = score;
+                best = Some(m);
+                if bestscore == 0 {
+                    break;
+                }
+            }
+        }
+        best
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ParamTrial {
     pub addr: Address,
@@ -1261,6 +1409,9 @@ pub struct CallSpec {
     /// argument list and a spurious saved-slot trial stays unused. Scan-grade reads get the
     /// historical geometry, whose non-resolving placeholder is what the measured baseline is
     /// built on.
+    /// The callee's copied model (see [`FuncProto::model`]) — the call's input list is this
+    /// model's, as Ghidra's `fc->copy` makes it.
+    pub model: Option<ProtoModel>,
     pub reads_recovered: bool,
     /// Registers this callee OVERWRITES that the default convention calls `<unaffected>` —
     /// recovered from the callee's own body, per call site.
@@ -1553,6 +1704,13 @@ pub struct FuncProto {
     pub params: Vec<ProtoSlot>,
     /// Return storage; `None` is a void return.
     pub output: Option<ProtoSlot>,
+    /// Ghidra `FuncProto::model` as copied onto a call by `ActionDefaultParams`
+    /// (`fc->copy(otherfunc->getFuncProto())`, coreaction.cc:2327): the callee's prototype model
+    /// when it is NOT its spec's default — a `<resolveprototype>` constituent resolved by
+    /// `ActionInputPrototype` (x86gcc's `__regparm3`) or a named `<eval_current_prototype>`; `None`
+    /// for a default-model callee, whose calls keep [`Funcdata::called_model`] (so a Watcom callee's
+    /// per-function list never replaces `watcall` at its call sites — unchanged behaviour).
+    pub model: Option<ProtoModel>,
 }
 
 /// Ghidra `ActionInputPrototype` (coreaction.cc:4707): recover the function's input parameters
@@ -1560,9 +1718,9 @@ pub struct FuncProto {
 /// marked active when the varnode is used (`!hasNoDescend()`), resolved by the convention's
 /// `fillin_map`. A used-but-never-written input register (a pure pass-through parameter) is kept,
 /// which the older realism heuristic dropped.
-pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
-    let Some(reg) = f.spaces.by_name("register") else { return Vec::new() };
-    let Some(pl) = f.proto_model.input.as_ref() else { return Vec::new() };
+/// The trials of Ghidra `ActionInputPrototype::apply` (coreaction.cc:4716-4728): one per input
+/// varnode the model's input list accepts as a possible parameter, active when the varnode is used.
+fn input_trials(f: &Funcdata, pl: &ParamList, reg: SpaceId) -> ParamActive {
     let mut active = ParamActive::new(Some(reg));
     for i in 0..f.num_varnodes() as u32 {
         let vn = f.vn(VarnodeId(i));
@@ -1578,6 +1736,50 @@ pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
             active.trial[ti].mark_active();
         }
     }
+    active
+}
+
+/// Ghidra `FuncProto::resolveModel` (fspec.cc:3767) at its call site, `ActionInputPrototype::apply`
+/// (coreaction.cc:4731): a function whose model is a `<resolveprototype>` placeholder gets the
+/// constituent its input trials fit best — `ProtoModelMerged::selectModel` — before its input map
+/// is derived. Resolves once (a resolved model is not merged); a function whose trials match no
+/// constituent keeps the placeholder, and `recover_input_params` then reads the union list, as
+/// Ghidra's `ParamListMerged::fillinMap` would refuse ("Cannot determine prototype before model has
+/// been resolved") — the loud case is left visible rather than guessed.
+pub fn resolve_model(f: &mut Funcdata) -> bool {
+    if !f.proto_model.is_merged() {
+        return false;
+    }
+    let Some(reg) = f.spaces.by_name("register") else { return false };
+    let Some(pl) = f.proto_model.input.as_ref() else { return false };
+    let active = input_trials(f, pl, reg);
+    let chosen = match f.proto_model.select_model(&active) {
+        Some(m) => m.clone(),
+        None => {
+            // Ghidra throws `LowlevelError("No model matches : missing default")` (fspec.cc:2901).
+            // It cannot happen while the list holds `__cdecl` (every shipped `<resolveprototype>`
+            // lists it first: a register trial it cannot place costs 20, never 500); should a spec
+            // list no default, the function takes the list's first constituent — the spec's own
+            // "default case" — and says so, never the union placeholder.
+            eprintln!(
+                "mosura: {}: no constituent of the merged model `{}` fits its {} input trials; taking `{}`",
+                f.name,
+                f.proto_model.name,
+                active.trial.len(),
+                f.proto_model.merged[0].name
+            );
+            f.proto_model.merged[0].clone()
+        }
+    };
+    debug!(crate::debug::Topic::Args, "resolve_model: {} -> {} ({} active trials)", f.proto_model.name, chosen.name, active.trial.iter().filter(|t| t.is_active()).count());
+    f.proto_model = chosen;
+    true
+}
+
+pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
+    let Some(reg) = f.spaces.by_name("register") else { return Vec::new() };
+    let Some(pl) = f.proto_model.input.as_ref() else { return Vec::new() };
+    let mut active = input_trials(f, pl, reg);
     // A STACK-BASED function has no register arguments at all, and under a register convention the
     // empty register slots ahead of the stack entry read as HOLES: `build_trial_map` synthesizes
     // unref trials for them and `force_inactive_chain` (maxchain=2) latches on the run and marks
@@ -1771,8 +1973,13 @@ pub fn recover_output(f: &Funcdata) -> Option<ProtoSlot> {
 }
 
 /// Ghidra `Funcdata::getFuncProto`: the recovered prototype (input params + return storage).
+/// The function's model when it is not its spec's default (see [`FuncProto::model`]).
+pub fn non_default_model(f: &Funcdata) -> Option<ProtoModel> {
+    f.proto_model.print_in_decl.then(|| f.proto_model.clone())
+}
+
 pub fn recover_func_proto(f: &Funcdata) -> FuncProto {
-    FuncProto { params: recover_input_params(f), output: recover_output(f) }
+    FuncProto { params: recover_input_params(f), output: recover_output(f), model: non_default_model(f) }
 }
 
 // -------------------------------------------------------------------------------------------------
@@ -2315,5 +2522,100 @@ mod tests {
         let rax = f.new_input(8, Address::new(reg, RAX));
         f.new_op(OpCode::Return, seq, vec![retaddr, rax]);
         assert_eq!(recover_output(&f).unwrap().addr.offset, RAX);
+    }
+}
+
+#[cfg(test)]
+mod merged_model_tests {
+    use super::*;
+
+    fn x86gcc32() -> Option<(ProtoModel, ProtoModel)> {
+        crate::lang::resolve_cspec("x86:LE:32:default", "gcc")?;
+        let (spec, _) = crate::lang::load_cached("x86:LE:32:default")?;
+        // the spaces as `build.rs` sets them up: the `<stackpointer>` first (it sizes the stack space)
+        let mut spaces = SpaceManager::standard();
+        if let Some((space, offset, size)) =
+            crate::analysis::cspec::default_stack_pointer(spec, "x86:LE:32:default", "gcc", &spaces)
+        {
+            spaces.set_stack_pointer(Address::new(space, offset), size);
+        }
+        let current = crate::analysis::cspec::default_proto_model(spec, "x86:LE:32:default", "gcc", &spaces)?;
+        let called = crate::analysis::cspec::called_proto_model(spec, "x86:LE:32:default", "gcc", &spaces)?;
+        Some((current, called))
+    }
+
+    /// x86gcc.cspec: `<resolveprototype name="__cdecl/__regparm">` over `__cdecl, __regparm3,
+    /// __regparm2, __regparm1` named by `<eval_current_prototype>`; no `<eval_called_prototype>`.
+    #[test]
+    fn x86gcc_current_model_is_the_merged_placeholder_and_calls_start_cdecl() {
+        let Some((current, called)) = x86gcc32() else {
+            eprintln!("skip: x86 sla / gcc cspec not present");
+            return;
+        };
+        assert_eq!(current.name, "__cdecl/__regparm");
+        assert!(current.is_merged());
+        assert_eq!(current.merged.iter().map(|m| m.name.as_str()).collect::<Vec<_>>(), ["__cdecl", "__regparm3", "__regparm2", "__regparm1"]);
+        assert!(current.print_in_decl);
+        assert!(!current.merged[0].print_in_decl, "the default model is never printed");
+        assert!(current.merged[1].print_in_decl);
+        assert_eq!(called.name, "__cdecl");
+        assert!(!called.is_merged());
+        // the union list accepts EAX (regparm) and the stack (cdecl)
+        let reg = spaces_of(&current).0;
+        let pl = current.input.as_ref().unwrap();
+        assert!(pl.possible_param(Address::new(reg, 0), 4), "EAX");
+        assert!(!called.input.as_ref().unwrap().possible_param(Address::new(reg, 0), 4), "cdecl has no EAX slot");
+    }
+
+    fn spaces_of(m: &ProtoModel) -> (SpaceId, SpaceId) {
+        let pl = m.input.as_ref().unwrap();
+        let reg = pl.entry.iter().find(|e| e.alignment == 0).map(|e| e.space).expect("a register entry");
+        let stack = pl.entry.iter().find(|e| e.alignment != 0).map(|e| e.space).expect("a stack entry");
+        (reg, stack)
+    }
+
+    /// `ProtoModelMerged::selectModel` (fspec.cc:2877) with `ScoreProtoModel` (fspec.cc:2738): one
+    /// active EAX trial scores `__cdecl` 20 (a mismatch) and `__regparm3` 0 -> `__regparm3`, the
+    /// first regparm model on a tie; EAX+EDX -> `__regparm3` too; a stack-only trial ->
+    /// `__cdecl` (0) ahead of the regparm models (a hole before the stack slot costs 16); no
+    /// active trial -> `__cdecl` (every model scores 0, the first wins).
+    #[test]
+    fn select_model_scores_like_ghidra() {
+        let Some((current, _)) = x86gcc32() else {
+            eprintln!("skip: x86 sla / gcc cspec not present");
+            return;
+        };
+        let (reg, stack) = spaces_of(&current);
+        let pick = |trials: &[(Address, u32, bool)]| -> String {
+            let mut active = ParamActive::new(Some(reg));
+            for &(a, sz, on) in trials {
+                let ti = active.register_trial(a, sz);
+                if on {
+                    active.trial[ti].mark_active();
+                }
+            }
+            current.select_model(&active).map(|m| m.name.clone()).unwrap_or_default()
+        };
+        let eax = Address::new(reg, 0);
+        let edx = Address::new(reg, 8);
+        let st4 = Address::new(stack, 4);
+        assert_eq!(pick(&[(eax, 4, true)]), "__regparm3");
+        assert_eq!(pick(&[(eax, 4, true), (edx, 4, true)]), "__regparm3");
+        assert_eq!(pick(&[(st4, 4, true)]), "__cdecl");
+        assert_eq!(pick(&[]), "__cdecl");
+        // the scorer's arithmetic: a trial in slot 2 with slots 0 and 1 empty costs 16 + 10
+        let mut sm = ScoreProtoModel::new();
+        let regparm3 = &current.merged[1];
+        sm.add_parameter(regparm3, Address::new(reg, 4), 4); // ECX = slot 2
+        sm.do_score();
+        assert_eq!(sm.score(), 26);
+        let mut sm = ScoreProtoModel::new();
+        sm.add_parameter(regparm3, st4, 4); // a stack trial the model cannot place... it can: slot 3
+        sm.do_score();
+        assert_eq!(sm.score(), 16 + 10 + 7);
+        let mut sm = ScoreProtoModel::new();
+        sm.add_parameter(&current.merged[0], eax, 4); // cdecl cannot place EAX: a mismatch
+        sm.do_score();
+        assert_eq!(sm.score(), 20);
     }
 }

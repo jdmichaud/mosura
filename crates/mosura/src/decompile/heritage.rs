@@ -1306,7 +1306,7 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
         // spec's `<default_proto>`, carried on the function as `proto_model`). Note this is the
         // DEFAULT model; the per-call override for a callee that does not honour it is applied
         // inside the loop below, where the call — and so its CallSpec — is known.
-        f.proto_model.has_effect(super::space::Address::new(reg, off), size)
+        f.called_model().has_effect(super::space::Address::new(reg, off), size)
     } else if aliased_stack || Some(spc) == ram {
         // An aliased stack slot and a ram global both fall through to Ghidra's default unknown_effect.
         effect::UNKNOWN_EFFECT
@@ -1427,7 +1427,7 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
                 // gcc's `-fipa-ra` kept in `EDX` across `square()` (ground-truth `sum_to`:
                 // the counter came back as `extraout_RDX` and the loop's increment was lost,
                 // wrong code) — is exactly what the downgrade exists to preserve.
-                let out = f.proto_model.output.as_ref();
+                let out = f.called_model().output.as_ref();
                 let is_output = out.is_some_and(|o| o.possible_param(addr, size));
                 let is_primary = out.and_then(|o| o.entry.first()).is_some_and(|e| {
                     e.space == reg && off >= e.addressbase && off < e.addressbase + e.size as u64
@@ -1516,7 +1516,7 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
                 // to the callee's first stack-argument address and becomes a spurious trial. The
                 // spurious trial then extends the range `force_inactive_chain` fills holes over,
                 // promoting register holes into parameters of this function.
-                let preserved = f.proto_model.has_effect(src.loc, src.size) == effect::UNAFFECTED;
+                let preserved = f.called_model().has_effect(src.loc, src.size) == effect::UNAFFECTED;
                 let saved_here = f.own_saved.as_ref().is_some_and(|s| s.contains(&src.loc.offset));
                 if !preserved && !saved_here {
                     return false;
@@ -1607,7 +1607,7 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
             // walkable — without it the trial is marked definitely-not-used and BOTH arguments
             // (the return and the constant 0x2b behind it) are dropped from the emitted call.
             let possibleoutput = f.op(call).output.is_none()
-                && f.proto_model.characterize_as_output(trans_addr, size)
+                && f.called_model().characterize_as_output(trans_addr, size)
                     == super::fspec::Containment::ContainsJustified;
             let seq = f.op(call).seqnum;
             let zero = f.new_const(size, 0);
@@ -1688,7 +1688,7 @@ fn guard_call_overlapping_input(
     size: u32,
 ) {
     let Some((trunc_trans, trunc_size)) =
-        f.proto_model.get_biggest_contained_input_param(trans_addr, size)
+        f.called_model().get_biggest_contained_input_param(trans_addr, size)
     else {
         return;
     };

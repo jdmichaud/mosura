@@ -1084,6 +1084,21 @@ impl Action for ActionUnjustifiedParams {
     }
 }
 
+/// Ghidra `ActionInputPrototype` (coreaction.cc:4707, group `fixateproto`, placed at :5731): the
+/// model-resolution half — see [`super::fspec::resolve_model`]. Counts 1 when the model changed.
+pub struct ActionInputPrototype;
+
+impl Action for ActionInputPrototype {
+    fn name(&self) -> &str {
+        "inputprototype"
+    }
+    fn apply(&mut self, data: &mut Funcdata) -> u32 {
+        // Ghidra's returns 0 (coreaction.cc:4707-4760): no graph change, nothing to count.
+        super::fspec::resolve_model(data);
+        0
+    }
+}
+
 /// Ghidra `ActionActiveReturn`: recover each call's return value from its surviving `killedbycall`
 /// output-register clobber (see [`super::recover::resolve_call_output`]). Runs after the first
 /// dead-code pass, so only the *used* output creations remain to be promoted to call outputs.
@@ -1541,6 +1556,15 @@ pub fn universal_action() -> ActionGroup {
         // anywhere after the fullloop — the cleanup rules are self-contained. The sweep that sat
         // here was audited over the whole-image trace and removed zero live ops.)
         .then(cleanup_pool())
+        // ActionInputPrototype (:5731, group `fixateproto`): in `ActionDatabase::universalAction`
+        // it comes after the cleanup pool and ActionOutputPrototype (:5730), before ActionNameVars
+        // (:5734) and ActionSetCasts (:5735) — on the final input varnodes,
+        // after merging. mosura derives the parameter list at print time from the same trials
+        // (`recover_func_proto`), so the one thing that must happen in the pipeline, ahead of that,
+        // is the MODEL resolution a `<resolveprototype>` placeholder needs
+        // (`FuncProto::resolveModel`, coreaction.cc:4731) — the printer then reads the chosen
+        // model's list and prints its name.
+        .then(ActionInputPrototype)
         // Late branch-orientation stage (task #1): materialize the structurer's body-on-false
         // branch negations in the IR, mirroring Ghidra's final ActionNormalizeBranches placement
         // (after type recovery, where the guards are in final simplified form). ActionOrientBranches

@@ -90,7 +90,6 @@ pub fn with_suppressed_trace<R>(f: impl FnOnce() -> R) -> R {
 pub mod perf {
     use std::cell::RefCell;
     use std::collections::HashMap;
-    use std::sync::OnceLock;
     use std::time::Duration;
 
     thread_local! {

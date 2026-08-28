@@ -48,7 +48,44 @@ pub fn recover_prototypes_for(program: &Program, scope: &std::collections::HashS
     recover_prototypes_of(program, entries)
 }
 
-fn recover_prototypes_of(program: &Program, entries: Vec<u64>) -> HashMap<u64, FuncProto> {
+/// The pass to a FIXPOINT, callee-first by construction (Ghidra's Decompiler-Parameter-ID analyzer
+/// walks the call graph callee-first; a fixpoint over rounds reaches the same state and needs no
+/// cycle breaking): each round decompiles every entry with the previous round's prototypes in
+/// `program.recovered_protos`, so a caller's call copies its callee's prototype
+/// (`record_callee_effects`) and a PASS-THROUGH function — `l5: call l6; add eax,5; ret`, whose
+/// EAX exists only to be handed on — sees its register read as used and resolves its own model.
+/// Stops when a round changes nothing (`max_rounds` bounds a pathological program).
+pub fn recover_prototypes_fixpoint(program: &mut Program, entries: Vec<u64>, max_rounds: usize) -> usize {
+    let key = |m: &HashMap<u64, FuncProto>| -> Vec<(u64, Vec<(u64, u32)>, Option<(u64, u32)>, String)> {
+        let mut v: Vec<_> = m
+            .iter()
+            .map(|(e, p)| {
+                (
+                    *e,
+                    p.params.iter().map(|s| (s.addr.offset, s.size)).collect(),
+                    p.output.as_ref().map(|o| (o.addr.offset, o.size)),
+                    p.model.as_ref().map(|m| m.name.clone()).unwrap_or_default(),
+                )
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    let mut rounds = 0;
+    loop {
+        let next = recover_prototypes_of(program, entries.clone());
+        rounds += 1;
+        let same = key(&next) == key(&program.recovered_protos);
+        program.recovered_protos = next;
+        if same || rounds >= max_rounds {
+            return rounds;
+        }
+    }
+}
+
+/// The same pass over an explicit list of function entries — for a program whose functions come
+/// from elsewhere than the analysis' function manager (the gt oracle's ELF symbol table).
+pub fn recover_prototypes_of(program: &Program, entries: Vec<u64>) -> HashMap<u64, FuncProto> {
     let ram = program.default_space;
     let mut out = HashMap::with_capacity(entries.len());
     for entry in entries {
@@ -70,7 +107,7 @@ fn recover_prototypes_of(program: &Program, entries: Vec<u64>) -> HashMap<u64, F
 pub fn prototype_of(f: &Funcdata) -> FuncProto {
     let params = recover_input_params(f);
     let output = return_storage(f);
-    FuncProto { params, output }
+    FuncProto { params, output, model: crate::decompile::fspec::non_default_model(f) }
 }
 
 fn return_storage(f: &Funcdata) -> Option<ProtoSlot> {

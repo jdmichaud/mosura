@@ -383,6 +383,12 @@ pub fn prelude_for(target: Target) -> String {
     q
 }
 
+/// The emitted C names a function's prototype model when it is not the spec's default
+/// (`int4 __regparm3 f(int4 n)`, Ghidra's `printModelInDecl`); the prelude defines every
+/// non-default model name a cspec can select as EMPTY, because the harness (`-Dstatic=` makes the
+/// original's functions global) calls our interposed definitions with the platform's default
+/// convention — the register convention matters only to byte-similarity, not to this oracle's
+/// functional verdict.
 pub fn prelude() -> String {
     let mut p = String::from(
         "typedef unsigned char undefined; typedef unsigned char byte; typedef unsigned char bool;\n\
@@ -400,7 +406,9 @@ pub fn prelude() -> String {
          typedef __int128 int16; typedef unsigned __int128 uint16; typedef unsigned __int128 xunknown16;\n\
          extern long syscall(void); extern long swi(int); extern unsigned long rdtsc(void); extern unsigned int cpuid(unsigned int);\n\
          #define true 1\n#define false 0\n\
-         #define va_start(ap, last) ((ap) = (void *)__builtin_next_arg(last))\n",
+         #define va_start(ap, last) ((ap) = (void *)__builtin_next_arg(last))\n\
+         #define __regparm3\n#define __regparm2\n#define __regparm1\n#define __stdcall\n#define __fastcall\n\
+         #define __thiscall\n#define __vectorcall\n#define __pascal\n",
     );
     let u = |n: u32| match n {
         1 => "unsigned char",
@@ -628,7 +636,23 @@ pub fn analyze_program(src: &Path, workdir: &Path, target: Target) -> Result<Ana
     let syms_by_name_sizes: BTreeMap<String, u64> =
         syms.iter().filter(|s| !s.is_func).map(|s| (s.name.clone(), s.size)).collect();
     let t0 = Instant::now();
-    let program = analysis::analyze_file(&bin_path).map_err(|e| format!("analyze: {e:?}"))?;
+    let mut program = analysis::analyze_file(&bin_path).map_err(|e| format!("analyze: {e:?}"))?;
+    // THE CALLERS' SIDE (Ghidra `ActionDefaultParams`, coreaction.cc:2309-2327): a call whose callee
+    // has a recovered prototype copies it, so the call's arguments are the callee's parameters in
+    // the callee's model's slot order. Ghidra's decompiler gets those prototypes from the program
+    // database, where the Decompiler-Parameter-ID analyzer committed them; mosura's whole-program
+    // prototype pass (`analysis::interface::recover_prototypes_for`) is that analyzer — it fills
+    // `Program::recovered_protos`, which `record_callee_effects` copies onto every direct call
+    // (analysis/decompiler.rs). Over every function of the program; a callee's own prototype does
+    // not depend on its callees' (its parameters are its entry reads under its model), so no
+    // call-graph order is needed.
+    // The program's functions are the ELF's function symbols (what the loop below decompiles), not
+    // the analysis' function manager, so the pass takes that list explicitly.
+    let entries: Vec<u64> = syms.iter().filter(|s| s.is_func && fn_bytes.contains_key(&s.addr)).map(|s| s.addr).collect();
+    program.proto_scope = Some(entries.iter().copied().collect());
+    // To a fixpoint: a pass-through chain (deepchain's l1..l8, each handing EAX to the next) needs
+    // the callee's prototype known before the caller's own register read counts as used.
+    analysis::interface::recover_prototypes_fixpoint(&mut program, entries, 16);
     t.analyze = t0.elapsed();
     let ram = program.default_space;
 

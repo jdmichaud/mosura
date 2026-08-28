@@ -49,6 +49,24 @@ fn resolve_proto_model(spec: &Spec, language_id: &str, compiler_id: &str) -> Pro
         .unwrap_or_else(|| ProtoModel::with_default_ranges(&spaces))
 }
 
+fn resolve_called_model(spec: &Spec, language_id: &str, compiler_id: &str) -> ProtoModel {
+    let mut spaces = SpaceManager::standard();
+    // The `<stackpointer>` is applied FIRST, because it is what sets the `stack` space's address
+    // size (`Architecture::decodeStackPointer` → `addSpacebase`, architecture.cc:1008/1013) and the
+    // model's default `<localrange>`/`<paramrange>` are derived from that size (fspec.cc:2263/2292).
+    // Ghidra depends on the same ordering — `<stackpointer>` precedes `<default_proto>` in the
+    // compiler spec and `decodeCompilerConfig` (architecture.cc:1257) processes them in document
+    // order. Building the ranges against the x86-64 default 8 would put every 32-bit frame offset
+    // outside the local window, and no stack local would be recovered at all.
+    if let Some((space, offset, size)) =
+        crate::analysis::cspec::default_stack_pointer(spec, language_id, compiler_id, &spaces)
+    {
+        spaces.set_stack_pointer(Address::new(space, offset), size);
+    }
+    crate::analysis::cspec::called_proto_model(spec, language_id, compiler_id, &spaces)
+        .unwrap_or_else(|| ProtoModel::with_default_ranges(&spaces))
+}
+
 /// The compiler spec's NAMED `__cdecl` prototype's input list, when it declares one — the
 /// per-call override model for caller-cleaned calls
 /// ([`Funcdata::input_list_for_call`](super::funcdata::Funcdata::input_list_for_call)). Same
@@ -93,8 +111,12 @@ fn default_ram_addr_size(spec: &Spec) -> u32 {
 /// each field here is wrong-by-default on some target mosura can build.
 #[derive(Clone)]
 struct CspecSettings {
-    /// `<default_proto>` — the calling convention (input/output ParamLists + call effects).
+    /// The CURRENT function's starting model — `<eval_current_prototype>` else `<default_proto>`
+    /// (Ghidra `ActionPrototypeTypes`, coreaction.cc:4608).
     proto_model: ProtoModel,
+    /// The model its CALLS start with — `<eval_called_prototype>` else `<default_proto>` (Ghidra
+    /// `ActionDefaultParams`, coreaction.cc:2316).
+    called_model: ProtoModel,
     /// The named `__cdecl` prototype's input list, if the spec declares one — the per-call
     /// override for caller-cleaned calls.
     cdecl_input: Option<crate::decompile::fspec::ParamList>,
@@ -111,6 +133,7 @@ impl CspecSettings {
     fn resolve(spec: &Spec, language_id: &str, compiler_id: &str) -> CspecSettings {
         CspecSettings {
             proto_model: resolve_proto_model(spec, language_id, compiler_id),
+            called_model: resolve_called_model(spec, language_id, compiler_id),
             cdecl_input: resolve_cdecl_input(spec, language_id, compiler_id),
             stack_pointer: resolve_stack_pointer(spec, language_id, compiler_id),
             aggressive_ext_trim: crate::analysis::cspec::aggressive_ext_trim(language_id, compiler_id),
@@ -206,6 +229,7 @@ fn build_from_instrs(
     // The default calling convention (input/output ParamLists + call EffectRecord list), decoded
     // from the compiler spec's `<default_proto>`. Replaces the old hardcoded SysV `fspec::sysv_*`.
     f.proto_model = cspec.proto_model;
+    f.called_model = Some(cspec.called_model);
     // The named `__cdecl` input list (None unless the cspec declares the prototype) — consulted
     // per call by `input_list_for_call` when the call site's own evidence says the CALLER pops
     // the arguments.
