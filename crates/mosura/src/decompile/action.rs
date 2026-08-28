@@ -83,9 +83,10 @@ pub fn with_suppressed_trace<R>(f: impl FnOnce() -> R) -> R {
 }
 
 /// Wall-clock accounting for the pipeline (perf work). Off by default and completely inert
-/// unless the `MOSURA_PERF` environment variable is set; when on, [`ActionGroup::apply`]
-/// accumulates time per child action and [`ActionPool::apply`] per rule, and [`perf::dump`]
-/// prints the totals to stderr. Never touches decompiler output.
+/// unless the `perf` debug topic is on (`MOSURA_DEBUG=perf`, [`crate::debug`]); when on,
+/// [`ActionGroup::apply`] accumulates time per child action and [`ActionPool::apply`] per rule,
+/// and [`perf::dump`] prints the totals to stderr as a table (plain rows under the one gate, a
+/// `debug!` header above them). Never touches decompiler output.
 pub mod perf {
     use std::cell::RefCell;
     use std::collections::HashMap;
@@ -99,10 +100,10 @@ pub mod perf {
             RefCell::new(HashMap::new());
     }
 
-    /// Whether `MOSURA_PERF` is set (cached once).
+    /// Whether the `perf` topic is on (cached once).
     pub fn enabled() -> bool {
         static ON: OnceLock<bool> = OnceLock::new();
-        *ON.get_or_init(|| std::env::var_os("MOSURA_PERF").is_some())
+        *ON.get_or_init(|| crate::debug::on(crate::debug::Topic::Perf))
     }
 
     /// Add `dur` under (`kind`, `name`) — kind is "action" or "rule".
@@ -115,11 +116,16 @@ pub mod perf {
         });
     }
 
-    /// Print accumulated totals (sorted by time, worst first) to stderr and clear them.
+    /// Print accumulated totals (sorted by time, worst first) to stderr and clear them: a table,
+    /// so its rows are plain output under the one gate, with a `debug!` header line above them.
     pub fn dump() {
+        if !enabled() {
+            return;
+        }
         ACCUM.with(|a| {
             let mut rows: Vec<_> = a.borrow_mut().drain().collect();
             rows.sort_by(|x, y| y.1 .0.cmp(&x.1 .0));
+            debug!(crate::debug::Topic::Perf, "pipeline timing: {} rows (ms, calls, kind, name)", rows.len());
             for ((kind, name), (dur, calls)) in rows {
                 eprintln!("{:>10.3}ms  {:>8} calls  {kind:6} {name}", dur.as_secs_f64() * 1e3, calls);
             }

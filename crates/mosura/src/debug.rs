@@ -34,7 +34,7 @@ pub enum Topic {
     /// decompile/jumpbasic (was `MOSURA_JT_DEBUG`).
     JumpTable,
     /// argument recovery: decompile/recover, analysis/decompiler, heritage (was `MOSURA_ARG_DEBUG`,
-    /// `_MONO`).
+    /// `_MONO`; the trial pipeline's `_PARAMDOUBLE_DEBUG`, `_UJP_DEBUG`).
     Args,
     /// decompile/varargs (was `MOSURA_VARARGS_DEBUG`).
     Varargs,
@@ -51,7 +51,7 @@ pub enum Topic {
     /// decompile/constantptr, ptrarith, setcasts, varnodeprops, subvarflow (was `_CONSTPTR_DEBUG`,
     /// `_DISTRIB`, `_PTRFIT`, `_ALIAS_DEBUG`, `_SUBVAR`).
     Pointers,
-    /// decompile/pipeline (was `MOSURA_UJP_DEBUG`, `_PARAMDOUBLE_DEBUG`).
+    /// decompile/pipeline (was `MOSURA_INSTR_ALIAS`), deadcode, condexe and funcdata's check/watch prints.
     Pipeline,
     /// recompile/watsched (was `MOSURA_ZAP_DEBUG`, `_SCHED_DEBUG`).
     Watsched,

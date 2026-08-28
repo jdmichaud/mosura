@@ -129,9 +129,7 @@ impl Action for ActionHeritage {
             // threading the alias boundary. The probe clone above heritaged with guarding OFF (the
             // default), so its boundary was computed on a graph free of the call INDIRECTs — as
             // Ghidra runs guardCalls only in the true heritage, not the AliasChecker probe.
-            if std::env::var_os("MOSURA_INSTR_ALIAS").is_some() {
-                eprintln!("== alias_boundary = {:?}", boundary);
-            }
+            debug!(crate::debug::Topic::Pipeline, "== alias_boundary = {:?}", boundary);
             data.alias_boundary = boundary;
             data.call_guards_active = true;
             let dom = super::dominator::compute(data);
@@ -988,9 +986,7 @@ impl Action for ActionParamDouble {
                     j += 1;
                     continue;
                 }
-                if std::env::var("MOSURA_PARAMDOUBLE_DEBUG").is_ok() {
-                    eprintln!("PARAMDOUBLE split trial {j} at {:x} size {tsize} -> {splitsize}", taddr.offset);
-                }
+                debug!(crate::debug::Topic::Args, "split trial {j} at {:x} size {tsize} -> {splitsize}", taddr.offset);
                 data.active_inputs.get_mut(&call).expect("checked").split_trial(j, splitsize);
                 data.op_insert_input(call, slot, leastvn);
                 data.op_set_input(call, slot + 1, mostvn);
@@ -1072,10 +1068,8 @@ impl Action for ActionUnjustifiedParams {
                         None => break,
                     }
                 }
-                if std::env::var("MOSURA_UJP_DEBUG").is_ok() {
-                    eprintln!("UJP widen {:?}+{:x} size {} (from {:?}+{:x}/{})",
+                debug!(crate::debug::Topic::Args, "widen {:?}+{:x} size {} (from {:?}+{:x}/{})",
                         caddr.space, caddr.offset, csize, loc.space, loc.offset, size);
-                }
                 data.adjust_input_varnodes(caddr, csize);
                 done.push((caddr, csize));
                 count += 1;
