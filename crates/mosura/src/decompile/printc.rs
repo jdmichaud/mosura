@@ -634,11 +634,7 @@ impl PrintC<'_> {
                         let _ = write!(out, "{stmtxt}");
                         *separator = true;
                     } else {
-                        if crate::debug::on(crate::debug::Topic::Printc) {
-                            let _ = writeln!(out, "{pad}{stmtxt}; /*pc {:x} op {:?}*/", self.f.op(op).seqnum.pc.offset, self.f.op(op).code());
-                        } else {
-                            let _ = writeln!(out, "{pad}{stmtxt};");
-                        }
+                        let _ = writeln!(out, "{pad}{stmtxt};");
                     }
                 }
         true
@@ -3571,8 +3567,6 @@ impl<'a> PrintC<'a> {
                         out.push_str(", ");
                     }
                     out.push_str(&stmt);
-                } else if crate::debug::on(crate::debug::Topic::Printc) {
-                    let _ = writeln!(out, "{pad}{stmt}; /*pc {:x} {:?}*/", self.f.op(op).seqnum.pc.offset, self.f.op(op).code());
                 } else {
                     let _ = writeln!(out, "{pad}{stmt};");
                 }

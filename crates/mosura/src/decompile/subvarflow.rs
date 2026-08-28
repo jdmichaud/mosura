@@ -1866,13 +1866,11 @@ impl<'a> SubvariableFlow<'a> {
 /// side is read from the transform it *did* perform (the `subvar_zext` block in its trace names
 /// every replacement varnode); this names the op mosura stopped at.
 fn subvar_debug(msg: &str) {
-    if subvar_debug_on() {
-        debug!(crate::debug::Topic::Subvar, "{msg}");
-    }
+    debug!(crate::debug::Topic::Subvar, "{msg}");
 }
 
 fn subvar_debug_node(fd: &Funcdata, tag: &str, rvn: usize, rvnodes: &[ReplaceVarnode]) {
-    if !subvar_debug_on() {
+    if !crate::debug::on(crate::debug::Topic::Subvar) {
         return;
     }
     let node = &rvnodes[rvn];
@@ -1880,12 +1878,6 @@ fn subvar_debug_node(fd: &Funcdata, tag: &str, rvn: usize, rvnodes: &[ReplaceVar
         Some(v) => debug!(crate::debug::Topic::Subvar, " {tag} {} mask={:#x}", fd.vn_str(v), node.mask),
         None => debug!(crate::debug::Topic::Subvar, " {tag} <new> mask={:#x}", node.mask),
     }
-}
-
-fn subvar_debug_on() -> bool {
-    use std::sync::OnceLock;
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| crate::debug::on(crate::debug::Topic::Subvar))
 }
 
 /// Ghidra `TypeOpFloatInt2Float::preferredZextSize` (`typeop.cc`).

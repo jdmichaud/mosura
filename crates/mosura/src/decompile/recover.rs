@@ -1514,7 +1514,7 @@ fn check_input_trial_use(f: &mut Funcdata, call: OpId, aliascheck: &mut AliasChe
                 )
             })
             .collect();
-        debug!(crate::debug::Topic::Args, "call@{:#x} [{}]", f.op(call).seqnum.pc.offset, v.join(" "));
+        debug!(crate::debug::Topic::Args, "verdict call@{:#x} [{}]", f.op(call).seqnum.pc.offset, v.join(" "));
     }
     let active = f.active_inputs.get_mut(&call).unwrap();
     active.finish_pass();
@@ -1754,7 +1754,7 @@ fn build_input_from_trials(f: &mut Funcdata, call: OpId) {
                 )
             })
             .collect();
-        debug!(crate::debug::Topic::Args, "call@{:#x} {}", f.op(call).seqnum.pc.offset, all.join(" "));
+        debug!(crate::debug::Topic::Args, "trials call@{:#x} {}", f.op(call).seqnum.pc.offset, all.join(" "));
     }
     if crate::debug::on(crate::debug::Topic::Args) {
         for (slot, sz, unref, addr) in &used {

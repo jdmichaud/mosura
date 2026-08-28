@@ -493,9 +493,7 @@ impl AddTreeState {
                                 // decline. A zero at the decline site means nothing on its own —
                                 // it could equally mean the mechanism is never a candidate. Both
                                 // numbers together say which.
-                                if distrib_probe_on() {
-                                    debug!(crate::debug::Topic::Pointers, "distrib\t{}\tcandidate", f.name);
-                                }
+                                debug!(crate::debug::Topic::Pointers, "distrib\t{}\tcandidate", f.name);
                                 self.distribute_op = Some(op);
                             }
                             return self.span_add_tree(f, def, val);
@@ -871,9 +869,7 @@ impl AddTreeState {
             // RulePtrArith returns 0 and the pointer arithmetic is NOT converted, so the C renders
             // `*(T *)(p + k)` where Ghidra would reach `p[i]` / `p->field` — that is the deferral's
             // actual cost, and it is invisible in any gate we run.
-            if distrib_probe_on() {
-                debug!(crate::debug::Topic::Pointers, "distrib\t{}\tdecline", f.name);
-            }
+            debug!(crate::debug::Topic::Pointers, "distrib\t{}\tdecline", f.name);
             return false;
         }
         self.build_tree(f);
@@ -1310,14 +1306,6 @@ impl Rule for RulePtraddUndo {
         1
     }
 }
-
-/// Whether `MOSURA_DISTRIB` selects the distribution-path decline census (cached once).
-fn distrib_probe_on() -> bool {
-    use std::sync::OnceLock;
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| crate::debug::on(crate::debug::Topic::Pointers))
-}
-
 
 #[cfg(test)]
 mod ptrsub_undo_tests {

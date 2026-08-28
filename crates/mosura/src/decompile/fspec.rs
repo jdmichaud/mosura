@@ -407,7 +407,7 @@ impl ParamList {
                         )
                     })
                     .collect();
-                debug!(crate::debug::Topic::Args, "[fillin:{tag}] {}", v.join(" "));
+                debug!(crate::debug::Topic::Args, "{tag} {}", v.join(" "));
             }
         };
         self.build_trial_map(active);
@@ -1798,7 +1798,7 @@ pub fn recover_func_proto(f: &Funcdata) -> FuncProto {
 /// resolve, and that depends on the folding rules collapsing `(sp_input + delta) + 0` before the
 /// stack pass clears them — a claim only the running pipeline can settle.
 fn ph_log(ev: &str, call: OpId, extra: &str) {
-    debug!(crate::debug::Topic::Args, "PH {ev} call={} {extra}", call.0);
+    debug!(crate::debug::Topic::Args, "{ev} call={} {extra}", call.0);
 }
 
 /// Ghidra `FuncCallSpecs::getSpacebaseOffset` (fspec.hh:1689): the stack-pointer offset at `call`

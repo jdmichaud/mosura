@@ -885,19 +885,13 @@ impl Funcdata {
     /// is an IR invariant violation and renders as a nonsense literal. `MOSURA_CONSTCHECK=1` reports
     /// every such creation with a backtrace-able message; it is inert otherwise.
     pub fn new_const(&mut self, size: u32, value: u64) -> VarnodeId {
-        if size < 8 && value > (1u64 << (size * 8)) - 1 && Self::const_check_enabled() {
+        if size < 8 && value > (1u64 << (size * 8)) - 1 {
             // Name the FUNCTION, not just the value: a bare total cannot say how many functions a
             // class reaches, and per-function reach is the unit every gate here is quoted in.
             debug!(crate::debug::Topic::Pipeline, "constcheck\t{}\t{value:#x}\t{size}", self.name);
         }
         let loc = Address::new(self.spaces.constant(), value);
         self.alloc_varnode(size, loc, flags::CONSTANT)
-    }
-
-    /// Whether `MOSURA_CONSTCHECK` selects the oversized-constant invariant check (cached once).
-    fn const_check_enabled() -> bool {
-        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-        *ON.get_or_init(|| crate::debug::on(crate::debug::Topic::Pipeline))
     }
 
     /// Ghidra `Funcdata::spacebaseConstant` (funcdata.cc:358): rewrite the constant read by

@@ -133,12 +133,6 @@ fn ptrfit_probe(data: &Funcdata, op: OpId) {
     }
 }
 
-fn ptrfit_probe_on() -> bool {
-    use std::sync::OnceLock;
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| crate::debug::on(crate::debug::Topic::Pointers))
-}
-
 fn apply(data: &mut Funcdata) {
     // Ghidra reads `Varnode::isImplied`, set by `ActionMarkImplied` just before this action.
     let implied = super::merge::implied_classification(data);
@@ -156,7 +150,7 @@ fn apply(data: &mut Funcdata) {
             }
             // `MOSURA_PTRFIT=1` still measures the guard for BOTH ops (the PTRSUB refit is not
             // ported), and it runs BEFORE the refit below so its rows describe the input IR.
-            if ptrfit_probe_on() {
+            if crate::debug::on(crate::debug::Topic::Pointers) {
                 ptrfit_probe(data, op);
             }
             // "Check for PTRADD that no longer fits its pointer" (coreaction.cc:2740). A PTRADD

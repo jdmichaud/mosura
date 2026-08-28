@@ -699,19 +699,13 @@ impl<'a> TypeInfer<'a> {
 /// index (`#<id>`), since `printRawNoMarkup`'s `<space>0x<off>:<size>` alone does not
 /// distinguish the versions of one storage location, which is exactly what a trace must show.
 fn propagation_debug(f: &Funcdata, vn: VarnodeId, newtype: &Datatype, op: Option<OpId>, inslot: i32) {
-    if !typeprop_debug_on() {
+    if !crate::debug::on(crate::debug::Topic::Types) {
         return;
     }
     match op {
         None => debug!(crate::debug::Topic::Types, "{}#{} : {newtype:?} init", f.vn_str(vn), vn.0),
         Some(o) => debug!(crate::debug::Topic::Types, "{}#{} : {newtype:?} from {} slot={inslot}", f.vn_str(vn), vn.0, f.op_str(o)),
     }
-}
-
-fn typeprop_debug_on() -> bool {
-    use std::sync::OnceLock;
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| crate::debug::on(crate::debug::Topic::Types))
 }
 
 /// Ghidra `TypeOp::propagateToPointer`: build a pointer (of width `sz`) to the value type.

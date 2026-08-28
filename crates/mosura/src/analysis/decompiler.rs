@@ -580,10 +580,10 @@ fn record_callee_effects(
             .filter(|_| program.proto_scope.as_ref().is_none_or(|s| s.contains(&target)))
         {
             debug!(crate::debug::Topic::Effects,
-                    "callee {target:08x} recovered proto: params={:?} out={:?}",
-                    proto.params.iter().map(|p| (f.spaces.get(p.addr.space).name.clone(), p.addr.offset, p.size)).collect::<Vec<_>>(),
-                    proto.output.as_ref().map(|o| (f.spaces.get(o.addr.space).name.clone(), o.addr.offset, o.size))
-                );
+                "callee {target:08x} recovered proto: params={:?} out={:?}",
+                proto.params.iter().map(|p| (f.spaces.get(p.addr.space).name.clone(), p.addr.offset, p.size)).collect::<Vec<_>>(),
+                proto.output.as_ref().map(|o| (f.spaces.get(o.addr.space).name.clone(), o.addr.offset, o.size))
+            );
             // A recovered parameter's size is the width the CALLEE READS, which is not the width
             // of the slot it arrives in. This callee reads DX and BX, two bytes each, while the
             // caller writes whole 4-byte registers — and a 4-byte trial cannot justify into an
@@ -1143,15 +1143,15 @@ fn callee_writes_cfg(
         }
     }
     debug!(crate::debug::Topic::Effects,
-            "entry={entry:#x} writes={:x?} restored={:x?} nested={}",
-            writes,
-            restored,
-            match nested {
-                NestedCalls::Fail => "fail",
-                NestedCalls::Blanket => "blanket",
-                NestedCalls::Transitive => "transitive",
-            }
-        );
+        "entry={entry:#x} writes={:x?} restored={:x?} nested={}",
+        writes,
+        restored,
+        match nested {
+            NestedCalls::Fail => "fail",
+            NestedCalls::Blanket => "blanket",
+            NestedCalls::Transitive => "transitive",
+        }
+    );
     writes.retain(|o| !restored.contains(o));
     Some((writes, restored))
 }

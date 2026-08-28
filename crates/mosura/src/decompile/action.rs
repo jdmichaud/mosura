@@ -100,10 +100,9 @@ pub mod perf {
             RefCell::new(HashMap::new());
     }
 
-    /// Whether the `perf` topic is on (cached once).
+    /// Whether the `perf` topic is on -- a direct read of the topic (no cache of the cached array).
     pub fn enabled() -> bool {
-        static ON: OnceLock<bool> = OnceLock::new();
-        *ON.get_or_init(|| crate::debug::on(crate::debug::Topic::Perf))
+        crate::debug::on(crate::debug::Topic::Perf)
     }
 
     /// Add `dur` under (`kind`, `name`) — kind is "action" or "rule".
