@@ -518,7 +518,7 @@ pub fn schedule_with(
             }
         }
         let (b, _) = best?;
-        if std::env::var_os("MOSURA_SCHED_DEBUG").is_some() {
+        if crate::debug::on(crate::debug::Topic::Watsched) {
             let ready: Vec<String> = (0..n)
                 .filter(|&c| !placed[c] && succ[c] == 0)
                 .map(|c| {
@@ -531,7 +531,7 @@ pub fn schedule_with(
                     )
                 })
                 .collect();
-            eprintln!("[pick] {} from {}", kept[b], ready.join(" "));
+            debug!(crate::debug::Topic::Watsched, "pick {} from {}", kept[b], ready.join(" "));
         }
         placed[b] = true;
         order_rev.push(b);
@@ -641,14 +641,14 @@ pub fn order_regressed(insns: &[NormInsn], candidate: &CallEffects) -> bool {
         match schedule_with(win, &none, candidate).as_deref().map(|v| ascending(v)) {
             Some(true) => {}
             other => {
-                if std::env::var_os("MOSURA_ZAP_DEBUG").is_some() {
+                if crate::debug::on(crate::debug::Topic::Watsched) {
                     let calls: Vec<String> = win
                         .iter()
                         .filter(|x| x.is_call && candidate.contains_key(&x.addr))
                         .map(|x| format!("{:#x}", x.addr))
                         .collect();
-                    eprintln!(
-                        "[zapcheck]   window {:#x}..{:#x} verdict={:?} candidate-calls=[{}]",
+                    debug!(crate::debug::Topic::Watsched,
+                        "zapcheck window {:#x}..{:#x} verdict={:?} candidate-calls=[{}]",
                         win.first().map(|x| x.addr).unwrap_or(0),
                         win.last().map(|x| x.addr).unwrap_or(0),
                         other,

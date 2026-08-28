@@ -822,9 +822,7 @@ pub fn recompile_program(src: &Path, workdir: &Path, target: Target, plan: &Emit
                 .next()
                 .unwrap_or("")
                 .to_string();
-            if std::env::var_os("MOSURA_GT_DEBUG").is_some() {
-                eprintln!("[gt] {}: attempt kr={kr} fixed={:?} -> {note}", d.sym.name, fx.keys().collect::<Vec<_>>());
-            }
+            debug!(crate::debug::Topic::GroundTruth, "{}: attempt kr={kr} fixed={:?} -> {note}", d.sym.name, fx.keys().collect::<Vec<_>>());
             if first_error.is_empty() {
                 first_error = note.clone();
             }
