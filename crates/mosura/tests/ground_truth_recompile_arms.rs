@@ -19,18 +19,17 @@
 //! produces, and some arms are value-identical only because of their witness).
 //!
 //! COST: 27 programs x 2 passes, each a `gcc -m32` build, decompile, recompile and run -- about
-//! 7 minutes. It stays in the suite because the contract is "a wrong-code arm fails the suite"; a
-//! test that runs only when someone remembers to is not a gate. For a quick local run,
-//! `MOSURA_SKIP_GT_ARMS=1` makes it print a SKIP line and return -- never a silent pass, never
-//! `#[ignore]` -- and the acceptance chains never set it.
+//! 7 minutes on master. It is a PLAN-CLOSURE test (JD, 2026-08-28), `#[ignore]`d so that no
+//! per-commit iteration suite pays for it: the attribute is the mechanism (no environment variable
+//! to remember) and the `ignored` count in every suite summary is the visible sign. It runs alone,
+//! `cargo test --release --test ground_truth_recompile_arms -- --ignored`, at the end of a plan (the
+//! acceptance chain's closure suite) and for any commit that changes what it tests -- the gt
+//! oracle, the emit plan or an arm -- where the contract "a wrong-code arm fails the suite" is held.
 use mosura::recompile::groundtruth::{gcc_available, gcc_programs, recompile_program, EmitPlan, Target};
 
 #[test]
+#[ignore = "plan-closure test (~7 min on master): run with `cargo test --release --test ground_truth_recompile_arms -- --ignored` at the end of a plan or when a commit changes the gt oracle, the emit plan or an arm"]
 fn arm_enabled_emit_passes_wherever_plain_passes_in_the_32bit_column() {
-    if std::env::var_os("MOSURA_SKIP_GT_ARMS").is_some() {
-        println!("SKIP ground_truth_recompile_arms: MOSURA_SKIP_GT_ARMS is set (a local shortcut; the acceptance chains never set it)");
-        return;
-    }
     assert!(gcc_available(), "gcc is required by the development environment (ground-truth recompile gate)");
     let workdir = mosura::paths::workspace_root().join("build/gt-recompile");
     std::fs::create_dir_all(&workdir).unwrap();
