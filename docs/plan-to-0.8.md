@@ -173,6 +173,9 @@ deterministic tie-break is known: savings-sorted conflicts, ShellSort, table ord
 EAX,EDX,EBX,ECX,ESI,EDI) so the search becomes a lookup; if little moves, the residue is
 the compiler's and the ceiling is ~0.75. Checkpoint: the pilot's per-function gain
 distribution, published before any corpus-wide allocator work.
+*Run 2026-08-31: see [`phase-c-pilot-results.md`](phase-c-pilot-results.md) — the twelve free emit
+axes reach 60.3 % of the band and improve none of it, so the allocator question is UNJUDGED and
+witnessed `extra`-class levers are its prerequisite.*
 
 **Phase D — the last mile to 0.8.** Re-run the census; by then the loss is the allocation
 residue plus whatever R1/R2 left per size band. Decide per band: search (compile-in-the-loop
