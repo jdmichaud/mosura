@@ -1361,14 +1361,26 @@ fn merge_addrtied(f: &Funcdata, h: &mut HighVariables) -> VariablePieces {
     let mut i = 0;
     while i < subranges.len() {
         let (sp, base_off, _) = subranges[i].0;
-        let mut max_off = base_off + subranges[i].0 .2 as u64; // exclusive end
+        // `maxOff = off + (vn->getSize()-1)` (varnode.cc:1797). Ghidra tracks the INCLUSIVE end,
+        // and that is not a stylistic choice: it is what keeps a range that ends at the top of
+        // the address space representable. A 64-bit spacebase offset like -8 is
+        // 0xffff_ffff_ffff_fff8, whose EXCLUSIVE end is 2^64 — unrepresentable, and the reason
+        // this line used to panic (`attempt to add with overflow`) on the varargs ground-truth
+        // fixture in debug. `uintb` wraps in C++, so the adds wrap here too.
+        let mut max_off = base_off.wrapping_add(subranges[i].0 .2 as u64 - 1);
         let mut j = i + 1;
         while j < subranges.len() {
             let (sp2, off2, sz2) = subranges[j].0;
-            if sp2 != sp || off2 >= max_off {
+            // `vn->getSpace() != spc || vn->getOffset() > maxOff` (varnode.cc:1804) — strict,
+            // because maxOff is the last byte of the range rather than one past it.
+            if sp2 != sp || off2 > max_off {
                 break;
             }
-            max_off = max_off.max(off2 + sz2 as u64);
+            // `endOff = off + (size-1); if (endOff > maxOff) maxOff = endOff;` (varnode.cc:1810-1812)
+            let end_off = off2.wrapping_add(sz2 as u64 - 1);
+            if end_off > max_off {
+                max_off = end_off;
+            }
             j += 1;
         }
         if j - i > 1 {
@@ -1387,7 +1399,11 @@ fn merge_addrtied(f: &Funcdata, h: &mut HighVariables) -> VariablePieces {
                     members: members.clone(),
                 });
             }
-            pieces.groups.push(Group { size: (max_off - base_off) as u32, pieces: ids });
+            // `VariableGroup::size` is a byte count ("Number of contiguous bytes covered by the
+            // whole group", variable.hh:53), so an inclusive end spans one more byte than it
+            // measures.
+            let span = max_off.wrapping_sub(base_off).wrapping_add(1);
+            pieces.groups.push(Group { size: span as u32, pieces: ids });
         }
         i = j;
     }
