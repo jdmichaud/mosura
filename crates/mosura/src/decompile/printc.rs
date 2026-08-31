@@ -229,6 +229,11 @@ pub struct RecoveredChoices {
     /// decompiler's rendering) instead of the recovered storage width — per function, since
     /// one declaration covers every RETURN (`return-width`).
     pub narrow_return: bool,
+    /// That narrow return declaration is SIGNED — witnessed by the sign-extended-constant idiom
+    /// (`MOV EAX,0xffff8000` returning a 2-byte value). Only meaningful with `narrow_return`; a
+    /// return narrowed on narrow-write evidence alone leaves this false and keeps the inferred
+    /// type's own signedness, so no pre-existing firing changes spelling.
+    pub narrow_return_signed: bool,
     /// HighVariable representatives whose declaration widens to int width (`local-width`,
     /// per declared local instead of the arm's whole-function blanket).
     pub widen_local_reps: std::collections::HashSet<u32>,
@@ -4752,7 +4757,23 @@ fn print_c_inner(
             }
         }
         let w = p.apply_narrow_return(f, vn, choices);
-        widen_to_storage(&p.type_of(v), w).name()
+        let base = p.type_of(v);
+        // The sign-extended-constant witness says the narrow return is SIGNED, and the spelling is
+        // what carries it into the compiler: `int2` sign-extends the constant into the full return
+        // register the way the original does, where `xunknown2` (unsigned short) zero-extends it.
+        // Only scalar integer-ish recovered types are respelled — a pointer or float return is not
+        // a signedness question and keeps the storage answer.
+        if p.recovered.narrow_return
+            && p.recovered.narrow_return_signed
+            && matches!(
+                base,
+                Datatype::Unknown(_) | Datatype::Uint(_) | Datatype::Int(_) | Datatype::Bool | Datatype::Char
+            )
+        {
+            Datatype::Int(w).name()
+        } else {
+            widen_to_storage(&base, w).name()
+        }
     });
     // Signature parameters in convention order, each typed from its backing input Varnode.
     let plist: Vec<String> = sig_params

@@ -35,6 +35,12 @@ pub fn recover(
         insns,
     );
     let call_arg_orders = call_arg_orders(&report);
+    // One witness, two fields: whether the return declaration narrows, and whether that narrow
+    // declaration is signed (the sign-extended-constant idiom).
+    let narrow_ret = crate::recompile::buildconfig::narrow_return_from_evidence(
+        &report.return_width_candidates,
+        insns,
+    );
     let recovered = crate::decompile::printc::RecoveredChoices {
         complement_sites: crate::recompile::buildconfig::complement_compares_from_evidence(
             &report.compare_sites,
@@ -48,10 +54,8 @@ pub fn recover(
             &report.cond_nest_candidates,
             insns,
         ),
-        narrow_return: crate::recompile::buildconfig::narrow_return_from_evidence(
-            &report.return_width_candidates,
-            insns,
-        ),
+        narrow_return: narrow_ret.narrow,
+        narrow_return_signed: narrow_ret.signed,
         widen_local_reps: widen.0,
         tier2_sites: widen.1,
         snapshot_sites: crate::recompile::buildconfig::entry_snapshots_from_evidence(

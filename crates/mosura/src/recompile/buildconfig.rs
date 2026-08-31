@@ -321,6 +321,23 @@ pub fn nested_conds_from_evidence(
     out
 }
 
+/// The return-declaration witness's verdict: whether the declaration follows the VALUE's width,
+/// and whether the evidence says that narrow value is SIGNED.
+///
+/// `signed` is set ONLY by the sign-extended-constant path ([`sext_narrow_const`]). A function
+/// whose every return site writes narrow keeps `signed: false` and therefore exactly today's
+/// rendering, so signedness carries no change into any firing that already existed. It matters
+/// because the two spellings compile to different code: a signed narrow return sign-extends into
+/// the full register (`MOV EAX,0xffff8000`), an unsigned one zero-extends (`MOV EAX,0x8000`), and
+/// only the first reproduces what the original hands back to its callers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NarrowReturn {
+    /// Declare the return at the value's width instead of the recovered storage width.
+    pub narrow: bool,
+    /// That narrow declaration is SIGNED (witnessed by a sign-extended constant return).
+    pub signed: bool,
+}
+
 /// Decide the `return-width` axis PER FUNCTION from the original's bytes. The candidates are
 /// the RETURN sites where the value is narrower than the recovered storage
 /// ([`crate::decompile::printc::EmitReport::return_width_candidates`]); the readout is the
@@ -330,12 +347,19 @@ pub fn nested_conds_from_evidence(
 ///   high bytes untouched, so the source's return type was narrow: declare at the VALUE's
 ///   width (the reference decompiler's own rendering);
 /// - a full-register write (`AND EAX,0xff`, `MOVZX EAX,..`, `XOR EAX,EAX`, a `CALL`) — the
-///   original materializes the widening, which is what the widened declaration compiles to.
+///   original materializes the widening, which is what the widened declaration compiles to;
+/// - EXCEPT a **sign-extended narrow constant** (`MOV EAX,0xffff8000` returning 2 bytes), which
+///   is how a signed narrow return carries a constant rather than a widening — it declines to
+///   veto and reports [`NarrowReturn::signed`] ([`sext_narrow_const`]).
 ///
-/// Narrow only when EVERY return site reads narrow — one declaration covers all of them.
-pub fn narrow_return_from_evidence(candidates: &[(u64, u32, u32)], insns: &[NormInsn]) -> bool {
+/// Narrow only when every return site reads narrow OR is that constant idiom, AND at least one
+/// site is a genuine narrow write — the ANCHOR. Anchoring is what keeps the constant arm honest:
+/// a constant alone can look sign-extended at any width, so it may never make a return narrow by
+/// itself, and an all-constant-returning function stays wide.
+pub fn narrow_return_from_evidence(candidates: &[(u64, u32, u32)], insns: &[NormInsn]) -> NarrowReturn {
+    let wide = NarrowReturn::default();
     if candidates.is_empty() {
-        return false;
+        return wide;
     }
     let writes_a = |t: &str| -> Option<bool> {
         // Some(narrow?) when the instruction writes the A register family
@@ -352,29 +376,90 @@ pub fn narrow_return_from_evidence(candidates: &[(u64, u32, u32)], insns: &[Norm
             }
         }
     };
-    candidates.iter().all(|&(ret_pc, _, _)| {
-        let Some(end) = insns.iter().position(|x| x.addr >= ret_pc) else { return false };
+    // ANCHORED-ONLY (the sign-extended-constant arm below): a genuine narrow write must be seen at
+    // some return site before a sext-looking constant at another site is read as narrowness.
+    let mut anchored = false;
+    let mut sext_seen = false;
+    for &(ret_pc, narrow_w, _) in candidates {
+        let Some(end) = insns.iter().position(|x| x.addr >= ret_pc) else { return wide };
         let Some(last) = insns[..end].iter().rposition(|x| writes_a(&x.text).is_some()) else {
-            return false;
+            return wide;
         };
         if writes_a(&insns[last].text) != Some(true) {
-            return false; // full-register write — the widened declaration is right
+            // Full-register write. The widened declaration is right for all but ONE idiom: a
+            // SIGN-EXTENDED NARROW CONSTANT, which is how a signed narrow return carries a
+            // constant. It never anchors — it can only decline to veto.
+            if !sext_narrow_const(&insns[last].text, narrow_w) {
+                return wide;
+            }
+            sext_seen = true;
+            continue;
         }
         // A narrow last write PRECEDED by the container zero is the WIDENING IDIOM
         // (`XOR EAX,EAX ; MOV AL,[m] ; RET` — measured on FUN_00031044): the function
         // returns the zero-extended value in full EAX, so the contract is wide. Same
         // consumed-zero scan as `widened_sites_from_evidence`: stop if anything between
         // writes the A family.
+        let mut widening = false;
         for x in insns[last.saturating_sub(3)..last].iter().rev() {
             if x.text == "XOR EAX,EAX" {
-                return false; // wide: the narrow write completes a widening
+                widening = true; // wide: the narrow write completes a widening
+                break;
             }
             if writes_a(&x.text).is_some() {
                 break;
             }
         }
-        true
-    })
+        if widening {
+            return wide;
+        }
+        anchored = true; // a real narrow write, surviving the widening carve-out: this site anchors
+    }
+    if !anchored {
+        return wide;
+    }
+    // SIGNEDNESS comes only from the sext-constant path. A function whose every return site writes
+    // narrow keeps exactly today's rendering (`signed: false`), so this carries no change into any
+    // firing that already existed.
+    NarrowReturn { narrow: true, signed: sext_seen }
+}
+
+/// Whether a full-register A-family write is Watcom's **sign-extended narrow constant** idiom:
+/// `MOV EAX,0xffff8000` is the 32-bit sign-extension of the 2-byte `0x8000`, which Watcom
+/// materialises in the whole register because `b8 imm32` (5 bytes) beats `66 b8 imm16` (4 bytes
+/// plus the operand-size prefix). It is how a SIGNED narrow return carries a constant — the twin
+/// of the `XOR EAX,EAX` widening idiom above, read in the other direction (measured on
+/// FUN_00043ddc, whose `return -0x8000` path is exactly this).
+///
+/// **This never makes a return narrow on its own, and that is load-bearing.** `MOV EAX,0xffffffff`
+/// is arithmetically the sign-extension of -1 at *every* narrow width, so an unanchored reading
+/// would misfire on every `return -1` int function in the corpus. The caller only consults this to
+/// decide whether a full-register write VETOES narrowness; a genuine narrow write at some other
+/// return site is what anchors the width, so an all-constant-returning function stays wide by
+/// construction.
+///
+/// Only a parseable hex immediate qualifies — never `MOV EAX,[mem]`, whose value is unknown here.
+fn sext_narrow_const(text: &str, narrow_w: u32) -> bool {
+    if !(1..=3).contains(&narrow_w) {
+        return false; // not narrower than the 4-byte container; the shift below would be UB anyway
+    }
+    let mut it = text.split_whitespace();
+    if it.next() != Some("MOV") {
+        return false;
+    }
+    let mut halves = it.next().unwrap_or("").split(',');
+    if halves.next() != Some("EAX") {
+        return false;
+    }
+    let Some(src) = halves.next() else { return false };
+    if halves.next().is_some() {
+        return false; // more than two operands — not the simple constant load
+    }
+    let Some(hex) = src.strip_prefix("0x") else { return false };
+    let Ok(v) = u32::from_str_radix(hex, 16) else { return false };
+    let bits = narrow_w * 8;
+    let sext = (((v << (32 - bits)) as i32) >> (32 - bits)) as u32;
+    sext == v
 }
 
 /// Decide the entry-snapshot rendering PER VALUE from the original's bytes. The candidate is
@@ -1052,6 +1137,58 @@ mod tests {
         let edx = lift("ba09000000");
         assert_eq!(join_narrow_sites_from_evidence(&[0x1000], &dl), std::collections::HashSet::from([0x1000]));
         assert!(join_narrow_sites_from_evidence(&[0x1000], &edx).is_empty());
+    }
+
+    /// The sign-extended-constant arm is ANCHORED-ONLY: it neutralises a full-register write's veto
+    /// when another return site writes narrow, and never creates narrowness by itself.
+    #[test]
+    fn sext_constant_return_site_does_not_veto_when_another_site_writes_narrow() {
+        // b80080ffff MOV EAX,0xffff8000 ; c3 RET ; 668b4002 MOV AX,[EAX+2] ; c3 RET
+        let ev = lift("b80080ffffc3668b4002c3");
+        // both RETURN sites, logical width 2, recovered storage 4 (FUN_00043ddc's shape)
+        let v = narrow_return_from_evidence(&[(0x1005, 2, 4), (0x100a, 2, 4)], &ev);
+        assert!(v.narrow, "the sext constant must not veto when another site writes narrow");
+        assert!(v.signed, "the sext-constant path witnesses a SIGNED narrow return");
+    }
+
+    /// The control that makes the arm safe: with NO narrow write anywhere, sign-extended constants
+    /// alone leave the return WIDE. `MOV EAX,0xffffffff` is the sext of -1 at every width, so an
+    /// unanchored reading would narrow every `return -1` int function in the corpus.
+    #[test]
+    fn sext_constants_alone_never_narrow_a_return() {
+        // b80080ffff MOV EAX,0xffff8000 ; c3 ; b8ffffffff MOV EAX,0xffffffff ; c3
+        let ev = lift("b80080ffffc3b8ffffffffc3");
+        assert!(!narrow_return_from_evidence(&[(0x1005, 2, 4), (0x100b, 2, 4)], &ev).narrow);
+    }
+
+    /// A full-register constant that is NOT the sign-extension at the anchored width still vetoes:
+    /// `MOV EAX,0x8000` zero-extends the same 2 bytes, which is the widening the declaration keeps.
+    #[test]
+    fn a_non_sext_full_register_constant_still_vetoes() {
+        // b800800000 MOV EAX,0x8000 ; c3 ; 668b4002 MOV AX,[EAX+2] ; c3
+        let ev = lift("b800800000c3668b4002c3");
+        assert!(!narrow_return_from_evidence(&[(0x1005, 2, 4), (0x100a, 2, 4)], &ev).narrow);
+    }
+
+    /// Only a parseable immediate qualifies — a full-register load from memory has no known value
+    /// and keeps its veto.
+    #[test]
+    fn a_full_register_memory_load_is_not_a_sext_constant() {
+        // a134120000 MOV EAX,[0x1234] ; c3 ; 668b4002 MOV AX,[EAX+2] ; c3
+        let ev = lift("a134120000c3668b4002c3");
+        assert!(!narrow_return_from_evidence(&[(0x1005, 2, 4), (0x100a, 2, 4)], &ev).narrow);
+    }
+
+    /// Signedness comes ONLY from the sext-constant path: a return narrowed on narrow-write
+    /// evidence alone keeps today's rendering (`signed: false`), so no pre-existing firing changes
+    /// spelling when the signed half lands.
+    #[test]
+    fn narrow_writes_alone_witness_no_signedness() {
+        // 668b4002 MOV AX,[EAX+2] ; c3 ; 668b4004 MOV AX,[EAX+4] ; c3
+        let ev = lift("668b4002c3668b4004c3");
+        let v = narrow_return_from_evidence(&[(0x1004, 2, 4), (0x1009, 2, 4)], &ev);
+        assert!(v.narrow, "two narrow writes still narrow the return");
+        assert!(!v.signed, "narrow writes alone say nothing about signedness");
     }
 
     /// N3 witness: a `*0x4` scaled-index operand is a subscript site; a plain `[reg + const]` is not.
