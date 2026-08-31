@@ -45,9 +45,37 @@ dead, the slot-0 argument the address of a stack local) — `Program::recovered_
 function's own `ret <pointer size>` (gcc emits it on i386 only for a memory-returned struct), or
 — register side — EVERY known call site's evidence. No call site and no pop is no witness. The
 shape alone is byte-identical to `int *fill(int *p, ..) { ..; return p; }`; the caller-side
-witness can still match such a function whose callers all drop the result, and the rendering is
-then value-preserving either way: `local = fill(..)` performs the same stores into the same
-bytes — a false positive changes form, never values.
+witness can still match such a function whose callers all drop the result.
+
+**That false positive is value-preserving only on an ABI that returns the struct through the
+CALLER'S MEMORY** — gcc's i386 memory return, the case this arm is enabled for, where
+`local = fill(..)` performs the same stores into the same bytes and the rewrite changes form and
+not values; it is NOT value-preserving on a register-return convention like Watcom's, where a
+small struct comes back in EAX, so rewriting an out-parameter function moves the value out of the
+caller's buffer into a register and the program changes behaviour. State the convention before
+reusing this witness on another target.
+
+### Measured on WAR2 (2026-08-31): the axis stays OFF for Watcom
+
+A probe (the survey's prototype pass keeping the sret facts, the axis on the recovered pass only,
+side directories, nothing landed) put numbers on it. **Nine of 3,024 functions carry the sret
+SHAPE at all; ZERO carry the callee-pop witness** — `on_stack` is false on every one of them,
+because Watcom's parameter slot 0 is a register, so that half of the witness is structurally inert
+on this target. **One carries the callers witness and it is a false positive**: `FUN_00034918` is
+`void f(short *out, short *in)` whose single caller ignores the result, and the arm rewrites it to
+a `struct s2_x2` return — which, under Watcom's register return, is exactly the behaviour change
+above. **Four of the nine shaped functions are EXACT today and one is SAME_SHAPE, so any widening
+of the caller-side witness aims straight at EXACT rows.**
+
+**Enabling the arm for WAR2 would take more than an axis flip: the survey's TU assembly has no
+per-TU callee prototypes — every callee is declared `extern int func_0x...();` — so a
+struct-returning callee cannot be called from another TU at all** (`FUN_0003495c`, the one caller,
+renders `xStack_18 = func_0x00034918(&xStack_1c);` correctly and then fails to compile:
+`Error! E1010: Type mismatch`; MISMATCH -> COMPILE_FAIL, the round's only flip, WGSS 0.5576 ->
+0.5570). The ground-truth path has the mechanism the survey lacks — `make_tu` copies the callee's
+`struct sN { .. };` preamble AND its real signature line — so WAR2 enablement needs that
+mechanism plus a witness that can tell an out-parameter from a hidden return pointer on a
+register-return ABI. Neither is built; the arm is a ground-truth-column tool.
 
 **The arm** (`decompile/emit/arms/struct_return.rs`; the axis is `witness` in the gt ARMS plan
 only — `EmitPlan::arms()` — never in `plain()` (the reference rendering every baseline measured)
