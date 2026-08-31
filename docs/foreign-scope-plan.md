@@ -16,6 +16,9 @@ confirmation file):
 cargo run --release --example foreign_propose -- <binary> [--native]
 # preview the denominator with confirmed bands:
 cargo run --release --example foreign_propose -- <binary> --confirm <foreign-file>
+# audit a classification band by band (the band report, §5 Phase 1):
+cargo run --release --example foreign_propose -- <binary> --report [--confirm <foreign-file>] \
+    [--rec <rec.tsv>] [--memo-cut <va>]
 # score with foreign excluded (compare against a run without --exclude-foreign = both numbers):
 recompile_check <binary> <manifest> <src> recover <watcom> --exclude-foreign <foreign-file>
 ```
@@ -140,6 +143,15 @@ A **generic engine** consuming **binary-specific data behind a boundary**.
 - **Phase 1 — Band proposer (read-only).** *(DONE)* `examples/foreign_propose.rs` emits the
   human-facing band report per binary (range, #funcs, anchor class, example, fingerprint
   agreement) and a classification preview. Changes no denominator.
+  **`--report` (2026-08-31)** is the auditable form of the same pass, so §4.3.5 can actually be
+  exercised: per band, the span accounting and a *deterministic* spot-check sample (the sampling
+  rule is printed, so re-running the command reprints the same rows); then `held` in its own
+  section with its own row/weight/EXACT accounting, never folded into a band; then the denominator
+  table. `--rec <rec.tsv>` joins a `recompile_check --out` measurement so each section carries its
+  corpus weight (WGSS Σ orig_n·sim / Σ orig_n, the canonical formula). `--memo-cut <va>` prints
+  one extra row: what a **hand-drawn address cut** would score, and the gap between it and what
+  evidence covers. That address is supplied on the command line and labelled as *not evidence* —
+  it is the line the classifier has to earn, and it must never become a constant (§4.2).
 - **Phase 2 — Confirmation format.** *(DONE)* `foreign::Confirmation` line format
   (`foreign|reject <string> <reason>`), passed by path to the tools. The file is per-binary RE data
   kept out of the repo (with the binary's own artifacts). **The human names STRINGS, never
