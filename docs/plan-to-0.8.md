@@ -176,6 +176,11 @@ distribution, published before any corpus-wide allocator work.
 *Run 2026-08-31: see [`phase-c-pilot-results.md`](phase-c-pilot-results.md) — the twelve free emit
 axes reach 60.3 % of the band and improve none of it, so the allocator question is UNJUDGED and
 witnessed `extra`-class levers are its prerequisite.*
+*Run 2026-09-01: see [`oracle-sweep-calibrated.md`](oracle-sweep-calibrated.md) — the first sweep
+under our own compiler spec. 64.9 % of swept loss is the fixture's context-poverty rather than our
+divergence, so every earlier residual map was measuring the harness; the clean residue's largest
+class is a variable-count gap whose two named halves are the parked `merge-datatype` port and a
+self-declared `RuleEqual2Zero` port gap (landed, +3 EXACT).*
 
 **Phase D — the last mile to 0.8.** Re-run the census; by then the loss is the allocation
 residue plus whatever R1/R2 left per size band. Decide per band: search (compile-in-the-loop
