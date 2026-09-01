@@ -79,7 +79,7 @@ the harness — which is what the earlier maps were doing, for a second reason o
  class          TUs    loss     %   game  band   direction        mark
  local-decl     164    5700  31.1%  112   126   MORE 149/FEWER 15  NEW
  deref-cast      67    2539  13.8%   43    52   MORE  67/FEWER  0  NEW
- array-index     30    1129   6.2%   19    29   MORE   8/FEWER 22  NEW
+ array-index     31    1138   6.2%   20    30   MORE   8/FEWER 23  NEW
  short-circuit   14     849   4.6%   11    14   MORE   8/FEWER  6  KNOWN-OPEN
  while           14     744   4.1%   12    14   MORE   6/FEWER  8  KNOWN-OPEN
  piece-ops       16     574   3.1%   15    16   MORE  10/FEWER  6  KNOWN-CLOSED
@@ -88,6 +88,16 @@ the harness — which is what the earlier maps were doing, for a second reason o
  goto             3     286   1.6%    3     3   MORE   3/FEWER  0  NEW
  halt/trap        3      53   0.3%    0     2   MORE   0/FEWER  3  KNOWN-NAMED
 ```
+
+**Two rows are corrections, and both corrections are the same failure.** `deref-cast` first read
+**93 / 3,514**; the counter could not see a pointer-to-pointer cast, so 23 TUs where Ghidra spells
+`*(char **)x` were scored as ours-only — the row above is the corrected 67 / 2,539 (§8).
+`array-index` first read **30 / 1,129**; that counter could not see an array *declaration*, because
+both printers spell one `int4 aiStack_60 [9];` with a space and `\w+\[` will not cross it — uses
+were counted, declarations were not. Normalizing whitespace before matching moves it to the
+**31 / 1,138** above (one TU joins, `00923`; one delta deepens, `01476` −7 → −8), with the game and
+band cuts and the direction recut on the same members. Two classes, two counters, one rule:
+**normalize before matching** (§9).
 
 `piece-ops` deserves its mark: this is the first corpus-scale measurement of W7's shared-limit
 question under the correct cspec, and at **16 clean TUs / 574 loss / 3.1 %** it is consistent with
@@ -126,6 +136,29 @@ attempted ONCE on that function and once across 20 held TUs. Whether Ghidra's co
 or its trims simply fire is not decidable from the console: `HighVariable::printCover` prints
 "Cover dirty" once later phases set the flag (variable.hh:188), which is what `oracle/capture_merge`
 was built for.
+
+> **SUPERSEDED 2026-09-02 by Order O.** The paragraph above says the held half's mechanism is
+> "located but not attributed", and names two candidates the console could not decide between:
+> narrower covers, or trims that simply fire. `oracle/capture_merge` was built to decide it, and
+> it did — but the answer is neither candidate. It is a third thing: Ghidra's `copyShadow`
+> exemption lives INSIDE the one interference test every merge site shares
+> (`HighIntersectTest::testBlockIntersection`, variable.cc:978), and ours is not consulted at the
+> COPY-merge site.
+>
+> The attribution is PARTIAL, and Bob's four figures matter more than the headline. In his words:
+>
+> > · **24 of 57** on `00011` are Ghidra-merges-we-decline, predicted 57/57 with zero off-diagonal
+> >   by the missing `copyShadow` exemption;
+> > · **33** are not divergences at all — we decline and so does Ghidra, so §5's "57 declines" was
+> >   never 57 divergences, and that sentence of mine was loose;
+> > · **01661's 94** declines are all correct, so its held loss is a different mechanism entirely;
+> > · **02714** leaves **6 pairs** the exemption does not explain.
+>
+> So the sentence above should read: *attributed in part — at most 24 of 57 on `00011`, by the
+> missing `copyShadow` exemption; a second mechanism remains on `02714`, and `01661` is not this
+> class at all.* The "57 declines" figure in the superseded text is therefore not a divergence
+> count and must not be quoted as one. Full account: the `wc2src-reconcile` ledger,
+> `docs/wc2src-reconciliation-4.md`, Order O.
 
 Context-fairness for the held half was discharged without a locked capture: the two highest-loss
 held TUs contain **zero calls**, so no callee-prototype confound is possible. One of them
@@ -269,6 +302,8 @@ at −3 EXACT, WGSS flat, no wrong code; or **(c)** park, with both overrides un
 revival condition standing in cast.rs. Neither meets the zero-verdict-regression bar, so it is a
 decision rather than a landing.
 
+Both were measured after M's round; the numbers are in §11.
+
 ## 9. The counter burned three times — the worked sequence
 
 Each failure produced a confident wrong answer and a different discipline caught it. This is the
@@ -283,6 +318,15 @@ part of the method worth carrying to the next class.
    space. This produced a fictitious *"48 of 67 overshoot, 0 exact"* and a recommendation against
    the change. Caught only by **tracing a specimen** — reading the C.
 
+A fourth failure, in Order N, is the same family one layer up and is the one to remember. A
+census of negated-comparison sites read **237**, was corrected to **233** when a regex turned out
+to be matching `>>` as `>`, and the round then measured **242 → 4** with a single shift-normalized
+scanner over both sides. The first correction was a miscount. The second was not: the earlier
+figures came from a **different scanner** than the one that measured the result, so both numbers
+looked equally quotable and only one was comparable. **One scanner measures both sides, always** —
+a before/after pair produced by two scanners is not a measurement, and nothing about the numbers
+advertises the mismatch.
+
 Two rules came out of it. **Normalize before matching** (`re.sub(r'\s+','',text)`): spelling
 differences between two printers are the norm, and this class alone spells one construct three
 ways. **Report Σ|delta|, never a signed sum**: a class is defined by one-sided deltas, so
@@ -292,9 +336,40 @@ and withdrawn before the third measurement settled it.
 
 ## 10. Open
 
-- **K-5d**: the 65 unnamed held `local-decl` TUs, same trace-diff method.
+- **K-5d**: the 65 unnamed held `local-decl` TUs, same trace-diff method. Partially attributed
+  since — see the §5 supersession for what Order O did and did not account for.
 - **The parked `merge-datatype` port** is a decision, not a build order: half the largest clean
   class, more Ghidra-faithful, −0.00182 WGSS.
-- `deref-cast` (MORE 90/3) and `array-index` (FEWER 22/8) are the next two clean classes.
+- `array-index` is the next clean class to open (§4: 31 TUs / 1,138 loss, FEWER 23 / MORE 8).
+  `deref-cast` is no longer "next" — it is measured and on the slate (§8, §11), and its
+  corrected direction is MORE 67 / FEWER 0.
 - The isolation-sensitive pool is **not** a defect list, and should not be mined as one without a
   context-fair capture method.
+
+## 11. Slate, 2026-09-02 — numbers only
+
+Four measured options, **all on one base**: master `78287fb`, **867 EXACT / WGSS 0.5607**, all
+`kind=user`. Each row is stable at two rounds; the recommendation is not here.
+
+```
+  option                    EXACT     WGSS      delta        verdict flips
+  park                        867     0.5607    —            —
+  M alone (a9f7eef)           867     0.5601    −0.00058     0
+  pair alone (70ebc6c)        864     0.5607    −0.00007     4, all down
+  M + pair (fe10559)          864     0.5601    −0.00065     4, all down
+  O(2) (a40b3dc)              pending its round
+```
+
+**M and the pair are additive to the digit** (−0.00058 + −0.00007 = −0.00065) and the stacked run's
+four flips are the same four functions as the pair alone, so the two changes do not interact.
+
+What each buys: **M** corrects a wrong pointee type in the IR — a latent wrong-code source for
+every consumer of the pointee width — for no verdict movement. **The pair** ports Ghidra's two
+`getInputCast` overrides and removes the printer width gate they replace, converging `deref-cast`
+by Σ|delta| 86 → 38 with 47 of 67 TUs landing exactly on Ghidra's count, at the cost of three
+EXACT; its four downs are one one-character change (`int2 *` → `uint2 *`) that **Ghidra also
+prints**, costing one operand form in the compiled output, with no wrong code on either side.
+
+Neither meets the zero-verdict-regression bar, which is why they are a decision rather than a
+landing. The LOAD-only half of the pair is **not** an option: it looked cheaper at −1 EXACT and
+produces 155 width-mismatched stores across 63 TUs (§8).
