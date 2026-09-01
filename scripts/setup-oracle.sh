@@ -132,6 +132,18 @@ build_capture_trace() {
   [ -x "$MOSURA_DIR/oracle/capture_trace" ] || die "capture_trace tool did not build"
 }
 
+build_capture_merge() {
+  # The MERGE-side twin of capture_trace (K-9): HighVariable membership AND per-member covers at
+  # the end of the merge cluster. capture_trace cannot answer merge questions -- OPACTION_DEBUG
+  # traces the rule pool, and merge decisions are not PcodeOp modifications -- and decomp_dbg's
+  # console cannot either, because `print high` shows membership while `print cover high` prints
+  # "Cover dirty" once later phases set the flag (variable.hh:188). Same library, same switches.
+  log "building merge-state capture tool (oracle/capture_merge)"
+  g++ -std=c++11 -DCPUI_DEBUG -D__TERMINAL__ -I"$CPP_DIR" -O2 -o "$MOSURA_DIR/oracle/capture_merge" "$MOSURA_DIR/oracle/capture_merge.cc" \
+    -Wl,--whole-archive "$CPP_DIR/libdecomp_dbg.a" -Wl,--no-whole-archive -lbfd -lz
+  [ -x "$MOSURA_DIR/oracle/capture_merge" ] || die "capture_merge tool did not build"
+}
+
 build_capture_typeprop() {
   # The TYPE-PROPAGATION trace tool (task #11): emits Ghidra's TYPEPROP_DEBUG
   # "<varnode> : <type> from <op> slot=<n>" log, to diff against mosura's own (MOSURA_TYPEPROP=1)
@@ -217,6 +229,7 @@ fi
 build_tools
 build_capture
 build_capture_trace
+build_capture_merge
 build_capture_typeprop
 if [ "$SKIP_SPECS" -eq 0 ]; then compile_specs; else log "skipping spec compile (--skip-specs)"; fi
 write_env
