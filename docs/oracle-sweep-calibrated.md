@@ -178,7 +178,78 @@ named**: the Watcom work directory is per-PID and self-removing, unit filenames 
 shared per user and is the one real cross-worktree channel, but nothing was written to it during
 the window. No fix is proposed for an unnamed cause.
 
-## 8. Open
+## 8. `deref-cast`: the class that burned its counter three times, and a slate item
+
+**The class is 67 TUs / 2,539 loss, not the 93 / 3,514 of §4's table.** §4's figure was measured
+with a counter that could not see a pointer-to-pointer cast; 26 % of the class (23 TUs, 808 loss)
+was Ghidra spelling `*(char **)x` where the pattern only matched `*(char *)x`. That was the second
+of three counting failures in this one class — see §2's discipline and §9 below.
+
+**Mechanism.** Ghidra's `checkArrayDeref` (printc.cc:353-368) has no width test at all — implied,
+written, SEGMENTOP unwrap, PTRSUB/PTRADD, true. Our printer carried one (added by 677bef8 to fix
+`heapstring`'s 1-byte store through an `xunknown8 *`). Ghidra decides width one layer up, and
+**not symmetrically**: a STORE whose value size disagrees with the pointee gets a CAST on the
+POINTER (`TypeOpStore::getInputCast`, typeop.cc:536-538), and that CAST is what makes
+`checkArrayDeref` decline; a LOAD instead POSTPONES, casting the loaded VALUE (`TypeOpLoad::
+getInputCast`, :454-461). A printer gate cannot tell a load from a store, so loads were getting
+the store's rendering. cast.rs's own not-ported arm had already named the fix and its revival
+condition.
+
+**The faithful pair** — port both overrides, delete `Load`/`Store` from that arm, then remove the
+printer gate — measured on `b2654ea`, two stable rounds:
+
+```
+  build                 EXACT      WGSS      class Σ|delta|   class exact hits
+  baseline b2654ea       866      0.5594          86                0
+  whole pair             863      0.5594          38               47
+  LOAD-only (WITHDRAWN)  865      0.5583          38               49
+```
+
+The pair's four downs are one one-character change — the store's pointer cast `int2 *` → `uint2 *`
+— and **Ghidra prints `uint2 *`**, so the candidate is the faithful spelling. The compiled cost is
+one operand form (`XOR EDX,EDX` → `XOR DH,DH`): neither spelling is wrong code, but the original's
+codegen is what a *signed* short produces, so the unfaithful spelling happened to match the real
+compiler. We pay 3 EXACT to agree with Ghidra where Ghidra disagrees with the source.
+
+**THE CENTRE LINE: the LOAD-only half looked cheaper and was wrong code.** At −1 EXACT against
+−3 it was the attractive option, and it keeps the entire class gain (Σ|delta| 38, 49 exact hits —
+the store half contributes nothing textual). It also manufactures **155 width-mismatched
+cast→subscript stores across 63 TUs**: `*(xunknown2 *)(param_1 + 4) = x` becoming `param_1[4] = x`
+on an `xunknown1 *` narrows a 2-byte write to 1 byte, and the mirror widens 1 byte to 4. Removing
+the printer gate without porting the STORE override leaves nothing to re-insert the cast, so
+`checkArrayDeref` fires on every PTRADD-fed store and prints at the POINTEE's width. **The two
+verdict drops were the arbiter noticing.** A wrong-code scan of the whole pair finds ZERO such
+conversions — the store override prevents exactly this — so the halves are not separable: the
+store override is the safety half, not a cost to trim. **The LOAD-only probe must never be revived
+without it.**
+
+Slate, held for Order M's round and to be re-measured on the post-M base: **(a)** the whole pair
+at −3 EXACT, WGSS flat, no wrong code; or **(c)** park, with both overrides unported and their
+revival condition standing in cast.rs. Neither meets the zero-verdict-regression bar, so it is a
+decision rather than a landing.
+
+## 9. The counter burned three times — the worked sequence
+
+Each failure produced a confident wrong answer and a different discipline caught it. This is the
+part of the method worth carrying to the next class.
+
+1. **The extra paren.** We print `*((T *)x)`, Ghidra `*(T *)x`. The first table read
+   *"we emit FEWER in 739 of 741 TUs, 65 % of clean loss"*. Caught by the **structural-presence
+   check** — read a specimen and both sides have the construct.
+2. **The double star.** `*(char **)x`: `\*\)` cannot match `**)`. 26 % of the class evaporated.
+   Caught by **per-site comparison** of cast forms.
+3. **The spaced double star.** We print `code * *`, Ghidra `code **`; `\*+` will not cross the
+   space. This produced a fictitious *"48 of 67 overshoot, 0 exact"* and a recommendation against
+   the change. Caught only by **tracing a specimen** — reading the C.
+
+Two rules came out of it. **Normalize before matching** (`re.sub(r'\s+','',text)`): spelling
+differences between two printers are the norm, and this class alone spells one construct three
+ways. **Report Σ|delta|, never a signed sum**: a class is defined by one-sided deltas, so
+overshoot cancels undershoot and a signed total reads as convergence when the change has merely
+redistributed the error. Both a signed sum and an absolute sum on a wrong counter were reported
+and withdrawn before the third measurement settled it.
+
+## 10. Open
 
 - **K-5d**: the 65 unnamed held `local-decl` TUs, same trace-diff method.
 - **The parked `merge-datatype` port** is a decision, not a build order: half the largest clean
