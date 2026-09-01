@@ -7,11 +7,19 @@
 //! function was compared by hand).
 //!
 //! Usage: war2_oracle_sweep <manifest.tsv> <workdir> [--limit N] [--only idx,idx,...]
-//!   writes <workdir>/fixtures/<idx>.xml, <workdir>/ghidra/<idx>.c, <workdir>/mosura/<idx>.c and
-//!   appends <workdir>/sweep.tsv: idx  va  name  status  score  mosura_lines  ghidra_lines
+//!   writes <workdir>/fixtures/<idx>.xml, <workdir>/ghidra/<idx>.c, <workdir>/mosura/<idx>.c,
+//!   and <workdir>/sweep.tsv: idx  va  name  status  score  mosura_lines  ghidra_lines
+//!
+//! A FULL sweep (no `--only`) DEFINES sweep.tsv and truncates it; a PARTIAL sweep (`--only`)
+//! CONTRIBUTES to it and appends. The doc used to promise appending while the code truncated
+//! unconditionally, which silently destroyed the previous chunk's rows on every chunk of a
+//! resumable run -- 100 functions lost before a spin-guard noticed. Repeated `--only` runs
+//! accumulate rows rather than replacing them, so a chunked driver should derive its next
+//! chunk from the indices already in the file (that is exactly what makes it resumable), and
+//! anything wanting a clean partial re-measurement should use a fresh workdir.
 //! Env: GHIDRA_SRC must resolve a sleigh home for the oracle (a tree with Ghidra/Processors).
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -64,6 +72,44 @@ fn mosura_c(fixture: PathBuf) -> Result<String, String> {
     }
 }
 
+/// Open `<work>/sweep.tsv`. A full sweep DEFINES the file (truncate); a partial `--only` sweep
+/// CONTRIBUTES to it (append), which is what lets a chunked run resume without destroying the
+/// chunks before it.
+fn open_tsv(work: &Path, partial: bool) -> std::fs::File {
+    let p = work.join("sweep.tsv");
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .append(partial)
+        .truncate(!partial)
+        .open(p)
+        .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The regression: every `--only` chunk used to truncate the file, so a resumable run kept
+    /// only its last chunk. A partial sweep must preserve what is already there; a full sweep
+    /// must still define the file.
+    #[test]
+    fn a_partial_sweep_appends_and_a_full_sweep_truncates() {
+        use std::io::Write as _;
+        let d = std::env::temp_dir().join(format!("mosura-osweep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        writeln!(open_tsv(&d, false), "first").unwrap();
+        writeln!(open_tsv(&d, true), "second").unwrap();
+        let both = std::fs::read_to_string(d.join("sweep.tsv")).unwrap();
+        assert_eq!(both, "first\nsecond\n", "a partial sweep must keep the earlier chunk");
+        writeln!(open_tsv(&d, false), "fresh").unwrap();
+        let after = std::fs::read_to_string(d.join("sweep.tsv")).unwrap();
+        assert_eq!(after, "fresh\n", "a full sweep still defines the file");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}
+
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
     let manifest = a.first().expect("manifest.tsv");
@@ -88,7 +134,7 @@ fn main() {
     for d in ["fixtures", "ghidra", "mosura"] {
         std::fs::create_dir_all(work.join(d)).unwrap();
     }
-    let mut tsv = std::fs::File::create(work.join("sweep.tsv")).unwrap();
+    let mut tsv = open_tsv(&work, !only.is_empty());
     let text = std::fs::read_to_string(manifest).expect("manifest");
     let mut done = 0usize;
     let mut oracle_fail = 0usize;
