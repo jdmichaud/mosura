@@ -1112,7 +1112,30 @@ impl Structured {
         // oriented individually (Ghidra's `BlockCondition::negateCondition` distributes the NOT), so
         // the enclosing `if`/`while`'s `negated` (the De Morgan direction) must not read the last
         // leaf's flag — the per-leaf orientation is applied at print (printc `operand_oriented`).
-        if matches!(self.blocks[b].kind, FlowKind::CondAnd | FlowKind::CondOr) {
+        //
+        // The guard must be applied to the RESOLVED condition, not to `b`'s own top-level kind: a
+        // `List` wrapping a compound is not itself `CondAnd`/`CondOr`, but `exit_basic`
+        // (which recurses through any non-`Basic` kind via `components.last()`) walks straight
+        // through the List INTO the compound and returns the compound's last leaf — the very
+        // `fallthru_true` bit that print-side `operand_oriented` reads again in operand position.
+        // Reading `b`'s kind alone let both consumers fire on one bit, and the resulting
+        // double-count printed the De Morgan complement of the guard: byte-verified wrong code at
+        // FUN_0001aab0 @1aba9/@1ac7d/@1ad72/@1aed9, where the emitted `if` took the call when the
+        // tested word was ZERO and the bytes take it when NON-zero.
+        //
+        // Resolving `List -> components.last()` is exactly what the printer's `List` arm already
+        // does (printc `render_cond_expr`), so structurer and printer now agree on what "the
+        // condition" IS. Ghidra needs no such rule because its effect is realized where the node is
+        // BUILT — `BlockIf` reads edges already swapped by `negateCondition`; `is_oriented` is our
+        // substitute for that swap, so it too must be correct at build time.
+        let mut resolved = b;
+        while matches!(self.blocks[resolved].kind, FlowKind::List) {
+            match self.blocks[resolved].components.last() {
+                Some(&last) => resolved = last,
+                None => break,
+            }
+        }
+        if matches!(self.blocks[resolved].kind, FlowKind::CondAnd | FlowKind::CondOr) {
             return false;
         }
         self.exit_basic(b).is_some_and(|bid| self.oriented.get(bid.0 as usize).copied().unwrap_or(false))
@@ -3788,6 +3811,42 @@ mod tests {
             finaltrace: false,
             default_goto: HashSet::new(),
         }
+    }
+
+    /// `is_oriented` must apply its compound guard to the RESOLVED condition, not to the node's own
+    /// top-level kind. `exit_basic` recurses through any non-`Basic` kind via `components.last()`, so
+    /// a `List` wrapping a compound reaches the COMPOUND'S last leaf — the same `fallthru_true` bit
+    /// print-side `operand_oriented` reads in operand position. Reading the List's own kind let both
+    /// consumers fire on one bit, printing the De Morgan complement (byte-verified wrong code at
+    /// FUN_0001aab0 @1aba9/@1ac7d/@1ad72/@1aed9: the emitted `if` took the call when the tested word
+    /// was zero, the bytes take it when non-zero).
+    #[test]
+    fn is_oriented_resolves_through_list_wrappers_before_the_compound_guard() {
+        // Leaves 0 and 1 are the compound's sides; leaf 1 (its last) carries the orientation.
+        let mut s = bare(4, &[]);
+        s.oriented[1] = true;
+
+        // A bare compound over [0, 1]: guarded, orientation left to print (`operand_oriented`).
+        s.blocks[2].kind = FlowKind::CondOr;
+        s.blocks[2].components = vec![0, 1];
+        assert!(!s.is_oriented(2), "a bare compound reports NOT oriented");
+
+        // A List wrapping that compound: the guard must still fire — this is the regression.
+        s.blocks[3].kind = FlowKind::List;
+        s.blocks[3].components = vec![2];
+        assert!(
+            !s.is_oriented(3),
+            "a List wrapping a compound must report NOT oriented: exit_basic reaches the \
+             compound's last leaf, which print-side operand_oriented also consumes"
+        );
+
+        // A List resolving to a plain leaf still reads that leaf's flag — the guard must not
+        // over-fire (byte-verified control: FUN_0001aab0 @1ab0e / @1ae15 are correct as emitted).
+        let mut t = bare(3, &[]);
+        t.oriented[1] = true;
+        t.blocks[2].kind = FlowKind::List;
+        t.blocks[2].components = vec![1];
+        assert!(t.is_oriented(2), "a List over a plain leaf still reads the leaf's flag");
     }
 
     #[test]
