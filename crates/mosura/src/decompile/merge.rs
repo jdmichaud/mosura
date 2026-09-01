@@ -977,14 +977,27 @@ fn merge_markers(f: &Funcdata, h: &mut HighVariables, pieces: &VariablePieces) {
 }
 
 /// Do any member of class `a` and member of class `b` have overlapping liveness?
-fn classes_interfere(a: &[VarnodeId], b: &[VarnodeId], covers: &HashMap<VarnodeId, Cover>) -> bool {
-    a.iter().any(|x| {
-        b.iter().any(|y| match (covers.get(x), covers.get(y)) {
-            (Some(cx), Some(cy)) => cx.intersects(cy),
-            _ => false,
-        })
-    })
-}
+// `classes_interfere` — a bare pairwise Cover intersection with no copy-shadow exemption — is gone.
+// Ghidra has ONE interference test and every merge site shares it: `Merge::merge` (merge.cc:1565)
+// gates on `testCache.intersection` (:1569), `mergeAdjacent` (:1009) calls that same
+// `testCache.intersection` before merging, and `mergeLinear` (:287) reaches it through `merge`. The
+// test itself is `HighIntersectTest::testBlockIntersection` (variable.cc:968), which does NOT stop
+// at the cover overlap: it blocks only when the overlapping pair is not a copy shadow
+// (`Varnode::copyShadow`, varnode.cc:977, walking the COPY chain), with the cross-size
+// `partialCopyShadow` arm beside it. [`class_intersect`] is that port, and it is now the only
+// predicate here.
+//
+// Having two predicates was the defect. The COPY-merge site used the bare one, and the COPY merge is
+// exactly where copy-shadow pairs arise by construction — a COPY's output is a shadow of its input,
+// so their covers necessarily overlap. Measured on FUN_0001081c: of 57 declined COPY merges, the
+// exemption exempts 24 and Ghidra has precisely those 24 in one HighVariable, while the other 33 it
+// keeps apart exactly as we did — 57/57 agreement, zero off-diagonal
+// (docs/wc2src-reconciliation-4.md §"Order O").
+//
+// The bare `Cover::intersect(..) == 2` calls that DO remain in Ghidra are not merge gates:
+// `Merge::shadowedVarnode` (merge.cc:1271-1282) answers a different question, and the inflate path
+// (:1627, :1641) applies `copyShadow` / `partialCopyShadow` inline immediately before its test — the
+// same two arms, not an exemption-free predicate.
 
 /// `Merge::mergeAdjacent` (merge.cc:983, the `ActionMergeAdjacent` slot at coreaction.cc:5726) —
 /// speculatively merge an op's input into its output when the op advertises the *same local type* for
@@ -1036,7 +1049,7 @@ fn merge_adjacent(
             let (cls_out, cls_in) = (h.class_of(rep_out), h.class_of(rep_in));
             let out_members = pieces.extend_members(h, &cls_out);
             let in_members = pieces.extend_members(h, &cls_in);
-            if !classes_interfere(&out_members, &in_members, covers) {
+            if !class_intersect(f, &out_members, &in_members, covers) {
                 h.union(vn1.0, vn2.0);
             }
         }
@@ -1127,7 +1140,7 @@ fn merge_same_storage(
                     if !merge_test_speculative(f, h, pieces, rep_i, rep_j) {
                         continue;
                     }
-                    if !classes_interfere(&exts[i], &exts[j], covers) {
+                    if !class_intersect(f, &exts[i], &exts[j], covers) {
                         h.union(class_list[i][0].0, class_list[j][0].0);
                         merged = true;
                         break 'pair;
@@ -1454,7 +1467,7 @@ fn merge_copy(
                 let (cls_out, cls_in) = (h.class_of(rep_out), h.class_of(rep_in));
                 let mo = pieces.extend_members(h, &cls_out);
                 let mi = pieces.extend_members(h, &cls_in);
-                if classes_interfere(&mo, &mi, covers) {
+                if class_intersect(f, &mo, &mi, covers) {
                     continue; // would introduce a Cover intersection — skip
                 }
                 h.union(out.0, inv.0);
@@ -3072,10 +3085,22 @@ mod tests {
     }
 
     /// `merge_copy` (mergeOpcode COPY) merges a COPY's input and output when their Covers don't
-    /// interfere, but LEAVES them distinct when they do — a snapshot read that stays live across a
-    /// later write to the same variable must remain its own explicit temporary. All four values are
-    /// multi-use (explicit): `mergeTestBasic`'s implied exclusion (an expression term never merges)
-    /// is exercised separately below.
+    /// interfere — AND ALSO when they do, provided the pair is a COPY SHADOW.
+    ///
+    /// ⚠️ This test's second assertion was INVERTED before Order O. It read "an interfering COPY
+    /// (input still live) is left as a distinct variable", justified as *"a snapshot read that stays
+    /// live across a later write to the same variable"*. **The case it builds has no write**: `e` and
+    /// `d = COPY(e)` are simply both live at `rd = e + d`. In SSA a copy-shadow pair carries the SAME
+    /// value by construction (a later write produces a different Varnode), so overlapping lifetimes
+    /// are harmless and Ghidra permits the merge: `HighIntersectTest::testBlockIntersection`
+    /// (variable.cc:968) blocks only `if (!vn->copyShadow(vn2))` (:978). The old expectation encoded
+    /// mosura's own bare predicate, not Ghidra's behaviour, and it is oracle-contradicted: on
+    /// FUN_0001081c, 24 declined COPY pairs are copy shadows and Ghidra has all 24 in ONE
+    /// HighVariable (docs/wc2src-reconciliation-4.md §"Order O", 57/57 agreement).
+    ///
+    /// The concern the old doc named is real but belongs to a NON-shadow pair, which the third
+    /// assertion below now pins. All values are multi-use (explicit): `mergeTestBasic`'s implied
+    /// exclusion is exercised separately below.
     #[test]
     fn merge_copy_merges_noninterfering_but_not_interfering() {
         let spaces = SpaceManager::standard();
@@ -3122,7 +3147,89 @@ mod tests {
 
         let (mut h, _) = merge(&f);
         assert!(h.same(a, b), "a non-interfering COPY merges its input and output");
-        assert!(!h.same(e, d), "an interfering COPY (input still live) is left as a distinct variable");
+        assert!(
+            h.same(e, d),
+            "an interfering COPY that is a COPY SHADOW merges: same value, so the overlap is \
+             harmless (Ghidra testBlockIntersection variable.cc:978, `if (!vn->copyShadow(vn2))`)"
+        );
+    }
+
+    /// The concern the pre-Order-O doc named, pinned properly: a snapshot read that stays live
+    /// across a LATER WRITE to the same storage must remain its own variable. SSA already enforces
+    /// this and the copy-shadow exemption cannot defeat it — the post-write value is a DIFFERENT
+    /// Varnode, and `copy_shadow` traces COPY chains, so the snapshot's chain leads to the OLD
+    /// definition and never reaches the new one. `Varnode::copyShadow` (varnode.cc:977) has the same
+    /// property; this test exists so that stays true if either side is ever touched.
+    #[test]
+    fn a_copy_snapshot_does_not_merge_with_a_later_redefinition() {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let s = |u: u32| SeqNum { pc: Address::new(ram, u as u64), uniq: u };
+        let c = f.new_const(8, 5);
+        // e1 = (c+c)+c ; snap = COPY(e1) ; e2 = e1 + c  (a NEW value in the same storage) ;
+        // both `snap` and `e2` are then read, so they are jointly live and NOT copy shadows.
+        let o0 = f.new_op(OpCode::IntAdd, s(0), vec![c, c]);
+        let t0 = f.new_output(o0, 8, Address::new(reg, 0x48));
+        let o1 = f.new_op(OpCode::IntAdd, s(1), vec![t0, c]);
+        let e1 = f.new_output(o1, 8, Address::new(reg, 0));
+        let o2 = f.new_op(OpCode::Copy, s(2), vec![e1]);
+        let snap = f.new_output(o2, 8, Address::new(reg, 0x8));
+        // the redefinition: same storage as e1, different Varnode
+        let o3 = f.new_op(OpCode::IntAdd, s(3), vec![e1, c]);
+        let e2 = f.new_output(o3, 8, Address::new(reg, 0));
+        let o4 = f.new_op(OpCode::IntAdd, s(4), vec![snap, e2]);
+        let _r = f.new_output(o4, 8, Address::new(reg, 0x10));
+        let o5 = f.new_op(OpCode::IntAdd, s(5), vec![e2, c]);
+        let _r2 = f.new_output(o5, 8, Address::new(reg, 0x18));
+        f.set_blocks(vec![BlockBasic {
+            ops: vec![o0, o1, o2, o3, o4, o5],
+            ..Default::default()
+        }]);
+        let (mut h, _) = merge(&f);
+        assert!(
+            !h.same(snap, e2),
+            "a snapshot must not merge with a LATER redefinition of the same storage: the copy \
+             chain leads to the old value, so the pair is not a copy shadow"
+        );
+    }
+
+    /// The other half of the exemption, and the guard that keeps it from swallowing real
+    /// interference: two values that overlap and are NOT copy shadows still decline. Without this
+    /// the copy-shadow arm could be mistaken for "intersections no longer block".
+    #[test]
+    fn a_non_shadow_interfering_pair_still_declines() {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let s = |u: u32| SeqNum { pc: Address::new(ram, u as u64), uniq: u };
+        let c = f.new_const(8, 5);
+        // p and q are independently defined (no COPY between them) and both live at `r = p + q`.
+        let op0 = f.new_op(OpCode::IntAdd, s(0), vec![c, c]);
+        let tp = f.new_output(op0, 8, Address::new(reg, 0x48));
+        let op1 = f.new_op(OpCode::IntAdd, s(1), vec![tp, c]);
+        let p = f.new_output(op1, 8, Address::new(reg, 0));
+        let oq0 = f.new_op(OpCode::IntAdd, s(2), vec![c, c]);
+        let tq = f.new_output(oq0, 8, Address::new(reg, 0x50));
+        let oq1 = f.new_op(OpCode::IntAdd, s(3), vec![tq, c]);
+        let q = f.new_output(oq1, 8, Address::new(reg, 0x8));
+        let ocp = f.new_op(OpCode::Copy, s(4), vec![p]);
+        let pc2 = f.new_output(ocp, 8, Address::new(reg, 0x10));
+        let or = f.new_op(OpCode::IntAdd, s(5), vec![q, pc2]);
+        let _r = f.new_output(or, 8, Address::new(reg, 0x18));
+        let or2 = f.new_op(OpCode::IntAdd, s(6), vec![q, c]);
+        let _r2 = f.new_output(or2, 8, Address::new(reg, 0x20));
+        f.set_blocks(vec![BlockBasic {
+            ops: vec![op0, op1, oq0, oq1, ocp, or, or2],
+            ..Default::default()
+        }]);
+        let (mut h, _) = merge(&f);
+        assert!(
+            !h.same(p, q),
+            "two independently-defined live values are not copy shadows and must not merge"
+        );
     }
 
     /// `mergeTestBasic`'s implied exclusion (merge.cc:255, via the [`mark_explicit`] classification
