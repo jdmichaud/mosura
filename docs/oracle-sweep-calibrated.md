@@ -78,7 +78,7 @@ the harness — which is what the earlier maps were doing, for a second reason o
 ```
  class          TUs    loss     %   game  band   direction        mark
  local-decl     164    5700  31.1%  112   126   MORE 149/FEWER 15  NEW
- deref-cast      93    3514  19.2%   56    74   MORE  90/FEWER  3  NEW
+ deref-cast      67    2539  13.8%   43    52   MORE  67/FEWER  0  NEW
  array-index     30    1129   6.2%   19    29   MORE   8/FEWER 22  NEW
  short-circuit   14     849   4.6%   11    14   MORE   8/FEWER  6  KNOWN-OPEN
  while           14     744   4.1%   12    14   MORE   6/FEWER  8  KNOWN-OPEN
@@ -96,7 +96,7 @@ that closure rather than reopening it. `halt/trap` is the named-but-unported hal
 
 ## 5. `local-decl`: a three-way split, and two different mechanisms
 
-Cross-crossed against the parked `merge-datatype` port (`28cb07b`, Ghidra's `ActionMergeType`
+Cross-checked against the parked `merge-datatype` port (`28cb07b`, Ghidra's `ActionMergeType`
 bucketing by datatype where we bucket by storage), which cherry-picks onto the current baseline
 cleanly. Of the 149 MORE-locals TUs:
 
@@ -114,6 +114,18 @@ The worked specimen `0x63410` goes ghidra 5 / baseline 7 / ported 5 — an exact
 **So roughly half the class is the parked port**, whose measured price was −0.00182 WGSS. That is
 the decision on the table: *the faithful port is the principal cause of the corpus's largest clean
 divergence class, it is measurably more Ghidra-faithful, and it costs recompilation score.*
+
+**Update after the `RuleEqual2Zero` landing of §6.** Re-measured on `0c5016f`, the class is
+smaller and the split moves: of the 149 MORE-locals TUs, **17 were resolved by that landing alone**
+and 132 survive (loss 4,070); of those the parked port moves **66** and **66 are held** (loss
+1,045). So "65 unnamed" reads **66 / 1,045** at the current baseline, and the fix found through
+this class took a bite out of the class itself. The held half's mechanism is located but not
+attributed: our `classes_interfere` declines 57 COPY merges on `idx 00011` for cover intersection,
+while `build_dominant_copy` — the transformation that exists to dissolve exactly those — is
+attempted ONCE on that function and once across 20 held TUs. Whether Ghidra's covers are narrower
+or its trims simply fire is not decidable from the console: `HighVariable::printCover` prints
+"Cover dirty" once later phases set the flag (variable.hh:188), which is what `oracle/capture_merge`
+was built for.
 
 Context-fairness for the held half was discharged without a locked capture: the two highest-loss
 held TUs contain **zero calls**, so no callee-prototype confound is possible. One of them
