@@ -43,6 +43,19 @@ pub struct CompileOutput {
     pub object: Option<Vec<u8>>,
     /// Diagnostics for this unit, as the compiler printed them.
     pub log: String,
+    /// Did the compiler actually reach a verdict on THIS unit — produce its object, or reject it
+    /// and say so? False when nothing adjudicated it: the toolchain was unreachable, the session
+    /// aborted, the driver never ran.
+    ///
+    /// This exists to keep such a non-answer OUT of the cache. A failure that never reached the
+    /// compiler is not a property of the source, so caching it under the source's key makes an
+    /// environment fault permanent — the run that fixes the environment hits the stored verdict
+    /// and never recompiles. Measured: a detached run under `env -i` with no `dosemu` on PATH
+    /// stored 32 COMPILE_FAILs, and the corrected run reported "32 cached, 0 fresh" in 0.0s and
+    /// re-served every one of them. `Toolchain::id` cannot cover this the way it covers the
+    /// prelude (see `the_prelude_is_part_of_the_toolchain_identity`): the identity describes the
+    /// compiler we MEANT to run, and this is the case where no compiler ran at all.
+    pub adjudicated: bool,
 }
 
 impl CompileOutput {

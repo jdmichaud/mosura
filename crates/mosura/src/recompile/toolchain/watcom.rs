@@ -203,7 +203,17 @@ impl Toolchain for WatcomDos {
 
     fn compile_batch(&self, units: &[CompileUnit]) -> Vec<CompileOutput> {
         let mut results: Vec<CompileOutput> =
-            units.iter().map(|u| CompileOutput { key: u.key.clone(), object: None, log: String::new() }).collect();
+            units.iter()
+                .map(|u| CompileOutput {
+                    key: u.key.clone(),
+                    object: None,
+                    log: String::new(),
+                    // nothing has adjudicated this unit yet; the loop below sets it where the
+                    // compiler answers, and a unit that falls through to the isolated-and-silent
+                    // case keeps `false` so its non-answer is never cached
+                    adjudicated: false,
+                })
+                .collect();
         // Index list, so failure isolation can re-run a subset without losing positions.
         let mut pending: Vec<usize> = (0..units.len()).collect();
         let mut group = self.batch_size.max(1);
@@ -219,10 +229,13 @@ impl Toolchain for WatcomDos {
                     if obj.is_some() {
                         results[i].object = obj;
                         results[i].log = log;
+                        results[i].adjudicated = true;
                     } else if !log.trim().is_empty() {
                         // The compiler spoke about this unit and produced nothing: a genuine
-                        // rejection, not a casualty of someone else's abort.
+                        // rejection, not a casualty of someone else's abort. A verdict about the
+                        // source, so it is cacheable.
                         results[i].log = log;
+                        results[i].adjudicated = true;
                     } else {
                         next_round.push(i);
                     }
@@ -232,7 +245,10 @@ impl Toolchain for WatcomDos {
                 let _ = produced;
             }
             if group == 1 {
-                // Already isolated: an empty result now is this unit's own failure.
+                // Already isolated: an empty result now is this unit's own failure. It stays
+                // `adjudicated: false` — a unit alone in a session that produced neither object
+                // nor diagnostic was not judged, it was never compiled (an unreachable driver
+                // looks exactly like this), and that is not a fact about the source to cache.
                 for i in next_round {
                     if results[i].log.trim().is_empty() {
                         results[i].log = "no object and no diagnostic (compiler aborted)".into();

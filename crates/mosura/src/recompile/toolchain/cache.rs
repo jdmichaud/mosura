@@ -57,7 +57,8 @@ impl<T: Toolchain> Cached<T> {
         let log = std::fs::read_to_string(slot.with_extension("log")).unwrap_or_default();
         let obj = slot.with_extension("obj");
         let object = if obj.exists() { Some(std::fs::read(obj).ok()?) } else { None };
-        Some(CompileOutput { key: unit.key.clone(), object, log })
+        // anything stored was adjudicated: `compile_batch` below only writes such entries
+        Some(CompileOutput { key: unit.key.clone(), object, log, adjudicated: true })
     }
 
     fn write(&self, slot: &Path, unit: &CompileUnit, out: &CompileOutput) {
@@ -103,12 +104,92 @@ impl<T: Toolchain> Toolchain for Cached<T> {
             for group in todo.chunks(CACHE_GROUP) {
                 let batch: Vec<CompileUnit> = group.iter().map(|&i| units[i].clone()).collect();
                 for (slot_i, res) in group.iter().zip(self.inner.compile_batch(&batch)) {
-                    self.write(&slots[*slot_i], &units[*slot_i], &res);
+                    // Only a verdict the compiler actually reached is a fact about the source.
+                    // A unit nothing adjudicated (unreachable toolchain, aborted session) must
+                    // not be stored, or the environment fault becomes permanent: the run that
+                    // fixes the environment hits the stored failure and never recompiles. See
+                    // `CompileOutput::adjudicated`.
+                    if res.adjudicated {
+                        self.write(&slots[*slot_i], &units[*slot_i], &res);
+                    }
                     out[*slot_i] = Some(res);
                 }
             }
         }
         out.into_iter().map(|o| o.expect("every unit answered")).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::recompile::toolchain::CompileUnit;
+    use std::cell::Cell;
+
+    /// A toolchain that fails on its first batch and succeeds on every later one, counting how
+    /// often it was actually asked to compile. Whether that first failure was ADJUDICATED — the
+    /// compiler rejecting the source, versus nothing ever running — is the variable under test.
+    struct Flaky {
+        calls: Cell<usize>,
+        first_failure_adjudicated: bool,
+    }
+
+    impl Toolchain for Flaky {
+        fn id(&self) -> String {
+            "flaky".into()
+        }
+        fn compile_batch(&self, units: &[CompileUnit]) -> Vec<CompileOutput> {
+            let first = self.calls.get() == 0;
+            self.calls.set(self.calls.get() + 1);
+            units
+                .iter()
+                .map(|u| CompileOutput {
+                    key: u.key.clone(),
+                    object: (!first).then(|| b"OBJ".to_vec()),
+                    log: if first { "compiler aborted".into() } else { String::new() },
+                    adjudicated: !first || self.first_failure_adjudicated,
+                })
+                .collect()
+        }
+    }
+
+    fn unit() -> CompileUnit {
+        CompileUnit { key: "u".into(), source: "int main(void){return 0;}".into(), flags: vec![] }
+    }
+
+    fn run(dir: &str, first_failure_adjudicated: bool) -> (bool, usize) {
+        let d = std::env::temp_dir().join(format!("mosura-cache-{dir}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let t = Cached::new(Flaky { calls: 0.into(), first_failure_adjudicated }, &d).expect("dir");
+        let first = t.compile(&unit());
+        assert!(!first.ok(), "the first compile fails by construction");
+        let second = t.compile(&unit());
+        let calls = t.inner.calls.get();
+        let _ = std::fs::remove_dir_all(&d);
+        (second.ok(), calls)
+    }
+
+    /// The regression this exists for. A failure that never reached the compiler is not a fact
+    /// about the source, so it must not be stored under the source's key — otherwise an
+    /// environment fault becomes permanent, and the run that FIXES the environment is served the
+    /// stored failure and never recompiles. Measured before this guard: a detached run with no
+    /// `dosemu` on PATH cached 32 COMPILE_FAILs, and the corrected run reported "32 cached, 0
+    /// fresh" in 0.0s. The sibling guard `the_prelude_is_part_of_the_toolchain_identity` cannot
+    /// cover this: the toolchain id describes the compiler we meant to run, and here none ran.
+    #[test]
+    fn an_unadjudicated_failure_is_never_cached() {
+        let (ok, calls) = run("unadj", false);
+        assert!(ok, "the second attempt must reach the compiler again, not be served the failure");
+        assert_eq!(calls, 2, "the unadjudicated failure must not have been stored");
+    }
+
+    /// The other half: a verdict the compiler DID reach is a fact about the source, and caching
+    /// it is the whole point of this wrapper.
+    #[test]
+    fn an_adjudicated_failure_is_cached() {
+        let (ok, calls) = run("adj", true);
+        assert!(!ok, "the stored rejection is served back");
+        assert_eq!(calls, 1, "a real rejection is cached, so the compiler is not asked twice");
     }
 }
 
