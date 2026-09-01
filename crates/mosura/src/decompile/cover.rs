@@ -227,6 +227,24 @@ pub fn cover_of(f: &Funcdata, v: VarnodeId, pos: &OpPositions) -> Cover {
         return cov; // free / constant — no storage life
     };
 
+    // Ghidra `Cover::rebuild` (cover.cc:477-483) opens with `addDefPoint(vn)` — the def point is
+    // added UNCONDITIONALLY, before any descendant is walked — so a varnode with no readers still
+    // has a one-point cover at its definition, and an input is marked at the function entry.
+    //
+    // Building only from readers made a reader-less def's cover EMPTY, and `all_covers` then drops
+    // empty covers from the map entirely, so `class_intersect` — which skips members it cannot find
+    // a cover for — could not see it at all. The value that disappears that way is exactly the one
+    // Ghidra relies on: the address-forcing INDIRECT a call writes for a global
+    // (`HighIntersectTest::testUntiedCallIntersection`, variable.cc:1075-1077, declines to test
+    // persist highs on the stated ground that "the address forcing mechanism should act as a
+    // placeholder across calls"). With no cover the placeholder blocked nothing, the copy-shadow
+    // exemption merged a save/restore pair straight across the call, and the restoring STORE was
+    // deleted — wrong code, measured at FUN_00012840 where Ghidra keeps the store
+    // (docs/wc2src-reconciliation-4.md §"Order O").
+    //
+    // `op_index` already maps an INDIRECT to its guarded op, so the point lands at the call.
+    cov.extend(def_block.unwrap(), def_wpos, def_wpos);
+
     let descend: Vec<OpId> = {
         let mut d = vn.descend.clone();
         d.sort_unstable();
@@ -470,6 +488,75 @@ mod tests {
         let _t2 = f.new_output(o3, 8, Address::new(uniq, 0x18));
         f.set_blocks(vec![BlockBasic { ops: vec![o0, o1, o2, o3], ..Default::default() }]);
         (f, r1, r2)
+    }
+
+    /// Ghidra `Cover::rebuild` (cover.cc:477-483) calls `addDefPoint(vn)` before walking any
+    /// descendant, so a varnode with NO readers still has a one-point cover at its definition.
+    /// Building only from readers left such a value with an EMPTY cover, which `all_covers` then
+    /// dropped from the map, which made it invisible to the merge interference test — the exact
+    /// path by which a call's address-forcing INDIRECT for a global stopped blocking anything.
+    #[test]
+    fn a_reader_less_written_varnode_has_a_point_cover_at_its_def() {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let c5 = f.new_const(8, 5);
+        let o0 = f.new_op(OpCode::Copy, seq, vec![c5]);
+        let dead = f.new_output(o0, 8, Address::new(reg, 0)); // written, never read
+        f.set_blocks(vec![BlockBasic { ops: vec![o0], ..Default::default() }]);
+        let pos = op_positions(&f);
+        let cov = cover_of(&f, dead, &pos);
+        assert!(!cov.is_empty(), "a reader-less written varnode must still carry its def point");
+        assert!(
+            all_covers(&f).contains_key(&dead),
+            "and it must therefore survive into the cover map, where the merge test can see it"
+        );
+    }
+
+    /// The placeholder case itself: a call's INDIRECT output for a global has no readers, and its
+    /// def point must land at the CALL (`op_index` maps an INDIRECT to its guarded op), so anything
+    /// live across the call intersects it.
+    #[test]
+    fn a_reader_less_indirect_output_covers_its_call() {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let target = f.new_const(4, 0x123dc);
+        let call = f.new_op(OpCode::Call, seq, vec![target]);
+        let g = f.new_input(1, Address::new(ram, 0x8032c));
+        let ind = f.new_op(OpCode::Indirect, seq, vec![g]);
+        let after = f.new_output(ind, 1, Address::new(ram, 0x8032c)); // written by INDIRECT, unread
+        f.op_mut(ind).guarded_op = Some(call);
+        f.set_blocks(vec![BlockBasic { ops: vec![call, ind], ..Default::default() }]);
+        let pos = op_positions(&f);
+        let cov = cover_of(&f, after, &pos);
+        assert!(!cov.is_empty(), "the address-forcing placeholder must have a cover");
+        let (cb, ci) = op_index(&f, call, &pos).expect("the call is positioned");
+        assert!(
+            cov.block_range(cb).is_some_and(|(lo, hi)| lo <= 2 * ci as i32 + 2 && 2 * ci as i32 + 2 <= hi),
+            "and it must cover the CALL, so a value live across the call intersects it"
+        );
+    }
+
+    /// An input varnode is marked at the function entry (Ghidra's `addDefPoint` for an input),
+    /// so it too keeps a map entry even with no readers.
+    #[test]
+    fn a_reader_less_input_keeps_its_entry_mark() {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let c = f.new_const(8, 1);
+        let o0 = f.new_op(OpCode::Copy, seq, vec![c]);
+        let _o = f.new_output(o0, 8, Address::new(reg, 0x40));
+        let inp = f.new_input(8, Address::new(reg, 0x8));
+        f.set_blocks(vec![BlockBasic { ops: vec![o0], ..Default::default() }]);
+        let pos = op_positions(&f);
+        assert!(!cover_of(&f, inp, &pos).is_empty(), "an input keeps its entry mark");
     }
 
     #[test]

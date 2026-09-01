@@ -2018,9 +2018,25 @@ fn class_intersect(
     covers: &HashMap<VarnodeId, Cover>,
 ) -> bool {
     for &x in a {
-        let Some(cx) = covers.get(&x) else { continue };
+        // A member with no cover entry cannot block anything, so absence here is silent permission.
+        // Since `cover_of` adds Ghidra's unconditional def point, only free/constant varnodes reach
+        // this arm; anything else missing is a bug that would quietly widen merging (it did: the
+        // reader-less INDIRECT placeholder, §"Order O"). Assert it rather than let it pass unseen.
+        let Some(cx) = covers.get(&x) else {
+            debug_assert!(
+                !f.vn(x).is_written() && !f.vn(x).is_input(),
+                "a def'd/input varnode has no cover: it would silently permit a merge"
+            );
+            continue;
+        };
         for &y in b {
-            let Some(cy) = covers.get(&y) else { continue };
+            let Some(cy) = covers.get(&y) else {
+                debug_assert!(
+                    !f.vn(y).is_written() && !f.vn(y).is_input(),
+                    "a def'd/input varnode has no cover: it would silently permit a merge"
+                );
+                continue;
+            };
             if !cx.intersects(cy) {
                 continue;
             }
