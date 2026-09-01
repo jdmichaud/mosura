@@ -512,13 +512,59 @@ impl<'a> TypeInfer<'a> {
         }
     }
 
-    /// Ghidra `TypeOpIntAdd::propagateAddPointer`: classify an `add a constant/index` edge where
-    /// the input (slot `slot`) is a pointer to a `sz`-byte element. Returns Ghidra's command code
-    /// and the constant offset (when commands 0/1):
+    /// Ghidra `TypeOpIntAdd::propagateAddPointer` (typeop.cc:1268): classify an `add a
+    /// constant/index` edge where the input (slot `slot`) is a pointer to a `sz`-byte element.
+    /// Returns Ghidra's command code and the constant offset (when commands 0/1):
     ///   0 = add of zero · 1 = add of a constant `off` · 2 = does not propagate · 3 = propagate
-    /// the pointer untransformed (an index `i*sz`). Only INT_ADD is modelled (mosura has no
-    /// PTRADD/PTRSUB ops yet).
+    /// the pointer untransformed (an index `i*sz`).
+    ///
+    /// Ghidra dispatches on the OPCODE first — PTRADD (:1271), PTRSUB (:1283), then INT_ADD
+    /// (:1288) — and the three are not interchangeable. PTRADD's operands are
+    /// `(base, index, elemsize)`: the byte offset is `index * elemsize`, NOT the raw index, and
+    /// reading `input(1)` as an INT_ADD-style offset understates it by the element size. That is
+    /// what this function used to do, behind a comment claiming "mosura has no PTRADD/PTRSUB ops
+    /// yet" that `ptrarith` had long since made false: for `PTRADD(p, #1, #2)` it produced offset 1,
+    /// which lands INSIDE the 2-byte element, so `down_chain` could not reach a boundary and the
+    /// relay returned `None`. The pointer then kept whatever the LOAD's value→ptr edge had written
+    /// (`Pointer(uint1)` — the pointee always equal to the loaded size), and `RuleExpandLoad`
+    /// declined at `el_size <= out_size`, printing `*(uint1 *)(p + 1)` where Ghidra prints `p[1]`.
+    /// Measured: 36/36 relay candidates suppressed at FUN_0001081c @0x10845; 188 sites / 94 TUs
+    /// corpus-wide (docs/wc2src-reconciliation-4.md §"Order L").
+    ///
+    /// Ghidra sizes the element with `getAlignSize()` (:1220) where mosura uses `size()`; the two
+    /// agree for every base type mosura builds here, so the distinction is recorded, not chased.
     fn propagate_add_pointer(&self, op: OpId, slot: i32, sz: u32) -> (i32, u64) {
+        match self.f.op(op).code() {
+            // PTRADD `(base, index, elemsize)` — Ghidra typeop.cc:1271-1282.
+            OpCode::Ptradd => {
+                if slot != 0 {
+                    return (2, 0); // only the base edge carries the pointer
+                }
+                let Some(idx) = self.f.op(op).input(1) else { return (2, 0) };
+                let mult = self.f.op(op).input(2).map_or(0, |v| self.f.vn(v).constant_value());
+                let ivn = self.f.vn(idx);
+                if ivn.is_constant() {
+                    // `off = (index * elemsize) & calc_mask(index size)` — the byte offset.
+                    let mask = u64::MAX >> (64 - 8 * ivn.size.min(8));
+                    let off = ivn.constant_value().wrapping_mul(mult) & mask;
+                    return (if off == 0 { 0 } else { 1 }, off);
+                }
+                // Non-constant index: the stride must be a whole number of elements.
+                if sz != 0 && !mult.is_multiple_of(sz as u64) {
+                    return (2, 0);
+                }
+                return (3, 0);
+            }
+            // PTRSUB `(base, offset)` — Ghidra typeop.cc:1283-1287. The offset is already in bytes.
+            OpCode::Ptrsub => {
+                if slot != 0 {
+                    return (2, 0);
+                }
+                let off = self.f.op(op).input(1).map_or(0, |v| self.f.vn(v).constant_value());
+                return (if off == 0 { 0 } else { 1 }, off);
+            }
+            _ => {}
+        }
         let other = self.f.op(op).input((1 - slot) as usize).unwrap();
         let ovn = self.f.vn(other);
         if !ovn.is_constant() {
@@ -564,6 +610,11 @@ impl<'a> TypeInfer<'a> {
         if command == 2 {
             return None;
         }
+        // Ghidra `propagateAddIn2Out` (typeop.cc:1226): `allowWrap = (op->code() != CPUI_PTRSUB)`.
+        // A PTRSUB offset names a field inside the pointed-to object, so wrapping it modulo the
+        // element size would silently retarget the field; PTRADD/INT_ADD indices may legitimately
+        // run past one element.
+        let allow_wrap = self.f.op(op).code() != OpCode::Ptrsub;
         let mut pointer = Some(alttype.clone());
         if command != 3 {
             let mut type_offset = off;
@@ -583,7 +634,7 @@ impl<'a> TypeInfer<'a> {
                         continue;
                     }
                 }
-                pointer = down_chain(p, &mut type_offset, true);
+                pointer = down_chain(p, &mut type_offset, allow_wrap);
                 if type_offset == 0 {
                     break;
                 }
@@ -904,6 +955,106 @@ mod tests {
             ti.t(sum),
             &Datatype::Pointer(8, Box::new(Datatype::Int(4))),
             "a scaled-index add keeps the element pointer type"
+        );
+    }
+
+    #[test]
+    fn pointer_relays_through_a_ptradd_by_index_times_element() {
+        // PTRADD `(base, index, elemsize)` — Ghidra `propagateAddPointer` (typeop.cc:1271) computes
+        // the byte offset as `index * elemsize`, NOT the raw index. `p:uint2* + [1]*2` is offset 2,
+        // one whole element, so the element pointer relays unchanged.
+        //
+        // Reading input(1) as an INT_ADD-style byte offset (offset 1) lands INSIDE the 2-byte
+        // element, `down_chain` finds no boundary, and the relay yields nothing — which left the
+        // pointer typed by the LOAD's value→ptr edge instead (`Pointer(uint1)`) and made
+        // `RuleExpandLoad` decline. Measured at FUN_0001081c @0x10845 before this branch existed.
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let p = f.new_varnode(4, Address::new(reg, 0x100));
+        let one = f.new_const(4, 1);
+        let two = f.new_const(4, 2);
+        let oadd = f.new_op(OpCode::Ptradd, seq, vec![p, one, two]);
+        let _sum = f.new_output(oadd, 4, Address::new(reg, 0x118));
+
+        let locks = HashMap::new();
+        let mut ti = TypeInfer::new(&f, &locks);
+        ti.build_localtypes();
+        ti.temp[p.0 as usize] = Datatype::Pointer(4, Box::new(Datatype::Uint(2)));
+        ti.propagate_one_type(p);
+        let sum = f.op(oadd).output.unwrap();
+        assert_eq!(
+            ti.t(sum),
+            &Datatype::Pointer(4, Box::new(Datatype::Uint(2))),
+            "index*elemsize is a whole element, so the element pointer relays"
+        );
+    }
+
+    #[test]
+    fn ptradd_scaled_offset_inside_a_wider_pointee_does_not_relay() {
+        // The other side of the same arithmetic: `p:uint4* + [1]*2` is offset 2, which lands INSIDE
+        // the 4-byte pointee. `down_chain` cannot reach an element boundary, so nothing relays —
+        // Ghidra behaves the same, and this is what stops the new branch from over-firing.
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let p = f.new_varnode(4, Address::new(reg, 0x100));
+        let one = f.new_const(4, 1);
+        let two = f.new_const(4, 2);
+        let oadd = f.new_op(OpCode::Ptradd, seq, vec![p, one, two]);
+        let _sum = f.new_output(oadd, 4, Address::new(reg, 0x118));
+
+        let locks = HashMap::new();
+        let mut ti = TypeInfer::new(&f, &locks);
+        ti.build_localtypes();
+        ti.temp[p.0 as usize] = Datatype::Pointer(4, Box::new(Datatype::Uint(4)));
+        ti.propagate_one_type(p);
+        let sum = f.op(oadd).output.unwrap();
+        assert_ne!(
+            ti.t(sum),
+            &Datatype::Pointer(4, Box::new(Datatype::Uint(4))),
+            "an offset inside a wider pointee must not relay the element pointer"
+        );
+    }
+
+    #[test]
+    fn ptrsub_relays_without_the_array_wrap() {
+        // PTRSUB `(base, offset)` — Ghidra `propagateAddPointer` (typeop.cc:1283) takes input(1) as
+        // a BYTE offset directly, and `propagateAddIn2Out` (typeop.cc:1226) passes
+        // `allowWrap = (op->code() != CPUI_PTRSUB)`. A PTRSUB offset names a field inside the
+        // pointed-to object, so wrapping it modulo the element size would silently retarget the
+        // field. Offset 0 is the identity relay and must survive; a past-the-end offset must NOT
+        // wrap back onto a boundary the way a PTRADD index may.
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let reg = spaces.by_name("register").unwrap();
+        let build = |off: u64| -> Datatype {
+            let mut f = Funcdata::new("t", Address::new(ram, 0), spaces.clone());
+            let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+            let p = f.new_varnode(4, Address::new(reg, 0x100));
+            let k = f.new_const(4, off);
+            let osub = f.new_op(OpCode::Ptrsub, seq, vec![p, k]);
+            let _o = f.new_output(osub, 4, Address::new(reg, 0x118));
+            let locks = HashMap::new();
+            let mut ti = TypeInfer::new(&f, &locks);
+            ti.build_localtypes();
+            ti.temp[p.0 as usize] = Datatype::Pointer(4, Box::new(Datatype::Uint(2)));
+            ti.propagate_one_type(p);
+            ti.t(f.op(osub).output.unwrap()).clone()
+        };
+        assert_eq!(
+            build(0),
+            Datatype::Pointer(4, Box::new(Datatype::Uint(2))),
+            "PTRSUB at offset 0 is the identity relay"
+        );
+        assert_ne!(
+            build(2),
+            Datatype::Pointer(4, Box::new(Datatype::Uint(2))),
+            "a PTRSUB offset must not wrap modulo the element size (allowWrap = false)"
         );
     }
 
