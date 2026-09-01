@@ -2739,6 +2739,44 @@ impl<'a> PrintC<'a> {
                     let r = self.cast_operand(def, 1, 9, true);
                     return format!("{l} {sym} {r}");
                 }
+                // The ORDER flips, the other four rows of Ghidra's negation table. `PrintC`'s
+                // constructor sets `negate` on all six comparison tokens (printc.cc:129-134):
+                //     less_than.negate = &greater_equal;   less_equal.negate = &greater_than;
+                //     greater_than.negate = &less_equal;   greater_equal.negate = &less_than;
+                //     equal.negate = &not_equal;           not_equal.negate = &equal;
+                // and `PrintLanguage::pushOp` consumes them (printlanguage.cc:549-553). The arm
+                // above ports the last two rows; these are the first four. Like the equality flip
+                // it is a PURE TOKEN SWAP — operands stay in place and keep the precedence and
+                // casts of the un-negated `cmp_bin` path (:1851), so a negated compare prints
+                // exactly as the positive one does with the complementary operator.
+                //
+                // Signedness rides on the operands' casts, not the token, so the signed and
+                // unsigned opcodes share a row exactly as Ghidra's tokens do.
+                //
+                // The positive path additionally consults the complement-cmp emit arm
+                // (`ValueSite::Compare`, :1855); this arm does not, so a witnessed complement
+                // never lands on a negated site. That is recorded rather than fixed: Ghidra's
+                // token flip has no such hook either, and wiring one is a separate decision for
+                // whenever a witness actually wants it.
+                //
+                // These four were previously declined on the premise that the branch-orientation
+                // stage materializes every oriented order comparison, so none could reach print
+                // still negated. That premise is false — `ActionOrientBranches` materializes only
+                // conditions that fold cleanly (structure.rs:72) and the normal-form flip
+                // (`ActionNormalizeBranches`/`opFlipInPlaceExecute`) is still deferred to print
+                // (structure.rs:428) — and the census found 238 such sites in 153 TUs, measured
+                // like-for-like with the round's scanner (the other four fallbacks are compound
+                // `!(A || B)` that the De Morgan arm declines by design).
+                // Ghidra keeps
+                // BOTH the IR normalizer and the token table; this is the deferred half's faithful
+                // counterpart, not a workaround for it.
+                OpCode::IntLess | OpCode::IntSless | OpCode::IntLessequal | OpCode::IntSlessequal => {
+                    let sym = negated_order_token(code).expect("the four order opcodes map");
+                    let prec = 10u8;
+                    let l = self.cast_operand(def, 0, prec, false);
+                    let r = self.cast_operand(def, 1, prec, true);
+                    return format!("{l} {sym} {r}");
+                }
                 // De Morgan: `!(a && b)` => `!a || !b`, `!(a || b)` => `!a && !b`, pushing the
                 // negation into each operand. This is the print-time analogue of Ghidra's
                 // `ActionNormalizeBranches` (blockaction.cc:2117), which flips a CBRANCH condition
@@ -3708,6 +3746,22 @@ impl<'a> PrintC<'a> {
 /// [`PrintC::render_negated`] (the analogue of `ActionNormalizeBranches`); a BOOL_AND/BOOL_OR is
 /// distributed only when this returns 0. A non-lone-descended or non-flippable operand (e.g. a
 /// shared sub-boolean, or a FLOAT_LESS that has no in-place complement) yields 2.
+/// The negated token for an order comparison — the first four rows of Ghidra's negation table
+/// (`PrintC`'s constructor, printc.cc:129-132), which pairs `<`↔`>=` and `<=`↔`>`. Returns `None`
+/// for every other opcode, including the equality pair (:133-134): those are the OTHER two rows
+/// and are flipped by their own arm, so this mapping is the order half alone.
+///
+/// Signedness is carried by the operands' casts, not by the token — Ghidra has one `less_than`
+/// token for both, and `cmp_bin` prints `<` for `INT_LESS` and `INT_SLESS` alike — so the signed
+/// and unsigned opcodes share a row here exactly as they do there.
+fn negated_order_token(code: OpCode) -> Option<&'static str> {
+    match code {
+        OpCode::IntLess | OpCode::IntSless => Some(">="),
+        OpCode::IntLessequal | OpCode::IntSlessequal => Some(">"),
+        _ => None,
+    }
+}
+
 fn op_flip_normalizes(f: &Funcdata, op: OpId) -> i32 {
     let lone = |vn: VarnodeId| -> bool {
         let d = &f.vn(vn).descend;
@@ -5159,6 +5213,43 @@ mod tests {
     use crate::decompile::pipeline;
     use crate::sleigh::engine::Spec;
     use crate::{datatest, paths};
+
+    /// The four order rows of Ghidra's negation table (printc.cc:129-132), one assertion each.
+    /// `!(a < b)` is `a >= b` and `!(a <= b)` is `a > b`, operands in place — a token swap, never
+    /// a reorder. These four were missing while the equality pair (:133-134) was present, so every
+    /// negated order comparison fell to `!(...)`: 238 sites in 153 TUs, measured like-for-like
+    /// with the round's scanner — the remaining four fallbacks are compound `!(A || B)`, declined
+    /// by the De Morgan arm's gate, not by this one.
+    #[test]
+    fn the_four_order_rows_of_the_negation_table() {
+        assert_eq!(negated_order_token(OpCode::IntLess), Some(">="));
+        assert_eq!(negated_order_token(OpCode::IntSless), Some(">="));
+        assert_eq!(negated_order_token(OpCode::IntLessequal), Some(">"));
+        assert_eq!(negated_order_token(OpCode::IntSlessequal), Some(">"));
+    }
+
+    /// Signedness rides on the operands' casts, not the token: Ghidra has ONE `less_than` token for
+    /// both, and the positive path (`cmp_bin`) prints `<` for `INT_LESS` and `INT_SLESS` alike. A
+    /// signed/unsigned split here would contradict the arm this mirrors.
+    #[test]
+    fn signed_and_unsigned_order_opcodes_share_a_token() {
+        assert_eq!(negated_order_token(OpCode::IntLess), negated_order_token(OpCode::IntSless));
+        assert_eq!(
+            negated_order_token(OpCode::IntLessequal),
+            negated_order_token(OpCode::IntSlessequal)
+        );
+    }
+
+    /// The controls: this mapping is the ORDER half only. The equality pair and the
+    /// double-negation fold are other arms, and must not be captured here — if they ever start
+    /// answering, two arms are competing for the same opcode.
+    #[test]
+    fn the_order_mapping_declines_the_other_arms_opcodes() {
+        for code in [OpCode::IntEqual, OpCode::IntNotequal, OpCode::BoolNegate,
+                     OpCode::BoolAnd, OpCode::BoolOr, OpCode::IntAdd] {
+            assert_eq!(negated_order_token(code), None, "{code:?} belongs to another arm");
+        }
+    }
 
     #[test]
     fn emits_c_for_a_straight_line_function() {
