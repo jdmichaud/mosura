@@ -1156,13 +1156,35 @@ impl Rule for RuleEqual2Zero {
         } else {
             return 0;
         };
-        // DEBT (Task #20): Ghidra's RuleEqual2Zero (ruleaction.cc:~8xx) guards here — it fires only
-        // when EVERY descendant of the sum is a bool-output op (`for (iter : addvn->beginDescend())
-        // if (!boolop->isBoolOutput()) return 0;`). That guard is deliberately OMITTED: adding it
-        // suppresses an equal2zero firing switchloop's jumptable recovery depends on, because
-        // mosura's switch-path IR gives the guard sum a non-bool use Ghidra's doesn't (a separate
-        // switch-path divergence). Per no-adaptation-grandfathered this omission is CANCELED the
-        // moment that divergence is fixed — restore the guard then and re-verify switchloop.
+        // Ghidra's guard (`RuleEqual2Zero::applyOp`, ruleaction.cc:5867-5869), with its own
+        // comment "make sure the sum is only used in comparisons":
+        //
+        //     for(iter=addvn->beginDescend(); iter!=addvn->endDescend(); ++iter) {
+        //       PcodeOp *boolop = *iter;
+        //       if (!boolop->isBoolOutput()) return 0;
+        //     }
+        //
+        // THE GUARD IS THE DEFERRAL. Read as a filter it looks like a narrowing of when the
+        // rewrite is legal; it is really what keeps the rewrite off IR that dead code has not yet
+        // cleaned. On the first mainloop pass a space that is not dead-removal-eligible yet
+        // (`pass > deadcodedelay`) has every Varnode marked live (deadcode.rs pre-live block,
+        // Ghidra coreaction.cc:3950-3961), so SLEIGH's never-read parity chain — `INT_AND sum,0xff`
+        // → POPCOUNT → PF — is still hanging off the sum. Ghidra declines on that pass and fires a
+        // pass later, on clean IR. Without the guard we fired at the first opportunity, which is
+        // exactly the pass where the dead chain still lives.
+        //
+        // What that cost, measured before this landed: a decrement loop's `(x + -1) != 0` became
+        // `x != 1` on the PRE-decrement value, so the C needed a `bool` to carry the comparison
+        // across the decrement and the compiler emitted a `CMP r,1` beside the `DEC` the original
+        // branches on — 105 such extra instructions over 66 TUs.
+        //
+        // (This replaces a DEBT note claiming the guard had to stay out because it suppressed an
+        // equal2zero firing switchloop's jumptable recovery depended on. That no longer reproduces:
+        // with the guard restored switchloop is byte-identical and the suite is unchanged. The note
+        // outlived its cause.)
+        if data.vn(other).descend.clone().iter().any(|&u| !data.op(u).is_bool_output()) {
+            return 0;
+        }
         let Some(def) = data.vn(other).def else { return 0 };
         if data.op(def).num_inputs() != 2 {
             return 0;
@@ -10876,6 +10898,57 @@ mod tests {
         let spaces = SpaceManager::standard();
         let ram = spaces.by_name("ram").unwrap();
         (Funcdata::new("t", Address::new(ram, 0), spaces), Address::new(ram, 0))
+    }
+
+    /// The guard is a DEFERRAL, and that is what this asserts. While the sum still has a
+    /// non-bool descendant — on the first mainloop pass that is SLEIGH's never-read parity chain,
+    /// which dead code has not removed yet — the rule must DECLINE. Once the descendant is gone
+    /// the same op rewrites as before. Testing only the final form would pass with the guard
+    /// deleted, so the deferral itself is the assertion.
+    ///
+    /// Shape: `(x + -1) == 0`, the decrement loop the omission used to mis-rewrite into `x == 1`
+    /// on the PRE-decrement value.
+    #[test]
+    fn equal2zero_defers_while_the_sum_has_a_non_bool_use() {
+        let (mut f, _) = fd();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let reg = f.spaces.by_name("register").unwrap();
+        let seq = SeqNum { pc: Address::new(ram, 0), uniq: 0 };
+        let x = f.new_input(4, Address::new(reg, 0x10));
+        let minus1 = f.new_const(4, 0xffff_ffff);
+        let add = f.new_op(OpCode::IntAdd, seq, vec![x, minus1]);
+        let sum = f.new_output(add, 4, Address::new(reg, 0x20));
+        let zero = f.new_const(4, 0);
+        let eq = f.new_op(OpCode::IntEqual, seq, vec![sum, zero]);
+        f.new_output(eq, 1, Address::new(reg, 0x206));
+        // the dead parity chain's mask: a non-bool reader of the very same sum
+        let mask = f.new_const(4, 0xff);
+        let and = f.new_op(OpCode::IntAnd, seq, vec![sum, mask]);
+        f.new_output(and, 4, Address::new(reg, 0x30));
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![add, eq, and],
+            ..Default::default()
+        }]);
+        for o in [add, eq, and] {
+            f.op_mut(o).parent = Some(BlockId(0));
+        }
+
+        assert_eq!(
+            RuleEqual2Zero.apply_op(eq, &mut f),
+            0,
+            "must DEFER while the sum still has a non-bool (here: parity-mask) reader"
+        );
+        assert_eq!(f.op(eq).code(), OpCode::IntEqual);
+        assert_eq!(f.op(eq).input(0), Some(sum), "the comparison is untouched");
+
+        // dead code removes the parity chain a pass later; now the sum is comparison-only
+        f.op_destroy(and);
+        assert_eq!(
+            RuleEqual2Zero.apply_op(eq, &mut f),
+            1,
+            "once the non-bool reader is gone the rewrite proceeds as before"
+        );
+        assert_eq!(f.op(eq).input(0), Some(x), "compares the pre-sum value directly");
     }
 
     #[test]
