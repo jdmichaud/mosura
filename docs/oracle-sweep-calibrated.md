@@ -171,7 +171,7 @@ rate, and against an **82 %** size-matched expectation it is *below* chance — 
 excludes causation anyway, since the dead parity chain lives in `unique` space and never reaches
 compiled output.
 
-## 7. Three harness rules this round paid for
+## 7. Five harness rules this round paid for
 
 1. **A single corpus round is not evidence — repeat until stable, and state the run count.** The
    K-7 round's *first* run read WGSS 0.5520 / EXACT 851 with ten EXACT→MISMATCH flips. Runs 2 and
@@ -182,6 +182,20 @@ compiled output.
 3. **`extra` divergence rows carry the CANDIDATE's addresses**, so they must never be joined to
    original pcs. A join on exact pc returned 11 of 9,290 and would have been reported as a clean
    refutation; the valid join is function-level.
+
+4. **A calibration must be able to FAIL for the instrument at hand.** The house rule for captures
+   is "a watcom capture prints NO convention keyword" — and applied to `oracle/capture_trace` it
+   passes vacuously, because a rule trace never prints a prototype: the watcom, windows AND gcc
+   probes all yield zero keywords. A check that cannot fail proves nothing. The non-vacuous
+   substitute for trace tools is **root-sensitivity**: the calibrated root yields 7,342 trace
+   lines, a root without a watcom spec dies with `No sleigh specification for x86:LE:32:default`.
+   Assert the property the instrument can actually violate.
+5. **The console cannot show a cover, so do not ask it to.** `HighVariable::printCover` is
+   `if ((highflags & coverdirty)==0) internalCover.print(s); else s << "Cover dirty"`
+   (variable.hh:188), and later phases set that flag, so `decomp_dbg` reports membership but never
+   the cover that DECIDED the membership. `oracle/capture_merge` exists for exactly that gap: it
+   stops at the end of the merge cluster and prints each member's cover through
+   `Varnode::getCover()`, which recomputes on access (varnode.hh:202).
 
 The run-1 contamination **cleared itself** because unadjudicated compile results are no longer
 cached (`CompileOutput::adjudicated`) — the bad units simply recompiled. Its cause is **not
@@ -234,6 +248,21 @@ verdict drops were the arbiter noticing.** A wrong-code scan of the whole pair f
 conversions — the store override prevents exactly this — so the halves are not separable: the
 store override is the safety half, not a cost to trim. **The LOAD-only probe must never be revived
 without it.**
+
+**The class is two families, and the pair addresses one of them.** *Shape 1, doubled indirection*:
+we cast at every level (`*((code *)*((xunknown4 *)x))`) where Ghidra casts once to a doubled
+pointer (`**(code **)x`) — the pair fixes this wherever the PTRADD exists, and it is where the 47
+exact hits come from. *Shape 2, a narrow read through a typed pointer*: Ghidra indexes and
+truncates the value (`(uint4)(uint1)param_4[1]`), we re-cast the pointer (`*(uint1 *)(param_4 + 1)`)
+— and the pair CANNOT fix it, for a reason that lives upstream of casts. **Both sides LIFT one
+byte**: at `heritage` Ghidra's op is `u0x00017000:1 = *(ram,…)`, exactly ours. The two-byte load
+with a `SUB21` truncation that Ghidra shows by `copymarker` is `RuleExpandLoad`'s PRODUCT — Ghidra
+fires it, we decline, because our PTRADD output carries `Pointer(uint1)` where the element is 2.
+That decline is Order L's port gap: the missing PTRADD branch in `propagate_add_pointer`
+(infertypes.rs:540 against typeop.cc:1268), recorded in the `wc2src-reconcile` ledger at `b5d240d`.
+So casting the pointer is the correct answer to the IR our override is given TODAY, and Order M
+changes that IR — which is precisely why the slate waits for M rather than being decided now. The
+20 non-movers in the table above are that family, kept in the denominator rather than dropped.
 
 Slate, held for Order M's round and to be re-measured on the post-M base: **(a)** the whole pair
 at −3 EXACT, WGSS flat, no wrong code; or **(c)** park, with both overrides unported and their
