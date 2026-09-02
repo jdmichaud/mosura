@@ -1736,7 +1736,13 @@ fn main() {
                 // MOSURA_CONSISTENCY=0 restores the pure gate stack for A/B measurement.
                 let mut f_forced: Option<Funcdata> = None;
                 if !ok && std::env::var("MOSURA_CONSISTENCY").as_deref() != Ok("0") {
-                    let reach_mode = std::env::var("MOSURA_CONS_REACH").as_deref() == Ok("1");
+                    // DEFAULT-ON since the Order Y round (878 EXACT / WGSS 0.56212 on base
+                    // 38f1c72's 875 / 0.56115: +3, 4 flips up, 1 classified correct-code form
+                    // down, stable at two on byte-identical TSVs). `MOSURA_CONS_REACH=0`
+                    // restores the 12-instruction call-stopped witness and the flat shape
+                    // rule, the way `MOSURA_KERNEL_NET=0` and `MOSURA_CONSISTENCY=0` restore
+                    // theirs — the A/B every round on this gate has needed.
+                    let reach_mode = std::env::var("MOSURA_CONS_REACH").as_deref() != Ok("0");
                     // The callee's own entry block, for every direct callee of this function.
                     let mut evidence: HashMap<u64, Vec<Option<bool>>> = HashMap::new();
                     for op in fl.op_ids() {
