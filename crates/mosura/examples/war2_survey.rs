@@ -531,10 +531,72 @@ fn resolves_contradictions(
 /// a near-perfect regression predictor; zc52's 0x11b9c, and zc53's 0x2d360 where a CALLIND lost
 /// its buffer argument) and catches the collateral type ripple (zc53's 0x2247c: an unrelated
 /// call's return width drifted 1 → 4 and re-rendered with a cast).
+/// FIRST-TOUCH evidence for the watcall argument registers in a callee's ENTRY BLOCK, read from
+/// the callee's OWN bytes — the arbiter our `recovered_protos` is only testimony about (Order Y,
+/// and X(3)'s rule that `PUSH`/`POP` are the save prologue, not reads):
+///
+///   `Some(true)`  read (or read-modified) before any write — the callee takes it as an input;
+///   `Some(false)` written before any read — it CANNOT be an input (`0x4fe64`'s
+///                 `mov edx,[0x99594]`, `0x678ec`'s `xor ebx,ebx`, `0x67b44`'s `mov eax,0x64`);
+///   `None`        untouched before the first call or branch, so the entry block does not decide
+///                 — `0x50480`'s EAX passes through to its nested call and is a real input.
+///
+/// The gate built on this REFUSES only `Some(false)`: undecided is not evidence against.
+fn callee_input_evidence(
+    insns: &[mosura::recompile::insn::NormInsn],
+    arg_regs: &[u64],
+) -> Vec<Option<bool>> {
+    use mosura::recompile::insn::SemArg;
+    let mut v = vec![None; arg_regs.len()];
+    for x in insns {
+        if x.is_branch || x.is_call {
+            break;
+        }
+        if x.mnemonic == "PUSH" || x.mnemonic == "POP" {
+            continue;
+        }
+        // `XOR r,r` / `SUB r,r` is the zero idiom: it writes r, it does not read it.
+        let zero_idiom = matches!(x.mnemonic.as_str(), "XOR" | "SUB")
+            && x.sem.iter().any(|o| {
+                matches!((o.out.as_ref(), o.ins.first()), (Some(SemArg::Reg(a, _)), Some(SemArg::Reg(b, _))) if a == b)
+            });
+        for (i, &r) in arg_regs.iter().enumerate() {
+            if v[i].is_some() {
+                continue;
+            }
+            let reads = !zero_idiom
+                && x.sem.iter().any(|o| {
+                    o.ins.iter().any(|a| matches!(a, SemArg::Reg(o2, _) if o2 & !3 == r))
+                });
+            let writes = x
+                .sem
+                .iter()
+                .any(|o| matches!(o.out, Some(SemArg::Reg(o2, _)) if o2 & !3 == r));
+            if reads {
+                v[i] = Some(true);
+            } else if writes {
+                v[i] = Some(false);
+            }
+        }
+    }
+    v
+}
+
 fn call_shapes_stable(
     fl: &mosura::decompile::funcdata::Funcdata,
     fx: &mosura::decompile::funcdata::Funcdata,
     contradicted: &[(u64, usize)],
+    // CONTRACT-DIRECTED DRIFT (`MOSURA_CONS_REACH=1`, Order Y): the callee's own recovered
+    // prototype — the arity its BODY shows it reads — may license a drift the flat rule refuses.
+    // Measured on the 14 arity-defect TUs: every drifting site moves TOWARD the callee's
+    // register-only recovered arity and none moves away (0x59404 3->1 with proto 1, whose entry
+    // `PUSH EBX/ECX/EDX` and single `MOV ECX,EAX` read make 1 the byte truth). `None` = the
+    // landed flat rule.
+    protos: Option<&std::collections::HashMap<u64, mosura::decompile::fspec::FuncProto>>,
+    // The callee's OWN entry-block testimony per argument register ([`callee_input_evidence`]):
+    // a drift may never drop a register the callee is byte-proven to READ, and may never land on
+    // an arity whose registers the callee is byte-proven to WRITE first.
+    evidence: &HashMap<u64, Vec<Option<bool>>>,
 ) -> bool {
     type Shape = (usize, Option<u32>, u64); // (args, output width, direct-callee va or 0)
     let shapes = |f: &mosura::decompile::funcdata::Funcdata| -> HashMap<u64, Shape> {
@@ -557,10 +619,30 @@ fn call_shapes_stable(
         m
     };
     let (l, x) = (shapes(fl), shapes(fx));
+    let reg = fx.spaces.by_name("register");
     l.iter().all(|(pc, &(n, outw, callee))| {
         x.get(pc).is_some_and(|&(m, outw2, _)| {
             let grows_ok = contradicted.iter().any(|&(c, _)| c == callee);
-            outw2 == outw && if grows_ok { m >= n } else { m == n }
+            // The candidate lands EXACTLY on a register-only recovered contract the landed world
+            // missed: the drift is that callee's own testimony, not churn. Output width still has
+            // to hold — a materialized return is a different class and is not licensed here.
+            let ev = evidence.get(&callee);
+            let byte_ok = ev.is_some_and(|e| {
+                // nothing the new arity passes may be byte-refuted, and nothing it DROPS may be
+                // byte-proven read (dropping a register the callee reads is the wrong-code half)
+                (0..m).all(|i| e.get(i).copied().flatten() != Some(false))
+                    && (m..n).all(|i| e.get(i).copied().flatten() != Some(true))
+            });
+            let contract_ok = callee != 0
+                && m != n
+                && byte_ok
+                && protos.and_then(|p| p.get(&callee)).is_some_and(|p| {
+                    !p.params.is_empty()
+                        && p.params.iter().all(|s| Some(s.addr.space) == reg)
+                        && p.params.len() == m
+                        && p.params.len() != n
+                });
+            outw2 == outw && (contract_ok || if grows_ok { m >= n } else { m == n })
         })
     })
 }
@@ -1265,6 +1347,8 @@ fn main() {
     // upgraded arg list at such a callee can flip that post-pass's arity/width gates
     // (0x3925c's `parm [edx] [eax]` callee), so upgrades refuse those TUs precisely.
     let mut nondefault_storage: HashMap<u64, bool> = HashMap::new();
+    // Per-callee entry-block byte testimony, computed once per callee ([`callee_input_evidence`]).
+    let mut callee_ev_cache: HashMap<u64, Vec<Option<bool>>> = HashMap::new();
     for (idx, (va, name)) in entries.iter().enumerate() {
         if !only.is_empty() && !only.contains(va) {
             continue;
@@ -1645,6 +1729,51 @@ fn main() {
                 // MOSURA_CONSISTENCY=0 restores the pure gate stack for A/B measurement.
                 let mut f_forced: Option<Funcdata> = None;
                 if !ok && std::env::var("MOSURA_CONSISTENCY").as_deref() != Ok("0") {
+                    let reach_mode = std::env::var("MOSURA_CONS_REACH").as_deref() == Ok("1");
+                    // The callee's own entry block, for every direct callee of this function.
+                    let mut evidence: HashMap<u64, Vec<Option<bool>>> = HashMap::new();
+                    for op in fl.op_ids() {
+                        let o = fl.op(op);
+                        if o.code() != OpCode::Call || o.flags & (flags::DEAD | flags::MARKER) != 0 {
+                            continue;
+                        }
+                        let Some(t) = o.input(0) else { continue };
+                        let c = fl.vn(t).loc.offset;
+                        if c == 0 || evidence.contains_key(&c) {
+                            continue;
+                        }
+                        let e = callee_ev_cache
+                            .entry(c)
+                            .or_insert_with(|| {
+                                let ext = next_entry
+                                    .get(&c)
+                                    .copied()
+                                    .unwrap_or(c + 0x100)
+                                    .saturating_sub(c)
+                                    .min(0x100);
+                                let b = prog.memory.read_window(Address::new(ram, c), ext as usize);
+                                let ci = mosura::recompile::insn::normalize(
+                                    SURVEY_LANG,
+                                    &b,
+                                    c,
+                                    &mosura::recompile::insn::NoReloc,
+                                )
+                                .unwrap_or_default();
+                                callee_input_evidence(&ci, &arg_reg_offs)
+                            })
+                            .clone();
+                        evidence.insert(c, e);
+                    }
+                    // NO GROWTH-SIDE REFUSAL, and the reason is measured (Order Y): refusing a
+                    // contradiction whose claimed register the callee writes-before-reading was
+                    // built, run over the corpus, and REFUTED on its own criterion — it removed 4
+                    // benign extra-argument sites and created 4 sites that DROP a register the
+                    // callee's bytes say it READS. The asymmetry is real: in a positional
+                    // convention an UNUSED parameter slot is legal, so `written before read` does
+                    // not disprove parameterhood; passing a value the callee ignores is score
+                    // noise, while failing to pass one it reads is wrong code. The byte evidence
+                    // is therefore applied only where the harm is (in `call_shapes_stable`: never
+                    // drop a byte-proven read).
                     let contradicted = under_called_register_callees(fl, pp);
                     if !contradicted.is_empty() {
                         let list: Vec<String> =
@@ -1675,6 +1804,52 @@ fn main() {
                         // 12c58's `(0, 0)` — zeros the original never places — arrives as
                         // plain constants; the original's own instruction stream is the
                         // reliable witness.
+                        // (B) REACHING WITNESS (`MOSURA_CONS_REACH=1`, Order Y) — the landed window
+                        // stops at the first intervening CALL, and this defect class is DEFINED by
+                        // a materializing write that sits before one: `MOV EBX,0x28a0` at 0x22e61,
+                        // `CALL 0x59404` at 0x22e66, `CALL 0x50480` at 0x22e81. The walk crosses a
+                        // call only when that call's own recovered contract preserves the register
+                        // — the same `cdecl_modify` set our `#pragma aux .. modify [..]` already
+                        // asserts in the emitted C, so the witness never claims more than the
+                        // program we print (0x59404 saves EBX/ECX/EDX at entry: byte-confirmed).
+                        let preserves = |pc: u64, r: u64| -> bool {
+                            fl.op_ids()
+                                .find(|&op| {
+                                    let o = fl.op(op);
+                                    matches!(o.code(), OpCode::Call | OpCode::Callind)
+                                        && o.seqnum.pc.offset == pc
+                                })
+                                .and_then(|op| fl.call_specs.get(&op))
+                                .and_then(|cs| cs.cdecl_modify.as_ref())
+                                .is_some_and(|m| !m.iter().any(|&c| c & !3 == r))
+                        };
+                        let reach_witness = |callee: u64, r: u64, k: u64| -> bool {
+                            insns
+                                .iter()
+                                .enumerate()
+                                .filter(|(_, x)| x.is_call && x.target == Some(callee))
+                                .any(|(ci, _)| {
+                                    for x in insns[..ci].iter().rev() {
+                                        if x.is_branch {
+                                            return false;
+                                        }
+                                        let writes_r = x.sem.iter().any(|sop| {
+                                            matches!(sop.out, Some(mosura::recompile::insn::SemArg::Reg(o2, _)) if o2 & !3 == r)
+                                        });
+                                        if writes_r {
+                                            return x.sem.iter().any(|sop| {
+                                                matches!(sop.out, Some(mosura::recompile::insn::SemArg::Reg(o2, _)) if o2 & !3 == r)
+                                                    && (sop.ins.iter().any(|ii| matches!(ii, mosura::recompile::insn::SemArg::Const(vv, _) if *vv == k))
+                                                        || (k == 0 && x.mnemonic == "XOR"))
+                                            });
+                                        }
+                                        if x.is_call && !preserves(x.addr, r) {
+                                            return false;
+                                        }
+                                    }
+                                    false
+                                })
+                        };
                         let consts_witnessed = |f3: &Funcdata| -> bool {
                             for op in f3.op_ids() {
                                 let o = f3.op(op);
@@ -1698,7 +1873,10 @@ fn main() {
                                     }
                                     let k = vn.loc.offset;
                                     let Some(&r) = arg_reg_offs.get(i - 1) else { return false };
-                                    let witnessed = insns
+                                    let witnessed = if reach_mode {
+                                        reach_witness(callee, r, k)
+                                    } else {
+                                        insns
                                         .iter()
                                         .enumerate()
                                         .filter(|(_, x)| x.is_call && x.target == Some(callee))
@@ -1715,7 +1893,8 @@ fn main() {
                                                                 || (k == 0 && x.mnemonic == "XOR"))
                                                     })
                                                 })
-                                        });
+                                        })
+                                    };
                                     if !witnessed {
                                         return false;
                                     }
@@ -1726,7 +1905,7 @@ fn main() {
                         match f3 {
                             Some(f3)
                                 if resolves_contradictions(&f3, &contradicted)
-                                    && call_shapes_stable(fl, &f3, &contradicted)
+                                    && call_shapes_stable(fl, &f3, &contradicted, reach_mode.then_some(&pp.recovered_protos), &evidence)
                                     && sig_stable_vs(&f3)
                                     && consts_witnessed(&f3) =>
                             {
