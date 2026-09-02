@@ -628,10 +628,17 @@ fn call_shapes_stable(
             // to hold — a materialized return is a different class and is not licensed here.
             let ev = evidence.get(&callee);
             let byte_ok = ev.is_some_and(|e| {
-                // nothing the new arity passes may be byte-refuted, and nothing it DROPS may be
-                // byte-proven read (dropping a register the callee reads is the wrong-code half)
+                // Nothing the new arity passes may be byte-refuted, and every register it DROPS
+                // must be byte-REFUTED — undecided is not permission. `None` means the entry block
+                // does not decide, and `0x50480`'s EAX is the standing proof that a `None` register
+                // can be a real input (untouched before the nested call it passes through to).
+                // Undecided is therefore treated the SAME on both sides: growth keeps it because it
+                // might be read, so a drop must keep it for the identical reason. Dropping one is
+                // this thread's own wrong code with the sign reversed — and a score round cannot
+                // catch it, since the wrong-code gate keys on memory writes, not on an argument
+                // that stops being passed.
                 (0..m).all(|i| e.get(i).copied().flatten() != Some(false))
-                    && (m..n).all(|i| e.get(i).copied().flatten() != Some(true))
+                    && (m..n).all(|i| e.get(i).copied().flatten() == Some(false))
             });
             let contract_ok = callee != 0
                 && m != n
