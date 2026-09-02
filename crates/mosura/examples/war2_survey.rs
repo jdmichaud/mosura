@@ -1355,8 +1355,13 @@ fn main() {
     // AND READS wider than we would store -- the second is the wrong-code criterion and keeps the
     // arm off addresses that are merely accessed at two widths.
     //
-    // Off by default: the emit-and-compile check comes before any round (the string-ops lesson).
-    let global_width_arm = std::env::var("MOSURA_GLOBAL_WIDTH").as_deref() == Ok("witnessed");
+    // DEFAULT-ON since the round on 92db550: COMPILE_FAIL unchanged (the one pre-existing
+    // FUN_0007449c), 877 -> 878 EXACT, WGSS 0.5618 -> 0.5625, a single UP flip (FUN_00011098's
+    // byte increment of a dword global now recompiles byte-exact), 18 movers of which the 6 downs
+    // are form with no verdict change, stable at two on byte-identical TSVs.
+    // `MOSURA_GLOBAL_WIDTH=recovered` restores the narrowest-access declaration, the way
+    // `MOSURA_KERNEL_NET=0` and `MOSURA_CONS_REACH=0` restore theirs.
+    let global_width_arm = std::env::var("MOSURA_GLOBAL_WIDTH").as_deref() != Ok("recovered");
     let (ram_store_w, ram_read_w) = if global_width_arm {
         let t = std::time::Instant::now();
         let mut sw: HashMap<u64, u32> = HashMap::new();
