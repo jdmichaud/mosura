@@ -2369,6 +2369,29 @@ fn main() {
         // The decompiled function knows each varnode's width, so ask it.
         let ram_dec = f.spaces.by_name("ram");
         let mut gsizes: std::collections::HashMap<u64, u32> = std::collections::HashMap::new();
+        // ram addresses THIS FUNCTION STORES, read from its OWN BYTES.  Two IR-side tests were
+        // tried and both failed: `is_written()` is true for a purely read global (heritage gives it
+        // an INDIRECT across every call and a phi at every join), and excluding INDIRECT/MULTIEQUAL
+        // defs still let the return-guard COPY through -- 54 read-only TUs were widened either way.
+        // The instruction stream has no such ambiguity: a store is a memory operand in the output.
+        let gwrote: std::collections::HashSet<u64> = if global_width_arm {
+            mosura::recompile::insn::normalize(
+                SURVEY_LANG,
+                &region,
+                *va,
+                &mosura::recompile::insn::NoReloc,
+            )
+            .unwrap_or_default()
+            .iter()
+            .flat_map(|x| x.sem.iter())
+            .filter_map(|op| match &op.out {
+                Some(mosura::recompile::insn::SemArg::Mem(_, a, _)) => Some(*a),
+                _ => None,
+            })
+            .collect()
+        } else {
+            Default::default()
+        };
         for i in 0..f.num_varnodes() as u32 {
             let vn = f.vn(mosura::decompile::varnode::VarnodeId(i));
             // `Processor` covers ram AND register, so select the data space by NAME — the
@@ -2389,8 +2412,17 @@ fn main() {
         // Widen back to the original's own STORE width, but only where the image also READS it
         // wider than we would store -- the wrong-code criterion, and the condition that keeps this
         // off addresses that are merely accessed at two widths.  Never narrows: `max` only.
+        //
+        // AND ONLY WHERE THIS FUNCTION WRITES THE ADDRESS.  Measured on the first armed emit: without
+        // this the arm widened the declaration in every TU that merely READS the global, and the
+        // widened type then propagated through type inference into local declarations and even
+        // comparison rendering -- 138 TUs changed where only 27 had a truncated store to fix.  A
+        // read-only TU has nothing to repair: its byte read of a byte it uses is already right.
         if global_width_arm {
             for (a, w) in gsizes.iter_mut() {
+                if !gwrote.contains(a) {
+                    continue;
+                }
                 let sw = ram_store_w.get(a).copied().unwrap_or(0);
                 let rw = ram_read_w.get(a).copied().unwrap_or(0);
                 if sw > *w && rw > *w {
