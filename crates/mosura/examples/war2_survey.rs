@@ -1902,6 +1902,166 @@ fn main() {
                             }
                             true
                         };
+                        // ==== ORDER Y PROBE (unlanded, MOSURA_CONS_PROBE=1) ====
+                        // The HELD message names four conditions at once. This splits them, and
+                        // for the constant-witness half re-runs the search with the intervening-
+                        // CALL stop REMOVED — reporting the reaching write, how many calls it had
+                        // to cross, and each crossed callee, so the design reads bytes not guesses.
+                        if std::env::var("MOSURA_CONS_PROBE").as_deref() == Ok("1") {
+                            match f3.as_ref() {
+                                None => eprintln!("[cons-probe] {name}: f3=NONE callees [{}]", list.join(" ")),
+                                Some(fx) => {
+                                    let r1 = resolves_contradictions(fx, &contradicted);
+                                    let r2 = call_shapes_stable(fl, fx, &contradicted, reach_mode.then_some(&pp.recovered_protos), &evidence);
+                                    let r3 = sig_stable_vs(fx);
+                                    let r4 = consts_witnessed(fx);
+                                    eprintln!(
+                                        "[cons-probe] {name}: resolves={r1} shapes={r2} sig={r3} consts={r4} callees [{}]",
+                                        list.join(" ")
+                                    );
+                                    if !r3 {
+                                        // WHICH of the three tests wearing the `sig_stable` name
+                                        let lp = mosura::decompile::printc::rendered_param_slots(fl);
+                                        let cp = mosura::decompile::printc::rendered_param_slots(fx);
+                                        let reg = fx.spaces.by_name("register");
+                                        let prefix_ok = cp.len() >= lp.len()
+                                            && lp.iter().zip(cp.iter()).all(|(a, b)| a.addr == b.addr && a.size == b.size);
+                                        let landed_has_stack = lp.iter().any(|sl| Some(sl.addr.space) != reg);
+                                        let grows_registers = cp.len() > lp.len()
+                                            && cp[lp.len()..].iter().any(|sl| Some(sl.addr.space) == reg);
+                                        eprintln!(
+                                            "[cons-sig] {name} parm_regs_eq={} prefix_ok={prefix_ok} stack_to_reg={} landed={:?} cand={:?}",
+                                            nondefault_parm_regs(fx, &watreg) == nondefault_parm_regs(fl, &watreg),
+                                            landed_has_stack && grows_registers,
+                                            lp.iter().map(|s| (s.addr.offset, s.size)).collect::<Vec<_>>(),
+                                            cp.iter().map(|s| (s.addr.offset, s.size)).collect::<Vec<_>>()
+                                        );
+                                    }
+                                    if !r2 {
+                                        // WHICH call drifted, and in which direction — a GROWTH at
+                                        // a non-contradicted callee and a LOSS are different risks.
+                                        let shapes = |f: &Funcdata| -> HashMap<u64, (usize, Option<u32>, u64)> {
+                                            let mut m = HashMap::new();
+                                            for op in f.op_ids() {
+                                                let o = f.op(op);
+                                                if !matches!(o.code(), OpCode::Call | OpCode::Callind)
+                                                    || o.flags & (flags::DEAD | flags::MARKER) != 0
+                                                {
+                                                    continue;
+                                                }
+                                                let callee = if o.code() == OpCode::Call {
+                                                    o.input(0).map_or(0, |t| f.vn(t).loc.offset)
+                                                } else {
+                                                    0
+                                                };
+                                                m.insert(
+                                                    o.seqnum.pc.offset,
+                                                    (o.num_inputs() - 1, o.output.map(|v| f.vn(v).size), callee),
+                                                );
+                                            }
+                                            m
+                                        };
+                                        let (sl, sx) = (shapes(fl), shapes(fx));
+                                        let mut pcs: Vec<&u64> = sl.keys().collect();
+                                        pcs.sort();
+                                        for pc in pcs {
+                                            let (n, ow, callee) = sl[pc];
+                                            match sx.get(pc) {
+                                                None => eprintln!("[cons-shape] {name} {pc:#x} callee {callee:#x} GONE (landed {n} args)"),
+                                                Some(&(m, ow2, _)) if m != n || ow2 != ow => {
+                                                    let cont = contradicted.iter().any(|&(c, _)| c == callee);
+                                                    // the callee's OWN byte-derived contract, the
+                                                    // arbiter for whether a drift is a correction
+                                                    let pr = pp.recovered_protos.get(&callee);
+                                                    let reg = fx.spaces.by_name("register");
+                                                    let parity = pr.map(|p| p.params.len());
+                                                    let regonly = pr.map(|p| {
+                                                        !p.params.is_empty()
+                                                            && p.params.iter().all(|s| Some(s.addr.space) == reg)
+                                                    });
+                                                    eprintln!(
+                                                        "[cons-shape] {name} {pc:#x} callee {callee:#x} args {n}->{m} outw {ow:?}->{ow2:?} contradicted={cont} proto_arity={parity:?} regonly={regonly:?}"
+                                                    );
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                    for op in fx.op_ids() {
+                                        let o = fx.op(op);
+                                        if o.code() != OpCode::Call
+                                            || o.flags & (flags::DEAD | flags::MARKER) != 0
+                                        {
+                                            continue;
+                                        }
+                                        let Some(t) = o.input(0) else { continue };
+                                        let callee = fx.vn(t).loc.offset;
+                                        let Some(&(_, arity)) =
+                                            contradicted.iter().find(|&&(c, _)| c == callee)
+                                        else {
+                                            continue;
+                                        };
+                                        let pc = o.seqnum.pc.offset;
+                                        for i in 1..=arity.min(o.num_inputs() - 1) {
+                                            let Some(v) = o.input(i) else { continue };
+                                            let vn = fx.vn(v);
+                                            if !vn.is_constant() {
+                                                continue;
+                                            }
+                                            let k = vn.loc.offset;
+                                            let Some(&r) = arg_reg_offs.get(i - 1) else { continue };
+                                            let Some(ci) = insns
+                                                .iter()
+                                                .position(|x| x.is_call && x.addr == pc)
+                                            else {
+                                                eprintln!("[cons-site] {name} {pc:#x} callee {callee:#x} arg{i} k={k:#x} NO-INSN");
+                                                continue;
+                                            };
+                                            // reaching write of r, crossing calls, stopping at the
+                                            // first write of r (that write is the value's origin)
+                                            let mut crossed: Vec<String> = Vec::new();
+                                            let mut verdict = "no-write".to_string();
+                                            let mut dist = 0usize;
+                                            for (d, x) in insns[..ci].iter().rev().enumerate() {
+                                                if x.is_branch {
+                                                    verdict = format!("branch@{:#x}", x.addr);
+                                                    dist = d;
+                                                    break;
+                                                }
+                                                let writes_r = x.sem.iter().any(|sop| {
+                                                    matches!(sop.out, Some(mosura::recompile::insn::SemArg::Reg(o2, _)) if o2 & !3 == r)
+                                                });
+                                                if writes_r {
+                                                    let mats = x.sem.iter().any(|sop| {
+                                                        matches!(sop.out, Some(mosura::recompile::insn::SemArg::Reg(o2, _)) if o2 & !3 == r)
+                                                            && (sop.ins.iter().any(|ii| matches!(ii, mosura::recompile::insn::SemArg::Const(vv, _) if *vv == k))
+                                                                || (k == 0 && x.mnemonic == "XOR"))
+                                                    });
+                                                    verdict = format!(
+                                                        "{}@{:#x}:{}",
+                                                        if mats { "MATCH" } else { "other-write" },
+                                                        x.addr,
+                                                        x.mnemonic
+                                                    );
+                                                    dist = d;
+                                                    break;
+                                                }
+                                                if x.is_call {
+                                                    crossed.push(match x.target {
+                                                        Some(t) => format!("{t:#x}"),
+                                                        None => "ind".to_string(),
+                                                    });
+                                                }
+                                            }
+                                            eprintln!(
+                                                "[cons-site] {name} {pc:#x} callee {callee:#x} arg{i} reg{r} k={k:#x} reach={verdict} dist={dist} crossed=[{}]",
+                                                crossed.join(" ")
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         match f3 {
                             Some(f3)
                                 if resolves_contradictions(&f3, &contradicted)
