@@ -70,10 +70,30 @@ pub(crate) fn recognize(pr: &mut PrintC<'_>, f: &Funcdata) {
 /// The arm's answer at `ValueSite::Load`: `out` the loaded value, `addr` its address — the deref
 /// at int width for a witnessed site.
 pub(crate) fn render(pr: &mut PrintC<'_>, out: VarnodeId, addr: VarnodeId) -> Option<(String, u8)> {
-    if pr.recovered.testmem_sites.contains(&out) {
+    // ON THE AXIS since Order Q (`testmem=witness|off`). It was gated on the witness set ALONE,
+    // which is not a switch: the witness says the original read int width, it does not say we
+    // should print it that way, and with no axis the arm fired under every choice vector -- 183
+    // TUs / 313 sites of the canonical tree that could be neither turned off nor priced. The
+    // reference path is unaffected either way: `print_c` carries no recovered evidence, so the
+    // witness set is empty and this returns `None` before the axis is even consulted.
+    if pr.arms.testmem.witness && pr.recovered.testmem_sites.contains(&out) {
         let w = pr.f.size_of_int();
         let vty = Datatype::Uint(w);
         return Some(pr.render_mem(addr, w, &vty));
     }
     None
+}
+
+/// The arm's own state: its choice flag, per THE STATE RULE (arms/mod.rs) — an arm's reading of
+/// the axis lives here, not as a field on the printer.
+#[derive(Debug)]
+pub(crate) struct State {
+    /// `testmem=witness` is on for this function.
+    pub(crate) witness: bool,
+}
+
+impl State {
+    pub(crate) fn new(choices: &crate::decompile::emit::EmitChoices) -> Self {
+        State { witness: choices.testmem == crate::decompile::emit::TestMem::Witness }
+    }
 }

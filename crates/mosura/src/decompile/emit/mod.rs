@@ -216,6 +216,7 @@ pub struct EmitChoices {
     pub arm_order: ArmOrder,
     pub struct_locals: StructLocals,
     pub narrow_tests: NarrowTests,
+    pub testmem: TestMem,
     pub join_width: JoinWidth,
     pub array_index: ArrayIndex,
     pub string_ops: StringOps,
@@ -299,6 +300,34 @@ pub enum StructLocals {
 pub enum NarrowTests {
     Ghidra,
     Rewiden,
+}
+
+/// Whether a WITNESSED masked narrow load renders its dereference at int width.
+///
+/// The shape is a narrow load feeding a mask and a zero test. `Witness` prints the deref at the
+/// target's `int` width where the ORIGINAL tests memory directly at that width (`TEST dword [..],
+/// imm`); the mask keeps the value identical, and Watcom shrinks the wide masked test back to the
+/// original's byte `TEST`. `Off` prints at the varnode's own type -- what the reference decompiler
+/// does, since the value really is one byte.
+///
+/// Both are faithful renderings of one IR (rule 1): the original's own access width is not
+/// recoverable from the p-code, which lifts a byte load either way, so the instruction is the only
+/// witness there is. The evidence is per site (`RecoveredChoices::testmem_sites`, from
+/// `buildconfig::testmem_from_evidence`), never a blanket.
+///
+/// **Default is `Witness`, and that does not break `EmitChoices::default()`'s promise to be the
+/// reference rendering**: the arm answers only for a site in the recovered witness set, and the
+/// reference path (`print_c`) carries no recovered evidence at all, so the set is empty and the arm
+/// is inert. What the default preserves is the LANDED behaviour of the recovered emit.
+///
+/// It reaches this file from Order Q, which found it had no axis: it fired under every choice
+/// vector, so its 183 TUs / 313 sites in the canonical tree could be neither switched off nor
+/// priced -- the same shape as the promotion-cast hide, one layer over. See
+/// `emit::arms::testmem`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TestMem {
+    Witness,
+    Off,
 }
 
 /// How a constant-join local (a temporary fed only by constants, merged at a phi) is DECLARED
@@ -427,6 +456,7 @@ impl Default for EmitChoices {
             arm_order: ArmOrder::Ghidra,
             struct_locals: StructLocals::Ghidra,
             narrow_tests: NarrowTests::Ghidra,
+            testmem: TestMem::Witness,
             join_width: JoinWidth::Ghidra,
             array_index: ArrayIndex::Ghidra,
             string_ops: StringOps::Loop,
@@ -517,6 +547,12 @@ impl EmitChoices {
             values: &["ghidra", "rewiden"],
             doc: "render a shifted byte-of-word zero test as the lifter's shift-and-mask, or at the \
                   operand's own width with the mask shifted up (x & 0x200)",
+        },
+        Axis {
+            name: "testmem",
+            values: &["witness", "off"],
+            doc: "render a WITNESSED masked narrow load's deref at int width (the original's \
+                  memory-direct TEST at that width), or at the varnode's own type",
         },
         Axis {
             name: "join-width",
@@ -628,6 +664,10 @@ impl EmitChoices {
             "narrow-tests" => Some(match self.narrow_tests {
                 NarrowTests::Ghidra => "ghidra",
                 NarrowTests::Rewiden => "rewiden",
+            }),
+            "testmem" => Some(match self.testmem {
+                TestMem::Witness => "witness",
+                TestMem::Off => "off",
             }),
             "join-width" => Some(match self.join_width {
                 JoinWidth::Ghidra => "ghidra",
@@ -750,6 +790,13 @@ impl EmitChoices {
                 self.narrow_tests = match value {
                     "ghidra" => NarrowTests::Ghidra,
                     "rewiden" => NarrowTests::Rewiden,
+                    _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
+                }
+            }
+            "testmem" => {
+                self.testmem = match value {
+                    "witness" => TestMem::Witness,
+                    "off" => TestMem::Off,
                     _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
                 }
             }

@@ -105,6 +105,7 @@ pub(crate) struct State {
     pub(crate) return_split: return_split::State,
     pub(crate) snapshot: snapshot::State,
     pub(crate) struct_return: struct_return::State,
+    pub(crate) testmem: testmem::State,
 }
 
 impl State {
@@ -123,6 +124,7 @@ impl State {
             return_split: return_split::State::new(choices),
             snapshot: snapshot::State::new(choices),
             struct_return: struct_return::State::new(choices),
+            testmem: testmem::State::new(choices),
         }
     }
 }
