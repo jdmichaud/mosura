@@ -77,6 +77,11 @@ pub enum Topic {
     /// decompile/subvarflow's replacement trace (was `MOSURA_SUBVAR`): one line per node -- its own
     /// topic for the same reason.
     Subvar,
+    /// decompile/printc's `for`-loop recognition: one line per candidate `while`-do saying which
+    /// gate of `BlockWhileDo::finalTransform`'s chain accepted or declined it, and on what op or
+    /// varnode. The decline sites ARE the gates -- nothing here re-derives the decision, because a
+    /// diagnostic that re-computes what it reports is a second implementation that can drift.
+    ForLoop,
     /// the survey's raw-IR dump (was `MOSURA_RAW_IR`): every function's raw IR on stdout -- its own
     /// topic so `survey` alone stays readable.
     RawIr,
@@ -87,7 +92,7 @@ impl Topic {
         Topic::SparseSwitch, Topic::StructCopy, Topic::FrameFill, Topic::SumOrder, Topic::Printc, Topic::Recover,
         Topic::Structure, Topic::JumpTable, Topic::Args, Topic::Varargs, Topic::RetSplit, Topic::Effects,
         Topic::Varmap, Topic::StackVars, Topic::Heritage, Topic::Pointers, Topic::Pipeline, Topic::Watsched,
-        Topic::GroundTruth, Topic::Cspec, Topic::Analysis, Topic::Merge, Topic::Survey, Topic::Perf, Topic::Types, Topic::Subvar, Topic::RawIr,
+        Topic::GroundTruth, Topic::Cspec, Topic::Analysis, Topic::Merge, Topic::Survey, Topic::Perf, Topic::Types, Topic::Subvar, Topic::ForLoop, Topic::RawIr,
     ];
     /// The kebab-case name used in `MOSURA_DEBUG` and as the print prefix.
     pub fn name(self) -> &'static str {
@@ -118,6 +123,7 @@ impl Topic {
             Topic::Perf => "perf",
             Topic::Types => "types",
             Topic::Subvar => "subvar",
+            Topic::ForLoop => "for-loop",
             Topic::RawIr => "raw-ir",
         }
     }

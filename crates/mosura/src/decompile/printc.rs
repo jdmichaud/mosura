@@ -2521,6 +2521,21 @@ impl<'a> PrintC<'a> {
         cond_idx: usize,
         body_idx: usize,
     ) -> Option<(Option<VarnodeId>, OpId, VarnodeId)> {
+        // INSTRUMENT (`MOSURA_DEBUG=for-loop`, Order Z(2)): every gate below names itself when it
+        // declines. The decline sites ARE the gates — there is deliberately no second function
+        // that re-walks the chain to report on it, because a diagnostic that re-derives what it
+        // reports is two implementations of one rule and they drift. Print-only: `&self`, stderr,
+        // and the topic off is a single atomic read, so the emitted C cannot depend on it.
+        macro_rules! decline {
+            ($($arg:tt)*) => {{
+                debug!(
+                    crate::debug::Topic::ForLoop,
+                    "cond={cond_idx} body={body_idx} DECLINE {}",
+                    format!($($arg)*)
+                );
+                return None;
+            }};
+        }
         // `BlockWhileDo::finalTransform` derives its two anchors INDEPENDENTLY (block.cc:3362-3372):
         //     FlowBlock *copyBl = getFrontLeaf();
         //     BlockBasic *head = (BlockBasic *)copyBl->subBlock(0);   // the loop's FRONT leaf
@@ -2533,37 +2548,40 @@ impl<'a> PrintC<'a> {
         // for-loop on every compound condition: on FUN_00013edc the `uVar2` phi is in the front
         // leaf at 0x13f31 (which carries the `puVar1 != 0` test) while the `uVar2 < 8` CBRANCH is
         // in the block at 0x13f35, which holds no MULTIEQUAL at all.
-        let head = entry_basic(s, cond_idx)?;
+        let Some(head) = entry_basic(s, cond_idx) else { decline!("head: the condition has no entry basic block") };
         // Ghidra takes the typed `lastOp` and requires it to BE the CBRANCH (block.cc:3372),
         // rather than scanning backwards for the nearest one.
-        let cbranch = self.structured_last_op(s, cond_idx)?;
+        let Some(cbranch) = self.structured_last_op(s, cond_idx) else { decline!("cbranch: the condition has no typed last op") };
         if self.f.op(cbranch).code() != OpCode::Cbranch {
-            return None;
+            decline!("cbranch: the condition's last op is {}, not CBRANCH", self.f.op_str(cbranch));
         }
         // The body must have a typed last op; its block is the loop tail, flowing only to head.
-        let mut last = self.structured_last_op(s, body_idx)?;
-        let tail = self.f.op(last).parent?;
+        let Some(mut last) = self.structured_last_op(s, body_idx) else { decline!("tail: the body has no typed last op") };
+        let Some(tail) = self.f.op(last).parent else { decline!("tail: {} has no parent block", self.f.op_str(last)) };
         if self.f.block(tail).out_edges.len() != 1 || self.f.block(tail).out_edges[0] != head {
-            return None;
+            decline!("tail: block {tail:?} has {} out-edges, not one to the head", self.f.block(tail).out_edges.len());
         }
         // The iterate statement must appear after this point (skip a trailing branch).
         if self.f.op(last).code().is_branch() {
-            let pos = self.f.block(tail).ops.iter().position(|&o| o == last)?;
-            last = *self.f.block(tail).ops.get(pos.checked_sub(1)?)?;
+            let Some(pos) = self.f.block(tail).ops.iter().position(|&o| o == last) else { decline!("tail: the trailing branch is not in its own block") };
+            let Some(prev) = pos.checked_sub(1).and_then(|i| self.f.block(tail).ops.get(i)) else { decline!("tail: the trailing branch is the block's only op") };
+            last = *prev;
         }
-        let cond_var = self.f.op(cbranch).input(1)?;
+        let Some(cond_var) = self.f.op(cbranch).input(1) else { decline!("cbranch: no condition operand") };
         // `findLoopVariable` (block.cc:3164) searches for the phi and validates its tail-slot
         // iterate in ONE walk, continuing past any candidate that fails — see the function.
-        let slot = self.f.block(head).in_edges.iter().position(|&p| p == tail)?;
-        let (phi, iterate) = self.find_loop_variable(cond_var, head, tail, last, slot)?;
-        let phi_out = self.f.op(phi).output?;
+        let Some(slot) = self.f.block(head).in_edges.iter().position(|&p| p == tail) else { decline!("slot: the tail is not an in-edge of the head") };
+        let Some((phi, iterate)) = self.find_loop_variable(cond_var, head, tail, last, slot) else {
+            decline!("findLoopVariable: no phi-in-head with a moveable tail-slot iterate reaches {}", self.f.vn_str(cond_var))
+        };
+        let Some(phi_out) = self.f.op(phi).output else { decline!("findLoopVariable: the phi has no output") };
         // `BlockWhileDo::testIterateForm` (block.cc:3287), run by `finalizePrinting` after
         // `finalTransform` has already accepted the loop variable: the LOOP VARIABLE ITSELF must be
         // an input of the iterate statement. `findLoopVariable` above only established that the
         // exit test reaches the phi — the iterate op it picked up on the way may compute the next
         // value from something else entirely, and then there is no `for` to print.
         if !self.test_iterate_form(phi_out, iterate) {
-            return None;
+            decline!("testIterateForm: {} is not an input of the iterate {}", self.f.vn_str(phi_out), self.f.op_str(iterate));
         }
         // findInitializer: only a two-in head has one; the other phi input's def must sit in the
         // pre-loop block that flows only into the loop. (A folded-constant initializer has no def
@@ -2571,7 +2589,7 @@ impl<'a> PrintC<'a> {
         let mut init_var = None;
         if self.f.block(head).in_edges.len() == 2 {
             let init_slot = 1 - slot;
-            let initvn = self.f.op(phi).input(init_slot)?;
+            let Some(initvn) = self.f.op(phi).input(init_slot) else { decline!("findInitializer: the phi has no init-slot input") };
             // Ghidra `findInitializer` (block.cc:3223): the initializer must be WRITTEN
             // (`if (!initVn->isWritten()) return NULL`) by a NON-MARKER op sitting in the
             // pre-loop block (the head's init-slot in-edge), which flows only to the loop.
@@ -2595,6 +2613,13 @@ impl<'a> PrintC<'a> {
                 init_var = Some(initvn);
             }
         }
+        debug!(
+            crate::debug::Topic::ForLoop,
+            "cond={cond_idx} body={body_idx} ACCEPT iterate={} init={} var={}",
+            self.f.op_str(iterate),
+            init_var.map_or_else(|| "-".to_string(), |v| self.f.vn_str(v)),
+            self.f.vn_str(phi_out)
+        );
         Some((init_var, iterate, phi_out))
     }
 
