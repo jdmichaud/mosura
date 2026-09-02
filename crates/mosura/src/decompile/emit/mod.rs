@@ -321,9 +321,15 @@ pub enum NarrowTests {
 /// is inert. What the default preserves is the LANDED behaviour of the recovered emit.
 ///
 /// It reaches this file from Order Q, which found it had no axis: it fired under every choice
-/// vector, so its 183 TUs / 313 sites in the canonical tree could be neither switched off nor
-/// priced -- the same shape as the promotion-cast hide, one layer over. See
-/// `emit::arms::testmem`.
+/// vector, so its **196 TUs / 312 lines / 320 int-width deref tokens** in the canonical tree could
+/// be neither switched off nor priced -- the same shape as the promotion-cast hide, one layer
+/// over. See `emit::arms::testmem`.
+///
+/// Priced once it was switchable (Q(2), base `2476213` = 875 EXACT / WGSS 0.5616, two rounds,
+/// byte-identical TSVs): `off` scores **847 EXACT / 0.5556**, 31 flips ALL DOWN and all inside the
+/// arm's own population. Removing the arm costs 28 EXACT, which is its value -- not an argument
+/// that it is right, since these are sites where the ORIGINAL reads int width and Ghidra prints
+/// the byte.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TestMem {
     Witness,

@@ -3,8 +3,9 @@
 //! The arm prints a witnessed narrow load's dereference at the target's `int` width, because the
 //! ORIGINAL tests that memory directly at that width (`TEST dword [..], imm`) and the mask makes
 //! the two reads value-identical. Until Order Q it was gated on the witness set ALONE — which is
-//! evidence, not a switch: it fired under every choice vector, so its 183 TUs / 313 sites of the
-//! canonical tree could be neither turned off nor priced. This pins both halves of that repair.
+//! evidence, not a switch: it fired under every choice vector, so its 196 TUs / 320 int-width
+//! deref tokens of the canonical tree could be neither turned off nor priced. This pins both
+//! halves of that repair.
 //!
 //! SELF-COMPILED fixture (examples/watcom_mve_fixtures.rs): `x86_watcom_guard_order`, whose body
 //! masks a byte global and tests it against zero — the arm's exact shape.

@@ -72,8 +72,11 @@ pub(crate) fn recognize(pr: &mut PrintC<'_>, f: &Funcdata) {
 pub(crate) fn render(pr: &mut PrintC<'_>, out: VarnodeId, addr: VarnodeId) -> Option<(String, u8)> {
     // ON THE AXIS since Order Q (`testmem=witness|off`). It was gated on the witness set ALONE,
     // which is not a switch: the witness says the original read int width, it does not say we
-    // should print it that way, and with no axis the arm fired under every choice vector -- 183
-    // TUs / 313 sites of the canonical tree that could be neither turned off nor priced. The
+    // should print it that way, and with no axis the arm fired under every choice vector -- 196
+    // TUs / 320 int-width deref tokens of the canonical tree that could be neither turned off nor
+    // priced (measured by the axis itself: emit both values and diff. The first census said 183,
+    // a regex for `(uint4 *)(uint1 *)` that could not see the 13 TUs spelling the same construct
+    // `*(uint4 *)puVar1` -- an axis is the census, a regex over rendered text is a proxy). The
     // reference path is unaffected either way: `print_c` carries no recovered evidence, so the
     // witness set is empty and this returns `None` before the axis is even consulted.
     if pr.arms.testmem.witness && pr.recovered.testmem_sites.contains(&out) {
