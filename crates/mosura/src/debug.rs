@@ -77,6 +77,12 @@ pub enum Topic {
     /// decompile/subvarflow's replacement trace (was `MOSURA_SUBVAR`): one line per node -- its own
     /// topic for the same reason.
     Subvar,
+    /// decompile/rules' `RuleBoolNegate`: one line per firing, with the comparison's reader count
+    /// and whether every reader is a BOOL_NEGATE -- Ghidra's `RuleBoolNegate` requires that (it
+    /// rewrites the PRODUCER, so a comparison with a non-negate reader must not be flipped), and
+    /// ours has no such test. The line says what Ghidra would have done, so the corpus census of
+    /// the missing refusal is one emit rather than a trace-diff per fixture.
+    BoolNegate,
     /// decompile/printc's `for`-loop recognition: one line per candidate `while`-do saying which
     /// gate of `BlockWhileDo::finalTransform`'s chain accepted or declined it, and on what op or
     /// varnode. The decline sites ARE the gates -- nothing here re-derives the decision, because a
@@ -92,7 +98,7 @@ impl Topic {
         Topic::SparseSwitch, Topic::StructCopy, Topic::FrameFill, Topic::SumOrder, Topic::Printc, Topic::Recover,
         Topic::Structure, Topic::JumpTable, Topic::Args, Topic::Varargs, Topic::RetSplit, Topic::Effects,
         Topic::Varmap, Topic::StackVars, Topic::Heritage, Topic::Pointers, Topic::Pipeline, Topic::Watsched,
-        Topic::GroundTruth, Topic::Cspec, Topic::Analysis, Topic::Merge, Topic::Survey, Topic::Perf, Topic::Types, Topic::Subvar, Topic::ForLoop, Topic::RawIr,
+        Topic::GroundTruth, Topic::Cspec, Topic::Analysis, Topic::Merge, Topic::Survey, Topic::Perf, Topic::Types, Topic::Subvar, Topic::BoolNegate, Topic::ForLoop, Topic::RawIr,
     ];
     /// The kebab-case name used in `MOSURA_DEBUG` and as the print prefix.
     pub fn name(self) -> &'static str {
@@ -123,6 +129,7 @@ impl Topic {
             Topic::Perf => "perf",
             Topic::Types => "types",
             Topic::Subvar => "subvar",
+            Topic::BoolNegate => "boolnegate",
             Topic::ForLoop => "for-loop",
             Topic::RawIr => "raw-ir",
         }

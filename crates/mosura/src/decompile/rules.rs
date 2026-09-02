@@ -2426,6 +2426,29 @@ impl Rule for RuleBoolNegate {
             OpCode::FloatLessequal => (OpCode::FloatLess, true),
             _ => return 0,
         };
+        // INSTRUMENT (`MOSURA_DEBUG=boolnegate`, Order Z(4b)): report what Ghidra would decide
+        // here. Ghidra's `RuleBoolNegate` rewrites the COMPARISON in place, so it may only fire
+        // when EVERY reader of the comparison is a BOOL_NEGATE — otherwise flipping the producer
+        // would change what the other readers see. We rewrite the negate instead and have no such
+        // test, so we fire where Ghidra refuses; this line measures how often, corpus-wide, in one
+        // emit. Print-only: the decision below does not read it.
+        if crate::debug::on(crate::debug::Topic::BoolNegate) {
+            let readers: Vec<_> = data
+                .op(cmp)
+                .output
+                .map(|o| data.vn(o).descend.iter().copied().filter(|&u| !data.op(u).is_dead()).collect())
+                .unwrap_or_default();
+            let all_negate = readers.iter().all(|&u| data.op(u).code() == OpCode::BoolNegate);
+            debug!(
+                crate::debug::Topic::BoolNegate,
+                "{} cmp={} readers={} all-negate={} ghidra={}",
+                data.op_str(op),
+                data.op_str(cmp),
+                readers.len(),
+                all_negate,
+                if all_negate { "FIRE" } else { "REFUSE" }
+            );
+        }
         let (a, b) = (data.op(cmp).input(0).unwrap(), data.op(cmp).input(1).unwrap());
         data.op_set_opcode(op, flipped);
         let ins = if swap { [b, a] } else { [a, b] };
