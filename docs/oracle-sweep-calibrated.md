@@ -75,6 +75,11 @@ the harness — which is what the earlier maps were doing, for a second reason o
 
 ## 4. The clean residue
 
+**The table below is the ORDER K measurement, base `3eff9a8`, kept as the historical record.** It
+was produced by a scratch counter whose two corrected rows were corrected in this document and not
+in the counter; §4a restates it from the instrument that now lives in the tree. Read the two
+together, not one instead of the other.
+
 ```
  class          TUs    loss     %   game  band   direction        mark
  local-decl     164    5700  31.1%  112   126   MORE 149/FEWER 15  NEW
@@ -102,7 +107,55 @@ band cuts and the direction recut on the same members. Two classes, two counters
 `piece-ops` deserves its mark: this is the first corpus-scale measurement of W7's shared-limit
 question under the correct cspec, and at **16 clean TUs / 574 loss / 3.1 %** it is consistent with
 that closure rather than reopening it. `halt/trap` is the named-but-unported halt-type concept.
-`goto` is the only class where we emit unstructured control Ghidra does not.
+`goto` is the only class where we emit unstructured control Ghidra does not — no longer
+true at the restated base, where it is MORE 1 / FEWER 2 (§4a).
+
+## 4a. The same residue, restated — base `d0a505b`, `scripts/sweep-classify.py`
+
+Same 2,721 pairs, same manifest and idx numbering, **Ghidra side byte-identical to Order K's**
+(`diff -rq` clean over all 2,721 captures), same isolation cut — so the base is unchanged at
+**1,512 clean pairs / 18,333 loss** and every percentage keeps its denominator. What changed is the
+counter and the tree it measured.
+
+```
+ class          TUs    loss     %  S|delta|  game  band   direction
+ deref-cast      70    2706  14.8%      94    45    55   MORE 67/FEWER  3
+ array-index     31    1138   6.2%      68    20    30   MORE  8/FEWER 23
+ while           14     744   4.1%      16    12    14   MORE  6/FEWER  8
+ piece-ops       16     574   3.1%      21    15    16   MORE 10/FEWER  6
+ for             11     458   2.5%      11     9    11   MORE  8/FEWER  3
+ short-circuit   10     397   2.2%      17     7    10   MORE  4/FEWER  6
+ goto             3     286   1.6%       4     3     3   MORE  1/FEWER  2
+ do-while         4     235   1.3%       4     2     3   MORE  3/FEWER  1
+ halt/trap        3      53   0.3%       3     0     2   MORE  0/FEWER  3
+```
+
+**`local-decl` is absent because it was never in this counter.** §4's top row (164 / 5,700 / 31.1 %)
+came from a separate hand count and was merged into that table; the instrument does not produce it,
+and its absence here is a limit of the instrument, not a class that closed. Nor is the arithmetic
+promotion cast here: recognising it needs the declarations, so it has its own typed scanner (§8a).
+
+**`deref-cast` is 70 / 2,706, and the published 67 / 2,539 was its MORE half.** Order K's own note
+records the corrected counter as `re.sub(r'\s+','',t)` then `\*\(+\w+\*+\)` — character for
+character what the instrument uses — with *"members 67, Σ|delta| 86, FEWER: 0"*. The same pattern
+without the one-sided filter finds **three more TUs in the other direction**, and they are real:
+Ghidra spells cast-derefs we do not, in `01132`, `02028` and `02549`. The class was *defined* as
+"TUs where we emit more", so its opposite members were reported as zero rather than as missing.
+Both figures are pinned by `--calibrate`, so neither can be quoted without the other.
+
+**Three rows moved, and all three are `b2654ea` (W-7's `is_oriented` fix), not P(2).** The control
+settles it: the instrument run against a sweep of master `0b1cbbe` — P(2)'s parent — produces this
+table **identically, row for row**. So nothing in it is P(2)'s, which is what one expects of a
+change that only ever moves a cast:
+
+```
+  short-circuit   14 / 849  ->  10 / 397
+  do-while         6 / 475  ->   4 / 235
+  goto             MORE 3/FEWER 0 -> MORE 1/FEWER 2   (loss unchanged at 286)
+```
+
+**What P(2) did move is not in this table at all**: the arithmetic promotion class, Σ|delta|
+**484 → 12**, 250 divergent TUs → 9, 1,262 → **1,503 of 1,512** matching Ghidra exactly (§8a).
 
 ## 5. `local-decl`: a three-way split, and two different mechanisms
 
@@ -239,7 +292,11 @@ the window. No fix is proposed for an unnamed cause.
 
 ## 8. `deref-cast`: the class that burned its counter three times, and a slate item
 
-**The class is 67 TUs / 2,539 loss, not the 93 / 3,514 of §4's table.** §4's figure was measured
+**The class is 67 TUs / 2,539 loss, not the 93 / 3,514 of §4's table.** — *and 67 / 2,539 is
+itself the MORE half: the same pattern, run in both directions by the instrument, gives 70 / 2,706
+/ Σ|delta| 94 / MORE 67 / FEWER 3 (§4a, §9 item 5). The figures below are the MORE half throughout,
+which is the half the slate was priced on; the three FEWER TUs are not part of the cast pair's
+denominator.* §4's figure was measured
 with a counter that could not see a pointer-to-pointer cast; 26 % of the class (23 TUs, 808 loss)
 was Ghidra spelling `*(char **)x` where the pattern only matched `*(char *)x`. That was the second
 of three counting failures in this one class — see §2's discipline and §9 below.
@@ -304,7 +361,54 @@ decision rather than a landing.
 
 Both were measured after M's round; the numbers are in §11.
 
-## 9. The counter burned three times — the worked sequence
+## 8a. The arithmetic promotion cast: a class that was our own printer
+
+Ghidra prints `(uint4)(uint1)param_4[1] * 2`; we printed `(uint1)param_4[1] * 2`. A narrow operand
+in a wider arithmetic context gets an explicit promotion cast there and did not here.
+
+**It was not a port gap.** `opIntZext`/`opIntSext`, `isZextCast`/`isSextCast` and
+`isExtensionCastImplied` were all ported. `extension_implied_at` — the port of
+`CastStrategyC::isExtensionCastImplied` (cast.cc:249-297) — opened with an unconditional early
+`return true` for any int-width extension read by add/sub/mult/and/or/xor/eq/ne/PTRADD: zc44's
+measured hide, written INSIDE the port, ahead of both of Ghidra's tests (other operand a constant
+no wider than `promoteSize` or an explicit varnode, AND matching read-facing metatype). The port
+looked complete to a reader and to every axis sweep, and being on no axis it could not be switched
+off, so what it produced could not be priced either.
+
+**The class needs a typed scanner, which is why it is not in §4a.** The unit is the OPERAND, not
+the cast token: a narrow-valued leaf (narrow scalar, narrow array index, narrow-pointer index or
+deref) in a binary-arithmetic position, and whether the cast chain in front of it contains a wide
+cast. Per-operand is symmetric under how many casts either printer spells — Ghidra writes
+`(int4)(uint4)x` where we write `(int4)x` — and a per-token count read that as *ours-more*.
+
+**Measured, one scanner over both sides, the same 1,512 clean pairs:**
+
+```
+                                 spelled / narrow operands   div TUs   loss   S|delta|   exact
+  Ghidra                             491 / 1,425  (34.5 %)       --      --       --      --
+  ours @3eff9a8  (Order K)             7 / 1,404  ( 0.5 %)      250   6,335      484   1,262
+  ours @0b1cbbe  (master CONTROL)      7 / 1,401  ( 0.5 %)      250   6,335      484   1,262
+  ours @2f6321a  (the repair)        497 / 1,439  (34.5 %)        9     514       12   1,503
+```
+
+486 of Ghidra's 491 spelled sites — 99 % — have a consumer in the hide's opcode list, so the hide
+was the whole class; the 5 outside are shifts, and 5 of our own 7 spelled sites were those same
+shifts. **The middle row is the point**: master and the Order K baseline agree to the digit, so
+none of the seven landings between them touched this class and the entire 484 → 12 is `2f6321a`.
+
+**The repair** (`2f6321a`): `extension_implied_at` is Ghidra's test alone again, and the hide is
+the axis value `ext-cast=hide-wide` with the same predicate, the same int-width gate and the zc44
+provenance. **The recompile corpus could not move, and that is proved rather than argued** —
+`ext-cast=promotion`, the canonical arm, returns the bare operand for a zero-extension and `(intN)`
+for a sign-extension BEFORE the implied-cast branch, so it never reached either predicate; a
+`--only` emit of all 250 divergent TUs under the full canonical arm is md5-identical across master
+and the commit, and a test pins the reading. **6,335 of the clean residue's 18,333 loss was our own
+printer**, which is the general lesson: an emission arm inside a ported predicate does not merely
+diverge, it manufactures a class in the instrument that finds classes.
+
+Residue: nine TUs at ±1–2 (7 ours-more, 2 ours-fewer; worst `0001ee98` at 4 against 2), unnamed.
+
+## 9. The counter burned six times — the worked sequence
 
 Each failure produced a confident wrong answer and a different discipline caught it. This is the
 part of the method worth carrying to the next class.
@@ -318,7 +422,7 @@ part of the method worth carrying to the next class.
    space. This produced a fictitious *"48 of 67 overshoot, 0 exact"* and a recommendation against
    the change. Caught only by **tracing a specimen** — reading the C.
 
-A fourth failure, in Order N, is the same family one layer up and is the one to remember. A
+**4.** A fourth failure, in Order N, is the same family one layer up and is the one to remember. A
 census of negated-comparison sites read **237**, was corrected to **233** when a regex turned out
 to be matching `>>` as `>`, and the round then measured **242 → 4** with a single shift-normalized
 scanner over both sides. The first correction was a miscount. The second was not: the earlier
@@ -326,6 +430,25 @@ figures came from a **different scanner** than the one that measured the result,
 looked equally quotable and only one was comparable. **One scanner measures both sides, always** —
 a before/after pair produced by two scanners is not a measurement, and nothing about the numbers
 advertises the mismatch.
+
+The fifth and sixth surfaced when the counter was finally written down as an instrument
+(`scripts/sweep-classify.py`, `d0a505b`), and neither is a spelling problem:
+
+5. **A ONE-SIDED CLASS DEFINITION reports its opposite members as zero, not as missing.**
+   `deref-cast` was published as `67 TUs / 2,539 loss / MORE 67 / FEWER 0`. The identical pattern
+   run without the one-sided filter is **70 / 2,706 / Σ|delta| 94 / MORE 67 / FEWER 3**, and the
+   three are real (`01132`, `02028`, `02549`). "FEWER 0" was not a measurement of the other
+   direction; it was the absence of one, and it read as a measurement.
+6. **NORMALIZING CAN MAKE A CLASS VANISH.** Stripping whitespace glues a label onto its keyword
+   (`gotoLAB_0001`), so `\bgoto\b`'s trailing boundary never fires and the `goto` row left the
+   table entirely. Not a wrong number — *no* number, and a table cannot show you an absent row.
+   Rule 1 needs rule 1 applied to itself: after normalizing, re-check every pattern against the
+   normalized text, not against the text you wrote it for.
+
+The fix for all six is the same and it is not vigilance: the counter is now a script in the tree
+with `--calibrate`, which pins nine published figures — both halves of `deref-cast`, the
+`array-index` row, the `goto` row — and exits non-zero if the withdrawn pattern returns. It has
+been verified to FAIL as well as to pass, by re-arming the old pattern in a copy.
 
 Two rules came out of it. **Normalize before matching** (`re.sub(r'\s+','',text)`): spelling
 differences between two printers are the norm, and this class alone spells one construct three
@@ -340,9 +463,11 @@ and withdrawn before the third measurement settled it.
   since — see the §5 supersession for what Order O did and did not account for.
 - **The parked `merge-datatype` port** is a decision, not a build order: half the largest clean
   class, more Ghidra-faithful, −0.00182 WGSS.
-- `array-index` is the next clean class to open (§4: 31 TUs / 1,138 loss, FEWER 23 / MORE 8).
-  `deref-cast` is no longer "next" — it is measured and on the slate (§8, §11), and its
-  corrected direction is MORE 67 / FEWER 0.
+- `array-index` is the next clean class to open (§4a: 31 TUs / 1,138 loss, FEWER 23 / MORE 8).
+  `deref-cast` is no longer "next" — it is measured and on the slate (§8, §11); its direction is
+  MORE 67 in the published half and MORE 67 / FEWER 3 two-sided (§4a).
+- **The arithmetic promotion class is CLOSED** (§8a, `2f6321a`): Σ|delta| 484 → 12, 1,503 of 1,512
+  TUs exact. Its nine-TU ±1–2 residue is unnamed and is the only part still open.
 - The isolation-sensitive pool is **not** a defect list, and should not be mined as one without a
   context-fair capture method.
 
