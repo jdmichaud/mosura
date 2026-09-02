@@ -334,6 +334,9 @@ pub(crate) struct PrintC<'a> {
     render_stack: Vec<OpId>,
     /// `EmitChoices::ext_cast == Promotion`: leave integer widening to C's promotion.
     ext_cast_promotion: bool,
+    /// `EmitChoices::ext_cast == HideWide` (EMISSION ARM): hide an int-width extension whose
+    /// consumer cannot see it — see [`PrintC::hides_wide_extension`].
+    ext_cast_hide_wide: bool,
     /// `EmitChoices::swi == Int3` (EMISSION ARM): the CALLINDs whose target is the `swi(3)`
     /// CALLOTHER — each prints as the prelude's `__int3()` and its CALLOTHER assign is
     /// suppressed, so the pair becomes the one statement Watcom inlines as the 0xCC byte.
@@ -1179,38 +1182,67 @@ impl<'a> PrintC<'a> {
     /// comparison op whose other operand is a constant no wider than `int` or an explicit
     /// variable, of the same metatype as the extended value; PTRADD's index likewise.
     fn is_extension_cast_implied(&self, op: OpId) -> bool {
-        let out = self.f.op(op).output.unwrap();
-        if self.is_explicit(out) {
-            return false;
-        }
-        // Ghidra answers per READ SITE: `readOp` is the op whose operand is being printed — the
-        // enclosing render (`render_stack`); the extension's own entry is the top.
-        let n = self.render_stack.len();
-        let read_op = if n >= 2 && self.render_stack[n - 1] == op {
-            Some(self.render_stack[n - 2])
-        } else {
-            // printed as a statement of its own (explicit) or at the top: no read site
-            None
-        };
-        match read_op {
-            Some(r) if self.f.vn(out).descend.contains(&r) => self.extension_implied_at(op, out, r),
-            _ => false,
+        match self.extension_read_site(op) {
+            Some((out, r)) => self.extension_implied_at(op, out, r),
+            None => false,
         }
     }
 
-    fn extension_implied_at(&self, _op: OpId, out: VarnodeId, read_op: OpId) -> bool {
-        let ro = self.f.op(read_op);
-        let metatype = meta_class(&self.type_of(out));
-        // EMISSION ARM (recompilation): at int width — C's own promotion width — a consumer
-        // whose result does not depend on signedness (add/sub/mult, the bitwise ops, equality,
-        // a PTRADD index) yields the identical value with or without the cast, so the cast is
-        // hidden regardless of Ghidra's metatype test. Measured: the faithful `(uint4)*(uint1 *)
-        // (p + 0x1f) * 4 + C` address arithmetic moved Watcom's codegen (zc44 −190 weighted)
-        // while being value-identical; narrower widths (the 16-bit `(uint2)byte * 2`, where the
-        // cast pins the computation width) and sign-sensitive consumers keep Ghidra's rule.
-        if self.f.vn(out).size == self.f.size_of_int()
+    /// The `(output, readOp)` an extension is being printed under, or `None` when there is no read
+    /// site — Ghidra's `readOp` argument, which it answers per SITE rather than per op.
+    ///
+    /// `readOp` is the op whose operand is being printed: the enclosing render (`render_stack`),
+    /// the extension's own entry being the top. An explicit output is printed as a statement of
+    /// its own and has no read site.
+    fn extension_read_site(&self, op: OpId) -> Option<(VarnodeId, OpId)> {
+        let out = self.f.op(op).output.unwrap();
+        if self.is_explicit(out) {
+            return None;
+        }
+        let n = self.render_stack.len();
+        if n < 2 || self.render_stack[n - 1] != op {
+            return None;
+        }
+        let r = self.render_stack[n - 2];
+        self.f.vn(out).descend.contains(&r).then_some((out, r))
+    }
+
+    /// Is this extension hidden at its read site — by Ghidra's rule, or by the `hide-wide` arm?
+    /// The two are kept apart on purpose: [`PrintC::extension_implied_at`] is the port and answers
+    /// only what Ghidra answers; [`PrintC::hides_wide_extension`] is the emission arm and answers
+    /// only when its axis is set.
+    fn extension_hidden(&self, op: OpId) -> bool {
+        if self.is_extension_cast_implied(op) {
+            return true;
+        }
+        match self.extension_read_site(op) {
+            Some((out, r)) => self.hides_wide_extension(out, r),
+            None => false,
+        }
+    }
+
+    /// EMISSION ARM (`ext-cast=hide-wide`) — NOT part of Ghidra's rule.
+    ///
+    /// At int width — C's own promotion width — a consumer whose result does not depend on the
+    /// extension (add/sub/mult, the bitwise ops, equality, a PTRADD index) yields the identical
+    /// value with or without the cast, so this arm hides it where Ghidra prints it. Measured:
+    /// the faithful `(uint4)*(uint1 *)(p + 0x1f) * 4 + C` address arithmetic moved Watcom's
+    /// codegen (**zc44, −190 weighted**) while being value-identical. Narrower widths (the
+    /// 16-bit `(uint2)byte * 2`, where the cast pins the computation width) and sign-sensitive
+    /// consumers (divide, the order comparisons) are excluded, so it never changes a value.
+    ///
+    /// It lived INSIDE `extension_implied_at` until Order P, as an unconditional early `return
+    /// true` ahead of Ghidra's two tests. That made the port look complete while suppressing it:
+    /// measured on the calibrated oracle sweep's clean residue, Ghidra spells the promotion cast
+    /// at 491 of 1,425 narrow arithmetic operands and we spelled **7 of 1,404**, and 486 of those
+    /// 491 (99 %) have a consumer in the list below — the arm was the whole class. Being off
+    /// every axis, it could not be switched off or priced. Hence this: same predicate, same
+    /// provenance, on the axis, and `extension_implied_at` is Ghidra's test alone again.
+    fn hides_wide_extension(&self, out: VarnodeId, read_op: OpId) -> bool {
+        self.ext_cast_hide_wide
+            && self.f.vn(out).size == self.f.size_of_int()
             && matches!(
-                ro.code(),
+                self.f.op(read_op).code(),
                 OpCode::IntAdd
                     | OpCode::IntSub
                     | OpCode::IntMult
@@ -1221,9 +1253,11 @@ impl<'a> PrintC<'a> {
                     | OpCode::IntNotequal
                     | OpCode::Ptradd
             )
-        {
-            return true;
-        }
+    }
+
+    fn extension_implied_at(&self, _op: OpId, out: VarnodeId, read_op: OpId) -> bool {
+        let ro = self.f.op(read_op);
+        let metatype = meta_class(&self.type_of(out));
         match ro.code() {
             OpCode::Ptradd => true,
             OpCode::IntAdd
@@ -1982,7 +2016,7 @@ impl<'a> PrintC<'a> {
                 }
                 let (outty, inty) = (self.type_of(out), self.type_of(in0));
                 if is_zext_cast(&outty, &inty) {
-                    if self.is_extension_cast_implied(op) {
+                    if self.extension_hidden(op) {
                         self.render_var(in0)
                     } else {
                         (format!("({}){}", outty.name(), self.operand(in0, 14, false)), 14)
@@ -2054,7 +2088,7 @@ impl<'a> PrintC<'a> {
                     return (format!("(int{n}){}", self.cast_operand(op, 0, 14, false)), 14);
                 }
                 if is_sext_cast(&outty, &inty) {
-                    if self.is_extension_cast_implied(op) {
+                    if self.extension_hidden(op) {
                         self.render_var(in0)
                     } else {
                         (format!("({}){}", outty.name(), self.cast_operand(op, 0, 14, false)), 14)
@@ -4618,6 +4652,7 @@ fn print_c_inner(
         va_last_named: 0,
         render_stack: Vec::new(),
         ext_cast_promotion: choices.ext_cast == super::emit::ExtCast::Promotion,
+        ext_cast_hide_wide: choices.ext_cast == super::emit::ExtCast::HideWide,
         swi_int3: HashSet::new(),
         arm_order_address: choices.arm_order == super::emit::ArmOrder::Address,
         split_pairs: HashMap::new(),

@@ -230,7 +230,9 @@ pub struct EmitChoices {
 
 /// How an integer extension (INT_ZEXT/INT_SEXT) that C's promotion would perform anyway is
 /// rendered. `Ghidra` is `PrintC::opIntZext/opIntSext` with `isExtensionCastImplied` — the
-/// reference rendering (the oracle sweep and the datatests compare against it). `Promotion`
+/// reference rendering (the oracle sweep and the datatests compare against it). `HideWide` is
+/// that rendering plus zc44's extra hide, which was unconditional inside the port until Order P.
+/// `Promotion`
 /// prints the bare operand for a zero-extension and `(intN)x` for a sign-extension, leaving the
 /// widening to C's promotion: value-identical, and the rendering Watcom 10.0a compiles closest to
 /// WAR2's bytes (zc42 vs zc46: the Ghidra casts moved −262 weighted; each shape wants the cast
@@ -239,6 +241,13 @@ pub struct EmitChoices {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExtCast {
     Ghidra,
+    /// EMISSION ARM: Ghidra's rule PLUS zc44's extra hide — an int-width extension whose consumer
+    /// cannot see it (add/sub/mult, the bitwise ops, equality, a PTRADD index) prints bare.
+    /// Value-identical by construction; `PrintC::hides_wide_extension` carries the predicate and
+    /// the provenance, and says why this is an axis: it lived unconditionally inside the ported
+    /// `extension_implied_at` until Order P, where the calibrated sweep priced it at 484 sites in
+    /// 250 clean TUs of divergence that no axis could switch off or measure.
+    HideWide,
     Promotion,
 }
 
@@ -480,9 +489,10 @@ impl EmitChoices {
         },
         Axis {
             name: "ext-cast",
-            values: &["ghidra", "promotion"],
-            doc: "render integer extensions as Ghidra's implied-cast rule (opIntZext/opIntSext) \
-                  or leave the widening to C's promotion (bare zext, (intN) sext)",
+            values: &["ghidra", "hide-wide", "promotion"],
+            doc: "render integer extensions as Ghidra's implied-cast rule (opIntZext/opIntSext), \
+                  as that rule plus zc44's int-width value-insensitive hide, or leave the \
+                  widening to C's promotion (bare zext, (intN) sext)",
         },
         Axis {
             name: "swi",
@@ -600,6 +610,7 @@ impl EmitChoices {
             }),
             "ext-cast" => Some(match self.ext_cast {
                 ExtCast::Ghidra => "ghidra",
+                ExtCast::HideWide => "hide-wide",
                 ExtCast::Promotion => "promotion",
             }),
             "swi" => Some(match self.swi {
@@ -709,6 +720,7 @@ impl EmitChoices {
             "ext-cast" => {
                 self.ext_cast = match value {
                     "ghidra" => ExtCast::Ghidra,
+                    "hide-wide" => ExtCast::HideWide,
                     "promotion" => ExtCast::Promotion,
                     _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
                 }
