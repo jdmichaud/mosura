@@ -427,6 +427,11 @@ mod tests {
     /// A unit with no flags of its own takes the spec's profile; one with flags overrides it.
     /// (Pinned by the line-per-unit difference in the test above; asserted here directly.)
     #[test]
+    /// Note the fallback is the one place the driver deliberately differs from `WatcomDos`,
+    /// which passes a flagless unit NO flags at all. Benign, because the profile it falls back to
+    /// is `buildconfig::watcom_10_0a().base` (pinned by the test above) and `recompile_check`
+    /// sets flags per unit anyway -- but it is a real behavioural difference, so it is stated
+    /// here rather than left inside a claim that the driver reproduces WatcomDos.
     fn unit_flags_override_the_spec_profile_and_empty_falls_back() {
         let d = drv(spec::watcom_10_0a_dos(""));
         let t = d.script_text(&[unit("A", &["-zz"])]).unwrap();
@@ -582,4 +587,19 @@ mod tests {
         let logs = d.split_log(&units, "error: boom\n", &LogSplit::Whole);
         assert_eq!(logs, vec!["error: boom\n".to_string(); 2]);
     }
+
+    /// The DOS spec's flag profile and `buildconfig::watcom_10_0a().base` are the same four
+    /// options in two places, so they can drift apart silently -- and the drift would be nearly
+    /// invisible: `recompile_check` sets flags PER UNIT from buildconfig, so the spec's list is
+    /// only consulted for a unit that carries none. It would take a differently-compiled unit,
+    /// somewhere, to notice. Pinned here rather than wiring the layers together, because the
+    /// duplication is the honest description: one is the WAR2 build profile, the other is this
+    /// compiler's default when a caller expresses no preference.
+    #[test]
+    fn the_dos_spec_profile_matches_the_war2_build_profile() {
+        let spec_flags = spec::watcom_10_0a_dos("").flags;
+        let base = crate::recompile::buildconfig::watcom_10_0a().base;
+        assert_eq!(spec_flags, base, "the spec profile and the WAR2 build profile have drifted");
+    }
+
 }
