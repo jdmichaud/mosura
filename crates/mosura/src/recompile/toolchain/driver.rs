@@ -2,9 +2,14 @@
 //!
 //! Everything a particular compiler needs is in its spec; everything the DRIVING needs — write the
 //! sources, build the invocation, run it, collect the objects, split the diagnostics — is here and
-//! is the same for all of them. `WatcomDos`'s behaviour is reproduced exactly by
+//! is the same for all of them. `WatcomDos`'s behaviour is reproduced by
 //! [`spec::watcom_10_0a_dos`] plus this file, which is the point of the factoring: the DOS-hosted
 //! baseline stops being a special case and becomes one row of data.
+//!
+//! What "reproduced" is pinned to, precisely: the batch script is asserted byte-identical to the
+//! one `WatcomDos` writes inline, and the batching, the isolation retry and the adjudication rule
+//! are ported behaviours. The log SPLIT is re-expressed as spec data ([`LogSplit`]) rather than
+//! copied, so it is equivalent for `wcc386` and not a line-for-line reproduction.
 //!
 //! ## Off by default (design §0)
 //!
@@ -26,7 +31,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use super::spec::{CompilerSpec, Invocation};
+use super::spec::{CompilerSpec, Invocation, LogSplit};
 use super::{CompileOutput, CompileUnit, Toolchain};
 
 /// Why the compiler is being run. Recorded on every invocation; see the module note.
@@ -55,6 +60,18 @@ pub fn last_resort_debt() -> u64 {
     LAST_RESORT_COUNT.load(Ordering::Relaxed)
 }
 
+/// Whether the compiler ANSWERED about a unit: it produced the object, or it said something
+/// about it. Anything else means the environment failed, not the source.
+///
+/// This is a pure function and pinned in the gate because getting it wrong is invisible. The
+/// cache stores only adjudicated entries, so marking an unjudged unit `true` writes a false
+/// COMPILE_FAIL into the cache as a property of the SOURCE, where it survives every later run —
+/// and no compiler-free test can see it, because by construction no compiler ran. A dosemu
+/// hiccup or a full disk mid-round is exactly the case.
+pub fn adjudicated_from(object: Option<&[u8]>, log: &str) -> bool {
+    object.is_some() || !log.trim().is_empty()
+}
+
 /// Reset the debt counter (tests).
 pub fn reset_last_resort_debt() {
     LAST_RESORT_COUNT.store(0, Ordering::Relaxed);
@@ -62,6 +79,9 @@ pub fn reset_last_resort_debt() {
 
 /// A compiler, driven.
 pub struct CompilerDriver {
+    /// Units per session. Batching is what makes a corpus run possible under an emulator; the
+    /// isolation retry in `compile_batch` is what keeps it honest when a session dies.
+    pub batch_size: usize,
     spec: CompilerSpec,
     /// The compiler's installation, as the invocation's `{install}` placeholder.
     install_dir: PathBuf,
@@ -98,6 +118,7 @@ impl CompilerDriver {
             work_dir,
             role,
             own_work_dir: false,
+            batch_size: 200,
         })
     }
 
@@ -200,34 +221,90 @@ impl CompilerDriver {
         }
     }
 
-    fn run(&self, units: &[CompileUnit]) {
+    /// Run one session and return each unit's OWN diagnostics, positionally.
+    fn run(&self, units: &[CompileUnit]) -> Vec<String> {
         match &self.spec.invocation {
-            Invocation::Script { name, .. } => {
+            Invocation::Script { name, log_split, .. } => {
                 if let Some(text) = self.script_text(units) {
                     let _ = std::fs::write(self.work_dir.join(name), text);
                 }
                 let argv = self.command_line(None);
-                let Some((prog, args)) = argv.split_first() else { return };
+                let Some((prog, args)) = argv.split_first() else {
+                    return vec![String::new(); units.len()];
+                };
                 let _ = std::process::Command::new(prog)
                     .args(args)
                     .current_dir(&self.work_dir)
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
                     .status();
+                self.split_log(units, &self.log_text(), log_split)
             }
             Invocation::Native { .. } => {
-                for u in units {
-                    let argv = self.command_line(Some(u));
-                    let Some((prog, args)) = argv.split_first() else { continue };
-                    let _ = std::process::Command::new(prog)
-                        .args(args)
-                        .current_dir(&self.work_dir)
-                        .stdout(std::process::Stdio::null())
-                        .stderr(std::process::Stdio::null())
-                        .status();
+                // One process per unit, so the unit's diagnostics are simply its own output --
+                // captured, not discarded: for a native compiler there is no log FILE, and
+                // throwing stderr away would leave a genuine rejection looking like a silent
+                // abort (`adjudicated_from` would return false and the verdict would never cache).
+                units
+                    .iter()
+                    .map(|u| {
+                        let argv = self.command_line(Some(u));
+                        let Some((prog, args)) = argv.split_first() else { return String::new() };
+                        match std::process::Command::new(prog)
+                            .args(args)
+                            .current_dir(&self.work_dir)
+                            .output()
+                        {
+                            Ok(out) => {
+                                let mut t = String::from_utf8_lossy(&out.stdout).into_owned();
+                                t.push_str(&String::from_utf8_lossy(&out.stderr));
+                                t
+                            }
+                            Err(_) => String::new(),
+                        }
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    /// Attribute a session log to its units. Spec-driven and pure, so the gate tests it without
+    /// a compiler (design §3); `text` is passed in for exactly that reason.
+    pub fn split_log(&self, units: &[CompileUnit], text: &str, split: &LogSplit) -> Vec<String> {
+        let LogSplit::PerUnit { terminator, banners } = split else {
+            return vec![text.to_string(); units.len()];
+        };
+        let mut out = vec![String::new(); units.len()];
+        let mut current = String::new();
+        for line in text.lines() {
+            if banners.iter().any(|b| line.starts_with(b.as_str())) {
+                continue;
+            }
+            current.push_str(line);
+            current.push('\n');
+            if let Some((name, _)) = line.split_once(terminator.as_str()) {
+                let stem = name.trim().rsplit(['\\', '/']).next().unwrap_or("").to_ascii_uppercase();
+                // The terminator carries the file NAME; match it against the source name the spec
+                // would have produced, so a spec whose sources are not `{key}.C` still attributes.
+                let hit = units.iter().position(|u| {
+                    let src = self.spec.source_name_for(&u.key).to_ascii_uppercase();
+                    // Exact on the STEM, never a prefix: `T0` must not claim `T01`'s block.
+                    !stem.is_empty() && src.split('.').next() == Some(stem.as_str())
+                });
+                if let Some(i) = hit {
+                    out[i] = std::mem::take(&mut current);
+                } else {
+                    current.clear();
                 }
             }
         }
+        // Whatever is left belongs to the unit that stopped the session.
+        if !current.trim().is_empty() {
+            if let Some(i) = out.iter().position(|s| s.is_empty()) {
+                out[i] = current;
+            }
+        }
+        out
     }
 
     fn read_object(&self, key: &str) -> Option<Vec<u8>> {
@@ -257,28 +334,55 @@ impl Toolchain for CompilerDriver {
     }
 
     fn compile_batch(&self, units: &[CompileUnit]) -> Vec<CompileOutput> {
-        if units.is_empty() {
-            return Vec::new();
-        }
-        self.stage(units);
-        self.run(units);
-        let log = self.log_text();
-        units
+        let mut results: Vec<CompileOutput> = units
             .iter()
-            .map(|u| {
-                let object = self.read_object(&u.key);
-                CompileOutput {
-                    key: u.key.clone(),
-                    object,
-                    log: log.clone(),
-                    // A unit is adjudicated when the run produced an object for it, or produced a
-                    // log at all (the compiler ran and said something). Neither means the
-                    // environment was broken and nothing reached a verdict — which must not be
-                    // cached as a property of the source (see `CompileOutput::adjudicated`).
-                    adjudicated: true,
-                }
+            .map(|u| CompileOutput {
+                key: u.key.clone(),
+                object: None,
+                log: String::new(),
+                // Nothing has judged this unit yet. The loop sets it only where the compiler
+                // answered; a unit that reaches isolation still silent keeps `false`, so its
+                // non-answer is never cached as a fact about the source.
+                adjudicated: false,
             })
-            .collect()
+            .collect();
+
+        // Index list, so failure isolation can re-run a subset without losing positions. One
+        // aborted session must not condemn the units that merely shared it: they are retried in
+        // smaller groups, and alone, before anything is concluded about them.
+        let mut pending: Vec<usize> = (0..units.len()).collect();
+        let mut group = self.batch_size.max(1);
+        while !pending.is_empty() {
+            let mut next_round: Vec<usize> = Vec::new();
+            for chunk in pending.chunks(group) {
+                let batch: Vec<CompileUnit> = chunk.iter().map(|&i| units[i].clone()).collect();
+                self.stage(&batch);
+                let logs = self.run(&batch);
+                for (&i, log) in chunk.iter().zip(logs) {
+                    let object = self.read_object(&units[i].key);
+                    if adjudicated_from(object.as_deref(), &log) {
+                        results[i].object = object;
+                        results[i].log = log;
+                        results[i].adjudicated = true;
+                    } else {
+                        next_round.push(i);
+                    }
+                }
+            }
+            if group == 1 {
+                // Already alone and still silent: not a rejection, a non-compile. Say so in the
+                // log for the reader, and leave `adjudicated` false so it is not cached.
+                for i in next_round {
+                    if results[i].log.trim().is_empty() {
+                        results[i].log = "no object and no diagnostic (compiler aborted)".into();
+                    }
+                }
+                break;
+            }
+            group = (group / 8).max(1);
+            pending = next_round;
+        }
+        results
     }
 }
 
@@ -406,5 +510,76 @@ mod tests {
         .unwrap();
         assert_eq!(last_resort_debt(), 1, "a last-resort invocation is debt and is counted");
         reset_last_resort_debt();
+    }
+
+    /// The adjudication rule, pinned as a truth table because getting it wrong is INVISIBLE to a
+    /// compiler-free gate: the cache stores only adjudicated entries, so a `true` here on a unit
+    /// nothing judged writes a false COMPILE_FAIL into the cache as a fact about the source, and
+    /// it survives every later run. The no-object-no-log row is the one that matters.
+    #[test]
+    fn only_an_answered_unit_is_adjudicated() {
+        assert!(!adjudicated_from(None, ""), "no object and no diagnostic is NOT a verdict");
+        assert!(!adjudicated_from(None, "   \n\t "), "whitespace is not the compiler speaking");
+        assert!(adjudicated_from(None, "foo.c(3): Error! E1009"), "a rejection is a verdict");
+        assert!(adjudicated_from(Some(&[0x80, 0x00]), ""), "an object is a verdict");
+        assert!(adjudicated_from(Some(&[0x80]), "warning"), "both is still a verdict");
+    }
+
+    /// A session log belongs to the unit it names, not to everyone in the batch. Without this,
+    /// one unit's error makes `adjudicated_from` true for every unit that shared the session.
+    #[test]
+    fn the_session_log_is_split_per_unit() {
+        let d = drv(spec::watcom_10_0a_dos("typedef int int4;"));
+        let Invocation::Script { log_split, .. } = &d.spec().invocation.clone() else {
+            panic!("the DOS spec is a Script invocation")
+        };
+        let units = [unit("T0", &[]), unit("T1", &[]), unit("T2", &[])];
+        let text = concat!(
+            "WATCOM C32 Optimizing Compiler Version 10.0a\n",
+            "Copyright by WATCOM International Corp. 1988, 1994.\n",
+            "T0.C: 12 lines, 0 warnings, 0 errors\n",
+            "T1.C(4): Error! E1009: Expecting ';' but found '}'\n",
+            "T1.C: 4 lines, 0 warnings, 1 error\n",
+            "T2.C: 9 lines, 0 warnings, 0 errors\n",
+        );
+        let logs = d.split_log(&units, text, log_split);
+        assert!(logs[0].contains("T0.C: 12 lines"), "T0 keeps its own summary");
+        assert!(!logs[0].contains("E1009"), "T0 must not inherit T1's error");
+        assert!(logs[1].contains("E1009"), "T1 keeps its error");
+        assert!(logs[2].contains("T2.C: 9 lines"));
+        assert!(!logs[2].contains("E1009"));
+        for l in &logs {
+            assert!(!l.contains("Copyright"), "the banner belongs to the session, not a unit");
+        }
+    }
+
+    /// The case the split exists for: a session that dies partway leaves the units after the
+    /// abort with NOTHING -- and nothing must stay unadjudicated, so the retry sees them and the
+    /// cache never learns a false verdict about them.
+    #[test]
+    fn a_unit_killed_as_collateral_is_left_unadjudicated() {
+        let d = drv(spec::watcom_10_0a_dos("typedef int int4;"));
+        let Invocation::Script { log_split, .. } = &d.spec().invocation.clone() else {
+            panic!("the DOS spec is a Script invocation")
+        };
+        let units = [unit("T0", &[]), unit("T1", &[])];
+        // T0 compiled; then the session died -- T1 was never reached.
+        let logs = d.split_log(&units, "T0.C: 12 lines, 0 warnings, 0 errors\n", log_split);
+        assert!(logs[1].trim().is_empty(), "T1 got no diagnostics of its own");
+        assert!(
+            !adjudicated_from(None, &logs[1]),
+            "a unit with no object and no diagnostics of its OWN was not judged"
+        );
+        assert!(adjudicated_from(None, &logs[0]), "T0 was judged");
+    }
+
+    /// A spec with no per-unit structure hands the whole log over -- honest only because such a
+    /// session holds one unit. Pinned so the `Whole` arm cannot silently become the batch default.
+    #[test]
+    fn a_whole_log_spec_gives_every_unit_the_same_text() {
+        let d = drv(spec::gcc_native("cc", "typedef int int4;"));
+        let units = [unit("T0", &[]), unit("T1", &[])];
+        let logs = d.split_log(&units, "error: boom\n", &LogSplit::Whole);
+        assert_eq!(logs, vec!["error: boom\n".to_string(); 2]);
     }
 }

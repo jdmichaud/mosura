@@ -116,3 +116,82 @@ fn building_any_invocation_runs_no_compiler() {
         let _ = d.script_text(&[u]);
     }
 }
+
+/// The path the compiler-free gate CANNOT reach: a source the compiler REJECTS.
+///
+/// A rejection is a verdict about the source and must be adjudicated (so it caches); a unit
+/// nothing judged must not be. Only a live compiler can prove the diagnostics actually arrive —
+/// under dosemu they come from a log FILE that has to be found and split, and for a native
+/// compiler from stderr that has to be captured rather than discarded. Both were wrong here
+/// before review: the driver marked every unit adjudicated unconditionally, which caches a
+/// toolchain hiccup as a false COMPILE_FAIL against the source, permanently.
+#[test]
+#[ignore = "live-drive: needs dosemu + a Watcom 10.0a install"]
+fn watcom_adjudicates_a_rejected_source_with_its_own_diagnostics() {
+    let install = std::env::var("MOSURA_WATCOM").unwrap_or_else(|_| {
+        "/home/jd/projects/warcraft2-re/tmp/watcom-experiments/watcom_10.0a/WATCOM".into()
+    });
+    if !have("dosemu") || !std::path::Path::new(&install).is_dir() {
+        eprintln!("SKIP: dosemu or the Watcom install is absent");
+        return;
+    }
+    let d = CompilerDriver::new(
+        spec::watcom_10_0a_dos(""),
+        &install,
+        work("wat-rej"),
+        DriverRole::DevelopmentAssistance,
+    )
+    .expect("work dir")
+    .owning_work_dir();
+    // One good unit and one syntactically broken one, in ONE session -- the case where a whole-log
+    // copy would let the good unit's summary adjudicate the broken one and vice versa.
+    let outs = d.compile_batch(&[
+        CompileUnit { key: "T0".into(), source: MVE.into(), flags: vec![] },
+        CompileUnit { key: "T1".into(), source: "int q(void) { return ; ; ) }".into(), flags: vec![] },
+    ]);
+    assert!(outs[0].object.is_some(), "the good unit compiled");
+    assert!(outs[0].adjudicated, "an object is a verdict");
+    assert!(outs[1].object.is_none(), "the broken unit produced no object");
+    assert!(outs[1].adjudicated, "a REJECTION is a verdict about the source, and caches");
+    assert!(
+        !outs[1].log.trim().is_empty(),
+        "the rejected unit carries its own diagnostics: {:?}",
+        outs[1].log
+    );
+    assert!(
+        !outs[0].log.contains("Error!"),
+        "the good unit must NOT inherit its neighbour's error: {:?}",
+        outs[0].log
+    );
+}
+
+/// The same property for a NATIVE compiler, where the diagnostics are stderr rather than a file.
+#[test]
+#[ignore = "live-drive: needs gcc"]
+fn gcc_adjudicates_a_rejected_source_from_captured_stderr() {
+    if !have("gcc") {
+        eprintln!("SKIP: gcc is absent");
+        return;
+    }
+    let d = CompilerDriver::new(
+        spec::gcc_native("gcc", ""),
+        "/usr",
+        work("gcc-rej"),
+        DriverRole::DevelopmentAssistance,
+    )
+    .expect("work dir")
+    .owning_work_dir();
+    let out = d.compile(&CompileUnit {
+        key: "T0".into(),
+        source: "int q(void) { return ; ; ) }".into(),
+        flags: vec![],
+    });
+    assert!(out.object.is_none(), "no object from a rejected source");
+    assert!(
+        !out.log.trim().is_empty(),
+        "gcc's stderr is CAPTURED, not discarded -- without it a real rejection looks like a \
+         silent abort and never caches: {:?}",
+        out.log
+    );
+    assert!(out.adjudicated, "a rejection is a verdict about the source");
+}

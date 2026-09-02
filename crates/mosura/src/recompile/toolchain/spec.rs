@@ -67,9 +67,37 @@ pub enum Invocation {
         per_unit: String,
         /// The wrapper command. Placeholders: `{install}` `{work}` `{script}`.
         command: Vec<String>,
+        /// How to attribute the session log back to the units. See [`LogSplit`].
+        log_split: LogSplit,
     },
     /// One process per unit, run directly. Placeholders: `{flags}` `{src}` `{obj}` `{work}`.
+    ///
+    /// No `log_split` here on purpose: one process per unit means its output IS that unit's
+    /// diagnostics, captured directly, so there is nothing to attribute.
     Native { command: Vec<String> },
+}
+
+/// How a batch session's single log is attributed back to the units that were in it.
+///
+/// This matters for correctness, not tidiness. A unit is cached as a verdict about its SOURCE only
+/// when the compiler answered about that unit; handing every unit a copy of the whole session log
+/// makes "the compiler said something" true for all of them the moment it is true for any of them,
+/// so a unit that died as collateral in someone else's aborted session gets cached as a genuine
+/// compile failure. See `driver::adjudicated_from`.
+#[derive(Debug, Clone)]
+pub enum LogSplit {
+    /// The whole log belongs to every unit. Honest only for a single-unit session.
+    Whole,
+    /// The compiler prints a block per file ending in a line that contains `terminator`, preceded
+    /// by that file's stem (`wcc386`: `FOO.C: 68 lines, 0 warnings, 0 errors`). Attributing by
+    /// scanning for that terminator, rather than assuming one block per unit, is what survives a
+    /// unit aborting mid-file.
+    PerUnit {
+        /// Substring marking the end of a unit's block; the text before it is the file name.
+        terminator: String,
+        /// Line prefixes that belong to the session rather than any unit (banner, copyright).
+        banners: Vec<String>,
+    },
 }
 
 /// A compiler, described.
@@ -158,6 +186,10 @@ pub fn watcom_10_0a_dos(prelude: impl Into<String>) -> CompilerSpec {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
+            log_split: LogSplit::PerUnit {
+                terminator: ".C: ".into(),
+                banners: ["WATCOM C", "Copyright", "WATCOM is"].iter().map(|s| s.to_string()).collect(),
+            },
         },
     }
 }
