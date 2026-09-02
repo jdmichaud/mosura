@@ -20,9 +20,13 @@
 //! 8.3 filenames, its own diagnostic format — stays below.
 
 pub mod cache;
+pub mod driver;
+pub mod spec;
 pub mod watcom;
 
 pub use cache::Cached;
+pub use driver::{CompilerDriver, DriverRole};
+pub use spec::{CompilerSpec, Invocation, ObjectFormat};
 pub use watcom::WatcomDos;
 
 /// One translation unit to compile.

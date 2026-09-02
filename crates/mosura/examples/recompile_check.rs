@@ -20,7 +20,7 @@
 //! answer rather than guessing it.
 use mosura::analysis;
 use mosura::decompile::space::Address;
-use mosura::recompile::toolchain::{Cached, CompileUnit, Toolchain, WatcomDos};
+use mosura::recompile::toolchain::{spec, Cached, CompileUnit, CompilerDriver, DriverRole, Toolchain};
 use mosura::recompile::{
     emitted_symbol_address, ByteVerdict, DivergenceClass, FnKey, Subject, Verdict,
     DIVERGENCE_HEADER,
@@ -97,7 +97,17 @@ fn main() {
     let space = prog.default_space;
 
     let work = std::env::temp_dir().join(format!("mosura-check-{}", std::process::id()));
-    let wcc = WatcomDos::new(watcom, &work, "10.0a").expect("work dir").with_prelude(prelude).owning_work_dir();
+    // Through the generic driver (compiler-driver design §5, Phase 0): the DOS-hosted Watcom is
+    // one CompilerSpec, not a bespoke toolchain. Role VALIDATION -- checking recovered output
+    // against the target is what the compiler is legitimately for, and is not last-resort debt.
+    let wcc = CompilerDriver::new(
+        spec::watcom_10_0a_dos(prelude),
+        watcom,
+        &work,
+        DriverRole::Validation,
+    )
+    .expect("work dir")
+    .owning_work_dir();
     let tc = Cached::new(wcc, &cache_dir).expect("cache dir");
 
     // Select the functions to check, then compile them all in one pass so a whole-corpus run is
