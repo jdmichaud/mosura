@@ -41,6 +41,7 @@
 #include "funcdata.hh"
 #include <iostream>
 #include <sstream>
+#include <algorithm>
 #include <set>
 
 using namespace ghidra;
@@ -157,6 +158,40 @@ int main(int argc, char **argv) {
           m->getCover()->print(cout);
         else
           cout << "(none)";
+        // WHAT READS IT -- the only identity a `unique` shares across implementations.
+        //
+        // A temporary's own offset is an allocation detail: Ghidra's u0x6600 and mosura's u0x1011f
+        // may be the same value, and the storage tells you nothing. Joining them on the def pc
+        // alone is worse than useless -- one pc can define sixteen distinct temporaries, so the
+        // join matches everything and CANNOT FAIL, which manufactures agreement (a 57/57
+        // cross-tab with zero off-diagonal was produced exactly that way, and withdrawn).
+        //
+        // The consumer set is derivable from the same instruction stream on both sides: the pc of
+        // each reading op and the input slot the value occupies there. Two temporaries with the
+        // same consumer set are the same value; different sets mean UNRESOLVED, not a match.
+        // Printed sorted so the field is comparable as text. Still not sufficient on its own:
+        // measured on FUN_0001081c, ambiguous keys fall 16 -> 10 and the worst case 10 -> 7, so a
+        // consumer must report UNRESOLVED rather than match when a key maps to several highs.
+        {
+          vector<string> reads;
+          for (list<PcodeOp *>::const_iterator ri = m->beginDescend(); ri != m->endDescend(); ++ri) {
+            PcodeOp *r = *ri;
+            for (int4 sl = 0; sl < r->numInput(); ++sl) {
+              if (r->getIn(sl) == m) {
+                ostringstream one;
+                one << "0x" << std::hex << r->getAddr().getOffset() << std::dec << ":" << sl;
+                reads.push_back(one.str());
+              }
+            }
+          }
+          sort(reads.begin(), reads.end());
+          cout << " reads=[";
+          for (uint4 k = 0; k < reads.size(); ++k) {
+            if (k) cout << ",";
+            cout << reads[k];
+          }
+          cout << "]";
+        }
         cout << endl;
       }
     }
