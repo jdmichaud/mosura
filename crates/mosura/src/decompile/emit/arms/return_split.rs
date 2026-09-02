@@ -141,7 +141,40 @@ fn sole_bool_return(pr: &PrintC<'_>, s: &Structured, tail_idx: usize) -> Option<
 /// outputs of two bool ops with the same opcode and pairwise-identical inputs (the
 /// rules duplicate the predicate rather than CSE it — the branch's compare and the
 /// return's compare are distinct ops over the same operands in the measured IR).
+/// Resolve a value through a chain of COPYs.
+///
+/// Since `RuleBoolNegate` was ported faithfully (Order Z(5)) a negated comparison is a comparison
+/// flipped IN PLACE plus a COPY of it -- Ghidra's shape, and Ghidra's `RulePropagateCopy` clears
+/// those copies before its own consumers look. Ours survive to print time at some sites, and this
+/// arm's gate below is an IDENTITY test, so a COPY between the `if`'s condition and the returned
+/// boolean made it decline: measured, 15 EXACT of the port's round.
+///
+/// Looking through the copy here is NOT the `render_negated` question and the two must not be
+/// argued alike. `render_negated` is the PRINTER: it must render what Ghidra renders, Ghidra has no
+/// COPY arm, and adding one there would be a divergence (Bob's tripwire test pins exactly that).
+/// This is an EMIT ARM whose whole purpose is to print what Ghidra does not -- Watcom's
+/// materialised `1`/`0` where both decompilers print the merged boolean. Its gate exists to decide
+/// whether the WATCOM rewrite is value-identical, and a COPY does not change a value. Teaching it
+/// to see through one repairs a target-side witness the new IR shape broke; it does not make the
+/// printer less faithful.
+fn thru_copy(pr: &PrintC<'_>, mut v: VarnodeId) -> VarnodeId {
+    // bounded: a copy chain in a well-formed function is short, and a bound is cheaper than
+    // trusting that it can never cycle
+    for _ in 0..8 {
+        let Some(d) = pr.f.vn(v).def else { break };
+        if pr.f.op(d).code() != OpCode::Copy {
+            break;
+        }
+        match pr.f.op(d).input(0) {
+            Some(i) => v = i,
+            None => break,
+        }
+    }
+    v
+}
+
 fn same_bool_value(pr: &PrintC<'_>, a: VarnodeId, b: VarnodeId) -> bool {
+    let (a, b) = (thru_copy(pr, a), thru_copy(pr, b));
     if a == b {
         return true;
     }
