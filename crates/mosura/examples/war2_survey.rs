@@ -1338,6 +1338,69 @@ fn main() {
     } else {
         Default::default()
     };
+
+    // GLOBAL WIDTHS FROM THE ORIGINAL'S OWN INSTRUCTIONS (`MOSURA_GLOBAL_WIDTH=witnessed`).
+    //
+    // `gsizes` below declares a Ram global at the NARROWEST access the decompiled function makes,
+    // which is exactly right for a byte-only global -- FUN_0003ca48's `mov [0x95435],al` must not
+    // become a dword store -- and wrong when one function touches an address at two widths: the
+    // narrow declaration then TRUNCATES a store the original makes wide, and the high bytes are
+    // never written by our C at all.  Measured: 24 addresses, 21 of them READ wider elsewhere in
+    // the image than we store, so a reader sees bytes our C never writes.
+    //
+    // The original's own STORE width is the evidence that separates the two cases, and it is
+    // corpus-wide (one function's byte read is another function's dword store), so it is collected
+    // here, once, from the same normalized instruction stream the rest of the survey uses.  Both
+    // conditions below are byte evidence: widen only where the original STORES wider than we would
+    // AND READS wider than we would store -- the second is the wrong-code criterion and keeps the
+    // arm off addresses that are merely accessed at two widths.
+    //
+    // Off by default: the emit-and-compile check comes before any round (the string-ops lesson).
+    let global_width_arm = std::env::var("MOSURA_GLOBAL_WIDTH").as_deref() == Ok("witnessed");
+    let (ram_store_w, ram_read_w) = if global_width_arm {
+        let t = std::time::Instant::now();
+        let mut sw: HashMap<u64, u32> = HashMap::new();
+        let mut rw: HashMap<u64, u32> = HashMap::new();
+        for (va, _) in &entries {
+            let (next, body_end) = extent_bounds(*va);
+            let end = match body_end {
+                Some(b) => next.min(b),
+                None => next,
+            }
+            .max(*va + 1);
+            let region = prog.memory.read_window(Address::new(ram, *va), (end - *va) as usize);
+            let insns = mosura::recompile::insn::normalize(
+                SURVEY_LANG,
+                &region,
+                *va,
+                &mosura::recompile::insn::NoReloc,
+            )
+            .unwrap_or_default();
+            for x in &insns {
+                for op in &x.sem {
+                    if let Some(mosura::recompile::insn::SemArg::Mem(_, a, sz)) = &op.out {
+                        let e = sw.entry(*a).or_insert(0);
+                        *e = (*e).max(*sz);
+                    }
+                    for i in &op.ins {
+                        if let mosura::recompile::insn::SemArg::Mem(_, a, sz) = i {
+                            let e = rw.entry(*a).or_insert(0);
+                            *e = (*e).max(*sz);
+                        }
+                    }
+                }
+            }
+        }
+        eprintln!(
+            "global-width witness: {} stored addresses, {} read, in {:.1}s",
+            sw.len(),
+            rw.len(),
+            t.elapsed().as_secs_f64()
+        );
+        (sw, rw)
+    } else {
+        (HashMap::new(), HashMap::new())
+    };
     let order_excluded = order_excluded;
 
     let t0 = std::time::Instant::now();
@@ -2320,6 +2383,20 @@ fn main() {
                 .entry(vn.loc.offset)
                 .and_modify(|e| *e = (*e).min(vn.size))
                 .or_insert(vn.size);
+        }
+        // ARM (`MOSURA_GLOBAL_WIDTH=witnessed`): the narrowest-access rule above truncates a
+        // store the original makes wide whenever one function touches an address at two widths.
+        // Widen back to the original's own STORE width, but only where the image also READS it
+        // wider than we would store -- the wrong-code criterion, and the condition that keeps this
+        // off addresses that are merely accessed at two widths.  Never narrows: `max` only.
+        if global_width_arm {
+            for (a, w) in gsizes.iter_mut() {
+                let sw = ram_store_w.get(a).copied().unwrap_or(0);
+                let rw = ram_read_w.get(a).copied().unwrap_or(0);
+                if sw > *w && rw > *w {
+                    *w = sw;
+                }
+            }
         }
         // STACK-BASED CONVENTION. A function whose recovered parameters all live on the STACK is
         // not using default __watcall — Watcom spells that `#pragma aux <name> parm []`, and
