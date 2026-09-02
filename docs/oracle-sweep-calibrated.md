@@ -470,11 +470,17 @@ and withdrawn before the third measurement settled it.
   TUs exact. Its nine-TU ±1–2 residue is unnamed and is the only part still open.
 - The isolation-sensitive pool is **not** a defect list, and should not be mined as one without a
   context-fair capture method.
+- **`array-index` is dissolved at both ends** and is no longer the next class to open: its MORE
+  half is Ghidra over-recovering a call's arity (one register past what the callee reads — Orders
+  S/V/X in the `wc2src-reconcile` ledger, byte-verified on two callees), and its FEWER half is to
+  be re-cut only after M's decision, since M moves the pointee types the class counts.
 
 ## 11. Slate, 2026-09-02 — numbers only
 
-Four measured options, **all on one base**: master `78287fb`, **867 EXACT / WGSS 0.5607**, all
-`kind=user`. Each row is stable at two rounds; the recommendation is not here.
+**RE-MEASURED at the end of the day, base `c8d1f03` (875 EXACT / WGSS 0.56173).** §11a is the
+current slate; the table below it is the `78287fb` measurement, kept because the two together are
+the finding — the same deltas on different ground. Both are `kind=user`, both stable at two rounds,
+and the recommendation is in neither.
 
 ```
   option                    EXACT     WGSS      delta        verdict flips
@@ -498,3 +504,42 @@ prints**, costing one operand form in the compiled output, with no wrong code on
 Neither meets the zero-verdict-regression bar, which is why they are a decision rather than a
 landing. The LOAD-only half of the pair is **not** an option: it looked cheaper at −1 EXACT and
 produces 155 width-mismatched stores across 63 TUs (§8).
+
+## 11a. The slate re-measured — base `c8d1f03`, 875 EXACT / WGSS 0.56173
+
+Every row on **one measured base** (`/data/be2/base875-rec.tsv`, itself a round on the landed
+master), each stable at two rounds with byte-identical TSVs, all `kind=user`.
+
+```
+  option              sha        EXACT     WGSS      delta       verdict flips
+  park                c8d1f03      875     0.56173   —           —
+  M alone             c6d97aa      875     0.56115   −0.00058    0
+  pair alone          c307e59      872     0.56166   −0.00007    4, all down
+  M + pair            dcf197f      872     0.56108   −0.00065    4, all down
+```
+
+**Additivity holds by flip IDENTITY, not by count.** `pair` and `M + pair` flip the *same four
+functions* — `00483`, `02327`, `02328`, `02329` — with the same before/after verdicts in each; M
+contributes zero flips with or without the pair, and the pair contributes the same four with or
+without M. Predicted 0.56108, measured 0.56108. Matching totals alone would not have established
+this, and are not what is being reported.
+
+**Both candidates are now claims about the CHANGE rather than about a base**, which is why the
+older table above is kept rather than replaced:
+
+```
+  M     −0.00058 on 78287fb  and  −0.00058 on c8d1f03   (the pre-N −0.00010 is the outlier,
+                                                         measured before that base moved)
+  pair  −3 EXACT / −0.00007 on b2654ea  and  −3 / −0.00007 on c8d1f03
+```
+
+The pair's price survived a merge-layer landing and a printer change between the two measurements.
+
+**The four downs, unchanged in kind from the earlier measurement.** Three are one family —
+`0005b664`, `0005b68c`, `0005b6c0`, consecutive VAs, EXACT → SAME_SHAPE, all the one-character
+`int2 *` → `uint2 *` change that **Ghidra also prints**. The fourth, `00020650`, crosses
+SAME_SHAPE → MISMATCH **at unchanged similarity (0.769 → 0.769)** — a classification boundary, not
+a degradation, and a bare "4 downs" over-reads it.
+
+`dcf197f` is a measurement tree: `c8d1f03` + M's patch + the pair's patch, verified per file as the
+exact sum of the two (disjoint files, no resolution beyond context). **Nothing lands from it.**
