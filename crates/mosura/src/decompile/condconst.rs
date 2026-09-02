@@ -735,6 +735,57 @@ mod tests {
 
     /// `if (x == 0) { y = x + 7; }` — down the equal edge x is 0, so the dominated read of x in the
     /// add is replaced with constant 0. The core condconst1 mechanism.
+    /// Order Z(5) HAZARD PIN (Bob, 2026-09-02). `find_const_compare` looks THROUGH a `BoolNegate`
+    /// (condconst.rs:596) to reach the comparison, flipping `flip_edge` as it goes. After the
+    /// faithful `RuleBoolNegate` port the negate is a `COPY` of a producer flipped in place
+    /// (ruleaction.cc:5531-5535), so the look-through does not trigger: `comp_op` stays the COPY,
+    /// the `match opc` falls to `_ => return`, and NO ConstPoint is recorded. The edge sense is
+    /// already correct in the flipped producer, so a look-through here must NOT re-flip.
+    ///
+    /// The shape is produced by running the real rule, so it cannot pin a shape the port does not
+    /// make. Whether such a COPY survives to this action is a separate measurement.
+    #[test]
+    fn find_const_compare_sees_a_copy_after_the_boolnegate_port() {
+        use crate::decompile::action::Rule;
+        use crate::decompile::rules::RuleBoolNegate;
+
+        let mut f = func();
+        let reg = f.spaces.by_name("register").unwrap();
+        let x = f.new_input(4, Address::new(reg, 0x20));
+        let zero = f.new_const(4, 0);
+        let eq = f.new_op(OpCode::IntEqual, seq(0, &f), vec![x, zero]);
+        f.new_output(eq, 1, Address::new(reg, 0x100));
+        let eqout = f.op(eq).output.unwrap();
+        let neg = f.new_op(OpCode::BoolNegate, seq(1, &f), vec![eqout]);
+        f.new_output(neg, 1, Address::new(reg, 0x104));
+        let negout = f.op(neg).output.unwrap();
+        let tgt = f.new_const(8, 0x10);
+        let cbr = f.new_op(OpCode::Cbranch, seq(2, &f), vec![tgt, negout]);
+        // a second read of x so `lone_descend` does not bail: the point must have somewhere to go
+        let seven = f.new_const(4, 7);
+        let add = f.new_op(OpCode::IntAdd, seq(0x10, &f), vec![x, seven]);
+        f.new_output(add, 4, Address::new(reg, 0x28));
+        let ret = f.new_op(OpCode::Return, seq(0x20, &f), vec![]);
+        wire(&mut f, 3, &[(0, 2), (0, 1), (1, 2)], &[vec![eq, neg, cbr], vec![add], vec![ret]]);
+
+        assert_eq!(RuleBoolNegate.apply_op(neg, &mut f), 1, "the rule fires on a single-reader negate");
+        assert_eq!(f.op(eq).code(), OpCode::IntNotequal, "the producer was flipped in place");
+        assert_eq!(f.op(neg).code(), OpCode::Copy, "the negate became a COPY");
+
+        let mut points: VecDeque<ConstPoint> = VecDeque::new();
+        find_const_compare(&mut f, &mut points, negout, 0, &[true, true], false);
+
+        // THE PIN. Ghidra's `findConstCompare` (coreaction.cc:4484) has NO COPY arm either -- it
+        // handles BOOL_NEGATE then the comparison opcodes and returns otherwise. Adding a
+        // look-through here would DIVERGE; Ghidra is safe only because the COPY is transient.
+        // The invariant is "the COPY must not reach this action", and it is upstream of this file.
+        assert!(
+            points.is_empty(),
+            "faithful: no ConstPoint from a COPY, exactly as Ghidra -- a COPY arriving here means \
+             copy propagation failed, and THAT is the defect to fix"
+        );
+    }
+
     #[test]
     fn direct_replace_dominated_read() {
         let mut f = func();

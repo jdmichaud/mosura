@@ -245,3 +245,65 @@ pub(crate) fn evaluate(data: &Funcdata, vn1: VarnodeId, vn2: VarnodeId, depth: i
     }
     BooleanMatch::Uncorrelated
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::decompile::action::Rule;
+    use crate::decompile::op::SeqNum;
+    use crate::decompile::rules::RuleBoolNegate;
+    use crate::decompile::space::{Address, SpaceManager};
+    use crate::decompile::Funcdata;
+
+    /// Order Z(5) HAZARD PIN (Bob, 2026-09-02). [`evaluate`] looks THROUGH a `BoolNegate`
+    /// (expression.rs:92 and :112, one per operand), recursing on its input and flipping
+    /// Same<->Complementary. After the faithful `RuleBoolNegate` port the negate is a `COPY` of a
+    /// producer flipped in place, so the look-through does not trigger and the pair reads as
+    /// `Uncorrelated`.
+    ///
+    /// The shape is reachable in a FAITHFUL post-port IR precisely because of the port's
+    /// all-descendants guard: the comparison's readers must ALL be negates, so after the rewrite
+    /// every consumer holds a COPY. Two negates of one comparison is the honest shape here — the
+    /// producer is flipped ONCE and both copies carry that same flipped value, so the truthful
+    /// answer is `Same`. (Comparing a negate against the bare comparison is NOT reachable: a
+    /// non-negate reader makes the rule refuse to fire at all.)
+    #[test]
+    fn evaluate_sees_copies_after_the_boolnegate_port() {
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+        let reg = f.spaces.by_name("register").unwrap();
+        let sq = |o: u64| SeqNum { pc: Address::new(ram, o), uniq: 0 };
+
+        let x = f.new_input(4, Address::new(reg, 0x20));
+        let zero = f.new_const(4, 0);
+        let eq = f.new_op(OpCode::IntEqual, sq(0), vec![x, zero]);
+        f.new_output(eq, 1, Address::new(reg, 0x100));
+        let eqout = f.op(eq).output.unwrap();
+
+        let n1 = f.new_op(OpCode::BoolNegate, sq(1), vec![eqout]);
+        f.new_output(n1, 1, Address::new(reg, 0x104));
+        let n1out = f.op(n1).output.unwrap();
+        let n2 = f.new_op(OpCode::BoolNegate, sq(2), vec![eqout]);
+        f.new_output(n2, 1, Address::new(reg, 0x108));
+        let n2out = f.op(n2).output.unwrap();
+
+        assert_eq!(RuleBoolNegate.apply_op(n1, &mut f), 1, "all readers are negates: the rule fires");
+        assert_eq!(f.op(eq).code(), OpCode::IntNotequal, "the producer was flipped in place");
+        assert_eq!(f.op(n1).code(), OpCode::Copy, "the first negate became a COPY");
+        assert_eq!(f.op(n2).code(), OpCode::Copy, "EVERY reader became a COPY, not just the matched one");
+
+        // THE PIN. Ghidra's `BooleanMatch::evaluate` (expression.cc:111) has NO COPY arm -- only
+        // BOOL_NEGATE and the boolean connectives -- so it reads these two COPYs as Uncorrelated
+        // exactly as we do. Teaching ours to see through the COPY would DIVERGE from Ghidra. The
+        // real invariant is that `RulePropagateCopy` clears the COPY before condition correlation
+        // runs; the truthful answer for the pair IS `Same`, and neither decompiler reaches it from
+        // this shape, so a failure here on real input is an upstream propagation defect.
+        assert_eq!(
+            evaluate(&f, n1out, n2out, 0),
+            BooleanMatch::Uncorrelated,
+            "faithful: Uncorrelated, as Ghidra -- the fix for lost correlation is upstream copy \
+             propagation, never a COPY arm here"
+        );
+    }
+}

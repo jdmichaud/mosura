@@ -3515,6 +3515,70 @@ mod tests {
         f
     }
 
+    /// Order Z(5) HAZARD PIN (Bob, 2026-09-02). After the faithful `RuleBoolNegate` port a negated
+    /// comparison is no longer a rewritten negate: the PRODUCER is flipped in place and the negate
+    /// becomes a `COPY` of it (ruleaction.cc:5531-5535). [`condition_folds_cleanly`] matches the
+    /// CBRANCH condition's DEFINING op against the bare comparison opcodes, so it sees that `Copy`
+    /// and answers `false` where it used to answer `true` — the condition stops being oriented by
+    /// the branch-orientation stage and falls to the deferred normal-form flip. That is a silent
+    /// structural change at every negated-comparison CBRANCH whose COPY survives to structuring.
+    ///
+    /// The shape here is built by RUNNING THE REAL RULE, not by hand, so this cannot be pinning a
+    /// shape the port does not produce. It does NOT establish that such a COPY ever reaches
+    /// structuring — whether our `RulePropagateCopy` clears it first is a separate measurement.
+    #[test]
+    fn condition_folds_cleanly_sees_a_copy_after_the_boolnegate_port() {
+        use crate::decompile::action::Rule;
+        use crate::decompile::op::SeqNum;
+        use crate::decompile::rules::RuleBoolNegate;
+
+        let mut f = cfg(1, &[]);
+        let reg = f.spaces.by_name("register").unwrap();
+        let ram = f.spaces.by_name("ram").unwrap();
+        let sq = |o: u64| SeqNum { pc: Address::new(ram, o), uniq: 0 };
+
+        let x = f.new_input(4, Address::new(reg, 0x20));
+        let zero = f.new_const(4, 0);
+        let eq = f.new_op(OpCode::IntEqual, sq(0), vec![x, zero]);
+        f.new_output(eq, 1, Address::new(reg, 0x100));
+        let eqout = f.op(eq).output.unwrap();
+        let neg = f.new_op(OpCode::BoolNegate, sq(1), vec![eqout]);
+        f.new_output(neg, 1, Address::new(reg, 0x104));
+        let negout = f.op(neg).output.unwrap();
+        let tgt = f.new_const(8, 0x10);
+        let cbr = f.new_op(OpCode::Cbranch, sq(2), vec![tgt, negout]);
+
+        let mut blocks: Vec<BlockBasic> = vec![BlockBasic::default()];
+        blocks[0].ops = vec![eq, neg, cbr];
+        f.set_blocks(blocks);
+
+        // Baseline: a RAW negate is not accepted -- the predicate matches comparison opcodes only.
+        // Pre-port, the OLD rule is what made this true, by rewriting the negate op itself into the
+        // flipped comparison, so by the time the structurer ran the def WAS a comparison.
+        assert!(
+            !condition_folds_cleanly(&f, BlockId(0)),
+            "a raw BOOL_NEGATE is not a comparison; the rule is what used to make this fold"
+        );
+
+        assert_eq!(RuleBoolNegate.apply_op(neg, &mut f), 1, "the rule fires on a single-reader negate");
+
+        // Ghidra's post-conditions: the PRODUCER carries the flipped opcode, the negate is a COPY.
+        assert_eq!(f.op(eq).code(), OpCode::IntNotequal, "the producer was flipped in place");
+        assert_eq!(f.op(neg).code(), OpCode::Copy, "the negate became a COPY, not a new comparison");
+
+        // THE PIN, and note what it asserts. GHIDRA HAS NO COPY ARM HERE EITHER, so teaching this
+        // predicate to look through the COPY would be a DIVERGENCE, not a fix. Ghidra tolerates the
+        // shape only because `RulePropagateCopy` clears the COPY before the structurer runs. So the
+        // invariant this test protects is NOT "handle the COPY" but "the COPY must never get here":
+        // the predicate declines, and if it ever declines on real input the defect is upstream, in
+        // copy propagation, not in this function.
+        assert!(
+            !condition_folds_cleanly(&f, BlockId(0)),
+            "faithful: the predicate declines a COPY, exactly as Ghidra would -- if this ever fires \
+             on corpus input the COPY survived propagation, which is the real defect"
+        );
+    }
+
     fn active(s: &Structured) -> usize {
         (0..s.blocks.len()).filter(|&b| s.blocks[b].active).count()
     }
