@@ -694,6 +694,13 @@ fn sparse_compare(pr: &PrintC<'_>, cond: VarnodeId) -> Option<(VarnodeId, OpCode
     if pr.f.op(d).code() == OpCode::BoolNegate {
         neg = true;
         v = pr.f.op(d).input(0)?;
+    } else if pr.f.op(d).code() == OpCode::Copy {
+        // Since RuleBoolNegate was ported faithfully (Order Z(5)) a negated comparison arrives as
+        // a COPY of an ALREADY-FLIPPED comparison, not as a BOOL_NEGATE of the original: Ghidra
+        // flips the producer in place and turns every negate reading it into a COPY. So look
+        // through the copy, and leave `neg` FALSE -- the flip has already happened upstream and
+        // negating again would undo it.
+        v = pr.f.op(d).input(0)?;
     }
     let d = pr.f.vn(v).def?;
     let o = pr.f.op(d);

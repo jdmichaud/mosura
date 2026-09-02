@@ -2397,11 +2397,28 @@ impl Rule for RuleDumptyHump {
 // itself after no Ghidra class; `scripts/trace-names.py` now reports exactly that as ADAPTATION.
 
 /// `RuleBoolNegate`: a negated comparison is the complementary comparison —
-/// `!(a == b)` → `a != b`, `!(a < b)` → `b <= a`, etc. Comparisons are 0/1, so the rewrite
-/// is exact; it un-nests negations the structurer can't reach (inside `BOOL_AND`/`BOOL_OR`).
-/// Ghidra's `RuleBoolNegate` supports the signed and floating-point comparison variants too — the
-/// float ones flip the `ucomisd`-derived `!(a <= b)` into `b < a` (matching Ghidra) once
-/// `RuleIgnoreNan`/`RuleFloatRange` have collapsed the NaN-guarded web.
+/// Ghidra `RuleBoolNegate::applyOp` (ruleaction.cc), ported faithfully by Order Z(5).
+///
+/// `!(a == b)` becomes `a != b` and `!(a < b)` becomes `b <= a`, but WHERE the rewrite lands is
+/// the whole of it: Ghidra flips the COMPARISON in place and turns every negate that reads it into
+/// a COPY. It does NOT rewrite the negate into a new comparison, and the difference is not
+/// cosmetic --
+///
+/// * the surviving op is the comparison, at the flag-computing instruction's address, so a
+///   consumer that walks back from a branch (`BlockWhileDo::findLoopVariable`) starts from the
+///   same op Ghidra starts from. Measured before this port: on 11 loop-form specimens the two
+///   sides fired at different addresses in 11 of 11, ours always at the Jcc and Ghidra always at
+///   the CMP/TEST/AND, and that shifted what the for-loop walk began at (Order Z(3)).
+/// * the COPY the negates become is what `RulePropagateCopy` then removes, which is why Ghidra
+///   propagates a copy here that we never had.
+///
+/// And it may only fire when EVERY reader of the comparison is a BOOL_NEGATE: flipping a producer
+/// that something else also reads would change what that reader sees. Measured before this port:
+/// 2,435 of our 11,122 firing sites -- 21.9 % -- are ones Ghidra refuses on exactly that test, and
+/// every one of them is a multi-reader comparison (Order Z(4b), `MOSURA_DEBUG=boolnegate`).
+///
+/// `get_booleanflip` (opcodes.cc) also maps BOOL_NEGATE itself to COPY, so `!(!x)` collapses; the
+/// pre-port opcode table had no such entry and declined on double negation.
 pub struct RuleBoolNegate;
 
 impl Rule for RuleBoolNegate {
@@ -2412,7 +2429,18 @@ impl Rule for RuleBoolNegate {
         vec![OpCode::BoolNegate]
     }
     fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
-        let Some(cmp) = data.op(op).input(0).and_then(|v| data.vn(v).def) else { return 0 };
+        // `vn = op->getIn(0); if (!vn->isWritten()) return 0; flip_op = vn->getDef();`
+        let Some(vn) = data.op(op).input(0) else { return 0 };
+        let Some(cmp) = data.vn(vn).def else { return 0 };
+        // "ALL descendants must be negates" -- the guard that makes flipping the producer safe.
+        // Dead ops are filtered because Ghidra's descend list never holds one (a destroyed op is
+        // unlinked from it), so this is the faithful equivalent of iterating that list.
+        let negates: Vec<OpId> =
+            data.vn(vn).descend.iter().copied().filter(|&u| !data.op(u).is_dead()).collect();
+        if negates.iter().any(|&u| data.op(u).code() != OpCode::BoolNegate) {
+            return 0;
+        }
+        // `get_booleanflip` (opcodes.cc), including its BOOL_NEGATE -> COPY row.
         let (flipped, swap) = match data.op(cmp).code() {
             OpCode::IntEqual => (OpCode::IntNotequal, false),
             OpCode::IntNotequal => (OpCode::IntEqual, false),
@@ -2420,6 +2448,7 @@ impl Rule for RuleBoolNegate {
             OpCode::IntLessequal => (OpCode::IntLess, true),
             OpCode::IntSless => (OpCode::IntSlessequal, true),
             OpCode::IntSlessequal => (OpCode::IntSless, true),
+            OpCode::BoolNegate => (OpCode::Copy, false),
             OpCode::FloatEqual => (OpCode::FloatNotequal, false),
             OpCode::FloatNotequal => (OpCode::FloatEqual, false),
             OpCode::FloatLess => (OpCode::FloatLessequal, true),
@@ -2449,10 +2478,16 @@ impl Rule for RuleBoolNegate {
                 if all_negate { "FIRE" } else { "REFUSE" }
             );
         }
-        let (a, b) = (data.op(cmp).input(0).unwrap(), data.op(cmp).input(1).unwrap());
-        data.op_set_opcode(op, flipped);
-        let ins = if swap { [b, a] } else { [a, b] };
-        data.op_set_all_input(op, &ins);
+        // Flip the PRODUCER in place, swapping its operands when the flip needs it, then turn
+        // every negate that reads it into a COPY. The negate ops keep their identity and their
+        // addresses; only their opcode changes.
+        data.op_set_opcode(cmp, flipped);
+        if swap {
+            data.op_swap_input(cmp, 0, 1);
+        }
+        for u in negates {
+            data.op_set_opcode(u, OpCode::Copy);
+        }
         1
     }
 }
@@ -11566,9 +11601,64 @@ mod tests {
         f.new_output(neg, 1, Address::new(reg, 0));
         f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![eq, neg], ..Default::default() }]);
         ActionPool::new("p").with(RuleBoolNegate).apply(&mut f);
-        // !(a == 9)  =>  a != 9
-        assert_eq!(f.op(neg).code(), OpCode::IntNotequal);
-        assert_eq!(f.op(neg).input(0), Some(a));
+        // `!(a == 9)` becomes `a != 9` -- but Ghidra flips the PRODUCER and turns the negate into
+        // a COPY (ruleaction.cc). Before Order Z(5) this test asserted the opposite placement, the
+        // negate becoming the comparison, which is what put our surviving op at the Jcc's address
+        // instead of the CMP's and moved what `findLoopVariable` walks back from.
+        assert_eq!(f.op(eq).code(), OpCode::IntNotequal, "the comparison is flipped in place");
+        assert_eq!(f.op(eq).input(0), Some(a), "and keeps its operands, unswapped for EQUAL");
+        assert_eq!(f.op(neg).code(), OpCode::Copy, "the negate becomes a COPY");
+        assert_eq!(f.op(neg).input(0), Some(eqout), "still reading the comparison's output");
+    }
+
+    /// The guard that makes flipping a producer safe: if anything OTHER than a negate reads the
+    /// comparison, that reader would see the flip, so Ghidra refuses. Measured before the port:
+    /// 2,435 of our 11,122 firing sites are refusals on exactly this test, every one of them a
+    /// multi-reader comparison (`MOSURA_DEBUG=boolnegate`).
+    #[test]
+    fn boolnegate_refuses_a_comparison_with_a_non_negate_reader() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let uniq = f.spaces.by_name("unique").unwrap();
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let nine = f.new_const(4, 9);
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let eq = f.new_op(OpCode::IntEqual, seq, vec![a, nine]);
+        let eqout = f.new_output(eq, 1, Address::new(uniq, 0x100));
+        let neg = f.new_op(OpCode::BoolNegate, seq, vec![eqout]);
+        f.new_output(neg, 1, Address::new(reg, 0));
+        // a SECOND reader that is not a negate
+        let other = f.new_op(OpCode::IntZext, seq, vec![eqout]);
+        f.new_output(other, 4, Address::new(reg, 0x20));
+        f.set_blocks(vec![crate::decompile::BlockBasic {
+            ops: vec![eq, neg, other],
+            ..Default::default()
+        }]);
+        ActionPool::new("p").with(RuleBoolNegate).apply(&mut f);
+        assert_eq!(f.op(eq).code(), OpCode::IntEqual, "the producer is left alone");
+        assert_eq!(f.op(neg).code(), OpCode::BoolNegate, "and the negate stays a negate");
+    }
+
+    /// The ordered comparisons need their operands swapped when they flip: `!(a < b)` is
+    /// `b <= a`, not `a <= b`. Ghidra does it with `opSwapInput(flip_op, 0, 1)` ON THE PRODUCER.
+    #[test]
+    fn boolnegate_swaps_the_operands_of_an_ordered_comparison() {
+        let (mut f, ram) = fd();
+        let reg = f.spaces.by_name("register").unwrap();
+        let uniq = f.spaces.by_name("unique").unwrap();
+        let a = f.new_input(4, Address::new(reg, 0x10));
+        let b = f.new_input(4, Address::new(reg, 0x14));
+        let seq = SeqNum { pc: ram, uniq: 0 };
+        let lt = f.new_op(OpCode::IntLess, seq, vec![a, b]);
+        let ltout = f.new_output(lt, 1, Address::new(uniq, 0x100));
+        let neg = f.new_op(OpCode::BoolNegate, seq, vec![ltout]);
+        f.new_output(neg, 1, Address::new(reg, 0));
+        f.set_blocks(vec![crate::decompile::BlockBasic { ops: vec![lt, neg], ..Default::default() }]);
+        ActionPool::new("p").with(RuleBoolNegate).apply(&mut f);
+        assert_eq!(f.op(lt).code(), OpCode::IntLessequal);
+        assert_eq!(f.op(lt).input(0), Some(b), "operands swapped: !(a < b) is b <= a");
+        assert_eq!(f.op(lt).input(1), Some(a));
+        assert_eq!(f.op(neg).code(), OpCode::Copy);
     }
 
     #[test]
