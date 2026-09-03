@@ -90,6 +90,7 @@ Two corrections rode along, both value-preserving and both measured:
 | e25 | `store-forward` | 976 | 0.6369 | 2 TUs, +1 EXACT, 0 down |
 | e26 | `cmp-sign`: the load pair over an inline load, constants at the operand's width | 977 | 0.6370 | 20 TUs, +1 EXACT, 0 down |
 | e27 | `testmem` on globals | 978 | 0.6372 | 14 TUs, +1 EXACT, five MISMATCH → SAME_SHAPE, 0 down |
+| e28 | a read-only global read at two IR widths declared at the wider one (own-bytes witness) | — | — | REFUTED, not landed: +2 EXACT (FUN_00037280, FUN_000377a4, both probed EXACT) but −3 (FUN_00045aa4, FUN_00045ee0, FUN_0004f580) and 13 downs over 35 TUs — the wider type propagates into the TU's other reads |
 | e24 | the witnessed narrow zext cast SPELLED (`(uint2)x`) + the tier-2 widening gate opened to computed narrow loads | — | — | REFUTED, not landed: the spelled cast reached 131 TUs (33 up / 43 down, +1 −3 EXACT) for a 15-function family — the `XOR xH,xH` window witness cannot tell which register it zeroes; the opened tier-2 gate reached 424 TUs (58 up / 119 down, −20 EXACT): a widened local re-allocates far beyond its own load |
 
 The scrutinee-compared-elsewhere gate on the narrow switch was measured and dropped: declining a
