@@ -87,6 +87,7 @@ Two corrections rode along, both value-preserving and both measured:
 | e22 | the scaled-index witness alone | 971 | 0.6367 | identical to e20 |
 | e23 | `return-split`: negation-aware bool shape, the lone return's branch form | 975 | 0.6369 | 9 TUs, 6 up / 1 down, +4 EXACT |
 | e25 | `store-forward` | 976 | 0.6369 | 2 TUs, +1 EXACT, 0 down |
+| e26 | `cmp-sign`: the load pair over an inline load, constants at the operand's width | 977 | 0.6370 | 20 TUs, +1 EXACT, 0 down |
 | e24 | the witnessed narrow zext cast SPELLED (`(uint2)x`) + the tier-2 widening gate opened to computed narrow loads | — | — | REFUTED, not landed: the spelled cast reached 131 TUs (33 up / 43 down, +1 −3 EXACT) for a 15-function family — the `XOR xH,xH` window witness cannot tell which register it zeroes; the opened tier-2 gate reached 424 TUs (58 up / 119 down, −20 EXACT): a widened local re-allocates far beyond its own load |
 
 The scrutinee-compared-elsewhere gate on the narrow switch was measured and dropped: declining a
@@ -115,6 +116,16 @@ after improving, three switch-label counts grew by one.
 - The sound family (`ADD EDX,k ; MOV EAX,EDX` for `return rem % 4 + k`, 14 functions) is not a
   flags matter either: `-os`, `-onasx`, `-onax`, `-ot`, `-oe`, `-ol`, `-oi`, `-onalx` and no
   `-d1+` all keep the `LEA` (or change unrelated code). Closed.
+- A 16-bit unsigned division (`XOR BH,BH ; XOR EDX,EDX ; DIV BX` for `600 / byte`, the
+  0x167b8 quintet and 7 functions): `(uint2)600 / (uint2)b`, `600U / (uint2)b`, `(uint4)600 / b`
+  and 16-bit temporaries all promote to a 32-bit `IDIV`/`DIV`.
+- The argument-setup order of a constant beside a function input (`MOV EAX,ECX ; MOV EDX,k` vs
+  ours the other way, FUN_0004cdc0/FUN_0004d1a0): admitting the input as reorder-safe and
+  permuting the call prints the recovered `parm [edx] [eax] [ebx]` order, and the bytes do not
+  move — the scheduler orders the two independent moves; the arm change was reverted.
+- A zero the original reuses across a call (`XOR EDX,EDX ; CALL f ; MOV DL,AL` with `f`
+  declared `modify [eax]`, FUN_000498a0; the callee-preserved zero as the next argument,
+  FUN_00056db4): this compiler re-zeroes from our C even with the precise clobber list.
 - The byte register zeroed then stored (`XOR DL,DL ; MOV [..],DL` for `p[i] = 0`, FUN_00057fcc
   and the 0x2c08c loop trio): `'\0'`, a `(uint1)0` cast, a `char *` pointee, and a zero-initialized
   byte local (declared before or at the store) all compile to the immediate store.
