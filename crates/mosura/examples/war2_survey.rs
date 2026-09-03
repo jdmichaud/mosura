@@ -2404,24 +2404,43 @@ fn main() {
         // an INDIRECT across every call and a phi at every join), and excluding INDIRECT/MULTIEQUAL
         // defs still let the return-guard COPY through -- 54 read-only TUs were widened either way.
         // The instruction stream has no such ambiguity: a store is a memory operand in the output.
-        let gwrote: std::collections::HashSet<u64> = if global_width_arm {
-            mosura::recompile::insn::normalize(
-                SURVEY_LANG,
-                &region,
-                *va,
-                &mosura::recompile::insn::NoReloc,
-            )
-            .unwrap_or_default()
+        let own_norm = if global_width_arm {
+            mosura::recompile::insn::normalize(SURVEY_LANG, &region, *va, &mosura::recompile::insn::NoReloc).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let gwrote: std::collections::HashSet<u64> = own_norm
             .iter()
             .flat_map(|x| x.sem.iter())
             .filter_map(|op| match &op.out {
                 Some(mosura::recompile::insn::SemArg::Mem(_, a, _)) => Some(*a),
                 _ => None,
             })
-            .collect()
-        } else {
-            Default::default()
-        };
+            .collect();
+        // the widest GENUINE read of each absolute address in this function's own bytes: a
+        // dword read followed by `SAR r,0x10` is this compiler's sign-extension of the SHORT two
+        // bytes above (the dword trick), not a four-byte object at that address (measured: the
+        // trick's reads widened three array bases to `int`, round e28)
+        let mut own_read_w: std::collections::HashMap<u64, u32> = Default::default();
+        for (k, x) in own_norm.iter().enumerate() {
+            // the trick's `SAR` may sit a couple of instructions after its load (scheduled)
+            let trick = x.text.strip_prefix("MOV E").and_then(|r| r.split(',').next()).is_some_and(|reg| {
+                let sar = format!("SAR E{reg},0x10");
+                own_norm[k + 1..(k + 4).min(own_norm.len())].iter().any(|y| y.text == sar)
+            });
+            if trick {
+                continue;
+            }
+            for op in &x.sem {
+                for arg in &op.ins {
+                    if let mosura::recompile::insn::SemArg::Mem(_, a, sz) = arg {
+                        let e = own_read_w.entry(*a).or_insert(0);
+                        *e = (*e).max(*sz);
+                    }
+                }
+            }
+        }
+        let mut gsizes_max: std::collections::HashMap<u64, u32> = std::collections::HashMap::new();
         for i in 0..f.num_varnodes() as u32 {
             let vn = f.vn(mosura::decompile::varnode::VarnodeId(i));
             // `Processor` covers ram AND register, so select the data space by NAME — the
@@ -2435,6 +2454,10 @@ fn main() {
             gsizes
                 .entry(vn.loc.offset)
                 .and_modify(|e| *e = (*e).min(vn.size))
+                .or_insert(vn.size);
+            gsizes_max
+                .entry(vn.loc.offset)
+                .and_modify(|e| *e = (*e).max(vn.size))
                 .or_insert(vn.size);
         }
         // ARM (`MOSURA_GLOBAL_WIDTH=witnessed`): the narrowest-access rule above truncates a
@@ -2450,6 +2473,17 @@ fn main() {
         // read-only TU has nothing to repair: its byte read of a byte it uses is already right.
         if global_width_arm {
             for (a, w) in gsizes.iter_mut() {
+                // A READ-ONLY global this function reads at two IR widths, its own bytes reading
+                // it at the wider one (`MOV BX,word ptr [g]` for the divisor, `MOV AL,[g]` for the
+                // byte factor, WAR2 FUN_000377a4): declared at the wider width, the narrower reads
+                // print as casts of the same bytes — probed EXACT. The same-function two-width
+                // gate keeps this off the 138 read-only TUs the blanket widening moved.
+                if let (Some(&mx), Some(&rw)) = (gsizes_max.get(a), own_read_w.get(a)) {
+                    if mx > *w && rw >= mx && !gwrote.contains(a) {
+                        *w = mx;
+                        continue;
+                    }
+                }
                 if !gwrote.contains(a) {
                     continue;
                 }
