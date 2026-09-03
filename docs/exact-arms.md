@@ -36,6 +36,7 @@ Three more arms followed in the same method (rounds e8–e10):
 | `load-hoist` (`load_hoist.rs`, a setup pass over `force_explicit`/`force_implied`) | the original's load at the load's address reads the frame through a scaled index, no `LEA` at the pointer's address | an explicit pointer temp into a frame array whose load is inlined after the index advances: the 0x2a75c trio (`uVar = auStack[i]; i++; *(..) = uVar;`) | `x86_watcom_load_hoist.xml` |
 | `return-split`, the branch form (`return_split.rs`, `Site::Return`) | the original branches over the constant right after the compare (`TEST AL,AL ; JZ ; MOV AL,1`), no `SETcc` | a lone `return cVar1 != '\0';` the decompiler collapsed from `if (f() == 0) return 0; return 1;` (FUN_0002a228); the [if]+[bool return] shape now sees through the branch's BOOL_NEGATE and past heritage's return copies (FUN_0002a31c, FUN_0002ac70, FUN_00020790) | `x86_watcom_branch_ret.xml` |
 | `store-forward` (`store_forward.rs`, at `ValueSite::CallArg` after mask-cast) | the call's window stores the global then reloads it (`MOV [g],AX .. MOV AX,[g]`) | an argument that is the value just stored to a global, named by the value (`g = h; f(h);`): FUN_00014214, FUN_00014240 (28 functions carry a differing global load) | `x86_watcom_store_fwd.xml` |
+| `testmem` on globals (`testmem.rs`, `render_global` at `ValueSite::VarEntry`) | the original's memory-direct `TEST byte ptr [g],imm` at the mask's address | a narrow global masked into a zero-test (`(uRam & 8) != 0`) prints as the int-wide access `*(int4 *)&uRam`: FUN_00037280 (7 near functions carry the row) | (the LOAD half's axis and witness, unchanged) |
 | far return (`Funcdata::far_return`, `far_return_from_evidence`) | every return a `RETF` | one far-called handler, FUN_00058840 | `x86_watcom_far_return.xml` + `guard_contract` |
 | dummy stack parameters (`Funcdata::extra_stack_params`, `dummy_stack_params`) | a `RET n` on a function with no recovered parameter: n/4 unused stack parameters and `parm []` | pointer-called callbacks that ignore their argument: FUN_0004dd2c, FUN_0004e820 | `x86_watcom_dummy_param.xml` + `guard_contract` |
 | dropped parameters (`Funcdata::dropped_params`, `buildconfig::phantom_params_from_evidence`) | the register of the LAST recovered parameter pushed among the function's leading saves and popped before its returns, the parameter flowing only into callees | the callee-save family: `PUSH EDX .. POP EDX` missing because the pass-through EDX was declared a parameter (an argument register is the caller's to lose; a preserved one was never an argument), 87 functions | corpus guard `guard_phantom` (0x2c160, 0x11f18) |
@@ -88,6 +89,7 @@ Two corrections rode along, both value-preserving and both measured:
 | e23 | `return-split`: negation-aware bool shape, the lone return's branch form | 975 | 0.6369 | 9 TUs, 6 up / 1 down, +4 EXACT |
 | e25 | `store-forward` | 976 | 0.6369 | 2 TUs, +1 EXACT, 0 down |
 | e26 | `cmp-sign`: the load pair over an inline load, constants at the operand's width | 977 | 0.6370 | 20 TUs, +1 EXACT, 0 down |
+| e27 | `testmem` on globals | 978 | 0.6372 | 14 TUs, +1 EXACT, five MISMATCH → SAME_SHAPE, 0 down |
 | e24 | the witnessed narrow zext cast SPELLED (`(uint2)x`) + the tier-2 widening gate opened to computed narrow loads | — | — | REFUTED, not landed: the spelled cast reached 131 TUs (33 up / 43 down, +1 −3 EXACT) for a 15-function family — the `XOR xH,xH` window witness cannot tell which register it zeroes; the opened tier-2 gate reached 424 TUs (58 up / 119 down, −20 EXACT): a widened local re-allocates far beyond its own load |
 
 The scrutinee-compared-elsewhere gate on the narrow switch was measured and dropped: declining a
@@ -132,6 +134,10 @@ after improving, three switch-label counts grew by one.
   temporary (`MOVSX EAX,CX`), the bare global, a deref of the absolute address with and without
   `volatile` (`MOVSX EAX,[ECX]`), and the flags `-os`, `-onasx` (`MOVSX EAX,word ptr [g]`),
   `-onax`, no `-d1+`. Closed.
+- A top-of-function copy of a byte global the original loads at the use (`xVar1 = xRam000846ea;`
+  hoisted, FUN_0001d758, 59 functions reload a byte global): printing it inline frees the
+  register the original held it in (`PUSH EBX .. MOV EBX,EDX .. POP EBX` lost, 3 rows worse).
+  The `unsnapshot` arm was built, probed, and removed.
 - The byte register zeroed then stored (`XOR DL,DL ; MOV [..],DL` for `p[i] = 0`, FUN_00057fcc
   and the 0x2c08c loop trio): `'\0'`, a `(uint1)0` cast, a `char *` pointee, and a zero-initialized
   byte local (declared before or at the store) all compile to the immediate store.
