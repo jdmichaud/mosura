@@ -35,7 +35,7 @@ pub(crate) fn render(pr: &mut PrintC<'_>, op: OpId, strict: bool, prec: u8) -> O
     if !leaf(pr, a) || !leaf(pr, b) {
         return None;
     }
-    let (ra, rb) = (register_of(pr, a), register_of(pr, b));
+    let (ra, rb) = (operand_of(pr, a), operand_of(pr, b));
     pr.report.cmp_order_candidates.push((pc, ra, rb));
     if !pr.recovered.cmp_order_sites.contains(&pc) {
         return None;
@@ -66,7 +66,22 @@ fn leaf(pr: &PrintC<'_>, v: VarnodeId) -> bool {
 
 /// `(offset, size)` of `v` in the register space — `None` for anything else (memory, a
 /// temporary, a stack slot): only a register the disassembly can name is matched by the witness.
-fn register_of(pr: &PrintC<'_>, v: VarnodeId) -> Option<(u64, u32)> {
+/// A compare operand the original's `CMP` can name: a general register (by register-space
+/// offset and size) or a GLOBAL by its address (`CMP DL,byte ptr [0x8f042]`, WAR2 FUN_00014990:
+/// two byte globals compared, the memory operand names the source's right-hand side).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CmpOperand {
+    Reg(u64, u32),
+    Mem(u64),
+}
+
+fn operand_of(pr: &PrintC<'_>, v: VarnodeId) -> Option<CmpOperand> {
     let vn = pr.f.vn(v);
-    (pr.f.spaces.by_name("register") == Some(vn.loc.space)).then_some((vn.loc.offset, vn.size))
+    if pr.f.spaces.by_name("register") == Some(vn.loc.space) {
+        Some(CmpOperand::Reg(vn.loc.offset, vn.size))
+    } else if pr.f.spaces.by_name("ram") == Some(vn.loc.space) {
+        Some(CmpOperand::Mem(vn.loc.offset))
+    } else {
+        None
+    }
 }

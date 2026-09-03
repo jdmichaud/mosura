@@ -19,6 +19,7 @@
 //! this module consumes such an answer, never invents one.
 
 use super::insn::{NormInsn, SemArg, SemOp};
+pub use crate::decompile::emit::arms::cmp_order::CmpOperand;
 use super::x86enc;
 use std::collections::HashMap;
 
@@ -370,13 +371,15 @@ pub fn masked_args_from_evidence(
 /// register (the port may hold the value as `AL` where the CMP names `EAX`); a memory operand's
 /// text is not matched, and a site with no decisive register stays as the port prints it.
 pub fn cmp_orders_from_evidence(
-    cands: &[(u64, Option<(u64, u32)>, Option<(u64, u32)>)],
+    cands: &[(u64, Option<CmpOperand>, Option<CmpOperand>)],
     insns: &[NormInsn],
 ) -> std::collections::HashSet<u64> {
     let mut out = std::collections::HashSet::new();
-    let same = |r: Option<(u64, u32)>, c: Option<(u64, u32)>| -> bool {
+    // a register names a register of the same family; a global names its own address
+    let same = |r: Option<CmpOperand>, c: Option<CmpOperand>| -> bool {
         match (r, c) {
-            (Some((ro, _)), Some((co, _))) => ro & !3 == co & !3,
+            (Some(CmpOperand::Reg(ro, _)), Some(CmpOperand::Reg(co, _))) => ro & !3 == co & !3,
+            (Some(CmpOperand::Mem(ra)), Some(CmpOperand::Mem(ca))) => ra == ca,
             _ => false,
         }
     };
@@ -386,12 +389,12 @@ pub fn cmp_orders_from_evidence(
             continue;
         };
         let Some((first, second)) = cmp.split_once(',') else { continue };
-        let (first, second) = (x86_reg_by_name(first.trim()), x86_reg_by_name(second.trim()));
+        let (first, second) = (cmp_operand_by_name(first.trim()), cmp_operand_by_name(second.trim()));
         // whichever CMP operand names one of the port's operands decides: the first operand
         // naming the port's LEFT (or the second its RIGHT) is the port's order; the first naming
         // the RIGHT (or the second the LEFT) is the mirrored one. A narrowed compare may hold
         // one side in a temporary the disassembly cannot name — the other side still decides.
-        let names = |r: Option<(u64, u32)>, c: Option<(u64, u32)>, other: Option<(u64, u32)>| same(r, c) && !same(r, other);
+        let names = |r: Option<CmpOperand>, c: Option<CmpOperand>, other: Option<CmpOperand>| same(r, c) && !same(r, other);
         let mirrored = if names(first, left, right) || names(second, right, left) {
             false
         } else {
@@ -402,6 +405,17 @@ pub fn cmp_orders_from_evidence(
         }
     }
     out
+}
+
+/// A `CMP` operand as the arm describes it: a general register, or a bare absolute memory
+/// operand (`byte ptr [0x8f042]`, `[0x973d8]`) by its address.
+fn cmp_operand_by_name(t: &str) -> Option<CmpOperand> {
+    if let Some((o, s)) = x86_reg_by_name(t) {
+        return Some(CmpOperand::Reg(o, s));
+    }
+    let inner = t.rsplit_once('[')?.1.strip_suffix(']')?;
+    let addr = inner.strip_prefix("0x")?;
+    u64::from_str_radix(addr, 16).ok().map(CmpOperand::Mem)
 }
 
 /// The x86 general register a disassembly operand names, as `(offset, size)` in the register
@@ -1666,12 +1680,19 @@ mod tests {
     #[test]
     fn cmp_order_witness_reads_the_cmp_operand_order() {
         let insns = lift("39c20f9dc0"); // CMP EDX,EAX ; SETGE AL
-        let (eax, edx) = (Some((0u64, 4u32)), Some((8u64, 4u32)));
+        let (eax, edx) = (Some(CmpOperand::Reg(0, 4)), Some(CmpOperand::Reg(8, 4)));
         assert!(cmp_orders_from_evidence(&[(0x1002, eax, edx)], &insns).contains(&0x1002), "EDX first, EDX the port's right operand: mirror");
         assert!(cmp_orders_from_evidence(&[(0x1002, edx, eax)], &insns).is_empty(), "the port already prints the CMP's order");
         assert!(cmp_orders_from_evidence(&[(0x1002, None, None)], &insns).is_empty(), "no register to match, no decision");
         // the port holds the value in a sub-register (AL) where the CMP names EAX: the container matches
-        assert!(cmp_orders_from_evidence(&[(0x1002, Some((0, 1)), edx)], &insns).contains(&0x1002));
+        assert!(cmp_orders_from_evidence(&[(0x1002, Some(CmpOperand::Reg(0, 1)), edx)], &insns).contains(&0x1002));
+        // MOV DL,[0x8032e] ; CMP DL,byte ptr [0x8f042] ; JBE: the memory operand is the source's
+        // right-hand side — the port's operands the other way round mirror (WAR2 FUN_00014990)
+        let mem = lift("8a152e0308003a1542f0080076f0");
+        let (a, b) = (Some(CmpOperand::Mem(0x8032e)), Some(CmpOperand::Mem(0x8f042)));
+        assert_eq!(mem[1].text, "CMP DL,byte ptr [0x8f042]", "{:?}", mem.iter().map(|x| (x.addr, &x.text)).collect::<Vec<_>>());
+        assert!(cmp_orders_from_evidence(&[(0x1006, b, a)], &mem).contains(&0x1006), "the global in memory is the right operand: mirror");
+        assert!(cmp_orders_from_evidence(&[(0x1006, a, b)], &mem).is_empty());
     }
 
     /// The narrow zero-extension keeps its cast where the original zeroes only the high byte

@@ -464,6 +464,19 @@ int mve(int a)
 }
 "#;
 
+/// Two byte globals compared (WAR2 FUN_00014990): the source wrote `b >= a`; the compiler
+/// loads the left-hand side and compares against the right in memory (`MOV AL,[b] ; CMP
+/// AL,[a]`); the decompiler normalizes to `a <= b` — the cmp-order arm reads the memory
+/// operand as the right-hand side and mirrors back.
+const CMP_MEM_SRC: &str = r#"
+extern unsigned char a;
+extern unsigned char b;
+int mve(void)
+{
+    return b >= a;
+}
+"#;
+
 /// Every MVE, in the generator's order.
 pub const MVES: &[Mve] = &[
     Mve { key: "CSAVE", sym: "mve_", source: CALLEE_SAVE_SRC, fixture: "x86_watcom_callee_save.xml", base: 0x100000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(1));", "LOG_RET(mve(3));", "LOG_RET(mve(16));"], writes: &[("read16", "dst", 16)] },
@@ -491,6 +504,7 @@ pub const MVES: &[Mve] = &[
     Mve { key: "CMPSIGN", sym: "mve_", source: CMP_SIGN_SRC, fixture: "x86_watcom_cmp_sign.xml", base: 0x260000, inputs: &["{ short m[2]; m[0] = 1; m[1] = 0; LOG_RET(mve((struct s *)m)); m[0] = -1; LOG_RET(mve((struct s *)m)); m[0] = 2; LOG_RET(mve((struct s *)m)); }"], writes: &[] },
     Mve { key: "DUMMY", sym: "mve_", source: DUMMY_PARAM_SRC, fixture: "x86_watcom_dummy_param.xml", base: 0x280000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(5));"], writes: &[] },
     Mve { key: "FARRET", sym: "mve_", source: FAR_RETURN_SRC, fixture: "x86_watcom_far_return.xml", base: 0x290000, inputs: &["{ total = 1; LOG_RET(mve(2)); LOG_RET(total); }"], writes: &[] },
+    Mve { key: "CMPMEM", sym: "mve_", source: CMP_MEM_SRC, fixture: "x86_watcom_cmp_mem.xml", base: 0x2a0000, inputs: &["{ a = 3; b = 9; LOG_RET(mve()); a = 9; b = 3; LOG_RET(mve()); a = 5; b = 5; LOG_RET(mve()); }"], writes: &[] },
     Mve { key: "PTROFF", sym: "mve_", source: PTR_OFFSET_SRC, fixture: "x86_watcom_ptr_offset.xml", base: 0x270000, inputs: &["{ int m[4]; m[0] = 5; m[1] = 0x00030000; m[2] = 0x7fff0003; m[3] = 0; LOG_RET(mve(m)); m[2] = 0xfffe0000; LOG_RET(mve(m)); }"], writes: &[] },
 ];
 

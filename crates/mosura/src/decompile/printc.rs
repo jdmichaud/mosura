@@ -132,7 +132,7 @@ pub struct EmitReport {
     /// the source wrote first; the original's own `CMP` at that address has not — this compiler
     /// emits `CMP a,b` for `a < b` and `CMP b,a` for `b > a`. A target rule reads the CMP's operand
     /// order and decides the `cmp-order` sites (`buildconfig::cmp_orders_from_evidence`).
-    pub cmp_order_candidates: Vec<(u64, Option<(u64, u32)>, Option<(u64, u32)>)>,
+    pub cmp_order_candidates: Vec<(u64, Option<arms::cmp_order::CmpOperand>, Option<arms::cmp_order::CmpOperand>)>,
     /// Every zero-extension NARROWER than int (`(uint2)byte`, the IR's 16-bit arithmetic) the
     /// `ext-cast=promotion` arm would print bare, as `(instruction address, in size, out size)`.
     /// The IR's 2-byte ZEXT does not say how the compiler widened: this one zero-extends into

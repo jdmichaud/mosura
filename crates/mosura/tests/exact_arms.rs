@@ -179,6 +179,17 @@ fn far_return_is_witnessed_by_retf() {
     assert!(mosura::recompile::buildconfig::far_return_from_evidence(&insns));
 }
 
+/// `cmp-order` on globals: the memory operand of the original's `CMP` names the source's
+/// right-hand side, so the normalized `a <= b` mirrors back to `b >= a`.
+#[test]
+fn global_compare_mirrors_to_the_cmp_memory_operand() {
+    let (f, insns) = decompiled("x86_watcom_cmp_mem.xml");
+    let reference = reference_print(&f);
+    let (c, recovered) = recovered_print(&f, &insns);
+    assert!(!recovered.cmp_order_sites.is_empty(), "the witness read the memory operand: {:?}\n{reference}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
+    assert!(c.contains(">="), "mirrored:\n{c}\nreference:\n{reference}");
+}
+
 /// A sign-extension of an unsigned-typed piece re-signs the operand at its own width: the
 /// split local's high half is `(int4)(int2)` like its low half, never a zero-extending `(int4)`
 /// of the unsigned accessor.
