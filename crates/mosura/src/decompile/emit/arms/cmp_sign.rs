@@ -41,10 +41,15 @@ pub(crate) fn render(pr: &mut PrintC<'_>, op: OpId, sym: &str, prec: u8) -> Opti
     if !witnessed {
         return None;
     }
+    // a constant against a re-signed operand prints at the operand's width (`-4` is `0xfffc`
+    // beside `(uint2)x`: the promotion of `-4` would never match)
     let cast = |pr: &mut PrintC<'_>, slot: usize, v: VarnodeId, narrow: bool, right: bool| -> String {
         if narrow {
             let inner = pr.cast_operand(op, slot, 14, right);
             format!("({}){inner}", Datatype::Uint(pr.f.vn(v).size).name())
+        } else if pr.f.vn(v).is_constant() && pr.f.vn(v).size < pr.f.size_of_int() {
+            let w = pr.f.vn(v).size;
+            format!("0x{:x}", pr.f.vn(v).constant_value() & ((1u64 << (8 * w)) - 1))
         } else {
             pr.cast_operand(op, slot, prec, right)
         }

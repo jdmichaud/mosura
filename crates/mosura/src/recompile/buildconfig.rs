@@ -716,24 +716,27 @@ pub fn cmp_signs_from_evidence(
                 (load && global.is_none_or(|g| src.ends_with(&format!("[0x{g:x}]")))) || copy
             })
         });
-        // the `XOR r,r ; MOV r16,[global]` pair: the zero-extending load of THE candidate global
-        // (FUN_00029b50's `iRam000948d8 == 0x3c`); a pair loading anything else is some other
-        // value's load (measured: FUN_0004753c lost EXACT to a pair loading its other operand,
-        // round e14; FUN_0001562c to a register local's own load, round e13)
-        let zero_then_load = global.is_some_and(|g| {
-            let operand = format!("[0x{g:x}]");
-            window.windows(2).any(|w| {
-                let z = w[0].text.strip_prefix("XOR ").and_then(|r| {
-                    let (a, b) = r.split_once(',')?;
-                    (a == b && a.starts_with('E')).then_some(a)
-                });
-                z.is_some_and(|reg| {
-                    let low = &reg[1..]; // `EAX` -> `AX`
-                    let byte = format!("{}L", &low[..1]);
-                    w[1].text.starts_with("MOV ")
-                        && w[1].text[4..].split(',').next().is_some_and(|d| d == low || d == byte)
-                        && w[1].text.ends_with(&operand)
-                })
+        // the `XOR r,r ; MOV r16,[..]` pair: the zero-extending load of THE candidate — a global
+        // by its address (FUN_00029b50's `iRam000948d8 == 0x3c`), an inline load by any memory
+        // operand (FUN_0003f7e4's `*piVar1 == -4` under `XOR EBX,EBX ; MOV BX,[EDX]`); a pair
+        // loading another global is some other value's load (measured: FUN_0004753c lost EXACT
+        // to a pair loading its other operand, round e14; FUN_0001562c to a register local's
+        // own load — a register-resident local is never a candidate — round e13)
+        let zero_then_load = window.windows(2).any(|w| {
+            let z = w[0].text.strip_prefix("XOR ").and_then(|r| {
+                let (a, b) = r.split_once(',')?;
+                (a == b && a.starts_with('E')).then_some(a)
+            });
+            z.is_some_and(|reg| {
+                let low = &reg[1..]; // `EAX` -> `AX`
+                let byte = format!("{}L", &low[..1]);
+                let src_ok = match global {
+                    Some(g) => w[1].text.ends_with(&format!("[0x{g:x}]")),
+                    None => w[1].text.contains(" ptr [") && !w[1].text.contains("[0x"),
+                };
+                w[1].text.starts_with("MOV ")
+                    && w[1].text[4..].split(',').next().is_some_and(|d| d == low || d == byte)
+                    && src_ok
             })
         });
         if and_mask || zero_then_load {
@@ -1878,9 +1881,12 @@ mod tests {
         let pair = lift("31c066a16001090083f801");
         let (sites, globals) = cmp_signs_from_evidence(&[(0x1008, 2, Some(0x90160))], &pair);
         assert!(sites.contains(&0x1008) && globals.contains(&0x90160), "{:?}", pair.iter().map(|x| (x.addr, &x.text)).collect::<Vec<_>>());
-        // the same pair is not evidence for another global, nor for a load through a pointer
+        // the same pair is not evidence for another global, nor (a global load) for an inline load
         assert!(cmp_signs_from_evidence(&[(0x1008, 2, Some(0x90162))], &pair).0.is_empty());
         assert!(cmp_signs_from_evidence(&[(0x1008, 2, None)], &pair).0.is_empty());
+        // XOR EBX,EBX ; MOV BX,word ptr [EDX] ; CMP EBX,0xfffc — the pair over an inline load
+        let inline = lift("31db668b1a81fbfcff0000");
+        assert!(cmp_signs_from_evidence(&[(0x1005, 2, None)], &inline).0.contains(&0x1005), "{:?}", inline.iter().map(|x| (x.addr, &x.text)).collect::<Vec<_>>());
     }
 
     /// `store-forward`: the reload of the stored global between the store and the call.
