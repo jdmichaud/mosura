@@ -369,7 +369,6 @@ pub(crate) struct PrintC<'a> {
     /// being printed (Ghidra's `readOp` in `opIntZext`/`opIntSext`).
     render_stack: Vec<OpId>,
     /// `EmitChoices::ext_cast == Promotion`: leave integer widening to C's promotion.
-    ext_cast_promotion: bool,
     /// `EmitChoices::ext_cast == HideWide` (EMISSION ARM): hide an int-width extension whose
     /// consumer cannot see it — see [`PrintC::hides_wide_extension`].
     ext_cast_hide_wide: bool,
@@ -544,13 +543,8 @@ pub(crate) struct PrintC<'a> {
 
 impl PrintC<'_> {
     pub(crate) fn type_of(&self, v: VarnodeId) -> Datatype {
-        // the returned variable of a witnessed narrow return, at the declared width (see
-        // `narrow_ret_high` where it is set)
-        if let Some((h, w)) = self.narrow_ret_high {
-            if self.high_of.get(v.0 as usize) == Some(&h) {
-                let base = super::merge::high_type_read_facing(self.f, v);
-                return fit_to_storage(&base, w);
-            }
+        if let Some(t) = self.narrow_return_type(v) {
+            return t; // MARK narrow_return (its type half)
         }
         // A varnode's type is its inferred HighVariable type — the same value Ghidra's prototype
         // recovery reads (`FuncProto::updateInputTypes`/`updateOutputTypes`, fspec.cc:4076/4159:
@@ -698,36 +692,19 @@ impl PrintC<'_> {
 
     /// MARK `narrow_return` (witness `buildconfig::narrow_return_from_evidence`): the function's
     /// return type at the returned value's own width instead of the storage-widened one.
-    /// Does `v` render as an expression C's own promotion widens FAITHFULLY — a declared variable
-    /// or parameter, a load, a cast, a boolean, a mask or right shift (nothing above the narrow
-    /// width can appear), a call result (`int` under its `extern int`, and the original does not
-    /// mask it: round e4 measured the mask as −0.23 on FUN_0005dd14)? The exceptions are the
-    /// OVERFLOWING arithmetic ops — add, subtract, multiply, shift left, negate, divide — whose
-    /// narrow IR width is Ghidra's subvariable narrowing of a 32-bit computation the original
-    /// truncates (`(cond) + 0xbf8` masked with `AND EAX,0xffff`, WAR2 FUN_0004a194): printed
-    /// bare they compute at int width and skip the truncation, so those keep the cast.
-    fn narrow_typed_operand(&self, v: VarnodeId) -> bool {
-        if self.f.vn(v).is_constant() {
-            return false;
-        }
-        if self.is_explicit(v) {
-            return true;
-        }
-        let Some(d) = self.f.vn(v).def else { return true };
-        match self.f.op(d).code() {
-            OpCode::IntAdd
-            | OpCode::IntSub
-            | OpCode::IntMult
-            | OpCode::IntLeft
-            | OpCode::IntNegate
-            | OpCode::Int2comp
-            | OpCode::IntDiv
-            | OpCode::IntSdiv
-            | OpCode::IntRem
-            | OpCode::IntSrem => false,
-            OpCode::Copy => self.f.op(d).input(0).is_none_or(|x| self.narrow_typed_operand(x)),
-            _ => true,
-        }
+    /// MARK `narrow_return`, its type half (`narrow_ret_high`, set where the return declaration
+    /// is computed): every member of the returned HighVariable types at the witnessed width, so
+    /// the local the return sites assign is the byte the function returns.
+    pub(crate) fn narrow_return_type(&self, v: VarnodeId) -> Option<Datatype> {
+        let (h, w) = self.narrow_ret_high?;
+        (self.high_of.get(v.0 as usize) == Some(&h))
+            .then(|| fit_to_storage(&super::merge::high_type_read_facing(self.f, v), w))
+    }
+
+    /// Is `v` printed as a partial-symbol accessor (`x._2_2_`, Ghidra's `PrintC::opSubpiece`
+    /// symbol-piece form) — the port's answer, for the emitter that makes the accessor compilable.
+    pub(crate) fn is_partial_symbol(&mut self, v: VarnodeId) -> bool {
+        self.partial_symbol(v, false).is_some()
     }
 
     fn apply_narrow_return(&self, f: &Funcdata, vn: &super::varnode::Varnode, choices: &EmitChoices) -> u32 {
@@ -2125,35 +2102,10 @@ impl<'a> PrintC<'a> {
                 if self.f.vn(out).size > self.f.size_of_int() && !self.wide_int_declarable() {
                     return self.render_var(in0);
                 }
-                // EmitChoices `ext-cast=promotion`: the bare operand, C's promotion widens it —
-                // but only where C's promotion IS this extension, i.e. at int width. A narrower
-                // extension (`(uint2)byte`, the IR's 16-bit arithmetic) is not a promotion: printed
-                // bare, the C computes at int width and the compiler widens to 32 bits (`XOR
-                // EAX,EAX` for WAR2's `XOR AH,AH` at FUN_00019344/000207b8, whose original
-                // multiplies at 16 bits) — the value can differ too once the 16-bit result is
-                // read wider. Below int width the faithful cast stands (Ghidra prints it as well).
-                if self.ext_cast_promotion {
-                    let (insize, outsize) = (self.f.vn(in0).size, self.f.vn(out).size);
-                    if outsize >= self.f.size_of_int() {
-                        // C's promotion widens a NARROW-TYPED operand — a variable, a load, a
-                        // parameter, a truncation cast. An arithmetic operand is already an
-                        // `int` expression in C (its narrow IR width is Ghidra's subvariable
-                        // narrowing of a 32-bit computation), so the bare form skips the
-                        // truncation the IR performs: `(cond) + 0xbf8` passed where the
-                        // original masks with `AND EAX,0xffff` (WAR2 FUN_0004a194) — and a call
-                        // result is `int` under its `extern int` declaration. Both keep the cast.
-                        if self.narrow_typed_operand(in0) {
-                            return self.render_var(in0);
-                        }
-                        return (format!("({}){}", Datatype::Uint(insize).name(), self.operand(in0, 14, false)), 14);
-                    }
-                    // a sub-int extension: bare unless the original's own widening idiom at the
-                    // site is the 16-bit one (`narrow_zext_sites`, witnessed) — the cast below
-                    let pc = o.seqnum.pc.offset;
-                    self.report.narrow_zext_candidates.push((pc, insize, outsize));
-                    if !self.recovered.narrow_zext_sites.contains(&pc) {
-                        return self.render_var(in0);
-                    }
+                // ext-cast=promotion (emit/arms/ext_cast.rs): the emitter's rendering of the
+                // extension — bare where C's promotion is the extension, a cast where not
+                if let Some(r) = arms::render_value(self, ValueSite::Extension { op, signed: false }) {
+                    return r;
                 }
                 let (outty, inty) = (self.type_of(out), self.type_of(in0));
                 if is_zext_cast(&outty, &inty) {
@@ -2225,23 +2177,13 @@ impl<'a> PrintC<'a> {
                 let n = self.f.vn(out).size;
                 // (the same target arm as IntZext: the pre-port `(int8)x` form, which the
                 // Subpiece arm's narrowed divide consumes)
-                if (n > self.f.size_of_int() && !self.wide_int_declarable()) || self.ext_cast_promotion {
-                    // The operand's C type must be SIGNED at its own width for `(intN)x` to
-                    // sign-extend: `(int4)uVar` / `(int4)xStack_18._2_2_` (the accessor the emitter
-                    // makes compilable as `*(uint2 *)..`) ZERO-extend in C where the IR — and the
-                    // original's `MOVSX` — sign-extend (WAR2 FUN_00024a3c: the pieces of a split
-                    // point passed as arguments; 21 sites in 18 TUs, wrong code). An unsigned,
-                    // unknown, bool or `char` operand (Watcom's plain `char` is unsigned) is first
-                    // cast to the signed type of its own width.
-                    let insize = self.f.vn(in0).size;
-                    // (and, as for the zero-extension, an arithmetic or call operand is an `int`
-                    // expression in C whatever the IR's width — the inner cast re-narrows it)
-                    let inner = if matches!(inty, Datatype::Int(sz) if sz == insize) && self.narrow_typed_operand(in0) {
-                        String::new()
-                    } else {
-                        format!("(int{insize})")
-                    };
-                    return (format!("(int{n}){inner}{}", self.cast_operand(op, 0, 14, false)), 14);
+                if n > self.f.size_of_int() && !self.wide_int_declarable() {
+                    return (format!("(int{n}){}", self.cast_operand(op, 0, 14, false)), 14);
+                }
+                // ext-cast=promotion (emit/arms/ext_cast.rs): `(intN)` over the operand re-signed
+                // at its own width where its C type is not that signed type
+                if let Some(r) = arms::render_value(self, ValueSite::Extension { op, signed: true }) {
+                    return r;
                 }
                 if is_sext_cast(&outty, &inty) {
                     if self.extension_hidden(op) {
@@ -4888,7 +4830,6 @@ fn print_c_inner(
         va_start_ops: HashSet::new(),
         va_last_named: 0,
         render_stack: Vec::new(),
-        ext_cast_promotion: choices.ext_cast == super::emit::ExtCast::Promotion,
         ext_cast_hide_wide: choices.ext_cast == super::emit::ExtCast::HideWide,
         swi_int3: HashSet::new(),
         arm_order_address: choices.arm_order == super::emit::ArmOrder::Address,

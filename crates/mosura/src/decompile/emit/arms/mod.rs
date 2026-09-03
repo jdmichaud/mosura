@@ -99,6 +99,7 @@ pub(crate) struct State {
     pub(crate) sdiv_pow2: sdiv_pow2::State,
     pub(crate) nested_conds: nested_conds::State,
     pub(crate) complement_cmp: complement_cmp::State,
+    pub(crate) ext_cast: ext_cast::State,
     pub(crate) sum_order: sum_order::State,
     pub(crate) join_narrow: join_narrow::State,
     pub(crate) array_index: array_index::State,
@@ -118,6 +119,7 @@ impl State {
             sdiv_pow2: sdiv_pow2::State::new(choices),
             nested_conds: nested_conds::State::new(choices),
             complement_cmp: complement_cmp::State::new(choices),
+            ext_cast: ext_cast::State::new(choices),
             sum_order: sum_order::State::new(choices),
             join_narrow: join_narrow::State::new(choices),
             array_index: array_index::State::new(choices),
@@ -131,6 +133,7 @@ impl State {
 
 pub mod cmp_order;
 pub mod complement_cmp;
+pub mod ext_cast;
 pub mod array_index;
 pub mod frame_fill;
 pub mod nested_conds;
@@ -242,6 +245,7 @@ pub const SURFACE_METHODS: &[&str] = &[
     "lab_name", "first_pc", "next_flow_after", "plain_if_condition_vn", "spacebase_sym_at", "frame_off",
     "type_of", "stack_slot_name", "declare_stack", "collect_conj_clauses", "render_cond_expr", "emit_basic",
     "cast_operand",
+    "is_partial_symbol",
     "emit_if",
     "plain_if_branch_pc",
     "operand",
@@ -263,8 +267,9 @@ mod tests {
     /// The arm files, as text, for the surface scan — every `pub mod` of this module must be here
     /// (`arms_touch_only_the_documented_surface` checks that against this file's own source, so a
     /// new arm file cannot slip past the scan).
-    const ARM_SOURCES: [(&str, &str); 16] = [
+    const ARM_SOURCES: [(&str, &str); 17] = [
         ("cmp_order.rs", include_str!("cmp_order.rs")),
+        ("ext_cast.rs", include_str!("ext_cast.rs")),
         ("string_ops.rs", include_str!("string_ops.rs")),
         ("struct_copy.rs", include_str!("struct_copy.rs")),
         ("sparse_switch.rs", include_str!("sparse_switch.rs")),
@@ -405,6 +410,9 @@ pub enum ValueSite<'v> {
     /// render — a compare the original spelled through the complemented condition prints
     /// complemented. Replaces the inline consult at the head of cmp_bin (33d6e37); R2b, commit 2.
     Compare { op: OpId, strict: bool, prec: u8 },
+    /// `render_op_inner`'s INT_ZEXT (`signed` false) / INT_SEXT: the `ext-cast=promotion`
+    /// rendering of an extension at or below int width (emit/arms/ext_cast.rs).
+    Extension { op: OpId, signed: bool },
     /// `render_op_inner`'s `Load` arm: `out` the loaded value, `addr` its address — a witnessed
     /// masked narrow load prints its deref at int width. Replaces the inline width consult
     /// (33d6e37); R2b, commit 3.
@@ -435,6 +443,7 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
     // the order they are asked, first answer wins):
     //   OpRoot:      string-ops, sdiv-pow2, struct-return (a witnessed CALL)
     //   Compare:     complement-cmp (the immediate flavour), then cmp-order (the operand swap)
+    //   Extension:   ext-cast (the promotion rendering of INT_ZEXT / INT_SEXT)
     //   Var:         struct-return (the hidden pointer -> `__ret`), string-ops
     //   Deref:       struct-return (a field write through the hidden pointer), array-index
     //   SlotName / SlotOffset / SlotAddress / SlotPiece / FusedStore:
@@ -448,6 +457,7 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
         ValueSite::Var { v } => struct_return::render_value(p, &ValueSite::Var { v }).or_else(|| string_ops::render_var_value(p, v)),
         ValueSite::Equality { op, sym, prec } => unsigned_cmp::render(p, op, sym, prec),
         ValueSite::Compare { op, strict, prec } => complement_cmp::render(p, op, strict, prec).or_else(|| cmp_order::render(p, op, strict, prec)),
+        ValueSite::Extension { op, signed } => ext_cast::render(p, op, signed),
         ValueSite::Load { out, addr } => testmem::render(p, out, addr),
         ValueSite::Sum { op } => sum_order::render(p, op),
         ValueSite::Deref { addr } => struct_return::render_value(p, &ValueSite::Deref { addr }).or_else(|| array_index::render(p, addr)),
