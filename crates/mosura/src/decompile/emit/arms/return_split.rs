@@ -16,6 +16,16 @@
 //! port advancing past the pair). The pair's PRECONDITION — two components left in the list —
 //! stays the port's: it is what makes the site exist.
 //!
+//! A second shape at the same site (2026-09-03, the EXACT push — docs/exact-arms.md): the tail
+//! returns a variable that is a MULTIEQUAL of two CONSTANTS, one assigned in the if's condition
+//! block ahead of the branch (`x = 0;`), the other at the end of the if body (`x = 1;`) — the
+//! merged form Ghidra builds when the compiler shares one epilogue between `return 0;` and
+//! `return 1;`. The original materializes each constant on its own path (a `XOR AL,AL`
+//! right before an epilogue, after the branch — the witness `recovered.const_phi_sites`, from
+//! `buildconfig::const_phi_returns_from_evidence` over this arm's `const_phi_candidates`); the
+//! arm suppresses both assignments and prints the per-path returns. Value-identical: the phi's
+//! value on each path IS that path's constant.
+//!
 //! The arm answers ONE site kind, `SiteKind::ListTail`.
 // return-split=paths (the axis doc in emit.rs carries the measured probe): the
 // tail pair [plain `if` testing B] + [basic whose sole statement returns
@@ -29,7 +39,7 @@ use crate::decompile::block::BlockId;
 use crate::decompile::emit::arms::{Answer, Arm, Site, SiteKind};
 use crate::decompile::emit::{EmitChoices, ReturnSplit};
 use crate::decompile::opcode::OpCode;
-use crate::decompile::printc::PrintC;
+use crate::decompile::printc::{exit_basic, render_const, PrintC};
 use crate::decompile::varnode::VarnodeId;
 use crate::decompile::structure::{FlowKind, Structured};
 use std::fmt::Write as _;
@@ -86,8 +96,133 @@ fn try_emit(pr: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<Ans
                 return Some(Answer::Emitted);
             }
         }
+        // the constant-phi shape (see the module doc)
+        if let Some(split) = const_phi_split(pr, s, c, tail) {
+            pr.report.const_phi_candidates.push((split.branch_pc, split.k_tail));
+            if pr.recovered.const_phi_sites.contains(&split.branch_pc) {
+                pr.suppressed.insert(split.copy_tail);
+                pr.suppressed.insert(split.copy_body);
+                let then_k = render_const(split.k_body, split.size);
+                let tail_k = render_const(split.k_tail, split.size);
+                emit_if_with_tail(pr, s, c, indent, out, &format!("return {then_k};"));
+                let pad = "  ".repeat(indent);
+                let _ = writeln!(out, "{pad}return {tail_k};");
+                return Some(Answer::Emitted);
+            }
+        }
     }
     None
+}
+
+/// The constant-phi tail: the if `c`'s condition block assigns constant `k_tail` to a variable
+/// (`copy_tail`), the if body's exit block assigns `k_body` to it (`copy_body`), and the tail
+/// block's only statement returns the phi of the two.
+struct ConstPhiSplit {
+    branch_pc: u64,
+    copy_tail: crate::decompile::op::OpId,
+    copy_body: crate::decompile::op::OpId,
+    k_tail: u64,
+    k_body: u64,
+    size: u32,
+}
+
+fn const_phi_split(pr: &PrintC<'_>, s: &Structured, c: usize, tail: usize) -> Option<ConstPhiSplit> {
+    use crate::debug::Topic;
+    if !matches!(s.blocks[c].kind, FlowKind::If) || s.blocks[c].components.len() != 2 {
+        return None;
+    }
+    // the condition component's last basic block: the block with the branch (the component
+    // is a List when earlier statements fold into it — FUN_0002c4e4's `if (..) return 0;`)
+    let cond_bid = exit_basic(s, s.blocks[c].components[0])?;
+    let Some(body_exit) = exit_basic(s, s.blocks[c].components[1]) else {
+        crate::debug!(Topic::Recover, "const-phi: no body exit");
+        return None;
+    };
+    // the branch: the condition block's live CBRANCH (`plain_if_branch_pc` for a Basic
+    // condition; the same op when the condition component is a List)
+    let branch_pc = pr
+        .f
+        .block(cond_bid)
+        .ops
+        .iter()
+        .rev()
+        .copied()
+        .find(|&op| !pr.f.op(op).is_dead() && pr.f.op(op).code() == OpCode::Cbranch)
+        .map(|op| pr.f.op(op).seqnum.pc.offset)?;
+    // the tail: a basic block whose only printable statement is `return v`
+    let FlowKind::Basic(tail_bid) = s.blocks[tail].kind else { return None };
+    let mut ret = None;
+    for &op in &pr.f.block(tail_bid).ops {
+        let o = pr.f.op(op);
+        if o.is_dead() || o.is_marker() || o.is_return_copy() {
+            continue;
+        }
+        match o.code() {
+            OpCode::Return => {
+                if ret.is_some() {
+                    return None;
+                }
+                ret = Some(op);
+            }
+            OpCode::Store | OpCode::Call | OpCode::Callind | OpCode::Callother => return None,
+            OpCode::Branch | OpCode::Cbranch | OpCode::Branchind => return None,
+            _ => {
+                if o.output.is_some_and(|v| pr.is_explicit(v)) {
+                    crate::debug!(Topic::Recover, "const-phi @{branch_pc:x}: tail statement {:?}", o.code());
+                    return None;
+                }
+            }
+        }
+    }
+    let v = thru_copy(pr, pr.f.op(ret?).input(1)?);
+    let Some(phi) = pr.f.vn(v).def else {
+        crate::debug!(Topic::Recover, "const-phi @{branch_pc:x}: returned value has no def");
+        return None;
+    };
+    let po = pr.f.op(phi);
+    if po.code() != OpCode::Multiequal || po.num_inputs() != 2 {
+        crate::debug!(Topic::Recover, "const-phi @{branch_pc:x}: returned value def {:?} x{}", po.code(), po.num_inputs());
+        return None;
+    }
+    // each phi input: a COPY of a constant, in the condition block or in the body's exit block
+    let mut tail_side = None;
+    let mut body_side = None;
+    for i in 0..2 {
+        // the phi input's own def is the COPY of the constant (into the variable itself, or
+        // into a unique the phi merges: FUN_0002c4e4's `xVar2 = 0` is a unique at the branch)
+        let Some(copy) = pr.f.vn(po.input(i)?).def else { return None };
+        let co = pr.f.op(copy);
+        if co.code() != OpCode::Copy {
+            crate::debug!(Topic::Recover, "const-phi @{branch_pc:x}: input {i} def {:?}", co.code());
+            return None;
+        }
+        let k = co.input(0)?;
+        if !pr.f.vn(k).is_constant() {
+            crate::debug!(Topic::Recover, "const-phi @{branch_pc:x}: input {i} copies a non-constant");
+            return None;
+        }
+        let Some(parent) = co.parent else { return None };
+        if parent == cond_bid {
+            tail_side = Some((copy, pr.f.vn(k).constant_value()));
+        } else if parent == body_exit {
+            body_side = Some((copy, pr.f.vn(k).constant_value()));
+        } else {
+            crate::debug!(
+                Topic::Recover,
+                "const-phi @{branch_pc:x}: input {i} in block {:?} (cond {:?}, body exit {:?})",
+                parent,
+                cond_bid,
+                body_exit
+            );
+            return None;
+        }
+    }
+    let (copy_tail, k_tail) = tail_side?;
+    let (copy_body, k_body) = body_side?;
+    if k_tail == k_body || !pr.is_explicit(v) {
+        return None;
+    }
+    Some(ConstPhiSplit { branch_pc, copy_tail, copy_body, k_tail, k_body, size: pr.f.vn(v).size })
 }
 
 /// The boolean behind a basic block whose ONLY printable statement is `return (zext of)

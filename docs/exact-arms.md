@@ -27,6 +27,7 @@ Three more arms followed in the same method (rounds e8–e10):
 | --- | --- | --- | --- |
 | `mask-cast` (`mask_cast.rs`, at `ValueSite::CallArg`) | the original's `AND r,0xff\|0xffff` on the argument's register, the LAST write of that register before the call | a `WORD` argument Ghidra's `RuleAndMask` proved redundant and dropped: the `+ 0xbbb` message-id family, 23 near-miss functions | `x86_watcom_mask_arg.xml` |
 | stack-convention clause to callers (survey `parm_map`) | the callee's own `parm []` (every recovered parameter on the stack, callee pops) | callers compiling a stack callee under the register convention (`XOR EAX,EAX ; CALL` for `PUSH 0 ; CALL`) | — |
+| `return-split`, the constant-phi tail (`return_split.rs`, `const_phi_split`) | `TEST EAX,EAX ; JZ epilogue` with the taken edge landing on a bare epilogue: this compiler returns the tested register itself as the `0` of `if (x == 0) return 0;` — the merged form has to materialize its `0` in a variable of its own | `r = 0; if (x != 0) { ..; r = 1; } return r;` — Ghidra's phi of two constants behind one shared epilogue, 12 functions | `x86_watcom_const_phi.xml` |
 | dropped parameters (`Funcdata::dropped_params`, `buildconfig::phantom_params_from_evidence`) | the register of the LAST recovered parameter pushed among the function's leading saves and popped before its returns, the parameter flowing only into callees | the callee-save family: `PUSH EDX .. POP EDX` missing because the pass-through EDX was declared a parameter (an argument register is the caller's to lose; a preserved one was never an argument), 87 functions | corpus guard `guard_phantom` (0x2c160, 0x11f18) |
 
 The dropped-parameter fact has no self-compiled fixture: a callee stub of the generator never
@@ -62,6 +63,8 @@ Two corrections rode along, both value-preserving and both measured:
 | e8 | mask-cast, stack clause to callers | 944 | 0.6286 | 19 downs: the mask witness matched any earlier AND on the register |
 | e9 | the mask must be the register's last write before the call | 944 | 0.6306 | |
 | e10 | dropped (phantom) parameters | 950 | 0.6320 | 3 downs in a three-level pass-through chain (0x2f650 → 0x2f5e4 → 0x2f474): the freed register re-allocates |
+| e11 | constant-phi return split, first cut | 950 | 0.6321 | fired on 4 of the 12 carriers: the recognizer wanted a Basic condition block and a COPY into a unique |
+| e12 | the condition component's exit block, any COPY of a constant | 952 | 0.6322 | 6 up (FUN_0002c4e4, FUN_0002d4ec EXACT), 1 down (FUN_0006f94c −0.012); the 0x2a75c trio keeps a pointer-temp loop row |
 
 The scrutinee-compared-elsewhere gate on the narrow switch was measured and dropped: declining a
 one-case switch whose scrutinee has other compares cost −0.70 sim over 47 TUs (the fragment
@@ -77,6 +80,11 @@ after improving, three switch-label counts grew by one.
   `UWORD` parameter, which under this compiler still folds into `LEA`.
 - The AIL-region constant store (`MOV EBX,1 ; MOV [g],EBX` for `g = 1`, 5 third-party functions):
   not volatile, not a flag (`-ot`, `-os`, `-od`, `-oe`, `-3r`, `-4r` all keep the register form).
+- The byte-global argument loaded into `AL` first (`MOV AL,[g] ; XOR EDX,EDX ; MOV DL,AL` for
+  `f(g, k)`, the 0x39430 sextet): twelve source forms — the snapshot temp at every width and
+  sign, a prototyped callee (`uint1`, `char`, `uint4` parameters), the swapped argument order
+  with and without the `parm` clause, a `(uint4)` cast — all compile to `MOV DL,[g]` with or
+  without `AND EDX,0xff`; the `AL` staging has no C form found.
 - A callee declared to clobber a register the original saves (`PUSH EDX .. POP EDX` in a body
   that never writes it) does not make Watcom save it. The mechanism was the phantom parameter
   (the third arm above): the register was declared an argument, and this compiler never

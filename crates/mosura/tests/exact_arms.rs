@@ -114,6 +114,19 @@ fn masked_call_argument_prints_the_witnessed_cast() {
     assert!(c.contains("(uint2)("), "the masked argument:\n{c}");
 }
 
+/// `return-split`, the constant-phi shape: the reference merges the two returns into a phi
+/// (`x = 0; if (..) { ..; x = 1; } return x;`); the original's own-path `XOR EAX,EAX ; RET`
+/// witnesses the per-path returns.
+#[test]
+fn const_phi_tail_returns_per_path() {
+    let (f, insns) = decompiled("x86_watcom_const_phi.xml");
+    let reference = reference_print(&f);
+    assert!(reference.contains(" = 0;") && reference.contains(" = 1;"), "the reference merges the returns:\n{reference}");
+    let (c, recovered) = recovered_print(&f, &insns);
+    assert!(!recovered.const_phi_sites.is_empty(), "the witness read the exit: {:?}\n{c}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
+    assert!(c.contains("return 1;") && c.contains("return 0;") && !c.contains(" = 0;"), "per-path returns, no merged variable:\n{c}");
+}
+
 /// A sign-extension of an unsigned-typed piece re-signs the operand at its own width: the
 /// split local's high half is `(int4)(int2)` like its low half, never a zero-extending `(int4)`
 /// of the unsigned accessor.

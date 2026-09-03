@@ -154,6 +154,11 @@ pub struct EmitReport {
     /// the tail boolean (a `SETcc` in the region after the branch) or stayed branch-only —
     /// branch-only is what the split rendering compiles to.
     pub return_split_candidates: Vec<u64>,
+    /// Every constant-phi tail the `return-split` arm could split (see its module doc), as
+    /// `(guarding branch address, the fall-through constant)`. The original either materializes
+    /// that constant on its own path after the branch (a `XOR AL,AL` / `MOV EAX,k` right before
+    /// an epilogue) — the per-path returns — or hoists it above the test (the merged form).
+    pub const_phi_candidates: Vec<(u64, u64)>,
     /// Runs of two or more CONSECUTIVE pure global-store statements, as
     /// `(op, global address, size)` per store in OUR statement order — the persist-store
     /// ordering candidates. Ghidra's rendering order for adjacent global stores is
@@ -268,6 +273,9 @@ pub struct RecoveredChoices {
     /// Guarding-if branch addresses whose tail boolean return splits per path
     /// (`return-split`).
     pub return_split_sites: std::collections::HashSet<u64>,
+    /// Guarding-if branch addresses whose constant-phi tail splits per path (`return-split`,
+    /// `const_phi_candidates` evidence, `buildconfig::const_phi_returns_from_evidence`).
+    pub const_phi_sites: std::collections::HashSet<u64>,
     /// Short-circuit keys (first-clause branch address) to render as nested ifs
     /// (`cond-form`).
     pub nested_sites: std::collections::HashSet<u64>,

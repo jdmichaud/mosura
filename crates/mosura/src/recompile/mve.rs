@@ -382,6 +382,27 @@ int mve(unsigned char i)
 }
 "#;
 
+/// Per-path constant returns behind a shared epilogue (WAR2 FUN_0002a75c and kin): the compiler
+/// materializes `0` and `1` on their own paths and jumps both into one epilogue; Ghidra merges
+/// them into a phi (`x = 0; if (..) { ..; x = 1; } return x;`), the return-split arm's
+/// constant-phi shape prints the returns back per path. The `1` is assigned behind an inner if
+/// so the join is not the condition block's own successor — otherwise Ghidra's
+/// `RuleConditionalMove` collapses the phi into `return chk(..) != 0;`, the bool shape.
+const CONST_PHI_SRC: &str = r#"
+extern int chk(int *p);
+extern void work(int *p);
+int mve(int a)
+{
+    int buf[4];
+    buf[0] = a;
+    if (!chk(buf))
+        return 0;
+    if (buf[1] == 3)
+        work(buf);
+    return 1;
+}
+"#;
+
 /// Every MVE, in the generator's order.
 pub const MVES: &[Mve] = &[
     Mve { key: "CSAVE", sym: "mve_", source: CALLEE_SAVE_SRC, fixture: "x86_watcom_callee_save.xml", base: 0x100000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(1));", "LOG_RET(mve(3));", "LOG_RET(mve(16));"], writes: &[("read16", "dst", 16)] },
@@ -404,6 +425,7 @@ pub const MVES: &[Mve] = &[
     Mve { key: "STACKORD", sym: "mve_", source: STACK_ORDER_SRC, fixture: "x86_watcom_stack_order.xml", base: 0x210000, inputs: &["mve(1, 2);", "mve(0xff, -1);"], writes: &[] },
     Mve { key: "NZEXT", sym: "mve_", source: NARROW_ZEXT_SRC, fixture: "x86_watcom_narrow_zext.xml", base: 0x220000, inputs: &["{ t[0] = 3; t[1] = 200; mve(0); mve(1); }"], writes: &[] },
     Mve { key: "MASKARG", sym: "mve_", source: MASK_ARG_SRC, fixture: "x86_watcom_mask_arg.xml", base: 0x230000, inputs: &["{ t[0] = 3; t[1] = 200; LOG_RET(mve(0)); LOG_RET(mve(1)); }"], writes: &[] },
+    Mve { key: "CPHI", sym: "mve_", source: CONST_PHI_SRC, fixture: "x86_watcom_const_phi.xml", base: 0x240000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(7));"], writes: &[("chk", "p", 16), ("work", "p", 16)] },
 ];
 
 /// The names an MVE declares `extern`, by kind: a declarator followed by `(` is a function, anything

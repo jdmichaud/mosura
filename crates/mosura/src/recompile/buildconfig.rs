@@ -510,6 +510,45 @@ pub fn split_returns_from_evidence(
     out
 }
 
+/// Decide the constant-phi `return-split` sites
+/// ([`crate::decompile::printc::EmitReport::const_phi_candidates`]). This compiler compiles
+/// `if (x == 0) return 0; ..; return 1;` by REUSING the tested register as the return value:
+/// `TEST EAX,EAX ; JZ epilogue` with nothing written on the taken edge — the merged form
+/// (`r = 0; if (x != 0) { ..; r = 1; } return r;`) has to materialize the `0` in a variable of
+/// its own before the test. The witness for a fall-through constant `0`: the branch is a `JZ`
+/// right after a `TEST` of the return register (`EAX`/`AX`/`AL`) and its target is a bare
+/// epilogue (`MOV ESP,EBP` / `POP` / `LEAVE` / `ADD ESP,n` up to the `RET`). Returns the branch
+/// addresses whose tail splits.
+pub fn const_phi_returns_from_evidence(
+    candidates: &[(u64, u64)],
+    insns: &[NormInsn],
+) -> std::collections::HashSet<u64> {
+    let mut out = std::collections::HashSet::new();
+    for &(pc, k) in candidates {
+        if k != 0 {
+            continue;
+        }
+        let Some(i) = insns.iter().position(|x| x.addr == pc) else { continue };
+        let Some(target) = insns[i].text.strip_prefix("JZ 0x").and_then(|h| u64::from_str_radix(h, 16).ok())
+        else {
+            continue;
+        };
+        let tested_return_register = i > 0
+            && matches!(insns[i - 1].text.as_str(), "TEST EAX,EAX" | "TEST AX,AX" | "TEST AL,AL");
+        if !tested_return_register {
+            continue;
+        }
+        let Some(j) = insns.iter().position(|x| x.addr == target) else { continue };
+        let bare_epilogue = insns[j..].iter().find(|x| {
+            !(x.text == "MOV ESP,EBP" || x.text == "LEAVE" || x.text.starts_with("POP ") || x.text.starts_with("ADD ESP,"))
+        });
+        if bare_epilogue.is_some_and(|x| x.text.starts_with("RET")) {
+            out.insert(pc);
+        }
+    }
+    out
+}
+
 /// Decide the `cond-form` axis PER SITE from the original's bytes. The candidate is a
 /// statement-carrying short-circuit keyed by its first clause's branch address, with every
 /// clause's branch address supplied as the span to scan
@@ -1464,6 +1503,22 @@ mod tests {
         assert_eq!(regs, vec![8, 12], "EDX and EBX: {regs:?}");
         // no leading saves: nothing preserved
         assert!(preserved_registers(&lift("31c0c3")).is_empty());
+    }
+
+    /// The constant-phi split: `TEST EAX,EAX ; JZ epilogue` reuses the tested register as the
+    /// return `0` (the per-path source form); a merged form materializes its `0` in a register
+    /// of its own and the taken edge is not a bare epilogue.
+    #[test]
+    fn const_phi_witness_reads_the_reused_tested_register() {
+        // TEST EAX,EAX ; JZ +5 ; MOV EAX,1 ; POP EBX ; RET
+        let split = lift("85c07405b8010000005bc3");
+        assert_eq!(split[1].text, "JZ 0x1009", "{:?}", split.iter().map(|x| &x.text).collect::<Vec<_>>());
+        assert!(const_phi_returns_from_evidence(&[(0x1002, 0)], &split).contains(&0x1002));
+        // XOR EBX,EBX ; TEST EAX,EAX ; JZ +5 ; MOV EBX,1 ; MOV EAX,EBX ; POP EBX ; RET  (merged)
+        let merged = lift("31db85c07405bb0100000089d85bc3");
+        assert!(const_phi_returns_from_evidence(&[(0x1004, 0)], &merged).is_empty());
+        // a nonzero fall-through constant is never the reused zero
+        assert!(const_phi_returns_from_evidence(&[(0x1002, 1)], &split).is_empty());
     }
 
     /// `mask-cast`: the argument's register masked between its definition and the call decides the
