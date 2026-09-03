@@ -65,6 +65,59 @@ pub(crate) fn recognize(pr: &mut PrintC<'_>, f: &Funcdata) {
         }
         pr.report.testmem_candidates.push((out, o.seqnum.pc.offset));
     }
+    // a narrow GLOBAL read (a ram input, no LOAD op) masked into a zero-equality is the same
+    // shape: the original's `TEST byte ptr [0x8196c],0x8` (WAR2 FUN_00037280) says the source
+    // read the wider element and masked
+    let Some(ram) = f.spaces.by_name("ram") else { return };
+    for i in 0..f.num_varnodes() as u32 {
+        let v = VarnodeId(i);
+        let vn = f.vn(v);
+        if !vn.is_input() || vn.loc.space != ram || vn.size == 0 || vn.size >= f.size_of_int() {
+            continue;
+        }
+        // a global's uses include heritage's INDIRECT/MULTIEQUAL markers — not reads
+        let mut val = v;
+        let uses: Vec<_> = vn.descend.iter().copied().filter(|&u| !f.op(u).is_dead() && !f.op(u).is_marker()).collect();
+        if uses.len() == 1 && f.op(uses[0]).code() == OpCode::IntZext {
+            if let Some(z) = f.op(uses[0]).output {
+                val = z;
+            }
+        }
+        let anduse: Vec<_> = f.vn(val).descend.iter().copied().filter(|&u| !f.op(u).is_dead() && !f.op(u).is_marker()).collect();
+        if anduse.len() != 1 || f.op(anduse[0]).code() != OpCode::IntAnd {
+            continue;
+        }
+        let ao = f.op(anduse[0]);
+        let narrow_bits = u64::from(vn.size) * 8;
+        let narrow_mask = (1u64 << narrow_bits) - 1;
+        let const_fits = ao.input(1).is_some_and(|k| f.vn(k).is_constant() && f.vn(k).constant_value() & !narrow_mask == 0);
+        let cmp0 = ao.output.is_some_and(|av| {
+            f.vn(av).descend.iter().all(|&u| {
+                let uo = f.op(u);
+                matches!(uo.code(), OpCode::IntEqual | OpCode::IntNotequal)
+                    && uo.input(1).is_some_and(|k| f.vn(k).is_constant() && f.vn(k).constant_value() == 0)
+                    || uo.code() == OpCode::BoolNegate
+            })
+        });
+        if const_fits && cmp0 {
+            crate::debug!(crate::debug::Topic::Recover, "testmem: global candidate {:x} @{:x} witnessed {}", vn.loc.offset, ao.seqnum.pc.offset, pr.recovered.testmem_sites.contains(&v));
+            pr.report.testmem_candidates.push((v, ao.seqnum.pc.offset));
+        }
+    }
+}
+
+/// The arm's answer at `ValueSite::VarEntry` for a witnessed GLOBAL: the int-wide access to the
+/// global's address, `*(int4 *)&uRam0008196c`.
+pub(crate) fn render_global(pr: &mut PrintC<'_>, v: VarnodeId) -> Option<(String, u8)> {
+    if !pr.arms.testmem.witness || !pr.recovered.testmem_sites.contains(&v) {
+        return None;
+    }
+    let vn = pr.f.vn(v);
+    if !vn.is_input() || Some(vn.loc.space) != pr.f.spaces.by_name("ram") {
+        return None;
+    }
+    let name = pr.name_of(v);
+    Some((format!("*(int4 *)&{name}"), 15))
 }
 
 /// The arm's answer at `ValueSite::Load`: `out` the loaded value, `addr` its address — the deref

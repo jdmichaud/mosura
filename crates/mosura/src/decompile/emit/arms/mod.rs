@@ -498,7 +498,7 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
         ValueSite::Deref { addr, vty } => struct_return::render_value(p, &ValueSite::Deref { addr, vty })
             .or_else(|| array_index::render(p, addr))
             .or_else(|| ptr_offset::render(p, addr, vty)),
-        ValueSite::VarEntry { v } => snapshot::render(p, v),
+        ValueSite::VarEntry { v } => snapshot::render(p, v).or_else(|| testmem::render_global(p, v)),
         other => struct_return::render_value(p, &other).or_else(|| frame_fill::render_value(p, &other)),
     }
 }
