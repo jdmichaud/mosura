@@ -135,6 +135,7 @@ pub mod cmp_order;
 pub mod cmp_sign;
 pub mod complement_cmp;
 pub mod ext_cast;
+pub mod load_hoist;
 pub mod mask_cast;
 pub mod ptr_offset;
 pub mod return_widen;
@@ -241,7 +242,7 @@ pub const SURFACE_FIELDS: &[&str] = &[
     "arms", "f", "recovered", "report", "h", "force_explicit", "suppressed", "names", "decls",
     "stack_declared", "stack_space", "stack_syms", "high_stack_off", "high_ram_off", "high_of", "high_members",
     "nonprinting", "labels", "comma_separate", "sparse_consumed", "sparse_cond_override", "covered_nodes",
-    "var_counter", "array_elem",
+    "var_counter", "array_elem", "force_implied",
 ];
 #[cfg_attr(not(test), allow(dead_code))] // the documented list; read by the surface test
 pub const SURFACE_METHODS: &[&str] = &[
@@ -271,8 +272,9 @@ mod tests {
     /// The arm files, as text, for the surface scan — every `pub mod` of this module must be here
     /// (`arms_touch_only_the_documented_surface` checks that against this file's own source, so a
     /// new arm file cannot slip past the scan).
-    const ARM_SOURCES: [(&str, &str); 21] = [
+    const ARM_SOURCES: [(&str, &str); 22] = [
         ("ptr_offset.rs", include_str!("ptr_offset.rs")),
+        ("load_hoist.rs", include_str!("load_hoist.rs")),
         ("cmp_order.rs", include_str!("cmp_order.rs")),
         ("cmp_sign.rs", include_str!("cmp_sign.rs")),
         ("return_widen.rs", include_str!("return_widen.rs")),

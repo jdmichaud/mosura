@@ -167,6 +167,9 @@ pub struct EmitReport {
     /// `(the sum's address, offset)`: the original folds the offset into the addressing mode
     /// or materializes the sum.
     pub ptr_offset_candidates: Vec<(u64, u64)>,
+    /// Every load through an explicit pointer temp whose value is consumed after the pointer's
+    /// base or index is redefined (`load-hoist`), as `(load address, pointer's address)`.
+    pub load_hoist_candidates: Vec<(u64, u64)>,
     /// Runs of two or more CONSECUTIVE pure global-store statements, as
     /// `(op, global address, size)` per store in OUR statement order — the persist-store
     /// ordering candidates. Ghidra's rendering order for adjacent global stores is
@@ -293,6 +296,9 @@ pub struct RecoveredChoices {
     /// Sum addresses whose offset the original folds into the addressing mode (`ptr-offset`,
     /// `ptr_offset_candidates` evidence, `buildconfig::ptr_offsets_from_evidence`).
     pub ptr_offset_sites: std::collections::HashSet<u64>,
+    /// Load addresses whose original reads the element through a scaled index (`load-hoist`,
+    /// `load_hoist_candidates` evidence, `buildconfig::load_hoists_from_evidence`).
+    pub load_hoist_sites: std::collections::HashSet<u64>,
     /// The `return-width` witness saw the widening carve-out (`XOR EAX,EAX` completing a narrow
     /// write): the widened return zero-extends its narrow value (`return-widen`).
     pub return_zero_widened: bool,
@@ -548,6 +554,9 @@ pub(crate) struct PrintC<'a> {
     /// stack-array base varnodes, so a single-use base still renders by its array name (`axStack_98`)
     /// instead of via its address-computation (`&xStack_98`).
     pub(crate) force_explicit: HashSet<VarnodeId>,
+    /// Varnodes an arm renders INLINE at their single use whatever the frozen classification
+    /// says (`load-hoist`: the pointer temp whose load became the explicit value).
+    pub(crate) force_implied: HashSet<VarnodeId>,
     /// Recovered-parameter storage → 1-based parameter index, from the faithful prototype recovery
     /// (`fspec::recover_input_params`, Ghidra `ActionInputPrototype`/`fillinMap`). An input Varnode
     /// at one of these locations names `param_N`. This is XMM-aware (a `float8` in `XMM0` is a real
@@ -855,6 +864,9 @@ impl<'a> PrintC<'a> {
         // a recovered stack-array base is always named (even single-use) so it renders `axStack_98`
         if self.force_explicit.contains(&v) {
             return true;
+        }
+        if self.force_implied.contains(&v) {
+            return false; // load-hoist (emit/arms/load_hoist.rs): the pointer temp inlined at its load
         }
         // A register value written into an addrtied stack slot across a call — Ghidra materializes
         // the write to the addrtied variable, so the producing op renders as `xStack_NN = …` at its
@@ -4984,6 +4996,7 @@ fn print_c_inner(
             .unwrap_or(63),
         unmapped_stack_names: HashMap::new(),
         force_explicit: HashSet::new(),
+        force_implied: HashSet::new(),
         param_index,
         narrow_wide_locals: narrow_wide_locals(f, &high_of),
         high_of: high_of.clone(),
@@ -5101,6 +5114,8 @@ fn print_c_inner(
     arms::struct_copy::recognize(&p);
     // frame-fill=aggregate: the arm's gate (emit/arms/frame_fill.rs) — arm setup
     arms::frame_fill::recognize(&mut p, f, choices);
+    // load-hoist: the explicitness swap (emit/arms/load_hoist.rs) — arm setup
+    arms::load_hoist::recognize(&mut p, f);
     // struct-return=witness: the arm's setup (emit/arms/struct_return.rs), after frame-fill's
     // (its decline rule reads frame-fill's aggregate)
     arms::struct_return::recognize(&mut p, f);

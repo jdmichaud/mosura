@@ -73,6 +73,10 @@ pub fn recover(
             &report.ptr_offset_candidates,
             insns,
         ),
+        load_hoist_sites: crate::recompile::buildconfig::load_hoists_from_evidence(
+            &report.load_hoist_candidates,
+            insns,
+        ),
         nested_sites: crate::recompile::buildconfig::nested_conds_from_evidence(
             &report.cond_nest_candidates,
             insns,

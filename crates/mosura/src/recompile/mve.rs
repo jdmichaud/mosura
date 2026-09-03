@@ -477,6 +477,24 @@ int mve(void)
 }
 "#;
 
+/// A frame array copied element by element with the index advanced between the load and the
+/// store (WAR2 FUN_0002a75c: `g[i + 1] = buf[i]`): Ghidra keeps the element's POINTER explicit
+/// and inlines the load at the store, which this compiler compiles through a hoisted base
+/// register; the original loads straight from the frame through the scaled index — the
+/// load-hoist arm's explicitness swap.
+const LOAD_HOIST_SRC: &str = r#"
+extern int g[17];
+extern void fill(unsigned short *p);
+void mve(void)
+{
+    unsigned short buf[16];
+    int i;
+    fill(buf);
+    for (i = 0; i < 16; i++)
+        g[i + 1] = buf[i];
+}
+"#;
+
 /// Every MVE, in the generator's order.
 pub const MVES: &[Mve] = &[
     Mve { key: "CSAVE", sym: "mve_", source: CALLEE_SAVE_SRC, fixture: "x86_watcom_callee_save.xml", base: 0x100000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(1));", "LOG_RET(mve(3));", "LOG_RET(mve(16));"], writes: &[("read16", "dst", 16)] },
@@ -505,6 +523,7 @@ pub const MVES: &[Mve] = &[
     Mve { key: "DUMMY", sym: "mve_", source: DUMMY_PARAM_SRC, fixture: "x86_watcom_dummy_param.xml", base: 0x280000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(5));"], writes: &[] },
     Mve { key: "FARRET", sym: "mve_", source: FAR_RETURN_SRC, fixture: "x86_watcom_far_return.xml", base: 0x290000, inputs: &["{ total = 1; LOG_RET(mve(2)); LOG_RET(total); }"], writes: &[] },
     Mve { key: "CMPMEM", sym: "mve_", source: CMP_MEM_SRC, fixture: "x86_watcom_cmp_mem.xml", base: 0x2a0000, inputs: &["{ a = 3; b = 9; LOG_RET(mve()); a = 9; b = 3; LOG_RET(mve()); a = 5; b = 5; LOG_RET(mve()); }"], writes: &[] },
+    Mve { key: "LDHOIST", sym: "mve_", source: LOAD_HOIST_SRC, fixture: "x86_watcom_load_hoist.xml", base: 0x2b0000, inputs: &["{ mve(); LOG_BYTES(g, 68); }"], writes: &[("fill", "p", 32)] },
     Mve { key: "PTROFF", sym: "mve_", source: PTR_OFFSET_SRC, fixture: "x86_watcom_ptr_offset.xml", base: 0x270000, inputs: &["{ int m[4]; m[0] = 5; m[1] = 0x00030000; m[2] = 0x7fff0003; m[3] = 0; LOG_RET(mve(m)); m[2] = 0xfffe0000; LOG_RET(mve(m)); }"], writes: &[] },
 ];
 

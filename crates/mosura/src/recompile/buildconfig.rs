@@ -591,6 +591,35 @@ pub fn entry_byte_copy(insns: &[NormInsn], low: &str) -> bool {
         })
 }
 
+/// Decide the `load-hoist` sites ([`crate::decompile::printc::EmitReport::load_hoist_candidates`],
+/// `(load address, pointer's address)`): the original's instruction at the load's address reads
+/// the frame through a SCALED index (`MOV DX,word ptr [EBP + EAX*0x2 + -0x20]`) and the
+/// pointer's own address holds no `LEA` — the element addressed directly, where a pointer temp
+/// is materialized (`LEA EBX,[EBP - 0x20]`) and read through it (`[EBX + EAX*0x2]`). Returns the
+/// load addresses whose value the rendering makes explicit.
+pub fn load_hoists_from_evidence(candidates: &[(u64, u64)], insns: &[NormInsn]) -> std::collections::HashSet<u64> {
+    let mut out = std::collections::HashSet::new();
+    for &(pc, ptr_pc) in candidates {
+        let Some(x) = insns.iter().find(|x| x.addr == pc) else { continue };
+        if !x.text.starts_with("MOV ") {
+            continue;
+        }
+        let Some((_, src)) = x.text.split_once(',') else { continue };
+        let Some(inner) = src.split_once('[').map(|(_, r)| r) else { continue };
+        // the frame base with a SCALED index only: a stepped base pointer read at an offset
+        // (`[EBX + 0x4]`) measured 3 downs and no flip (round e21) — the value there lives in a
+        // callee-saved register the original chose for a longer life the swap does not give it
+        if !(inner.contains("*0x") && inner.contains("EBP")) {
+            continue;
+        }
+        if insns.iter().any(|y| y.addr == ptr_pc && y.text.starts_with("LEA ")) {
+            continue;
+        }
+        out.insert(pc);
+    }
+    out
+}
+
 /// The function returns FAR: its return instructions are `RETF` (WAR2 FUN_00058840).
 pub fn far_return_from_evidence(insns: &[NormInsn]) -> bool {
     let rets: Vec<&NormInsn> = insns.iter().filter(|x| x.text.starts_with("RET")).collect();
@@ -1720,6 +1749,24 @@ mod tests {
         assert_eq!(regs, vec![8, 12], "EDX and EBX: {regs:?}");
         // no leading saves: nothing preserved
         assert!(preserved_registers(&lift("31c0c3")).is_empty());
+    }
+
+    /// `load-hoist`: the element read straight from the frame through a scaled index says the
+    /// value was loaded there; a read through a hoisted base register does not.
+    #[test]
+    fn load_hoist_witness_reads_the_scaled_frame_index() {
+        // MOV DX,word ptr [EBP + EAX*2 - 0x20]: the element straight from the frame
+        let direct = lift("668b5445e0");
+        assert!(load_hoists_from_evidence(&[(0x1000, 0x1000)], &direct).contains(&0x1000), "{:?}", direct.iter().map(|x| (x.addr, &x.text)).collect::<Vec<_>>());
+        // LEA EBX,[EBP - 0x20] ; MOV DX,word ptr [EBX + EAX*2]: the pointer materialized
+        let hoisted = lift("8d5de0668b1443");
+        assert!(load_hoists_from_evidence(&[(0x1003, 0x1000)], &hoisted).is_empty(), "{:?}", hoisted.iter().map(|x| (x.addr, &x.text)).collect::<Vec<_>>());
+        // MOV ESI,dword ptr [EBX + 0x4]: a stepped base read at its offset — not the shape
+        let stepped = lift("8b7304");
+        assert!(load_hoists_from_evidence(&[(0x1000, 0x1000)], &stepped).is_empty());
+        // MOV ESI,dword ptr [EAX]: a bare pointer read
+        let bare = lift("8b30");
+        assert!(load_hoists_from_evidence(&[(0x1000, 0x1000)], &bare).is_empty());
     }
 
     /// The entry-region byte copy of a parameter: `MOV CL,AL` after the saves says the source

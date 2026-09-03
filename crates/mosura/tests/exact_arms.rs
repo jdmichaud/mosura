@@ -190,6 +190,17 @@ fn global_compare_mirrors_to_the_cmp_memory_operand() {
     assert!(c.contains(">="), "mirrored:\n{c}\nreference:\n{reference}");
 }
 
+/// `load-hoist`: the element load becomes the explicit value and the pointer temp is inlined,
+/// so the subscript folds into the access at the load's own position.
+#[test]
+fn load_through_a_pointer_temp_hoists_to_a_value() {
+    let (f, insns) = decompiled("x86_watcom_load_hoist.xml");
+    let reference = reference_print(&f);
+    let (c, recovered) = recovered_print(&f, &insns);
+    assert!(!recovered.load_hoist_sites.is_empty(), "the witness read the scaled frame index: {:?}\n{reference}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
+    assert!(!c.contains("Stack_28 + ") && !c.contains("Stack_24 + ") && c.contains("[iVar"), "the value is loaded at its position, no pointer temp:\n{c}\nreference:\n{reference}");
+}
+
 /// A sign-extension of an unsigned-typed piece re-signs the operand at its own width: the
 /// split local's high half is `(int4)(int2)` like its low half, never a zero-extending `(int4)`
 /// of the unsigned accessor.
