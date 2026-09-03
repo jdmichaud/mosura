@@ -101,6 +101,7 @@ Two corrections rode along, both value-preserving and both measured:
 | e32 | the range case list `case 0..top:` on a witnessed `CMP r16,top ; JA` | 982 | 0.6374 | 1 TU, +1 EXACT (FUN_0002bb98), 0 down — landed; ungated (e32) it reached two register locals, one −0.066 |
 | e34 | caller-side `parm []` propagation: a stack-convention callee's byte parameter meets the caller's 4-byte pushed argument (arity gates, width does not) | 983 | 0.6374 | 1 TU, +1 EXACT (FUN_00030dc8), 0 down — landed; pinned by `guard_contract 0x30dc8 EXACT` |
 | e35 | `return-split`, the early-return shape | 985 | 0.6374 | 3 TUs, +2 EXACT (FUN_000184b0, FUN_000367a8), 0 down — landed |
+| e36 | the printer's negation looks through an implied COPY (Ghidra's negate token descends `pushVn`): `!(x != 0)` → `x == 0` | 986 | 0.6376 | +1 EXACT (FUN_00025cb4), WGSS +0.0002, 7 sim downs (largest −0.044, comma-form clauses whose SETcc polarity moved) — landed |
 | e24 | the witnessed narrow zext cast SPELLED (`(uint2)x`) + the tier-2 widening gate opened to computed narrow loads | — | — | REFUTED, not landed: the spelled cast reached 131 TUs (33 up / 43 down, +1 −3 EXACT) for a 15-function family — the `XOR xH,xH` window witness cannot tell which register it zeroes; the opened tier-2 gate reached 424 TUs (58 up / 119 down, −20 EXACT): a widened local re-allocates far beyond its own load |
 
 The scrutinee-compared-elsewhere gate on the narrow switch was measured and dropped: declining a

@@ -2995,6 +2995,15 @@ impl<'a> PrintC<'a> {
                     let inner = self.f.op(def).input(0).unwrap();
                     return self.render_var(inner).0; // !(!x) => x
                 }
+                // An IMPLIED copy of the boolean prints as its input (`PrintC::opCopy` →
+                // `pushVn(in0)`), and the negate token rides down with it (`PrintLanguage::pushVn`
+                // passes the modifiers on): the flip lands on the compare underneath, not on a
+                // `!(...)` around the copy. RuleBoolNegate leaves such copies behind (a negated
+                // comparison arrives as a COPY of the flipped compare).
+                OpCode::Copy if !self.is_explicit(v) => {
+                    let inner = self.f.op(def).input(0).unwrap();
+                    return self.render_negated(inner);
+                }
                 // The equality flip `!(a == b)` => `a != b` is Ghidra's print-time `negatetoken`
                 // (printlanguage.cc:549, `tok->negate`: `==`↔`!=`, printc.cc:133-134) — a pure token
                 // flip, no operand reorder. Operands route through `cast_operand` so both sides keep

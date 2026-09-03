@@ -273,6 +273,6 @@ fn early_return_prints_the_test_as_the_early_return() {
     assert!(reference.contains("!= 0) {") && !reference.contains("== 0) {\n    return 0;"), "the reference is the merged form:\n{reference}");
     let (c, recovered) = recovered_print(&f, &insns);
     assert!(!recovered.early_return_sites.is_empty(), "the witness saw the jump past the load");
-    assert!(c.contains(") {\n    return 0;\n  }\n"), "the early return:\n{c}");
+    assert!(c.contains("== 0) {\n    return 0;\n  }\n"), "the early return, its test flipped through the copy Ghidra's negate token descends:\n{c}");
     assert_eq!(c.matches("return 0;").count(), 2, "two returns of 0, the early one and the tail:\n{c}");
 }
