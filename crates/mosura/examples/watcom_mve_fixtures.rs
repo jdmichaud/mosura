@@ -11,7 +11,7 @@
 //!        printed. The manual pre-landing step for anything that touches a fixture (it needs the
 //!        in-house wcc386, so it is not a unit test).
 use mosura::recompile::candidate::load_object_function;
-use mosura::recompile::toolchain::{CompileUnit, Toolchain, WatcomDos};
+use mosura::recompile::toolchain::{spec, CompileUnit, CompilerDriver, DriverRole, Toolchain};
 
 
 /// The first line of every product; `tests/fixture_provenance.rs` keys the generator-product bar on it.
@@ -30,7 +30,18 @@ fn main() {
     };
     std::fs::create_dir_all(&out).unwrap();
     let work = out.join("work");
-    let tc = WatcomDos::new(&watcom, &work, "10.0a").expect("toolchain").owning_work_dir();
+    // Through the generic driver. Role DEVELOPMENT-ASSISTANCE: this builds oracle fixtures
+    // offline, which is the compiler helping us do the work rather than standing in for it.
+    // Every unit below carries EXPLICIT flags, so the spec's profile fallback never fires and the
+    // products are the same bytes as before the migration -- `--check` is the proof, not this note.
+    let tc = CompilerDriver::new(
+        spec::watcom_10_0a_dos(""),
+        &watcom,
+        &work,
+        DriverRole::DevelopmentAssistance,
+    )
+    .expect("toolchain")
+    .owning_work_dir();
     // The watcom_10_0a profile's own flag knowledge (buildconfig.rs): `-d1+` is what makes
     // 10.0a emit the BP frame on WAR2's path — saves pushed BEFORE the frame (`52 55 89e5`),
     // which is the whole point of the callee-save fixture: the saved-EBP slot carves the

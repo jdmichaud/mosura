@@ -1,16 +1,25 @@
-//! The toolchain driver against the real compiler.
-//!
-//! **These tests FAIL when no toolchain is configured; they do not skip.** They used to skip, and
-//! that is precisely how the driver came to report every unit as a compile failure on a machine
-//! where the compiler worked perfectly: the default path (`$HOME/watcom`) did not exist, both
-//! tests printed one line and passed, and the whole recompile/verify path stayed inert and green.
-//! A gate that goes quiet when its subject is missing is not a gate. Set `MOSURA_WATCOM_DIR` (and
-//! have `dosemu` on PATH) to run them.
+//! LIVE compiler-integration tests for the Watcom driver -- OPT-IN, never in the default gate.
 //!
 //! What they prove cannot be proved without a real compiler: that mosura can drive it, tell
 //! success from failure, attribute a diagnostic to the unit that caused it, and survive a unit
 //! that takes its session down.
-use mosura::recompile::toolchain::{Cached, CompileUnit, Toolchain, WatcomDos};
+//!
+//! Run: `cargo test --release -p mosura --test recompile_toolchain -- --ignored`
+//!
+//! ## Why `#[ignore]` and not a skip
+//!
+//! These were in the DEFAULT gate until 2026-09-03, hard-asserting dosemu rather than skipping,
+//! for a stated and good reason: *a silent skip is what kept a broken compile driver green*. But
+//! asserting in the default gate breaks a more important invariant -- mosura must build, test and
+//! gate with NO compiler installed, because being a decompiler that does not need the compiler is
+//! the point. `cargo test` on a clean machine FAILED here, so "the gate is compiler-free" was a
+//! label rather than a fact.
+//!
+//! `#[ignore]` keeps both properties: out of the default gate, and still asserting rather than
+//! skipping WHEN RUN, so an opt-in run on a machine that is supposed to have the toolchain is loud
+//! about a missing one. `scripts/gate-compiler-free.sh` proves the other half by running the gate
+//! with no toolchain reachable at all.
+use mosura::recompile::toolchain::{spec, Cached, CompileUnit, CompilerDriver, DriverRole, Toolchain};
 
 /// Serialize the dosemu sessions — this target runs single-threaded by construction rather than
 /// by remembering `--test-threads=1`.
@@ -24,7 +33,7 @@ fn serial() -> std::sync::MutexGuard<'static, ()> {
     LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn watcom(tag: &str) -> WatcomDos {
+fn watcom(tag: &str) -> CompilerDriver {
     let dir = mosura::paths::watcom_dir();
     assert!(
         dir.join("BINW").is_dir() || dir.join("binw").is_dir(),
@@ -43,7 +52,17 @@ fn watcom(tag: &str) -> WatcomDos {
     // objects — which read as "the compiler produced nothing" and hung the pair for >10 minutes.
     let work = std::env::temp_dir().join(format!("mosura-wcc-{}-{tag}", std::process::id()));
     let _ = std::fs::remove_dir_all(&work);
-    WatcomDos::new(dir, work, "10.0a").expect("work dir")
+    // Through the generic driver. These two tests exercise exactly the behaviours the driver had
+    // to PORT rather than inherit -- attributing a diagnostic to the unit that caused it, and
+    // surviving a unit that takes its session down -- so running them against the driver is what
+    // makes the port's faithfulness a measurement rather than a claim.
+    CompilerDriver::new(
+        spec::watcom_10_0a_dos(""),
+        dir,
+        work,
+        DriverRole::DevelopmentAssistance,
+    )
+    .expect("work dir")
 }
 
 fn which_dosemu() -> Option<std::path::PathBuf> {
@@ -63,6 +82,7 @@ fn unit(key: &str, source: &str) -> CompileUnit {
 }
 
 #[test]
+#[ignore = "live-drive: needs dosemu + a Watcom 10.0a install (opt-in tier, see the module note)"]
 fn compiles_a_batch_and_reports_each_unit() {
     let _serial = serial();
     let wcc = watcom("batch");
@@ -91,6 +111,7 @@ fn compiles_a_batch_and_reports_each_unit() {
 }
 
 #[test]
+#[ignore = "live-drive: needs dosemu + a Watcom 10.0a install (opt-in tier, see the module note)"]
 fn the_cache_serves_the_same_object_without_recompiling() {
     let _serial = serial();
     let wcc = watcom("cache");
