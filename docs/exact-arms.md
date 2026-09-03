@@ -1,4 +1,4 @@
-# The EXACT push (2026-09-03) — six witnessed emit choices from the near-miss census
+# The EXACT push (2026-09-03) — witnessed emit choices from the near-miss census
 
 ## Where the functions were
 
@@ -28,6 +28,10 @@ Three more arms followed in the same method (rounds e8–e10):
 | `mask-cast` (`mask_cast.rs`, at `ValueSite::CallArg`) | the original's `AND r,0xff\|0xffff` on the argument's register, the LAST write of that register before the call | a `WORD` argument Ghidra's `RuleAndMask` proved redundant and dropped: the `+ 0xbbb` message-id family, 23 near-miss functions | `x86_watcom_mask_arg.xml` |
 | stack-convention clause to callers (survey `parm_map`) | the callee's own `parm []` (every recovered parameter on the stack, callee pops) | callers compiling a stack callee under the register convention (`XOR EAX,EAX ; CALL` for `PUSH 0 ; CALL`) | — |
 | `return-split`, the constant-phi tail (`return_split.rs`, `const_phi_split`) | `TEST EAX,EAX ; JZ epilogue` with the taken edge landing on a bare epilogue: this compiler returns the tested register itself as the `0` of `if (x == 0) return 0;` — the merged form has to materialize its `0` in a variable of its own | `r = 0; if (x != 0) { ..; r = 1; } return r;` — Ghidra's phi of two constants behind one shared epilogue, 12 functions | `x86_watcom_const_phi.xml` |
+| `return-widen` (`return_widen.rs`, `ValueSite::ReturnValue`) | the `return-width` witness's widening carve-out (`XOR EAX,EAX ; MOV AX,[g]`): the widened return zero-extends its narrow SIGNED value, `return (uint2)iRam..;` | `short g` returned under an int declaration sign-extended (`MOV EAX,[g-2] ; SAR EAX,0x10`): FUN_000243bc | `x86_watcom_return_zx.xml` |
+| `ptr-offset` (`ptr_offset.rs`, last at `ValueSite::Deref`) | the original's access at the sum's address carries the offset as its displacement (`[EDX + 0x1a]`, not an `LEA`) | `*(T *)((int4)p + k)` compiled as integer arithmetic plus an `LEA`; 118 TUs carried the form, 87 with the `LEA` | `x86_watcom_ptr_offset.xml` |
+| far return (`Funcdata::far_return`, `far_return_from_evidence`) | every return a `RETF` | one far-called handler, FUN_00058840 | `x86_watcom_far_return.xml` + `guard_contract` |
+| dummy stack parameters (`Funcdata::extra_stack_params`, `dummy_stack_params`) | a `RET n` on a function with no recovered parameter: n/4 unused stack parameters and `parm []` | pointer-called callbacks that ignore their argument: FUN_0004dd2c, FUN_0004e820 | `x86_watcom_dummy_param.xml` + `guard_contract` |
 | dropped parameters (`Funcdata::dropped_params`, `buildconfig::phantom_params_from_evidence`) | the register of the LAST recovered parameter pushed among the function's leading saves and popped before its returns, the parameter flowing only into callees | the callee-save family: `PUSH EDX .. POP EDX` missing because the pass-through EDX was declared a parameter (an argument register is the caller's to lose; a preserved one was never an argument), 87 functions | corpus guard `guard_phantom` (0x2c160, 0x11f18) |
 
 The dropped-parameter fact has no self-compiled fixture: a callee stub of the generator never
@@ -65,6 +69,9 @@ Two corrections rode along, both value-preserving and both measured:
 | e10 | dropped (phantom) parameters | 950 | 0.6320 | 3 downs in a three-level pass-through chain (0x2f650 → 0x2f5e4 → 0x2f474): the freed register re-allocates |
 | e11 | constant-phi return split, first cut | 950 | 0.6321 | fired on 4 of the 12 carriers: the recognizer wanted a Basic condition block and a COPY into a unique |
 | e12 | the condition component's exit block, any COPY of a constant | 952 | 0.6322 | 6 up (FUN_0002c4e4, FUN_0002d4ec EXACT), 1 down (FUN_0006f94c −0.012); the 0x2a75c trio keeps a pointer-temp loop row |
+| e13 | return-widen + a first `cmp-sign` (any zero-extension idiom before a compare) | 951 | 0.6317 | 24 down: the `XOR r,r ; MOV r16` pair is this compiler's equality load for either signedness — three EXACT lost to the cast |
+| e14 | `cmp-sign` limited to memory operands | 952 | 0.6322 | still ±1: a pair loading the OTHER operand (FUN_0004753c) |
+| e15 | ptr-offset, far return, dummy stack parameters, `cmp-sign` keyed by global | 960 | 0.6361 | 84 up / 20 down: ptr-offset +4 EXACT over 121 TUs (76 up / 18 down), contracts +3, return-widen +1; `cmp-sign` +1/−1 and NOT landed |
 
 The scrutinee-compared-elsewhere gate on the narrow switch was measured and dropped: declining a
 one-case switch whose scrutinee has other compares cost −0.70 sim over 47 TUs (the fragment
@@ -85,6 +92,9 @@ after improving, three switch-label counts grew by one.
   sign, a prototyped callee (`uint1`, `char`, `uint4` parameters), the swapped argument order
   with and without the `parm` clause, a `(uint4)` cast — all compile to `MOV DL,[g]` with or
   without `AND EDX,0xff`; the `AL` staging has no C form found.
+- The byte register zeroed then stored (`XOR DL,DL ; MOV [..],DL` for `p[i] = 0`, FUN_00057fcc
+  and the 0x2c08c loop trio): `'\0'`, a `(uint1)0` cast, a `char *` pointee, and a zero-initialized
+  byte local (declared before or at the store) all compile to the immediate store.
 - A callee declared to clobber a register the original saves (`PUSH EDX .. POP EDX` in a body
   that never writes it) does not make Watcom save it. The mechanism was the phantom parameter
   (the third arm above): the register was declared an argument, and this compiler never
