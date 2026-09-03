@@ -1,0 +1,22 @@
+<!-- SELF-COMPILED fixture: wcc386 10.0a (in-house), flags -5r -fpi87 -s -onatx -d1+ -zq. No third-party
+     bytes — the source is this comment; regenerate with examples/watcom_mve_fixtures.rs.
+     Externs: code from 0x2c1000 (one RET stub per callee, 0x10 apart), data from 0x2c2000 (0x100 apart).
+     externs: chk=0x2c1000
+  extern unsigned char chk(int a);
+  unsigned char mve(int a)
+  {
+      if (a != 0x20)
+          return 0;
+      if (chk(a) == 0)
+          return 0;
+      return 1;
+  }
+-->
+<binaryimage arch="x86:LE:32:default:watcom">
+  <bytechunk space="ram" offset="0x2c0000" readonly="true">
+5589e583f820740430c05dc3e8ef0f000084c07402b0015dc3
+  </bytechunk>
+  <bytechunk space="ram" offset="0x2c1000" readonly="true">
+c3
+  </bytechunk>
+</binaryimage>

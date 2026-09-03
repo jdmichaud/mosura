@@ -495,6 +495,22 @@ void mve(void)
 }
 "#;
 
+/// A byte bool return the source wrote as a branch (WAR2 FUN_0002a228: `if (f() == 0) return 0;
+/// return 1;`): the compiler branches over the constant reusing the tested register
+/// (`TEST AL,AL ; JZ epilogue ; MOV AL,1`); the decompiler collapses it to `return x != 0;`,
+/// which recompiles to a `SETNZ` — the return-split arm's branch form prints it back.
+const BRANCH_RET_SRC: &str = r#"
+extern unsigned char chk(int a);
+unsigned char mve(int a)
+{
+    if (a != 0x20)
+        return 0;
+    if (chk(a) == 0)
+        return 0;
+    return 1;
+}
+"#;
+
 /// Every MVE, in the generator's order.
 pub const MVES: &[Mve] = &[
     Mve { key: "CSAVE", sym: "mve_", source: CALLEE_SAVE_SRC, fixture: "x86_watcom_callee_save.xml", base: 0x100000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(1));", "LOG_RET(mve(3));", "LOG_RET(mve(16));"], writes: &[("read16", "dst", 16)] },
@@ -524,6 +540,7 @@ pub const MVES: &[Mve] = &[
     Mve { key: "FARRET", sym: "mve_", source: FAR_RETURN_SRC, fixture: "x86_watcom_far_return.xml", base: 0x290000, inputs: &["{ total = 1; LOG_RET(mve(2)); LOG_RET(total); }"], writes: &[] },
     Mve { key: "CMPMEM", sym: "mve_", source: CMP_MEM_SRC, fixture: "x86_watcom_cmp_mem.xml", base: 0x2a0000, inputs: &["{ a = 3; b = 9; LOG_RET(mve()); a = 9; b = 3; LOG_RET(mve()); a = 5; b = 5; LOG_RET(mve()); }"], writes: &[] },
     Mve { key: "LDHOIST", sym: "mve_", source: LOAD_HOIST_SRC, fixture: "x86_watcom_load_hoist.xml", base: 0x2b0000, inputs: &["{ mve(); LOG_BYTES(g, 68); }"], writes: &[("fill", "p", 32)] },
+    Mve { key: "BRRET", sym: "mve_", source: BRANCH_RET_SRC, fixture: "x86_watcom_branch_ret.xml", base: 0x2c0000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(5));"], writes: &[] },
     Mve { key: "PTROFF", sym: "mve_", source: PTR_OFFSET_SRC, fixture: "x86_watcom_ptr_offset.xml", base: 0x270000, inputs: &["{ int m[4]; m[0] = 5; m[1] = 0x00030000; m[2] = 0x7fff0003; m[3] = 0; LOG_RET(mve(m)); m[2] = 0xfffe0000; LOG_RET(mve(m)); }"], writes: &[] },
 ];
 

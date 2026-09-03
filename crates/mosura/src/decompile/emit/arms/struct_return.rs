@@ -109,7 +109,7 @@ pub const ARM: Arm = Arm {
 };
 
 fn try_emit(p: &mut PrintC<'_>, site: Site<'_>, _out: &mut String) -> Option<Answer> {
-    let Site::Return { op } = site else { return None };
+    let Site::Return { op, .. } = site else { return None };
     if !p.arms.struct_return.witness || p.arms.struct_return.def.is_none() || p.f.op(op).num_inputs() > 1 {
         return None;
     }

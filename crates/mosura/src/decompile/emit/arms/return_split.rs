@@ -38,6 +38,7 @@
 use crate::decompile::block::BlockId;
 use crate::decompile::emit::arms::{Answer, Arm, Site, SiteKind};
 use crate::decompile::emit::{EmitChoices, ReturnSplit};
+use crate::decompile::op::OpId;
 use crate::decompile::opcode::OpCode;
 use crate::decompile::printc::{exit_basic, render_const, PrintC};
 use crate::decompile::varnode::VarnodeId;
@@ -60,11 +61,14 @@ impl State {
 /// The arm, as the [`super::ARMS`] table holds it.
 pub const ARM: Arm = Arm {
     name: "return-split: a tail boolean return as per-path constant returns (return-split=paths)",
-    kinds: &[SiteKind::ListTail],
+    kinds: &[SiteKind::ListTail, SiteKind::Return],
     try_emit,
 };
 
 fn try_emit(pr: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<Answer> {
+    if let Site::Return { op, pad } = site {
+        return branch_return(pr, op, pad, out);
+    }
     let Site::ListTail { s, c, tail, indent } = site else { return None };
     if matches!(s.blocks[c].kind, FlowKind::If)
         && s.node_gotos.get(&c).is_none()
@@ -85,8 +89,12 @@ fn try_emit(pr: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<Ans
                 || key.is_some_and(|pc| {
                     pr.recovered.return_split_sites.contains(&pc)
                 });
-            if apply && same_bool_value(pr, cond, ret_b) {
-                let negated = s.blocks[c].negated;
+            // the branch may test the NEGATION of the returned bool (`JZ` over `x != 0`: the
+            // CBRANCH input is a BOOL_NEGATE the structure prints back positive) — peel it and
+            // fold the flip into the structure's own negation (FUN_0002a31c, FUN_0002ac70)
+            let (cond0, flips) = peel_negations(pr, cond);
+            if apply && same_bool_value(pr, cond0, ret_b) {
+                let negated = s.blocks[c].negated ^ flips;
                 let (then_k, tail_k) = if negated { (0, 1) } else { (1, 0) };
                 emit_if_with_tail(pr, s, c, indent, out, &format!("return {then_k};"));
                 let pad = "  ".repeat(indent);
@@ -100,7 +108,9 @@ fn try_emit(pr: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<Ans
         if let Some(split) = const_phi_split(pr, s, c, tail) {
             pr.report.const_phi_candidates.push((split.branch_pc, split.k_tail));
             if pr.recovered.const_phi_sites.contains(&split.branch_pc) {
-                pr.suppressed.insert(split.copy_tail);
+                if let Some(copy_tail) = split.copy_tail {
+                    pr.suppressed.insert(copy_tail);
+                }
                 pr.suppressed.insert(split.copy_body);
                 let then_k = render_const(split.k_body, split.size);
                 let tail_k = render_const(split.k_tail, split.size);
@@ -119,7 +129,9 @@ fn try_emit(pr: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<Ans
 /// block's only statement returns the phi of the two.
 struct ConstPhiSplit {
     branch_pc: u64,
-    copy_tail: crate::decompile::op::OpId,
+    /// The tail constant's COPY, or `None` when the tail input is the tested value itself
+    /// (`cVar1 != 0` false ⇒ `cVar1 == 0`: the phi carries the call result, worth 0 there).
+    copy_tail: Option<crate::decompile::op::OpId>,
     copy_body: crate::decompile::op::OpId,
     k_tail: u64,
     k_body: u64,
@@ -184,13 +196,41 @@ fn const_phi_split(pr: &PrintC<'_>, s: &Structured, c: usize, tail: usize) -> Op
         crate::debug!(Topic::Recover, "const-phi @{branch_pc:x}: returned value def {:?} x{}", po.code(), po.num_inputs());
         return None;
     }
+    // the value the branch tests against zero (`x != 0` / `x == 0`): a phi input that IS that
+    // value on the tail path is worth 0 there — Ghidra's `return cVar1 != '\0';` of
+    // FUN_0002a228 / FUN_0002a31c, where the original's `TEST AL,AL ; JZ epilogue` returns
+    // the tested register itself
+    let tested = pr
+        .f
+        .block(cond_bid)
+        .ops
+        .iter()
+        .rev()
+        .copied()
+        .find(|&op| !pr.f.op(op).is_dead() && pr.f.op(op).code() == OpCode::Cbranch)
+        .and_then(|cb| pr.f.op(cb).input(1))
+        .map(|b| thru_copy(pr, b))
+        .and_then(|b| pr.f.vn(b).def)
+        .and_then(|d| {
+            let o = pr.f.op(d);
+            if !matches!(o.code(), OpCode::IntNotequal | OpCode::IntEqual) {
+                return None;
+            }
+            let (x, k) = (o.input(0)?, o.input(1)?);
+            (pr.f.vn(k).is_constant() && pr.f.vn(k).constant_value() == 0).then(|| thru_copy(pr, x))
+        });
     // each phi input: a COPY of a constant, in the condition block or in the body's exit block
     let mut tail_side = None;
     let mut body_side = None;
     for i in 0..2 {
+        let input = po.input(i)?;
+        if tested.is_some_and(|x| x == thru_copy(pr, input)) && tail_side.is_none() {
+            tail_side = Some((None, 0u64));
+            continue;
+        }
         // the phi input's own def is the COPY of the constant (into the variable itself, or
         // into a unique the phi merges: FUN_0002c4e4's `xVar2 = 0` is a unique at the branch)
-        let Some(copy) = pr.f.vn(po.input(i)?).def else { return None };
+        let Some(copy) = pr.f.vn(input).def else { return None };
         let co = pr.f.op(copy);
         if co.code() != OpCode::Copy {
             crate::debug!(Topic::Recover, "const-phi @{branch_pc:x}: input {i} def {:?}", co.code());
@@ -203,7 +243,7 @@ fn const_phi_split(pr: &PrintC<'_>, s: &Structured, c: usize, tail: usize) -> Op
         }
         let Some(parent) = co.parent else { return None };
         if parent == cond_bid {
-            tail_side = Some((copy, pr.f.vn(k).constant_value()));
+            tail_side = Some((Some(copy), pr.f.vn(k).constant_value()));
         } else if parent == body_exit {
             body_side = Some((copy, pr.f.vn(k).constant_value()));
         } else {
@@ -234,7 +274,8 @@ fn sole_bool_return(pr: &PrintC<'_>, s: &Structured, tail_idx: usize) -> Option<
     let mut ret = None;
     for &op in &pr.f.block(bid).ops {
         let o = pr.f.op(op);
-        if o.is_dead() || o.is_marker() {
+        // heritage's return-guard COPY of a persistent global (`markReturnCopy`) prints nothing
+        if o.is_dead() || o.is_marker() || o.is_return_copy() {
             continue;
         }
         match o.code() {
@@ -306,6 +347,50 @@ fn thru_copy(pr: &PrintC<'_>, mut v: VarnodeId) -> VarnodeId {
         }
     }
     v
+}
+
+/// The value under any chain of BOOL_NEGATEs (through copies), and whether the chain flips.
+fn peel_negations(pr: &PrintC<'_>, v: VarnodeId) -> (VarnodeId, bool) {
+    let mut v = thru_copy(pr, v);
+    let mut flips = false;
+    while let Some(d) = pr.f.vn(v).def {
+        let o = pr.f.op(d);
+        if o.code() != OpCode::BoolNegate {
+            break;
+        }
+        let Some(x) = o.input(0) else { break };
+        v = thru_copy(pr, x);
+        flips = !flips;
+    }
+    (v, flips)
+}
+
+/// The branch form of a lone `return <bool>;` (the module doc): `if (cond) { return 1; }
+/// return 0;` where the original branched over the constant instead of materializing the bool.
+/// Value-identical.
+fn branch_return(pr: &mut PrintC<'_>, op: OpId, pad: &str, out: &mut String) -> Option<Answer> {
+    if pr.comma_separate {
+        return None;
+    }
+    let v = pr.f.op(op).input(1)?;
+    let (b, flips) = peel_negations(pr, v);
+    let d = pr.f.vn(b).def?;
+    let bo = pr.f.op(d);
+    if !bo.is_bool_output() || bo.code() == OpCode::BoolNegate || pr.f.vn(v).size != 1 {
+        return None;
+    }
+    let pc = bo.seqnum.pc.offset;
+    pr.report.branch_return_candidates.push(pc);
+    if !pr.recovered.branch_return_sites.contains(&pc) {
+        return None;
+    }
+    let cond = pr.render_var(v).0;
+    let _ = flips; // the rendered bool already carries its negation
+    let _ = writeln!(out, "{pad}if ({cond}) {{");
+    let _ = writeln!(out, "{pad}  return 1;");
+    let _ = writeln!(out, "{pad}}}");
+    let _ = writeln!(out, "{pad}return 0;");
+    Some(Answer::Emitted)
 }
 
 fn same_bool_value(pr: &PrintC<'_>, a: VarnodeId, b: VarnodeId) -> bool {

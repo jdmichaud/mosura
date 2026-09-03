@@ -67,6 +67,10 @@ pub fn recover(
             &report.const_phi_candidates,
             insns,
         ),
+        branch_return_sites: crate::recompile::buildconfig::branch_returns_from_evidence(
+            &report.branch_return_candidates,
+            insns,
+        ),
         cmp_unsigned_sites: cmp_sign.0,
         cmp_unsigned_globals: cmp_sign.1,
         ptr_offset_sites: crate::recompile::buildconfig::ptr_offsets_from_evidence(

@@ -201,6 +201,17 @@ fn load_through_a_pointer_temp_hoists_to_a_value() {
     assert!(!c.contains("Stack_28 + ") && !c.contains("Stack_24 + ") && c.contains("[iVar"), "the value is loaded at its position, no pointer temp:\n{c}\nreference:\n{reference}");
 }
 
+/// `return-split`, the branch form: a lone `return x != 0;` the original branched over prints
+/// `if (x != 0) { return 1; } return 0;`.
+#[test]
+fn lone_bool_return_prints_its_branch_form() {
+    let (f, insns) = decompiled("x86_watcom_branch_ret.xml");
+    let reference = reference_print(&f);
+    let (c, recovered) = recovered_print(&f, &insns);
+    assert!(!recovered.branch_return_sites.is_empty() || !recovered.const_phi_sites.is_empty(), "the witness read the branch: {:?}\n{reference}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
+    assert!(c.contains("return 1;") && c.contains("return 0;") && !c.contains("return iVar1 != 0;"), "split:\n{c}\nreference:\n{reference}");
+}
+
 /// A sign-extension of an unsigned-typed piece re-signs the operand at its own width: the
 /// split local's high half is `(int4)(int2)` like its low half, never a zero-extending `(int4)`
 /// of the unsigned accessor.

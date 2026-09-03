@@ -746,6 +746,33 @@ pub fn cmp_signs_from_evidence(
     (sites, globals)
 }
 
+/// Decide the branch-form `return-split` sites
+/// ([`crate::decompile::printc::EmitReport::branch_return_candidates`]): at the compare that
+/// computes a lone `return <bool>;`, the original branches (`TEST AL,AL ; JZ epilogue ; MOV AL,1`
+/// — the tested register reused as the 0) where a materialized bool is a `SETcc`. Returns the
+/// compare addresses whose return prints as `if (cond) { return 1; } return 0;`.
+pub fn branch_returns_from_evidence(candidates: &[u64], insns: &[NormInsn]) -> std::collections::HashSet<u64> {
+    let mut out = std::collections::HashSet::new();
+    for &pc in candidates {
+        let Some(i) = insns.iter().position(|x| x.addr == pc) else { continue };
+        let Some(next) = insns.get(i + 1) else { continue };
+        if !(next.text.starts_with('J') && !next.text.starts_with("JMP")) {
+            continue;
+        }
+        let after = &insns[i + 2..(i + 6).min(insns.len())];
+        if after.iter().any(|x| x.text.starts_with("SET")) {
+            continue;
+        }
+        let constant = after.iter().take(3).any(|x| {
+            matches!(x.text.as_str(), "MOV AL,0x1" | "MOV EAX,0x1" | "XOR AL,AL" | "XOR EAX,EAX" | "MOV AX,0x1" | "XOR AX,AX")
+        });
+        if constant {
+            out.insert(pc);
+        }
+    }
+    out
+}
+
 /// Decide the constant-phi `return-split` sites
 /// ([`crate::decompile::printc::EmitReport::const_phi_candidates`]). This compiler compiles
 /// `if (x == 0) return 0; ..; return 1;` by REUSING the tested register as the return value:
@@ -1830,6 +1857,16 @@ mod tests {
         // the same pair is not evidence for another global, nor for a load through a pointer
         assert!(cmp_signs_from_evidence(&[(0x1008, 2, Some(0x90162))], &pair).0.is_empty());
         assert!(cmp_signs_from_evidence(&[(0x1008, 2, None)], &pair).0.is_empty());
+    }
+
+    /// The branch-form bool return: `TEST AL,AL ; JZ +2 ; MOV AL,1` branches over the constant;
+    /// a `SETNZ AL` materializes the bool the way the recompile of `return x != 0;` does.
+    #[test]
+    fn branch_return_witness_reads_the_branch_over_the_constant() {
+        let branched = lift("84c07402b0015dc3"); // TEST AL,AL ; JZ +2 ; MOV AL,1 ; POP EBP ; RET
+        assert!(branch_returns_from_evidence(&[0x1000], &branched).contains(&0x1000), "{:?}", branched.iter().map(|x| (x.addr, &x.text)).collect::<Vec<_>>());
+        let materialized = lift("84c00f95c05dc3"); // TEST AL,AL ; SETNZ AL ; POP EBP ; RET
+        assert!(branch_returns_from_evidence(&[0x1000], &materialized).is_empty());
     }
 
     /// The constant-phi split: `TEST EAX,EAX ; JZ epilogue` reuses the tested register as the

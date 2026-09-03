@@ -176,13 +176,14 @@ pub enum SiteKind {
 }
 
 /// One call of the statement-level hook.
+#[derive(Clone, Copy)]
 pub enum Site<'s> {
     LoopNode { s: &'s Structured, idx: usize, indent: usize },
     IfEntry { s: &'s Structured, idx: usize, indent: usize },
     IfWithoutElse { s: &'s Structured, idx: usize, indent: usize },
     BlockOp { block_ops: &'s [OpId], op: OpId, pc: u64, reordered: &'s std::collections::HashSet<OpId> },
     ListTail { s: &'s Structured, c: usize, tail: usize, indent: usize },
-    Return { op: OpId },
+    Return { op: OpId, pad: &'s str },
 }
 
 impl Site<'_> {
@@ -232,8 +233,9 @@ pub const ARMS: [Arm; 6] = [
 /// `None` = no arm answered, the port prints the site itself. The table IS the dispatch.
 pub fn try_emit(p: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<Answer> {
     let kind = site.kind();
-    let arm = ARMS.iter().find(|arm| arm.kinds.contains(&kind))?;
-    (arm.try_emit)(p, site, out)
+    // every arm declaring the kind is asked in table order; the first answer wins (an arm writes
+    // to `out` only when it answers)
+    ARMS.iter().filter(|arm| arm.kinds.contains(&kind)).find_map(|arm| (arm.try_emit)(p, site, out))
 }
 
 /// THE ARM SURFACE (see the module doc): every printer member an arm file may touch, by kind.

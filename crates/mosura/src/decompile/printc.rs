@@ -159,6 +159,10 @@ pub struct EmitReport {
     /// that constant on its own path after the branch (a `XOR AL,AL` / `MOV EAX,k` right before
     /// an epilogue) — the per-path returns — or hoists it above the test (the merged form).
     pub const_phi_candidates: Vec<(u64, u64)>,
+    /// Every lone `return <bool>;` statement (`return-split`, the branch form), by the address
+    /// of the compare that computes the bool: the original either branches over a constant
+    /// (`JZ ; MOV AL,1`) or materializes it (`SETNZ AL`).
+    pub branch_return_candidates: Vec<u64>,
     /// Every compare with a narrow SIGNED non-constant operand (`cmp-sign`), as `(compare
     /// address, operand size)`: the original's extension idiom before the compare decides the
     /// operand's promotion.
@@ -287,6 +291,9 @@ pub struct RecoveredChoices {
     /// Guarding-if branch addresses whose constant-phi tail splits per path (`return-split`,
     /// `const_phi_candidates` evidence, `buildconfig::const_phi_returns_from_evidence`).
     pub const_phi_sites: std::collections::HashSet<u64>,
+    /// Compare addresses whose lone bool return the original branches over (`return-split`,
+    /// `branch_return_candidates` evidence, `buildconfig::branch_returns_from_evidence`).
+    pub branch_return_sites: std::collections::HashSet<u64>,
     /// Compare addresses whose narrow signed operands the original zero-extended (`cmp-sign`,
     /// `cmp_sign_candidates` evidence, `buildconfig::cmp_signs_from_evidence`).
     pub cmp_unsigned_sites: std::collections::HashSet<u64>,
@@ -3745,7 +3752,13 @@ impl<'a> PrintC<'a> {
                 let mut answer = arms::try_emit(self, Site::BlockOp { block_ops: &block_ops, op, pc, reordered: &reordered }, out);
                 // struct-return (emit/arms/struct_return.rs): a RETURN statement is its own site
                 if answer.is_none() && self.f.op(op).code() == OpCode::Return {
-                    answer = arms::try_emit(self, Site::Return { op }, out);
+                    answer = arms::try_emit(self, Site::Return { op, pad: &pad }, out);
+                }
+                // return-split (emit/arms/return_split.rs): a lone bool return printed as its
+                // branch form — the arm wrote the statements itself
+                if let Some(Answer::Emitted) = answer {
+                    reordered.insert(op);
+                    continue;
                 }
                 if let Some(Answer::Fused { stmt, members }) = answer {
                     for m in members {
