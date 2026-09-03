@@ -368,6 +368,20 @@ void mve(unsigned char i)
 }
 "#;
 
+/// A call argument the source truncates to a `WORD` (WAR2's `MOV AL,[g] ; ADD EAX,0xbbb ; AND
+/// EAX,0xffff ; CALL` message-id family): the compiler masks it before the call, Ghidra's
+/// RuleAndMask proves the mask redundant and drops it, the `mask-cast` arm restores it from the
+/// bytes.
+const MASK_ARG_SRC: &str = r#"
+extern unsigned char t[];
+extern int f(int a, int b);
+int mve(unsigned char i)
+{
+    unsigned short v = t[i] + 0xbc1;
+    return f(v, 0);
+}
+"#;
+
 /// Every MVE, in the generator's order.
 pub const MVES: &[Mve] = &[
     Mve { key: "CSAVE", sym: "mve_", source: CALLEE_SAVE_SRC, fixture: "x86_watcom_callee_save.xml", base: 0x100000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(1));", "LOG_RET(mve(3));", "LOG_RET(mve(16));"], writes: &[("read16", "dst", 16)] },
@@ -389,6 +403,7 @@ pub const MVES: &[Mve] = &[
     Mve { key: "BYTERET", sym: "mve_", source: BYTE_RETURN_SRC, fixture: "x86_watcom_byte_return.xml", base: 0x200000, inputs: &["{ limit = 10; total = 0; LOG_RET(mve(3)); LOG_RET(mve(20)); LOG_RET(mve(7)); LOG_RET(mve(1)); }"], writes: &[] },
     Mve { key: "STACKORD", sym: "mve_", source: STACK_ORDER_SRC, fixture: "x86_watcom_stack_order.xml", base: 0x210000, inputs: &["mve(1, 2);", "mve(0xff, -1);"], writes: &[] },
     Mve { key: "NZEXT", sym: "mve_", source: NARROW_ZEXT_SRC, fixture: "x86_watcom_narrow_zext.xml", base: 0x220000, inputs: &["{ t[0] = 3; t[1] = 200; mve(0); mve(1); }"], writes: &[] },
+    Mve { key: "MASKARG", sym: "mve_", source: MASK_ARG_SRC, fixture: "x86_watcom_mask_arg.xml", base: 0x230000, inputs: &["{ t[0] = 3; t[1] = 200; LOG_RET(mve(0)); LOG_RET(mve(1)); }"], writes: &[] },
 ];
 
 /// The names an MVE declares `extern`, by kind: a declarator followed by `(` is a function, anything

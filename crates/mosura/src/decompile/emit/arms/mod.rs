@@ -134,6 +134,7 @@ impl State {
 pub mod cmp_order;
 pub mod complement_cmp;
 pub mod ext_cast;
+pub mod mask_cast;
 pub mod array_index;
 pub mod frame_fill;
 pub mod nested_conds;
@@ -267,9 +268,10 @@ mod tests {
     /// The arm files, as text, for the surface scan — every `pub mod` of this module must be here
     /// (`arms_touch_only_the_documented_surface` checks that against this file's own source, so a
     /// new arm file cannot slip past the scan).
-    const ARM_SOURCES: [(&str, &str); 17] = [
+    const ARM_SOURCES: [(&str, &str); 18] = [
         ("cmp_order.rs", include_str!("cmp_order.rs")),
         ("ext_cast.rs", include_str!("ext_cast.rs")),
+        ("mask_cast.rs", include_str!("mask_cast.rs")),
         ("string_ops.rs", include_str!("string_ops.rs")),
         ("struct_copy.rs", include_str!("struct_copy.rs")),
         ("sparse_switch.rs", include_str!("sparse_switch.rs")),
@@ -413,6 +415,9 @@ pub enum ValueSite<'v> {
     /// `render_op_inner`'s INT_ZEXT (`signed` false) / INT_SEXT: the `ext-cast=promotion`
     /// rendering of an extension at or below int width (emit/arms/ext_cast.rs).
     Extension { op: OpId, signed: bool },
+    /// One argument (`slot`, an input index) of the CALL/CALLIND `op` the port is about to
+    /// render: the `mask-cast` arm's narrow cast where the original masks it (emit/arms/mask_cast.rs).
+    CallArg { op: OpId, slot: usize },
     /// `render_op_inner`'s `Load` arm: `out` the loaded value, `addr` its address — a witnessed
     /// masked narrow load prints its deref at int width. Replaces the inline width consult
     /// (33d6e37); R2b, commit 3.
@@ -444,6 +449,7 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
     //   OpRoot:      string-ops, sdiv-pow2, struct-return (a witnessed CALL)
     //   Compare:     complement-cmp (the immediate flavour), then cmp-order (the operand swap)
     //   Extension:   ext-cast (the promotion rendering of INT_ZEXT / INT_SEXT)
+    //   CallArg:     mask-cast (a call argument the original masks before the call)
     //   Var:         struct-return (the hidden pointer -> `__ret`), string-ops
     //   Deref:       struct-return (a field write through the hidden pointer), array-index
     //   SlotName / SlotOffset / SlotAddress / SlotPiece / FusedStore:
@@ -458,6 +464,7 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
         ValueSite::Equality { op, sym, prec } => unsigned_cmp::render(p, op, sym, prec),
         ValueSite::Compare { op, strict, prec } => complement_cmp::render(p, op, strict, prec).or_else(|| cmp_order::render(p, op, strict, prec)),
         ValueSite::Extension { op, signed } => ext_cast::render(p, op, signed),
+        ValueSite::CallArg { op, slot } => mask_cast::render(p, op, slot),
         ValueSite::Load { out, addr } => testmem::render(p, out, addr),
         ValueSite::Sum { op } => sum_order::render(p, op),
         ValueSite::Deref { addr } => struct_return::render_value(p, &ValueSite::Deref { addr }).or_else(|| array_index::render(p, addr)),

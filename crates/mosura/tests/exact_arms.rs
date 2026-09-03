@@ -102,6 +102,18 @@ fn narrow_zext_cast_follows_the_witness() {
     assert!(!bare.contains("(uint2)"), "without the witness the promotion arm prints bare:\n{bare}");
 }
 
+/// `mask-cast`: the reference passes the sum bare (Ghidra dropped the redundant mask); the
+/// original's `AND EAX,0xffff` before the call witnesses the `(uint2)` cast.
+#[test]
+fn masked_call_argument_prints_the_witnessed_cast() {
+    let (f, insns) = decompiled("x86_watcom_mask_arg.xml");
+    let reference = reference_print(&f);
+    assert!(!reference.contains("(uint2)("), "the reference passes the sum bare:\n{reference}");
+    let (c, recovered) = recovered_print(&f, &insns);
+    assert!(!recovered.mask_sites.is_empty(), "the witness read the AND: {:?}\n{c}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
+    assert!(c.contains("(uint2)("), "the masked argument:\n{c}");
+}
+
 /// A sign-extension of an unsigned-typed piece re-signs the operand at its own width: the
 /// split local's high half is `(int4)(int2)` like its low half, never a zero-extending `(int4)`
 /// of the unsigned accessor.

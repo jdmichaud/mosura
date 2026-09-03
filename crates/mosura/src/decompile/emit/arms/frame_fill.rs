@@ -208,7 +208,7 @@ if let Some(agg) = pr.arms.frame_fill.agg.clone() {
 }
             None
         }
-        ValueSite::OpRoot { .. } | ValueSite::Var { .. } | ValueSite::Equality { .. } | ValueSite::Compare { .. } | ValueSite::Extension { .. } | ValueSite::Load { .. } | ValueSite::Sum { .. } | ValueSite::Deref { .. } | ValueSite::VarEntry { .. } => None,
+        ValueSite::OpRoot { .. } | ValueSite::Var { .. } | ValueSite::Equality { .. } | ValueSite::Compare { .. } | ValueSite::Extension { .. } | ValueSite::CallArg { .. } | ValueSite::Load { .. } | ValueSite::Sum { .. } | ValueSite::Deref { .. } | ValueSite::VarEntry { .. } => None,
     }
 }
 

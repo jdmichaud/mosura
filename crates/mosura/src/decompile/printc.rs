@@ -142,6 +142,13 @@ pub struct EmitReport {
     /// at the site and keeps the cast only for the 16-bit one (`narrow_zexts_from_evidence`);
     /// printing it everywhere measured −3 EXACT / +1 (round e1, 2026-09-03).
     pub narrow_zext_candidates: Vec<(u64, u32, u32)>,
+    /// Every register-resident, non-constant CALL argument, as `(call address, argument slot,
+    /// definition address, register (offset, size))` — the `mask-cast` candidates. Ghidra's
+    /// `RuleAndMask` removes a mask it proves redundant, so an argument the original masks to a
+    /// narrow width before the call (`ADD EAX,0xbc1 ; AND EAX,0xffff ; CALL`) has no mask left
+    /// in the IR; a target rule reads the original's `AND` on the argument's register between
+    /// its definition and the call (`buildconfig::masked_args_from_evidence`).
+    pub mask_candidates: Vec<(u64, u32, u64, (u64, u32))>,
     /// Every tail pair the `return-split` axis could rewrite, keyed by the guarding `if`'s
     /// CBRANCH instruction address. The target rule reads whether the ORIGINAL materialized
     /// the tail boolean (a `SETcc` in the region after the branch) or stayed branch-only —
@@ -250,6 +257,9 @@ pub struct RecoveredChoices {
     /// Sub-int zero-extension sites (`narrow_zext_candidates`) whose original widens with the
     /// 16-bit idiom (`XOR xH,xH`): the `ext-cast=promotion` arm keeps the `(uint2)` cast there.
     pub narrow_zext_sites: std::collections::HashSet<u64>,
+    /// `mask-cast`: call arguments to print as `(uintN)(expr)` — `(call address, slot)` to the
+    /// witnessed mask width (`mask_candidates` evidence, `buildconfig::masked_args_from_evidence`).
+    pub mask_sites: std::collections::HashMap<(u64, u32), u32>,
     /// Sites from [`EmitReport::allones_cmp_candidates`] whose ORIGINAL compare immediate is
     /// the zero-extended (unsigned) spelling — render `(uintN)x == 0xffN` instead of the
     /// signed `x == -1` (see the candidate's doc; decided by
@@ -979,6 +989,16 @@ impl<'a> PrintC<'a> {
     /// as Ghidra's plain variable-occurrence path does (`allowCast=false`, printc.cc:1886).
     pub(crate) fn lvalue_of(&mut self, v: VarnodeId) -> String {
         self.partial_symbol(v, false).unwrap_or_else(|| self.name_of(v))
+    }
+
+    /// One argument of a CALL/CALLIND: the `mask-cast` arm's rendering (emit/arms/mask_cast.rs)
+    /// where the original masks the argument, else the value's own.
+    fn render_call_arg(&mut self, op: OpId, slot: usize) -> String {
+        if let Some((s, _)) = arms::render_value(self, ValueSite::CallArg { op, slot }) {
+            return s;
+        }
+        let v = self.f.op(op).input(slot).unwrap();
+        self.render_var(v).0
     }
 
     /// The name of `v`'s variable, assigning one on first use.
@@ -2331,7 +2351,7 @@ impl<'a> PrintC<'a> {
                         .collect();
                     debug!(crate::debug::Topic::Printc, "{name} op={} args=[{}]", op.0, facts.join(" | "));
                 }
-                let args: Vec<String> = (1..o.num_inputs()).map(|i| self.render_var(a(i)).0).collect();
+                let args: Vec<String> = (1..o.num_inputs()).map(|i| self.render_call_arg(op, i)).collect();
                 // call-arg-orders MARK: the candidacy report and the recovered permutation
                 let args = self.apply_call_arg_orders(op, args);
                 (format!("{name}({})", args.join(", ")), 16)
@@ -2357,7 +2377,7 @@ impl<'a> PrintC<'a> {
                 // global function lookup at this point, so it takes the second path: an explicit
                 // `(code *)` on the constant, which is what makes `(*(code *)0x1006ca)()` valid C.
                 let t0 = a(0);
-                let args: Vec<String> = (1..o.num_inputs()).map(|i| self.render_var(a(i)).0).collect();
+                let args: Vec<String> = (1..o.num_inputs()).map(|i| self.render_call_arg(op, i)).collect();
                 if self.f.vn(t0).is_constant() {
                     // A pointer-typed constant already renders with its cast (`render_var`).
                     if matches!(self.type_of(t0), Datatype::Pointer(..)) {

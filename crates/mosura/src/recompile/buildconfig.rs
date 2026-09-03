@@ -248,6 +248,49 @@ pub fn narrow_zexts_from_evidence(
     out
 }
 
+/// Decide the `mask-cast` sites ([`crate::decompile::printc::EmitReport::mask_candidates`]): a
+/// call argument whose register the original masks with `AND r,0xff` / `AND r,0xffff` between
+/// the argument's definition and the call — the last write of the argument's register in that
+/// window being that mask — prints as the cast to the mask's width. Ghidra's `RuleAndMask` has
+/// removed the mask from the IR as redundant; the bytes still carry it. Returns
+/// `(call address, slot) -> width in bytes`.
+pub fn masked_args_from_evidence(
+    cands: &[(u64, u32, u64, (u64, u32))],
+    insns: &[NormInsn],
+) -> std::collections::HashMap<(u64, u32), u32> {
+    let mut out = std::collections::HashMap::new();
+    use crate::recompile::insn::SemArg;
+    for &(call_pc, slot, def_pc, (reg, _)) in cands {
+        let container = reg & !3;
+        let mut mask: Option<u32> = None;
+        for x in insns.iter().filter(|x| x.addr > def_pc && x.addr < call_pc) {
+            // the mask must be the LAST write of the register before the call: any later write
+            // of its container — a reload, a pop, an arithmetic result — retires it (measured:
+            // an `AND EDX,0xff` on an index, EDX then reloaded with the parameter the call
+            // passes, cast the parameter, FUN_00018238 0.739 -> 0.520 in round e8)
+            let writes = x.sem.iter().any(|o| matches!(o.out, Some(SemArg::Reg(r, _)) if r & !3 == container));
+            let and_imm = x.text.strip_prefix("AND ").and_then(|rest| {
+                let (dst, imm) = rest.split_once(',')?;
+                let (o, sz) = x86_reg_by_name(dst)?;
+                (sz == 4 && o & !3 == container).then(|| match imm.trim() {
+                    "0xff" => Some(1u32),
+                    "0xffff" => Some(2u32),
+                    _ => None,
+                })?
+            });
+            if let Some(w) = and_imm {
+                mask = Some(w);
+            } else if writes {
+                mask = None;
+            }
+        }
+        if let Some(w) = mask {
+            out.insert((call_pc, slot), w);
+        }
+    }
+    out
+}
+
 /// Decide the `cmp-order` sites ([`crate::decompile::printc::EmitReport::cmp_order_candidates`]):
 /// at each two-operand order comparison the original's own `CMP` — found the way
 /// [`complement_compares_from_evidence`] finds it, within the three instructions before the
@@ -1339,6 +1382,20 @@ mod tests {
         // XOR EAX,EAX ; MOV AL,[EDX+0x99a42] ; XOR ECX,ECX ; ADD EAX,EAX
         let wide = lift("31c08a82429a090031c901c0");
         assert!(narrow_zexts_from_evidence(&[(add, 1, 2)], &wide).is_empty(), "the full-register zero is the compiler's ordinary widening");
+    }
+
+    /// `mask-cast`: the argument's register masked between its definition and the call decides the
+    /// width; a mask on another register, or one the call does not follow, does not.
+    #[test]
+    fn masked_arg_witness_reads_the_and_before_the_call() {
+        // MOV AL,[0x8032f] ; ADD EAX,0xbc1 ; AND EAX,0xffff ; XOR EBX,EBX ; CALL +0
+        let insns = lift("a02f8008000005c10b000025ffff000031dbe800000000");
+        let (load, add, call) = (0x1000, 0x1005, 0x1000 + 5 + 5 + 5 + 2);
+        let sites = masked_args_from_evidence(&[(call, 0, add, (0, 4))], &insns);
+        assert_eq!(sites.get(&(call, 0)), Some(&2), "EAX masked to 16 bits before the call: {sites:?}");
+        // the same window on EBX: no mask
+        assert!(masked_args_from_evidence(&[(call, 2, add, (12, 4))], &insns).is_empty());
+        let _ = load;
     }
 
     /// The stack twin of the store-order witness: the original stores `[EBP-8]` (the parameter)

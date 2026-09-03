@@ -54,6 +54,10 @@ pub fn recover(
             &report.narrow_zext_candidates,
             insns,
         ),
+        mask_sites: crate::recompile::buildconfig::masked_args_from_evidence(
+            &report.mask_candidates,
+            insns,
+        ),
         return_split_sites: crate::recompile::buildconfig::split_returns_from_evidence(
             &report.return_split_candidates,
             insns,
