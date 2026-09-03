@@ -510,6 +510,73 @@ pub fn split_returns_from_evidence(
     out
 }
 
+/// Register parameters the original handles as a NARROW value: every IR use of the parameter
+/// is a mask to its low bytes (`param & 0xff`) and the original's entry region copies the
+/// parameter's low byte into a byte register (`MOV CL,AL`, WAR2 FUN_00019e38) — the source
+/// declared a byte parameter, which this compiler keeps in a byte register where a masked int
+/// parameter is copied whole and masked (`MOV ECX,EAX .. AND EAX,0xff`). Returns the parameter
+/// varnodes with their witnessed width.
+pub fn narrow_params_from_evidence(
+    f: &crate::decompile::funcdata::Funcdata,
+    insns: &[NormInsn],
+) -> HashMap<crate::decompile::varnode::VarnodeId, u32> {
+    use crate::decompile::opcode::OpCode;
+    let mut out = HashMap::new();
+    let Some(reg) = f.spaces.by_name("register") else { return out };
+    for slot in crate::decompile::printc::rendered_param_slots(f) {
+        let Some(v) = slot.vn else { continue };
+        let vn = f.vn(v);
+        if vn.loc.space != reg || vn.size != 4 {
+            continue;
+        }
+        let Some(low) = low_byte_name(vn.loc.offset) else { continue };
+        // every live use masks the low byte
+        let uses: Vec<_> = vn.descend.iter().copied().filter(|&u| !f.op(u).is_dead()).collect();
+        let width = 1u32;
+        let all_masked = !uses.is_empty()
+            && uses.iter().all(|&u| {
+                let o = f.op(u);
+                o.code() == OpCode::IntAnd
+                    && o.input(0) == Some(v)
+                    && o.input(1).is_some_and(|m| f.vn(m).is_constant() && f.vn(m).constant_value() == 0xff)
+            });
+        if all_masked && entry_byte_copy(insns, low) {
+            out.insert(v, width);
+        }
+    }
+    out
+}
+
+/// The low-byte name of a general register by register-space offset (EAX 0, ECX 4, EDX 8, EBX 12).
+fn low_byte_name(off: u64) -> Option<&'static str> {
+    match off {
+        0 => Some("AL"),
+        4 => Some("CL"),
+        8 => Some("DL"),
+        12 => Some("BL"),
+        _ => None,
+    }
+}
+
+/// The entry region (after the leading saves and frame setup, up to the first branch or call,
+/// at most eight instructions) copies `low` into a byte register: `MOV CL,AL`.
+pub fn entry_byte_copy(insns: &[NormInsn], low: &str) -> bool {
+    let start = insns
+        .iter()
+        .position(|x| !(x.text.starts_with("PUSH ") || x.text == "MOV EBP,ESP"))
+        .unwrap_or(insns.len());
+    let src = format!(",{low}");
+    insns[start..]
+        .iter()
+        .take(8)
+        .take_while(|x| !(x.text.starts_with('J') || x.text.starts_with("CALL") || x.text.starts_with("RET")))
+        .any(|x| {
+            x.text.starts_with("MOV ")
+                && x.text.ends_with(&src)
+                && x.text[4..].split(',').next().is_some_and(|d| matches!(d, "AL" | "BL" | "CL" | "DL" | "AH" | "BH" | "CH" | "DH") && d != low)
+        })
+}
+
 /// The function returns FAR: its return instructions are `RETF` (WAR2 FUN_00058840).
 pub fn far_return_from_evidence(insns: &[NormInsn]) -> bool {
     let rets: Vec<&NormInsn> = insns.iter().filter(|x| x.text.starts_with("RET")).collect();
@@ -1632,6 +1699,19 @@ mod tests {
         assert_eq!(regs, vec![8, 12], "EDX and EBX: {regs:?}");
         // no leading saves: nothing preserved
         assert!(preserved_registers(&lift("31c0c3")).is_empty());
+    }
+
+    /// The entry-region byte copy of a parameter: `MOV CL,AL` after the saves says the source
+    /// took a byte in EAX; a whole-register copy or a copy past the first call does not.
+    #[test]
+    fn entry_byte_copy_reads_the_narrow_move() {
+        // PUSH ECX ; PUSH EBP ; MOV EBP,ESP ; MOV CL,AL ; MOV ESI,EDX
+        assert!(entry_byte_copy(&lift("51558bec88c189d6"), "AL"));
+        assert!(!entry_byte_copy(&lift("51558bec88c189d6"), "DL"));
+        // PUSH ECX ; MOV ECX,EAX (whole register)
+        assert!(!entry_byte_copy(&lift("5189c1"), "AL"));
+        // PUSH ECX ; CALL +0 ; MOV CL,AL (past the call)
+        assert!(!entry_byte_copy(&lift("51e80000000088c1"), "AL"));
     }
 
     /// A far return: every `RET` is a `RETF`.

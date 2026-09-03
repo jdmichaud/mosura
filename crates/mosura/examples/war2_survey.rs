@@ -2346,6 +2346,9 @@ fn main() {
             // a `RETF` return declares the function `far`; a `RET n` popping slots no parameter
             // reads declares the popped slots as unused stack parameters
             f.far_return = mosura::recompile::buildconfig::far_return_from_evidence(&insns);
+            // a parameter the original copies into a byte register at entry and the IR only
+            // masks is declared at that width
+            f.narrow_params = mosura::recompile::buildconfig::narrow_params_from_evidence(&f, &insns);
             f.extra_stack_params = mosura::recompile::buildconfig::dummy_stack_params(&f);
             f
         };

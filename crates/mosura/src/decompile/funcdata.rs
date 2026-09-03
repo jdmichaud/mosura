@@ -217,6 +217,11 @@ pub struct Funcdata {
     /// MARK (decided by the survey from the original's bytes): the function returns FAR
     /// (`RETF`); its own contract declares `far` (WAR2 FUN_00058840, a far-called handler).
     pub far_return: bool,
+    /// MARK (decided by the survey from the original's bytes): register parameters the
+    /// original handles as a NARROW value — copied into a byte register at entry (`MOV CL,AL`)
+    /// and read only through a mask in the IR (`param_1 & 0xff`) — declared at that width
+    /// (`uint1 param_1`), the mask elided (WAR2 FUN_00019e38 and its two siblings).
+    pub narrow_params: std::collections::HashMap<VarnodeId, u32>,
     /// MARK (decided by the survey from the original's `RET n`): stack parameter slots the
     /// function pops but never reads — declared as unused parameters under the stack
     /// convention so the recompile pops them too (WAR2 FUN_0004dd2c: `return 0;` with `RET 4`).
@@ -435,6 +440,7 @@ impl Funcdata {
             own_modify: None,
             dropped_params: Default::default(),
             far_return: false,
+            narrow_params: Default::default(),
             extra_stack_params: 0,
             own_saved: None,
             not_mapped: super::space::RangeList::default(),

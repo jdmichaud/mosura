@@ -207,8 +207,8 @@ fn the_committed_baseline_loads_with_the_expected_sets() {
     assert_eq!(b.guards("guard_volatile").len(), 14);
     // the dropped-parameter (phantom) specimens, EXACT since round e10 (docs/exact-arms.md)
     assert_eq!(b.guards("guard_phantom").len(), 2);
-    // the far-return and dummy-stack-parameter contracts (docs/exact-arms.md)
-    assert_eq!(b.guards("guard_contract").len(), 3);
+    // the far-return, dummy-stack-parameter and narrow-parameter contracts (docs/exact-arms.md)
+    assert_eq!(b.guards("guard_contract").len(), 6);
     assert!(b.rows.iter().all(|r| !r.set_at.is_empty()));
 }
 

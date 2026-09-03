@@ -584,6 +584,9 @@ impl PrintC<'_> {
         if let Some(t) = self.narrow_return_type(v) {
             return t; // MARK narrow_return (its type half)
         }
+        if let Some(t) = self.narrow_param_type(v) {
+            return t; // MARK narrow_params (its type half)
+        }
         // A varnode's type is its inferred HighVariable type — the same value Ghidra's prototype
         // recovery reads (`FuncProto::updateInputTypes`/`updateOutputTypes`, fspec.cc:4076/4159:
         // `vn->getHigh()->getType()`) and the C printer declares for the symbol. Ghidra applies no
@@ -759,6 +762,28 @@ impl PrintC<'_> {
         } else {
             return_width(f, vn, choices)
         }
+    }
+
+    /// MARK narrow_params (`Funcdata::narrow_params`, decided by the survey from the original's
+    /// entry-region byte copy of the parameter, `buildconfig::narrow_params_from_evidence`): the
+    /// parameter's declared type is the narrow unsigned width.
+    fn narrow_param_type(&self, v: VarnodeId) -> Option<Datatype> {
+        self.f.narrow_params.get(&v).map(|&w| Datatype::Uint(w))
+    }
+
+    /// MARK narrow_params, the mask half: `param & 0xff` over a parameter declared at that
+    /// width prints the parameter alone — C's promotion of the narrow unsigned value IS the
+    /// mask, and the compiler then keeps the byte in a byte register (`MOV CL,AL`) instead of
+    /// masking the full one.
+    fn narrow_param_mask(&mut self, op: OpId) -> Option<(String, u8)> {
+        let o = self.f.op(op);
+        let (a, m) = (o.input(0)?, o.input(1)?);
+        let &w = self.f.narrow_params.get(&a)?;
+        let mv = self.f.vn(m);
+        if !mv.is_constant() || w >= 8 || mv.constant_value() != (1u64 << (8 * w)) - 1 {
+            return None;
+        }
+        Some(self.render_var(a))
     }
 
     /// The value a NARROWED return statement prints: a PIECE whose low bytes are exactly the
@@ -2284,7 +2309,10 @@ impl<'a> PrintC<'a> {
             OpCode::IntLessequal | OpCode::IntSlessequal => self.cmp_bin(op, false),
             OpCode::IntEqual => self.eq_bin(op, "=="),
             OpCode::IntNotequal => self.eq_bin(op, "!="),
-            OpCode::IntAnd => bin(self, "&", 8),
+            OpCode::IntAnd => match self.narrow_param_mask(op) {
+                Some(r) => r, // MARK narrow_params (its mask half)
+                None => bin(self, "&", 8),
+            },
             OpCode::IntXor | OpCode::BoolXor => bin(self, "^", 7),
             OpCode::IntOr => bin(self, "|", 6),
             OpCode::BoolAnd => bin(self, "&&", 5),
