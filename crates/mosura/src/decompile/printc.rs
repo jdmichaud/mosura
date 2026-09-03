@@ -4103,15 +4103,55 @@ pub fn rendered_param_slots(f: &Funcdata) -> Vec<RenderedParam> {
                 && addr.offset < vn.loc.offset + vn.size as u64
         })
     };
+    // `ParamListStandard::forceInactiveChain` (fspec.cc:1145) — "Across the range of active
+    // trials, fill in 'holes' of inactive trials": every inactive trial at or below the LAST
+    // ACTIVE one is marked active, and a trial is inactive exactly when its varnode has no
+    // descendants (`markActive` is conditioned on `!vn->hasNoDescend()`, coreaction.cc:4726).
+    // So Ghidra RENDERS an interior dead slot and does not render a trailing one.
+    //
+    // The intersection test below is Ghidra's `hasInputIntersection` from
+    // `ActionInputPrototype::apply` (coreaction.cc:4736), and it governs a different population:
+    // that branch runs only for `paramtrial.isUnref()` — a slot with NO varnode at all. A slot
+    // whose varnode is merely DEAD is referenced, so `isUnref()` is false and the guard never
+    // reaches it. Applying it there dropped an interior hole that Ghidra fills, which renumbered
+    // the signature exactly as the unreferenced case did before `ba26a46` — the same
+    // `forceInactiveChain`, the other branch of it.
+    //
+    // NOT modelled, and stated rather than hidden: `forceInactiveChain`'s `maxchain` cutoff. A run
+    // of more than two inactive trials makes Ghidra mark everything after it inactive, so `max`
+    // stops advancing and the hole is NOT filled. That needs the trial groups, which this
+    // print-time reconstruction does not carry — it walks the recovered prototype, not a
+    // `ParamActive`. The shape it would exclude is three-plus consecutive dead slots followed by a
+    // used one; with at most four register slots that is the whole of it.
+    let used: Vec<Option<VarnodeId>> =
+        proto.params.iter().map(|s| find_used_input(s.addr, s.size)).collect();
+    let last_used = used.iter().rposition(Option::is_some);
     let mut out = Vec::new();
-    for slot in proto.params.iter() {
-        if let Some(v) = find_used_input(slot.addr, slot.size) {
+    for (i, slot) in proto.params.iter().enumerate() {
+        if let Some(v) = used[i] {
             out.push(RenderedParam { addr: slot.addr, size: slot.size, vn: Some(v) });
-        } else if !has_input_intersection(slot.addr, slot.size) {
+        } else if renders_empty_slot(has_input_intersection(slot.addr, slot.size), i, last_used) {
             out.push(RenderedParam { addr: slot.addr, size: slot.size, vn: None });
         }
     }
     out
+}
+
+/// Whether a prototype slot with no *used* input is still part of the signature.
+///
+/// Two ways in, and they are different branches of Ghidra's own code:
+/// - nothing occupies the slot at all — `ActionInputPrototype::apply` materializes a varnode for
+///   it (`isUnref() && isUsed() && !hasInputIntersection()`, coreaction.cc:4736);
+/// - something occupies it but is DEAD, and a LATER slot is used — `forceInactiveChain` fills
+///   holes up to the last active trial (fspec.cc:1145).
+///
+/// A dead slot with nothing used after it is neither: `forceInactiveChain` never reaches past
+/// `max`, so it stays inactive and out of the signature.
+fn renders_empty_slot(intersects: bool, slot: usize, last_used: Option<usize>) -> bool {
+    if !intersects {
+        return true;
+    }
+    last_used.is_some_and(|m| slot < m)
 }
 
 
@@ -5273,6 +5313,27 @@ mod tests {
     use crate::decompile::pipeline;
     use crate::sleigh::engine::Spec;
     use crate::{datatest, paths};
+
+    /// A parameter slot with no *used* input is in the signature two ways, and out of it a third —
+    /// the three branches of Ghidra's own code, which our port had collapsed into two.
+    ///
+    /// The middle row is the defect: a slot occupied by a dead varnode with a used slot AFTER it
+    /// is a hole `forceInactiveChain` fills (fspec.cc:1145, `i <= max`). Dropping it renumbered
+    /// the signature — `f(a, b, c)` printed as `f(b, c)` — so a caller passed argument 1 in EAX
+    /// while the callee read EDX. The last row is why the rule is not simply "keep every slot":
+    /// past the last active trial Ghidra never fills, and rendering there would be unfaithful in
+    /// the other direction.
+    #[test]
+    fn an_empty_parameter_slot_is_rendered_only_where_ghidra_fills_it() {
+        //                       intersects  slot  last_used      rendered
+        assert!(renders_empty_slot(false, 0, Some(1)), "nothing in the way: materialized");
+        assert!(renders_empty_slot(false, 3, None), "nothing in the way, nothing used either");
+        assert!(renders_empty_slot(true, 0, Some(2)), "interior hole: filled up to the last used");
+        assert!(renders_empty_slot(true, 1, Some(2)), "interior hole, one below the last used");
+        assert!(!renders_empty_slot(true, 2, Some(2)), "the last used slot is not a hole below itself");
+        assert!(!renders_empty_slot(true, 3, Some(2)), "trailing dead slot: never reached");
+        assert!(!renders_empty_slot(true, 0, None), "dead with nothing used at all");
+    }
 
     /// The four order rows of Ghidra's negation table (printc.cc:129-132), one assertion each.
     /// `!(a < b)` is `a >= b` and `!(a <= b)` is `a > b`, operands in place — a token swap, never
