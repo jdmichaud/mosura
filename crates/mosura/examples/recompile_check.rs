@@ -294,11 +294,19 @@ fn main() {
     // lowers its sim, not the denominator. Printed next to the micro-average so the harness and the
     // script agree.
     let (mut canon_w, mut canon_n) = (0f64, 0u64);
+    // The same census over the strict, byte-for-byte fidelity, so a round reports both.
+    let mut canon_byte = 0f64;
     // Header carries the foreign-scope stamp when excluding, so the series is self-identifying
     // (the census skips the `idx` header row, so the extra field is safe).
     let stamp_col = foreign_stamp.as_deref().map(|s| format!("\tEXCLUDE-FOREIGN={s}")).unwrap_or_default();
+    // `sim` counts a layout shift as agreement (structural fidelity). Every table written before
+    // that change carries a byte-strict `sim` in the same column, and nothing about the numbers
+    // says which -- so the header stamps the unit and a comparison across the boundary is visibly
+    // a comparison of two different quantities. The strict value stays derivable from any row as
+    // `equal / max(orig_n, cand_n)`.
+    let sim_col = "\tSIM=structural";
     let mut tsv = format!(
-        "idx\tva\tname\tverdict\tbytes\tprimary\tsim\tequal\torig_n\tcand_n\tclasses{stamp_col}\n"
+        "idx\tva\tname\tverdict\tbytes\tprimary\tsim\tequal\torig_n\tcand_n\tclasses{sim_col}{stamp_col}\n"
     );
     let mut divs = String::from(DIVERGENCE_HEADER);
     for (row, out) in kept.iter().zip(outs.iter()) {
@@ -380,6 +388,7 @@ fn main() {
         agg_equal += diff.equal_insns as u64;
         agg_denom += diff.orig_insns.max(diff.cand_insns) as u64;
         canon_w += diff.orig_insns as f64 * diff.similarity;
+        canon_byte += diff.orig_insns as f64 * diff.byte_similarity;
         canon_n += diff.orig_insns as u64;
         sim_sum += diff.similarity;
         sim_n += 1;
@@ -485,6 +494,14 @@ fn main() {
         eprintln!(
             "{:.4}  WGSS — the canonical census (scripts/war2-verdicts.sh: Σ orig_n·sim / Σ orig_n over {canon_n} original instructions)",
             canon_w / canon_n.max(1) as f64
+        );
+        // Both fidelities, side by side: WGSS above counts a layout shift as agreement (the same
+        // instruction, moved), this one charges it. The gap between them is the price of position,
+        // not of recovery — neither number moves a verdict, and the EXACT count above is byte-exact
+        // under both.
+        eprintln!(
+            "{:.4}  WGSS, BYTE-strict (same census over byte_similarity — a layout shift charged)",
+            canon_byte / canon_n.max(1) as f64
         );
     }
     if !causes.is_empty() {

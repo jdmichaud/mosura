@@ -158,7 +158,23 @@ pub struct FnDiff {
     pub reg_subst_consistent: bool,
     /// Fraction of instructions that aligned and agreed, over the larger stream. Unlike a byte
     /// percentage this degrades smoothly: one extra instruction costs one instruction.
+    ///
+    /// **Structural fidelity**: a [`DivergenceClass::LayoutShift`] pair counts as agreement. It is
+    /// the same instruction with the same logical target, differing only in a value that is a
+    /// function of where the code sits — so one inserted instruction upstream would otherwise be
+    /// charged again for every later call's return address and every later branch displacement in
+    /// the function. The comparison key already holds those two operands out for exactly this
+    /// reason ([`super::insn::SemArg::PcRef`] records that keeping one of them cost 5741 spurious
+    /// rows across 1722 functions); this extends the same decision from the key to the score.
+    ///
+    /// This is NOT byte fidelity and does not move the byte-exact verdict: a layout-shifted
+    /// function is not byte-identical and stays [`Verdict::SameCode`], never [`Verdict::Exact`].
+    /// Use [`Self::byte_similarity`] for the strict measure.
     pub similarity: f64,
+    /// Fraction of instructions that aligned and agreed **byte-for-byte** — the strict measure,
+    /// which charges a layout shift like any other difference. Kept alongside
+    /// [`Self::similarity`] so both fidelities stay visible in one pass.
+    pub byte_similarity: f64,
 }
 
 const GAP: u32 = 7;
@@ -370,6 +386,11 @@ pub fn compare(orig: &[NormInsn], cand: &[NormInsn]) -> FnDiff {
     };
 
     let denom = n.max(m).max(1) as f64;
+    // A layout shift is the same instruction at a different position: `sem` equality has already
+    // established that every operand outside `SemArg::Target`/`SemArg::PcRef` agrees, and the
+    // target check above has demoted any pair whose control transfer lands somewhere else. What
+    // remains differs only in a value that is a function of where the code sits.
+    let shifted = class_counts.get(&DivergenceClass::LayoutShift).copied().unwrap_or(0);
     FnDiff {
         verdict,
         orig_insns: n,
@@ -383,7 +404,8 @@ pub fn compare(orig: &[NormInsn], cand: &[NormInsn]) -> FnDiff {
         primary,
         reg_subst: subst,
         reg_subst_consistent: subst_consistent,
-        similarity: equal_insns as f64 / denom,
+        byte_similarity: equal_insns as f64 / denom,
+        similarity: (equal_insns + shifted) as f64 / denom,
     }
 }
 
@@ -399,10 +421,16 @@ mod tests {
     }
 
     fn lift1(hex: &str) -> Vec<NormInsn> {
+        lift1_at(hex, 0x1000)
+    }
+
+    /// Lift at a chosen address, so a test can place the same instruction somewhere else — which
+    /// is the only way to produce a layout shift with nothing else differing.
+    fn lift1_at(hex: &str, at: u64) -> Vec<NormInsn> {
         let bytes: Vec<u8> = (0..hex.len() / 2)
             .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
             .collect();
-        normalize("x86:LE:32:default", &bytes, 0x1000, &NoReloc).expect("language tables")
+        normalize("x86:LE:32:default", &bytes, at, &NoReloc).expect("language tables")
     }
 
     // push ebp; mov ebp,esp; mov eax,[ebp+8]; pop ebp; ret
@@ -476,6 +504,39 @@ mod tests {
         let cand = lift2("6690", "e8f90f0000"); // 66 nop (2 bytes); call 0x2000 from 0x1002
         let d = compare(&orig, &cand);
         assert_eq!(d.verdict, Verdict::SameCode, "{:?}", d.class_counts);
+    }
+
+    /// The two fidelities on the one stream that isolates them: the SAME call to the SAME place,
+    /// sitting one byte later, so a layout shift is the only divergence there is. It agrees
+    /// structurally and not byte-for-byte, and the VERDICT stays `SameCode` — masking the shift in
+    /// the score must never promote anything to `Exact`.
+    #[test]
+    fn a_layout_shift_agrees_structurally_and_not_byte_for_byte() {
+        let orig = lift1_at("e8fb0f0000", 0x1000); // call 0x2000 from 0x1000
+        let cand = lift1_at("e8fa0f0000", 0x1001); // call 0x2000 from 0x1001
+        assert_eq!(orig[0].target, cand[0].target, "the same destination");
+        assert_ne!(orig[0].bytes, cand[0].bytes, "encoded differently because it moved");
+        let d = compare(&orig, &cand);
+        assert_eq!(d.class_counts.get(&DivergenceClass::LayoutShift), Some(&1));
+        assert_eq!(d.similarity, 1.0, "the same program, moved, agrees structurally");
+        assert_eq!(d.byte_similarity, 0.0, "and agrees on no byte-identical instruction");
+        assert_eq!(d.verdict, Verdict::SameCode, "still not byte-exact");
+    }
+
+    /// The masking must not reach a branch that goes somewhere else. `a_branch_to_the_wrong_place`
+    /// pins the classification; this pins the SCORE, which is the number the masking changes —
+    /// a wrong target is demoted to `BranchTarget` before the score is taken, so it is charged
+    /// in both fidelities and neither reads as agreement.
+    #[test]
+    fn a_wrong_branch_target_is_charged_in_both_fidelities() {
+        // jmp +2; nop; nop; ret   vs   jmp +3; nop; nop; ret — same form, different destination
+        let orig = lift1("eb029090c3");
+        let cand = lift1("eb039090c3");
+        let d = compare(&orig, &cand);
+        assert_eq!(d.class_counts.get(&DivergenceClass::BranchTarget), Some(&1));
+        assert_eq!(d.class_counts.get(&DivergenceClass::LayoutShift), None);
+        assert_eq!(d.similarity, d.byte_similarity, "no masking is available to it");
+        assert!(d.similarity < 1.0, "similarity {} must charge the wrong target", d.similarity);
     }
 
     /// Different register, same program: SAME_SHAPE, and the substitution is reported as a
