@@ -2513,9 +2513,18 @@ fn main() {
         // deriving it caller-side from `CallSpec::reads` was measured wrong (reads is the
         // read-before-write evidence SET, not slot-ordered parameter storage: sb48's first
         // cut broke 8 EXACT callers whose callees' own recovery says default order).
+        // A STACK-CONVENTION callee (`parm []`, every recovered parameter on the stack) needs the
+        // same clause in every caller: without it the caller compiles the call under the register
+        // convention and passes in EAX what the original PUSHes (measured: FUN_00030dc8's
+        // `func_0x00060ad0(0)` — `XOR EAX,EAX ; CALL` for the original's `PUSH 0 ; CALL`). The
+        // callee's own clause is `parm []` or `parm caller []` by its pop contract; the caller's
+        // `parm caller []` comes from its own call spec (`cs.caller_cleans`), so only the
+        // callee-pops form is propagated here — the existing-clause rule in the post-pass keeps a
+        // caller-cleaned line as it is.
+        let stack_decl = (stack_convention && !matches!(cleanup, Some(0))).then(|| "[]".to_string());
         parm_map.insert(
             *va,
-            nondefault_parm_regs(&f, &watreg).map(|decl| {
+            nondefault_parm_regs(&f, &watreg).or(stack_decl).map(|decl| {
                 let sizes = mosura::decompile::printc::rendered_param_slots(&f)
                     .iter()
                     .map(|sl| sl.size)
