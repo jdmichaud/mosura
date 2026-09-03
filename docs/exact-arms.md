@@ -126,6 +126,12 @@ after improving, three switch-label counts grew by one.
 - A zero the original reuses across a call (`XOR EDX,EDX ; CALL f ; MOV DL,AL` with `f`
   declared `modify [eax]`, FUN_000498a0; the callee-preserved zero as the next argument,
   FUN_00056db4): this compiler re-zeroes from our C even with the precise clobber list.
+- The sign-extended short global loaded `MOV AX,[g] ; CWDE` (FUN_0005dfa8; the `SAR` idiom family
+  is 151 functions on our side): our `(int4)iRam..` compiles to the dword trick
+  (`MOV EAX,[g-2] ; SAR EAX,0x10`) under every form tried — an `extern` declaration, a 16-bit
+  temporary (`MOVSX EAX,CX`), the bare global, a deref of the absolute address with and without
+  `volatile` (`MOVSX EAX,[ECX]`), and the flags `-os`, `-onasx` (`MOVSX EAX,word ptr [g]`),
+  `-onax`, no `-d1+`. Closed.
 - The byte register zeroed then stored (`XOR DL,DL ; MOV [..],DL` for `p[i] = 0`, FUN_00057fcc
   and the 0x2c08c loop trio): `'\0'`, a `(uint1)0` cast, a `char *` pointee, and a zero-initialized
   byte local (declared before or at the store) all compile to the immediate store.
