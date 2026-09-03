@@ -17,17 +17,17 @@
 //!
 //! The [`Toolchain`] trait is the seam where a compiler's specifics stop. Everything above it
 //! deals in "source in, object out"; everything a particular compiler needs — DOS emulation,
-//! 8.3 filenames, its own diagnostic format — stays below.
+//! 8.3 filenames, its own diagnostic format — stays below, and since 2026-09-03 it is DATA: a
+//! [`CompilerSpec`] describing the compiler, driven by the one [`CompilerDriver`]. There is no
+//! per-compiler driver type any more.
 
 pub mod cache;
 pub mod driver;
 pub mod spec;
-pub mod watcom;
 
 pub use cache::Cached;
 pub use driver::{CompilerDriver, DriverRole};
 pub use spec::{CompilerSpec, Invocation, ObjectFormat};
-pub use watcom::WatcomDos;
 
 /// One translation unit to compile.
 #[derive(Debug, Clone)]

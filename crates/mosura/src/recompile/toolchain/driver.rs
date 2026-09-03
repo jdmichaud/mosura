@@ -2,14 +2,15 @@
 //!
 //! Everything a particular compiler needs is in its spec; everything the DRIVING needs — write the
 //! sources, build the invocation, run it, collect the objects, split the diagnostics — is here and
-//! is the same for all of them. `WatcomDos`'s behaviour is reproduced by
-//! [`spec::watcom_10_0a_dos`] plus this file, which is the point of the factoring: the DOS-hosted
-//! baseline stops being a special case and becomes one row of data.
+//! is the same for all of them. The DOS-hosted Watcom baseline had its own `WatcomDos` type until
+//! 2026-09-03; it is now [`spec::watcom_10_0a_dos`] plus this file, which is the point of the
+//! factoring: that compiler stopped being a special case and became one row of data.
 //!
-//! What "reproduced" is pinned to, precisely: the batch script is asserted byte-identical to the
-//! one `WatcomDos` writes inline, and the batching, the isolation retry and the adjudication rule
-//! are ported behaviours. The log SPLIT is re-expressed as spec data ([`LogSplit`]) rather than
-//! copied, so it is equivalent for `wcc386` and not a line-for-line reproduction.
+//! Its behaviours were PORTED, not inherited -- the batching, the isolation retry, the
+//! adjudication rule -- and the log SPLIT was re-expressed as spec data ([`LogSplit`]) rather than
+//! copied. Two live tests written against the old type (a rejected unit carries ITS OWN
+//! diagnostic; a unit after a failing one still compiles) pass against this driver unchanged,
+//! which is what makes the port's faithfulness a measurement rather than a claim.
 //!
 //! ## Off by default (design §0)
 //!
@@ -404,10 +405,14 @@ mod tests {
         CompilerDriver::new(spec, "/opt/watcom", work, DriverRole::Validation).unwrap()
     }
 
-    /// The DOS-hosted baseline's batch file, byte for byte. This is the factoring's proof
-    /// obligation: `WatcomDos::run_session` builds this text inline, and the spec-driven driver
-    /// must produce the same thing -- CRLF, the four environment lines, the drive change, one
-    /// `WCC386` line per unit redirecting to the log. Compiler-free, so it runs IN the gate.
+    /// The DOS-hosted baseline's batch file, byte for byte -- CRLF, the four environment lines,
+    /// the drive change, one `WCC386` line per unit redirecting to the log.
+    ///
+    /// The literal below IS the text the retired `WatcomDos::run_session` built inline, kept here
+    /// when that type was deleted. So this no longer compares two implementations; it pins the
+    /// spec against the hand-written original, which is the useful half and was always the point:
+    /// an edit that changes what the compiler is actually told fails HERE, in a compiler-free
+    /// test, instead of silently in a round. Compiler-free, so it runs IN the gate.
     #[test]
     fn the_watcom_script_matches_the_hand_written_batch_file() {
         let d = drv(spec::watcom_10_0a_dos(""));
@@ -427,8 +432,8 @@ mod tests {
     /// A unit with no flags of its own takes the spec's profile; one with flags overrides it.
     /// (Pinned by the line-per-unit difference in the test above; asserted here directly.)
     #[test]
-    /// Note the fallback is the one place the driver deliberately differs from `WatcomDos`,
-    /// which passes a flagless unit NO flags at all. Benign, because the profile it falls back to
+    /// Note the fallback is the one place the driver deliberately differed from the retired
+    /// `WatcomDos`, which passed a flagless unit NO flags at all. Benign, because the profile it falls back to
     /// is `buildconfig::watcom_10_0a().base` (pinned by the test above) and `recompile_check`
     /// sets flags per unit anyway -- but it is a real behavioural difference, so it is stated
     /// here rather than left inside a claim that the driver reproduces WatcomDos.
