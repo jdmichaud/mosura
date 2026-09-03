@@ -32,6 +32,7 @@ Three more arms followed in the same method (rounds e8–e10):
 | `ptr-offset` (`ptr_offset.rs`, last at `ValueSite::Deref`) | the original's access at the sum's address carries the offset as its displacement (`[EDX + 0x1a]`, not an `LEA`) | `*(T *)((int4)p + k)` compiled as integer arithmetic plus an `LEA`; 118 TUs carried the form, 87 with the `LEA` | `x86_watcom_ptr_offset.xml` |
 | `cmp-sign` (`cmp_sign.rs`, last at `ValueSite::Equality`/`Compare`, alone at `NegatedEquality`) | the original's extension idiom ahead of the compare on the operand's own load: `MOV r16,[..] ; AND r,0xffff` (or a register copy of that load), or `XOR r,r ; MOV r16,[g]` for THAT global; `SAR`/`CWDE`/`MOVSX` veto | a narrow SIGNED memory operand C promotes by sign where the original zero-extended (`RuleZextEliminate` dropped the IR's ZEXT): FUN_00059784, FUN_00029b50; a witnessed global casts at every compare of it | `x86_watcom_cmp_sign.xml` |
 | narrow parameters (`Funcdata::narrow_params`, `narrow_params_from_evidence`) | every IR use masks the low byte AND the entry region copies the low byte into a byte register (`MOV CL,AL`) | a byte parameter the decompiler widened and masked (`param_1 & 0xff` → `uint1 param_1`): FUN_00019e38 and siblings, 19 TUs | `guard_contract` (no fixture: the raw pipeline types a byte-only parameter `uint1` by itself) |
+| `cmp-order` on globals (`CmpOperand::Mem`) | the `CMP`'s bare memory operand names the source's right-hand side | two globals compared, printed mirrored: FUN_00014990, FUN_000149b8 (20 TUs carry a differing global `CMP`) | `x86_watcom_cmp_mem.xml` |
 | far return (`Funcdata::far_return`, `far_return_from_evidence`) | every return a `RETF` | one far-called handler, FUN_00058840 | `x86_watcom_far_return.xml` + `guard_contract` |
 | dummy stack parameters (`Funcdata::extra_stack_params`, `dummy_stack_params`) | a `RET n` on a function with no recovered parameter: n/4 unused stack parameters and `parm []` | pointer-called callbacks that ignore their argument: FUN_0004dd2c, FUN_0004e820 | `x86_watcom_dummy_param.xml` + `guard_contract` |
 | dropped parameters (`Funcdata::dropped_params`, `buildconfig::phantom_params_from_evidence`) | the register of the LAST recovered parameter pushed among the function's leading saves and popped before its returns, the parameter flowing only into callees | the callee-save family: `PUSH EDX .. POP EDX` missing because the pass-through EDX was declared a parameter (an argument register is the caller's to lose; a preserved one was never an argument), 87 functions | corpus guard `guard_phantom` (0x2c160, 0x11f18) |
@@ -77,6 +78,7 @@ Two corrections rode along, both value-preserving and both measured:
 | e16 | `cmp-sign` on the negated-equality path too | 962 | 0.6361 | +2 (FUN_0004753c back, FUN_00059784); FUN_0002dfb0 −0.258: the negated seam had let `unsigned-cmp` re-spell `param_4 != -1` |
 | e17 | `NegatedEquality` seam answered by `cmp-sign` alone | 962 | 0.6362 | 0 down: `cmp-sign` landed |
 | e18 | narrow parameters, the mask witness on the register's own last write | 966 | 0.6366 | 19 TUs, 11 up / 2 down, +4 EXACT (FUN_000192e8 and the 0x19e38 trio); the witness fix changed no TU |
+| e19 | `cmp-order` on global operands | 968 | 0.6367 | 8 TUs, 4 up / 1 down, +2 EXACT |
 
 The scrutinee-compared-elsewhere gate on the narrow switch was measured and dropped: declining a
 one-case switch whose scrutinee has other compares cost −0.70 sim over 47 TUs (the fragment
@@ -97,6 +99,10 @@ after improving, three switch-label counts grew by one.
   sign, a prototyped callee (`uint1`, `char`, `uint4` parameters), the swapped argument order
   with and without the `parm` clause, a `(uint4)` cast — all compile to `MOV DL,[g]` with or
   without `AND EDX,0xff`; the `AL` staging has no C form found.
+- A constant the original keeps in a register across a call and stores from it
+  (`MOV [0x88bcc],EDX` after the call took `0x2c160` in EDX, FUN_0002c204; 13 functions store a
+  register where the recompile stores the immediate): a local holding the constant is
+  propagated back into the immediate by this compiler.
 - The byte register zeroed then stored (`XOR DL,DL ; MOV [..],DL` for `p[i] = 0`, FUN_00057fcc
   and the 0x2c08c loop trio): `'\0'`, a `(uint1)0` cast, a `char *` pointee, and a zero-initialized
   byte local (declared before or at the store) all compile to the immediate store.
