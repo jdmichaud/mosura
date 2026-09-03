@@ -67,6 +67,10 @@ pub fn recover(
             &report.const_phi_candidates,
             insns,
         ),
+        early_return_sites: crate::recompile::buildconfig::const_phi_returns_from_evidence(
+            &report.early_return_candidates,
+            insns,
+        ),
         branch_return_sites: crate::recompile::buildconfig::branch_returns_from_evidence(
             &report.branch_return_candidates,
             insns,

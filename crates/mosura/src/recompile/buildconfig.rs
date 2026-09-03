@@ -809,6 +809,13 @@ pub fn branch_returns_from_evidence(candidates: &[u64], insns: &[NormInsn]) -> s
 /// right after a `TEST` of the return register (`EAX`/`AX`/`AL`) and its target is a bare
 /// epilogue (`MOV ESP,EBP` / `POP` / `LEAVE` / `ADD ESP,n` up to the `RET`). Returns the branch
 /// addresses whose tail splits.
+///
+/// The same byte fact decides the arm's EARLY-RETURN shape
+/// ([`crate::decompile::printc::EmitReport::early_return_candidates`]): an if whose join is a
+/// lone `return 0;` — `if (x != 0) { .. } return 0;` — where the original's `JZ` lands on the
+/// bare epilogue PAST the shared `XOR EAX,EAX`, the tested register already holding the 0; the
+/// merged form's `JZ` lands ON the load. Only a source-level early return
+/// (`if (x == 0) return 0;`) puts the jump there (WAR2 FUN_000367a8, FUN_000184b0).
 pub fn const_phi_returns_from_evidence(
     candidates: &[(u64, u64)],
     insns: &[NormInsn],

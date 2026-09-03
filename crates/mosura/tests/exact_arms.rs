@@ -262,3 +262,17 @@ fn narrow_switch_prints_a_small_range_as_the_case_list() {
     assert!(c.contains("switch (*param_2) {") && c.contains("case 0:\n") && c.contains("case 1:\n"), "the two-label case:\n{c}");
     assert!(!c.contains(" < 2)"), "no if remains:\n{c}");
 }
+
+/// `return-split`, the early-return shape: the reference merges the two `return 0;` into
+/// `if (n != 0) { .. } return 0;`; the original's `JZ` past the shared `XOR EAX,EAX` says the
+/// source returned early, and the recovered rendering prints that.
+#[test]
+fn early_return_prints_the_test_as_the_early_return() {
+    let (f, insns) = decompiled("x86_watcom_early_return.xml");
+    let reference = reference_print(&f);
+    assert!(reference.contains("!= 0) {") && !reference.contains("== 0) {\n    return 0;"), "the reference is the merged form:\n{reference}");
+    let (c, recovered) = recovered_print(&f, &insns);
+    assert!(!recovered.early_return_sites.is_empty(), "the witness saw the jump past the load");
+    assert!(c.contains(") {\n    return 0;\n  }\n"), "the early return:\n{c}");
+    assert_eq!(c.matches("return 0;").count(), 2, "two returns of 0, the early one and the tail:\n{c}");
+}

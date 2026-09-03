@@ -26,6 +26,16 @@
 //! arm suppresses both assignments and prints the per-path returns. Value-identical: the phi's
 //! value on each path IS that path's constant.
 //!
+//! A third shape at the same site (2026-09-04, the EXACT push): the tail returns a CONSTANT
+//! (no phi) after an if without an else whose body carries its own returns —
+//! `if (x != 0) { .. } return 0;`. The original's `JZ` lands on the bare epilogue past the
+//! shared `XOR EAX,EAX` (the tested return register already holds the 0), which only a
+//! source-level early return produces; the merged form's jump lands on the load. Under the
+//! witness (`recovered.early_return_sites`, the same byte fact as the constant-phi shape's, over
+//! this arm's `early_return_candidates`) the pair prints as `if (x == 0) { return 0; }`, the
+//! body UN-NESTED at the same level, and the tail's `return 0;` — value-identical: the body's
+//! fall-through reaches the same return either way.
+//!
 //! The arm answers ONE site kind, `SiteKind::ListTail`.
 // return-split=paths (the axis doc in emit.rs carries the measured probe): the
 // tail pair [plain `if` testing B] + [basic whose sole statement returns
@@ -104,6 +114,27 @@ fn try_emit(pr: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<Ans
                 return Some(Answer::Emitted);
             }
         }
+        // the early-return shape (see the module doc)
+        if let Some(split) = early_return_split(pr, s, c, tail) {
+            pr.report.early_return_candidates.push((split.branch_pc, split.k));
+            if pr.recovered.early_return_sites.contains(&split.branch_pc) {
+                let fb = &s.blocks[c];
+                let (cond_node, body) = (fb.components[0], fb.components[1]);
+                let negated = fb.negated;
+                let k = render_const(split.k, split.size);
+                let pad = "  ".repeat(indent);
+                // the condition block's own statements (the tested call's assignment), as the
+                // if would print them; then the early return on the branch's taken edge
+                pr.emit_structured(s, cond_node, indent, out);
+                let cond = pr.render_condition(s, cond_node, !negated);
+                let _ = writeln!(out, "{pad}if ({cond}) {{");
+                let _ = writeln!(out, "{pad}  return {k};");
+                let _ = writeln!(out, "{pad}}}");
+                pr.emit_structured(s, body, indent, out);
+                let _ = writeln!(out, "{pad}return {k};");
+                return Some(Answer::Emitted);
+            }
+        }
         // the constant-phi shape (see the module doc)
         if let Some(split) = const_phi_split(pr, s, c, tail) {
             pr.report.const_phi_candidates.push((split.branch_pc, split.k_tail));
@@ -122,6 +153,59 @@ fn try_emit(pr: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<Ans
         }
     }
     None
+}
+
+/// The early-return tail: the if `c` (no else, a single-block condition, a body with something
+/// to print) followed by a basic block whose only statement returns the constant `k`.
+struct EarlyReturnSplit {
+    branch_pc: u64,
+    k: u64,
+    size: u32,
+}
+
+fn early_return_split(pr: &PrintC<'_>, s: &Structured, c: usize, tail: usize) -> Option<EarlyReturnSplit> {
+    if !matches!(s.blocks[c].kind, FlowKind::If) || s.blocks[c].components.len() != 2 {
+        return None;
+    }
+    let (cond_node, body) = (s.blocks[c].components[0], s.blocks[c].components[1]);
+    // a single-block condition (`plain_if_branch_pc` enforces it: a short-circuit condition
+    // has no one branch to witness), a body that prints, no cut edges on the pair
+    let branch_pc = pr.plain_if_branch_pc(s, c)?;
+    let FlowKind::Basic(cond_bid) = s.blocks[cond_node].kind else { return None };
+    exit_basic(s, body)?;
+    let FlowKind::Basic(tail_bid) = s.blocks[tail].kind else { return None };
+    if s.gotos.contains_key(&cond_bid) || s.gotos.contains_key(&tail_bid) || s.node_gotos.contains_key(&body) {
+        return None;
+    }
+    // the tail: a basic block whose only printable statement is `return <constant>`
+    let mut ret = None;
+    for &op in &pr.f.block(tail_bid).ops {
+        let o = pr.f.op(op);
+        if o.is_dead() || o.is_marker() || o.is_return_copy() {
+            continue;
+        }
+        match o.code() {
+            OpCode::Return => {
+                if ret.is_some() {
+                    return None;
+                }
+                ret = Some(op);
+            }
+            OpCode::Store | OpCode::Call | OpCode::Callind | OpCode::Callother => return None,
+            OpCode::Branch | OpCode::Cbranch | OpCode::Branchind => return None,
+            _ => {
+                if o.output.is_some_and(|v| pr.is_explicit(v)) {
+                    return None;
+                }
+            }
+        }
+    }
+    let v = thru_copy(pr, pr.f.op(ret?).input(1)?);
+    let vn = pr.f.vn(v);
+    if !vn.is_constant() {
+        return None;
+    }
+    Some(EarlyReturnSplit { branch_pc, k: vn.constant_value(), size: vn.size })
 }
 
 /// The constant-phi tail: the if `c`'s condition block assigns constant `k_tail` to a variable

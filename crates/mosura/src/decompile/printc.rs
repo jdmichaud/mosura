@@ -159,6 +159,12 @@ pub struct EmitReport {
     /// that constant on its own path after the branch (a `XOR AL,AL` / `MOV EAX,k` right before
     /// an epilogue) — the per-path returns — or hoists it above the test (the merged form).
     pub const_phi_candidates: Vec<(u64, u64)>,
+    /// Every early-return tail the `return-split` arm could rewrite (see its module doc): an
+    /// if without an else whose join is a lone `return <constant>`, as `(guarding branch
+    /// address, the constant)`. The original either lands the branch PAST the constant's load,
+    /// on the bare epilogue (the tested return register already holds it — the early return),
+    /// or on the load (the merged form).
+    pub early_return_candidates: Vec<(u64, u64)>,
     /// Every lone `return <bool>;` statement (`return-split`, the branch form), by the address
     /// of the compare that computes the bool: the original either branches over a constant
     /// (`JZ ; MOV AL,1`) or materializes it (`SETNZ AL`).
@@ -294,6 +300,10 @@ pub struct RecoveredChoices {
     /// Guarding-if branch addresses whose constant-phi tail splits per path (`return-split`,
     /// `const_phi_candidates` evidence, `buildconfig::const_phi_returns_from_evidence`).
     pub const_phi_sites: std::collections::HashSet<u64>,
+    /// Guarding-if branch addresses whose constant join prints as the early return
+    /// (`return-split`, `early_return_candidates` evidence, the same byte fact as
+    /// `buildconfig::const_phi_returns_from_evidence`).
+    pub early_return_sites: std::collections::HashSet<u64>,
     /// Compare addresses whose lone bool return the original branches over (`return-split`,
     /// `branch_return_candidates` evidence, `buildconfig::branch_returns_from_evidence`).
     pub branch_return_sites: std::collections::HashSet<u64>,

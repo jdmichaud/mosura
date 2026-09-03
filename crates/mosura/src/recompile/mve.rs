@@ -568,6 +568,28 @@ int mve(int a, unsigned short *p)
 }
 "#;
 
+/// `return-split`, the early-return shape (docs/exact-arms.md): `if (n == 0) return 0;` ahead
+/// of a body with its own returns and a final `return 0;` — the compiler shares one epilogue
+/// and lands the test's `JZ` PAST the `XOR EAX,EAX`, the tested register already holding 0;
+/// Ghidra merges the two returns into `if (n != 0) { .. } return 0;`.
+const EARLY_RETURN_SRC: &str = r#"
+extern int f(int a);
+extern int g(int a, int n);
+extern int h(int a);
+int mve(int a)
+{
+    int n = f(a);
+    if (n == 0) {
+        return 0;
+    }
+    if (g(a, n) != 0) {
+        return 1;
+    }
+    h(n);
+    return 0;
+}
+"#;
+
 /// Every MVE, in the generator's order.
 pub const MVES: &[Mve] = &[
     Mve { key: "CSAVE", sym: "mve_", source: CALLEE_SAVE_SRC, fixture: "x86_watcom_callee_save.xml", base: 0x100000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(1));", "LOG_RET(mve(3));", "LOG_RET(mve(16));"], writes: &[("read16", "dst", 16)] },
@@ -600,6 +622,7 @@ pub const MVES: &[Mve] = &[
     Mve { key: "BRRET", sym: "mve_", source: BRANCH_RET_SRC, fixture: "x86_watcom_branch_ret.xml", base: 0x2c0000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(5));"], writes: &[] },
     Mve { key: "STFWD", sym: "mve_", source: STORE_FWD_SRC, fixture: "x86_watcom_store_fwd.xml", base: 0x2d0000, inputs: &["{ a = 7; b = 0; LOG_RET(mve()); LOG_RET(b); }"], writes: &[] },
     Mve { key: "SWTAIL", sym: "mve_", source: SWITCH_TAIL_SRC, fixture: "x86_watcom_switch_tail.xml", base: 0x2e0000, inputs: &["{ short m[2]; m[0] = 9; m[1] = 5; g = 1; LOG_RET(mve(1, m)); g = 0; LOG_RET(mve(2, m)); m[1] = 0; g = 1; LOG_RET(mve(3, m)); m[0] = 3; LOG_RET(mve(4, m)); }"], writes: &[] },
+    Mve { key: "EARLYRET", sym: "mve_", source: EARLY_RETURN_SRC, fixture: "x86_watcom_early_return.xml", base: 0x300000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(1));", "LOG_RET(mve(2));"], writes: &[] },
     Mve { key: "SWRANGE", sym: "mve_", source: SWITCH_RANGE_SRC, fixture: "x86_watcom_switch_range.xml", base: 0x2f0000, inputs: &["{ unsigned short m[1]; m[0] = 0; LOG_RET(mve(1, m)); m[0] = 1; LOG_RET(mve(2, m)); m[0] = 2; LOG_RET(mve(3, m)); m[0] = 0xffff; LOG_RET(mve(4, m)); }"], writes: &[] },
     Mve { key: "PTROFF", sym: "mve_", source: PTR_OFFSET_SRC, fixture: "x86_watcom_ptr_offset.xml", base: 0x270000, inputs: &["{ int m[4]; m[0] = 5; m[1] = 0x00030000; m[2] = 0x7fff0003; m[3] = 0; LOG_RET(mve(m)); m[2] = 0xfffe0000; LOG_RET(mve(m)); }"], writes: &[] },
 ];
