@@ -6,6 +6,18 @@
 //! the baseline, later runs fail on any verdict regression (per function, and the per-program
 //! FUNCTIONAL verdict: our functions linked into the program and run against the original) or a
 //! WGSS drop over 0.01, and `MOSURA_GT_BASELINE=update` rewrites it after an accepted change.
+//!
+//! ## OPT-IN (§0): this needs gcc, so it is not in the default gate
+//!
+//! Run: `cargo test --release -p mosura --test ground_truth_recompile -- --ignored`
+//!
+//! mosura must build and test on a machine with ZERO toolchains installed -- no Watcom, no Open
+//! Watcom, no gcc. This test hard-asserts gcc, so until 2026-09-03 it made `cargo test` FAIL on a
+//! clean machine and "the gate is compiler-free" was a label rather than a fact. It joins gt-arms
+//! in the opt-in tier, which is where JD already put the rest of this gcc ground-truth family;
+//! `scripts/gate-compiler-free.sh` proves the invariant by running the gate with no toolchain
+//! reachable. The cost is real and accepted: this no longer runs per-commit, so run it at plan
+//! closure, or whenever a commit changes what it measures.
 use std::collections::BTreeMap;
 
 use mosura::recompile::groundtruth::{default_workers, gcc_available, gcc_programs, recompile_programs, EmitPlan, GtReport, GtTimings, Target};
@@ -23,6 +35,7 @@ fn rank(v: &str) -> u8 {
 }
 
 #[test]
+#[ignore = "opt-in: needs gcc (§0 -- the default gate must pass with zero toolchains)"]
 fn decompile_recompile_does_not_regress_against_the_local_baseline() {
     assert!(gcc_available(), "gcc is required by the development environment (ground-truth recompile gate)");
     let workdir = mosura::paths::workspace_root().join("build/gt-recompile");

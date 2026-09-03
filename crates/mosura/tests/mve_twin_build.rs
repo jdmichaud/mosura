@@ -8,10 +8,23 @@
 //! plain, plain != arms) is a WRONG-CODE ARM on exactly the shape the arm exists for — the
 //! finding class this oracle exists to catch, asserted, never baselined. A fixture without the
 //! `externs:` header line fails loudly. Cost: 14 MVEs x 3 tiny gcc -m32 builds — seconds.
+//!
+//! ## OPT-IN (§0): this needs gcc, so it is not in the default gate
+//!
+//! Run: `cargo test --release -p mosura --test mve_twin_build -- --ignored`
+//!
+//! mosura must build and test on a machine with ZERO toolchains installed -- no Watcom, no Open
+//! Watcom, no gcc. This test hard-asserts gcc, so until 2026-09-03 it made `cargo test` FAIL on a
+//! clean machine and "the gate is compiler-free" was a label rather than a fact. It joins gt-arms
+//! in the opt-in tier, which is where JD already put the rest of this gcc ground-truth family;
+//! `scripts/gate-compiler-free.sh` proves the invariant by running the gate with no toolchain
+//! reachable. The cost is real and accepted: this no longer runs per-commit, so run it at plan
+//! closure, or whenever a commit changes what it measures.
 use mosura::recompile::mve::MVES;
 use mosura::recompile::twin::twin;
 
 #[test]
+#[ignore = "opt-in: needs gcc (§0 -- the default gate must pass with zero toolchains)"]
 fn every_arm_rendering_of_an_mve_behaves_as_its_source() {
     let workdir = mosura::paths::workspace_root().join("build/mve-twin");
     std::fs::create_dir_all(&workdir).unwrap();

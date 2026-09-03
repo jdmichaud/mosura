@@ -6,6 +6,18 @@
 //! renders the struct-returning function and its caller's typed local, and the program PASSes.
 //! One `gcc -m32` build, one analysis, two renders — seconds; the whole column is the opt-in
 //! gt-arms test.
+//!
+//! ## OPT-IN (§0): this needs gcc, so it is not in the default gate
+//!
+//! Run: `cargo test --release -p mosura --test ground_truth_struct_return -- --ignored`
+//!
+//! mosura must build and test on a machine with ZERO toolchains installed -- no Watcom, no Open
+//! Watcom, no gcc. This test hard-asserts gcc, so until 2026-09-03 it made `cargo test` FAIL on a
+//! clean machine and "the gate is compiler-free" was a label rather than a fact. It joins gt-arms
+//! in the opt-in tier, which is where JD already put the rest of this gcc ground-truth family;
+//! `scripts/gate-compiler-free.sh` proves the invariant by running the gate with no toolchain
+//! reachable. The cost is real and accepted: this no longer runs per-commit, so run it at plan
+//! closure, or whenever a commit changes what it measures.
 use mosura::recompile::groundtruth::{analyze_program, gcc_available, render_and_check, EmitPlan, GtReport, Target};
 
 fn text_of<'r>(r: &'r GtReport, symbol: &str) -> &'r str {
@@ -13,6 +25,7 @@ fn text_of<'r>(r: &'r GtReport, symbol: &str) -> &'r str {
 }
 
 #[test]
+#[ignore = "opt-in: needs gcc (§0 -- the default gate must pass with zero toolchains)"]
 fn structval_32bit_returns_the_struct_under_the_arms_plan_only() {
     assert!(gcc_available(), "gcc is required by the development environment (ground-truth recompile gate)");
     let root = mosura::paths::workspace_root();
