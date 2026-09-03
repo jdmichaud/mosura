@@ -212,6 +212,19 @@ fn lone_bool_return_prints_its_branch_form() {
     assert!(c.contains("return 1;") && c.contains("return 0;") && !c.contains("return iVar1 != 0;"), "split:\n{c}\nreference:\n{reference}");
 }
 
+/// `store-forward`: the argument that is the value just stored to a global names the stored
+/// global where the original reloads it.
+#[test]
+fn stored_global_is_named_at_the_call_the_original_reloads() {
+    let (f, insns) = decompiled("x86_watcom_store_fwd.xml");
+    let reference = reference_print(&f);
+    let (c, recovered) = recovered_print(&f, &insns);
+    assert!(!recovered.store_forward_sites.is_empty(), "the witness read the reload: {:?}\n{reference}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
+    let store = c.lines().find(|l| l.contains(" = ") && l.trim().starts_with("uRam") || l.contains(" = ") && l.trim().starts_with("xRam")).expect("the store statement");
+    let stored = store.trim().split(" = ").next().unwrap().trim();
+    assert!(c.contains(&format!("({stored})")), "the call names the stored global `{stored}`:\n{c}\nreference:\n{reference}");
+}
+
 /// A sign-extension of an unsigned-typed piece re-signs the operand at its own width: the
 /// split local's high half is `(int4)(int2)` like its low half, never a zero-extending `(int4)`
 /// of the unsigned accessor.

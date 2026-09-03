@@ -144,6 +144,7 @@ pub mod frame_fill;
 pub mod nested_conds;
 pub mod sdiv_pow2;
 pub mod sparse_switch;
+pub mod store_forward;
 pub mod string_ops;
 pub mod struct_copy;
 pub mod unsigned_cmp;
@@ -274,9 +275,10 @@ mod tests {
     /// The arm files, as text, for the surface scan — every `pub mod` of this module must be here
     /// (`arms_touch_only_the_documented_surface` checks that against this file's own source, so a
     /// new arm file cannot slip past the scan).
-    const ARM_SOURCES: [(&str, &str); 22] = [
+    const ARM_SOURCES: [(&str, &str); 23] = [
         ("ptr_offset.rs", include_str!("ptr_offset.rs")),
         ("load_hoist.rs", include_str!("load_hoist.rs")),
+        ("store_forward.rs", include_str!("store_forward.rs")),
         ("cmp_order.rs", include_str!("cmp_order.rs")),
         ("cmp_sign.rs", include_str!("cmp_sign.rs")),
         ("return_widen.rs", include_str!("return_widen.rs")),
@@ -471,7 +473,7 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
     //   NegatedEquality: cmp-sign only
     //   ReturnValue: return-widen (the sign of a widened narrow return)
     //   Extension:   ext-cast (the promotion rendering of INT_ZEXT / INT_SEXT)
-    //   CallArg:     mask-cast (a call argument the original masks before the call)
+    //   CallArg:     mask-cast (a call argument the original masks before the call), then store-forward
     //   Var:         struct-return (the hidden pointer -> `__ret`), string-ops
     //   Deref:       struct-return (a field write through the hidden pointer), array-index
     //   SlotName / SlotOffset / SlotAddress / SlotPiece / FusedStore:
@@ -490,7 +492,7 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
             .or_else(|| cmp_sign::render(p, op, if strict { "<" } else { "<=" }, prec)),
         ValueSite::ReturnValue { v } => return_widen::render(p, v),
         ValueSite::Extension { op, signed } => ext_cast::render(p, op, signed),
-        ValueSite::CallArg { op, slot } => mask_cast::render(p, op, slot),
+        ValueSite::CallArg { op, slot } => mask_cast::render(p, op, slot).or_else(|| store_forward::render(p, op, slot)),
         ValueSite::Load { out, addr } => testmem::render(p, out, addr),
         ValueSite::Sum { op } => sum_order::render(p, op),
         ValueSite::Deref { addr, vty } => struct_return::render_value(p, &ValueSite::Deref { addr, vty })

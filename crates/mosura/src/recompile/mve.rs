@@ -511,6 +511,21 @@ unsigned char mve(int a)
 }
 "#;
 
+/// A global stored then passed (WAR2 FUN_00014214: `g = h; f(g);`): the decompiler names the
+/// stored VALUE at the call (`f(h)`), and this compiler then keeps the source global's load
+/// where the original reloaded the stored one (`MOV [g],AX .. MOV AX,[g]`) — the
+/// store-forward arm names the stored global back.
+const STORE_FWD_SRC: &str = r#"
+extern unsigned short a;
+extern unsigned short b;
+extern int f();
+int mve(void)
+{
+    b = a;
+    return f(b);
+}
+"#;
+
 /// Every MVE, in the generator's order.
 pub const MVES: &[Mve] = &[
     Mve { key: "CSAVE", sym: "mve_", source: CALLEE_SAVE_SRC, fixture: "x86_watcom_callee_save.xml", base: 0x100000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(1));", "LOG_RET(mve(3));", "LOG_RET(mve(16));"], writes: &[("read16", "dst", 16)] },
@@ -541,6 +556,7 @@ pub const MVES: &[Mve] = &[
     Mve { key: "CMPMEM", sym: "mve_", source: CMP_MEM_SRC, fixture: "x86_watcom_cmp_mem.xml", base: 0x2a0000, inputs: &["{ a = 3; b = 9; LOG_RET(mve()); a = 9; b = 3; LOG_RET(mve()); a = 5; b = 5; LOG_RET(mve()); }"], writes: &[] },
     Mve { key: "LDHOIST", sym: "mve_", source: LOAD_HOIST_SRC, fixture: "x86_watcom_load_hoist.xml", base: 0x2b0000, inputs: &["{ mve(); LOG_BYTES(g, 68); }"], writes: &[("fill", "p", 32)] },
     Mve { key: "BRRET", sym: "mve_", source: BRANCH_RET_SRC, fixture: "x86_watcom_branch_ret.xml", base: 0x2c0000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(5));"], writes: &[] },
+    Mve { key: "STFWD", sym: "mve_", source: STORE_FWD_SRC, fixture: "x86_watcom_store_fwd.xml", base: 0x2d0000, inputs: &["{ a = 7; b = 0; LOG_RET(mve()); LOG_RET(b); }"], writes: &[] },
     Mve { key: "PTROFF", sym: "mve_", source: PTR_OFFSET_SRC, fixture: "x86_watcom_ptr_offset.xml", base: 0x270000, inputs: &["{ int m[4]; m[0] = 5; m[1] = 0x00030000; m[2] = 0x7fff0003; m[3] = 0; LOG_RET(mve(m)); m[2] = 0xfffe0000; LOG_RET(mve(m)); }"], writes: &[] },
 ];
 

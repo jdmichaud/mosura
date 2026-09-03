@@ -746,6 +746,30 @@ pub fn cmp_signs_from_evidence(
     (sites, globals)
 }
 
+/// Decide the `store-forward` sites ([`crate::decompile::printc::EmitReport::store_forward_candidates`],
+/// `(call address, slot, store address, stored global)`): between the store and the call, the
+/// original loads the STORED global (`MOV AX,[0x80004]`) — the source named it for the argument.
+pub fn store_forwards_from_evidence(
+    candidates: &[(u64, u32, u64, u64)],
+    insns: &[NormInsn],
+) -> std::collections::HashSet<(u64, u32)> {
+    let mut out = std::collections::HashSet::new();
+    for &(call_pc, slot, _store_pc, g) in candidates {
+        // the store COPY is re-attributed to the call's own address by the pipeline (the snip
+        // before the call), so the window is the call's own: back to the previous call, at
+        // most eight instructions, the store of `g` first and its reload after it
+        let Some(b) = insns.iter().position(|x| x.addr == call_pc) else { continue };
+        let a = insns[..b].iter().rposition(|x| x.text.starts_with("CALL")).map(|i| i + 1).unwrap_or(0).max(b.saturating_sub(8));
+        let store = format!("[0x{g:x}],");
+        let load = format!(",[0x{g:x}]");
+        let Some(s) = insns[a..b].iter().position(|x| x.text.starts_with("MOV ") && x.text.contains(&store)) else { continue };
+        if insns[a + s + 1..b].iter().any(|x| x.text.starts_with("MOV ") && x.text.ends_with(&load)) {
+            out.insert((call_pc, slot));
+        }
+    }
+    out
+}
+
 /// Decide the branch-form `return-split` sites
 /// ([`crate::decompile::printc::EmitReport::branch_return_candidates`]): at the compare that
 /// computes a lone `return <bool>;`, the original branches (`TEST AL,AL ; JZ epilogue ; MOV AL,1`
@@ -1857,6 +1881,17 @@ mod tests {
         // the same pair is not evidence for another global, nor for a load through a pointer
         assert!(cmp_signs_from_evidence(&[(0x1008, 2, Some(0x90162))], &pair).0.is_empty());
         assert!(cmp_signs_from_evidence(&[(0x1008, 2, None)], &pair).0.is_empty());
+    }
+
+    /// `store-forward`: the reload of the stored global between the store and the call.
+    #[test]
+    fn store_forward_witness_reads_the_reload() {
+        // MOV [0x80004],AX ; MOV AX,[0x80004] ; CALL +0
+        let reloaded = lift("66a30400080066a104000800e800000000");
+        assert!(store_forwards_from_evidence(&[(0x100c, 0, 0x100c, 0x80004)], &reloaded).contains(&(0x100c, 0)), "{:?}", reloaded.iter().map(|x| (x.addr, &x.text)).collect::<Vec<_>>());
+        // MOV [0x80004],AX ; CALL +0 (the register reused)
+        let reused = lift("66a304000800e800000000");
+        assert!(store_forwards_from_evidence(&[(0x1006, 0, 0x1006, 0x80004)], &reused).is_empty());
     }
 
     /// The branch-form bool return: `TEST AL,AL ; JZ +2 ; MOV AL,1` branches over the constant;

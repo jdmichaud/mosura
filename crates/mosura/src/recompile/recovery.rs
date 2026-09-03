@@ -71,6 +71,10 @@ pub fn recover(
             &report.branch_return_candidates,
             insns,
         ),
+        store_forward_sites: crate::recompile::buildconfig::store_forwards_from_evidence(
+            &report.store_forward_candidates,
+            insns,
+        ),
         cmp_unsigned_sites: cmp_sign.0,
         cmp_unsigned_globals: cmp_sign.1,
         ptr_offset_sites: crate::recompile::buildconfig::ptr_offsets_from_evidence(

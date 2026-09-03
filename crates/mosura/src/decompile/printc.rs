@@ -163,6 +163,9 @@ pub struct EmitReport {
     /// of the compare that computes the bool: the original either branches over a constant
     /// (`JZ ; MOV AL,1`) or materializes it (`SETNZ AL`).
     pub branch_return_candidates: Vec<u64>,
+    /// Every call argument that is the value just stored to another global (`store-forward`),
+    /// as `(call address, slot, store address, the stored global's address)`.
+    pub store_forward_candidates: Vec<(u64, u32, u64, u64)>,
     /// Every compare with a narrow SIGNED non-constant operand (`cmp-sign`), as `(compare
     /// address, operand size)`: the original's extension idiom before the compare decides the
     /// operand's promotion.
@@ -294,6 +297,9 @@ pub struct RecoveredChoices {
     /// Compare addresses whose lone bool return the original branches over (`return-split`,
     /// `branch_return_candidates` evidence, `buildconfig::branch_returns_from_evidence`).
     pub branch_return_sites: std::collections::HashSet<u64>,
+    /// `(call address, slot)` pairs whose argument the original reloads from the stored global
+    /// (`store-forward`, `store_forward_candidates` evidence).
+    pub store_forward_sites: std::collections::HashSet<(u64, u32)>,
     /// Compare addresses whose narrow signed operands the original zero-extended (`cmp-sign`,
     /// `cmp_sign_candidates` evidence, `buildconfig::cmp_signs_from_evidence`).
     pub cmp_unsigned_sites: std::collections::HashSet<u64>,
