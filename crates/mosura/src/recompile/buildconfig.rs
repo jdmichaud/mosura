@@ -554,6 +554,81 @@ pub fn ptr_offsets_from_evidence(candidates: &[(u64, u64)], insns: &[NormInsn]) 
     out
 }
 
+/// Decide the `cmp-sign` sites ([`crate::decompile::printc::EmitReport::cmp_sign_candidates`]):
+/// the extension idiom the original applies to a narrow operand right before the compare. Within
+/// the three instructions ahead of the compare, an `AND r,0xffff` (`0xff` for a byte) or a
+/// `XOR r,r` followed by a narrow `MOV` from memory into that register's low part zero-extends; a
+/// `SAR r,0x10` / `SAR r,0x18` / `CWDE` / `CBW` / `MOVSX` sign-extends and vetoes; a
+/// `XOR r,r ; MOV r16,[..]` pair zero-extends a memory operand loaded at the compare (the arm
+/// reports only such operands). Returns the compare addresses whose operands the original
+/// zero-extended.
+pub fn cmp_signs_from_evidence(
+    candidates: &[(u64, u32, Option<u64>)],
+    insns: &[NormInsn],
+) -> (std::collections::HashSet<u64>, std::collections::HashSet<u64>) {
+    let mut sites = std::collections::HashSet::new();
+    let mut globals = std::collections::HashSet::new();
+    for &(pc, size, global) in candidates {
+        let Some(i) = insns.iter().position(|x| x.addr == pc) else { continue };
+        let window = &insns[i.saturating_sub(3)..i];
+        let mask = if size == 1 { ",0xff" } else { ",0xffff" };
+        let signs = window.iter().any(|x| {
+            x.text == "CWDE"
+                || x.text == "CBW"
+                || x.text.starts_with("MOVSX ")
+                || (x.text.starts_with("SAR ") && (x.text.ends_with(",0x10") || x.text.ends_with(",0x18")))
+        });
+        if signs {
+            continue;
+        }
+        // the mask on the candidate's OWN load: `MOV r16,[..] ; AND r32,0xffff` on one register
+        // (a global's load names its address); a mask on some other register is another
+        // value's (measured: FUN_0004753c lost EXACT to the mask of a flag test two
+        // instructions earlier, round e15)
+        let and_mask = window.iter().enumerate().any(|(j, x)| {
+            let Some(reg) = x.text.strip_prefix("AND ").and_then(|r| r.split(',').next()) else { return false };
+            if !reg.starts_with('E') || !x.text.ends_with(mask) {
+                return false;
+            }
+            let low = &reg[1..];
+            let byte = format!("{}L", &low[..1]);
+            window[..j].iter().any(|y| {
+                y.text.starts_with("MOV ")
+                    && y.text[4..].split(',').next().is_some_and(|d| d == low || d == byte)
+                    && y.text.contains('[')
+                    && global.is_none_or(|g| y.text.ends_with(&format!("[0x{g:x}]")))
+            })
+        });
+        // the `XOR r,r ; MOV r16,[global]` pair: the zero-extending load of THE candidate global
+        // (FUN_00029b50's `iRam000948d8 == 0x3c`); a pair loading anything else is some other
+        // value's load (measured: FUN_0004753c lost EXACT to a pair loading its other operand,
+        // round e14; FUN_0001562c to a register local's own load, round e13)
+        let zero_then_load = global.is_some_and(|g| {
+            let operand = format!("[0x{g:x}]");
+            window.windows(2).any(|w| {
+                let z = w[0].text.strip_prefix("XOR ").and_then(|r| {
+                    let (a, b) = r.split_once(',')?;
+                    (a == b && a.starts_with('E')).then_some(a)
+                });
+                z.is_some_and(|reg| {
+                    let low = &reg[1..]; // `EAX` -> `AX`
+                    let byte = format!("{}L", &low[..1]);
+                    w[1].text.starts_with("MOV ")
+                        && w[1].text[4..].split(',').next().is_some_and(|d| d == low || d == byte)
+                        && w[1].text.ends_with(&operand)
+                })
+            })
+        });
+        if and_mask || zero_then_load {
+            sites.insert(pc);
+            if let Some(g) = global {
+                globals.insert(g);
+            }
+        }
+    }
+    (sites, globals)
+}
+
 /// Decide the constant-phi `return-split` sites
 /// ([`crate::decompile::printc::EmitReport::const_phi_candidates`]). This compiler compiles
 /// `if (x == 0) return 0; ..; return 1;` by REUSING the tested register as the return value:
@@ -1570,6 +1645,29 @@ mod tests {
         assert!(ptr_offsets_from_evidence(&[(0x1000, 0x1a)], &insns).contains(&0x1000), "{:?}", insns.iter().map(|x| (x.addr, &x.text)).collect::<Vec<_>>());
         assert!(ptr_offsets_from_evidence(&[(0x1005, 0x1a)], &insns).is_empty());
         assert!(ptr_offsets_from_evidence(&[(0x1000, 0x1c)], &insns).is_empty());
+    }
+
+    /// `cmp-sign`: the original's `AND EAX,0xffff` ahead of the compare zero-extends; a
+    /// `SAR EAX,0x10` sign-extends; a `XOR EAX,EAX ; MOV AX,[..]` pair zero-extends.
+    #[test]
+    fn cmp_sign_witness_reads_the_extension_idiom() {
+        // MOV AX,[EAX+0x1c] ; AND EAX,0xffff ; CMP EAX,1
+        let zext = lift("668b401c25ffff000083f801");
+        assert!(cmp_signs_from_evidence(&[(0x1009, 2, None)], &zext).0.contains(&0x1009), "{:?}", zext.iter().map(|x| (x.addr, &x.text)).collect::<Vec<_>>());
+        // AND EBX,0xffff ; CMP DX,word ptr [0x973d8] — a mask on another register is not evidence
+        let other = lift("81e3ffff0000663b15d8730900");
+        assert!(cmp_signs_from_evidence(&[(0x1006, 2, Some(0x973d8))], &other).0.is_empty(), "{:?}", other.iter().map(|x| (x.addr, &x.text)).collect::<Vec<_>>());
+        // MOV EAX,[EAX+0x1a] ; SAR EAX,0x10 ; CMP EAX,1
+        let sext = lift("8b401ac1f81083f801");
+        assert_eq!(sext[2].addr, 0x1006);
+        assert!(cmp_signs_from_evidence(&[(0x1006, 2, None)], &sext).0.is_empty());
+        // XOR EAX,EAX ; MOV AX,[0x90160] ; CMP EAX,1 — the zero-extending load of THAT global
+        let pair = lift("31c066a16001090083f801");
+        let (sites, globals) = cmp_signs_from_evidence(&[(0x1008, 2, Some(0x90160))], &pair);
+        assert!(sites.contains(&0x1008) && globals.contains(&0x90160), "{:?}", pair.iter().map(|x| (x.addr, &x.text)).collect::<Vec<_>>());
+        // the same pair is not evidence for another global, nor for a load through a pointer
+        assert!(cmp_signs_from_evidence(&[(0x1008, 2, Some(0x90162))], &pair).0.is_empty());
+        assert!(cmp_signs_from_evidence(&[(0x1008, 2, None)], &pair).0.is_empty());
     }
 
     /// The constant-phi split: `TEST EAX,EAX ; JZ epilogue` reuses the tested register as the

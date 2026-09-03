@@ -417,6 +417,19 @@ int mve(int a)
 }
 "#;
 
+/// A narrow signed field compared zero-extended (WAR2 FUN_00059784): `RuleZextEliminate`
+/// folds `ZEXT(x) == 1` into a 16-bit compare of a short-typed value, which C promotes by
+/// sign; the original's `AND EAX,0xffff` before the compare is the cmp-sign witness.
+const CMP_SIGN_SRC: &str = r#"
+struct s { short a; short b; };
+int mve(struct s *p)
+{
+    if (p->a < 0)
+        return 0;
+    return (unsigned short)p->a == 1;
+}
+"#;
+
 /// A field read at a constant offset from a pointer (WAR2 FUN_0003ca54's `p->flags < 0`): the
 /// decompiler prints the int-cast sum `*(int4 *)((int4)p + 6)`, which this compiler
 /// materializes with an `LEA`; the original folds the displacement (`[EAX + 0x6]`) — the
@@ -475,6 +488,7 @@ pub const MVES: &[Mve] = &[
     Mve { key: "MASKARG", sym: "mve_", source: MASK_ARG_SRC, fixture: "x86_watcom_mask_arg.xml", base: 0x230000, inputs: &["{ t[0] = 3; t[1] = 200; LOG_RET(mve(0)); LOG_RET(mve(1)); }"], writes: &[] },
     Mve { key: "CPHI", sym: "mve_", source: CONST_PHI_SRC, fixture: "x86_watcom_const_phi.xml", base: 0x240000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(7));"], writes: &[("chk", "p", 16), ("work", "p", 16)] },
     Mve { key: "RETZX", sym: "mve_", source: RET_ZX_SRC, fixture: "x86_watcom_return_zx.xml", base: 0x250000, inputs: &["{ g = -5; LOG_RET(mve(0)); g = 7; LOG_RET(mve(3)); g = 7; LOG_RET(mve(9)); }"], writes: &[] },
+    Mve { key: "CMPSIGN", sym: "mve_", source: CMP_SIGN_SRC, fixture: "x86_watcom_cmp_sign.xml", base: 0x260000, inputs: &["{ short m[2]; m[0] = 1; m[1] = 0; LOG_RET(mve((struct s *)m)); m[0] = -1; LOG_RET(mve((struct s *)m)); m[0] = 2; LOG_RET(mve((struct s *)m)); }"], writes: &[] },
     Mve { key: "DUMMY", sym: "mve_", source: DUMMY_PARAM_SRC, fixture: "x86_watcom_dummy_param.xml", base: 0x280000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(5));"], writes: &[] },
     Mve { key: "FARRET", sym: "mve_", source: FAR_RETURN_SRC, fixture: "x86_watcom_far_return.xml", base: 0x290000, inputs: &["{ total = 1; LOG_RET(mve(2)); LOG_RET(total); }"], writes: &[] },
     Mve { key: "PTROFF", sym: "mve_", source: PTR_OFFSET_SRC, fixture: "x86_watcom_ptr_offset.xml", base: 0x270000, inputs: &["{ int m[4]; m[0] = 5; m[1] = 0x00030000; m[2] = 0x7fff0003; m[3] = 0; LOG_RET(mve(m)); m[2] = 0xfffe0000; LOG_RET(mve(m)); }"], writes: &[] },

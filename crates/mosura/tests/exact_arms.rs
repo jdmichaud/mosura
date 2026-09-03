@@ -137,6 +137,16 @@ fn widened_return_of_a_signed_short_zero_extends() {
     assert!(c.contains("return (uint2)"), "the returned short is re-signed:\n{c}");
 }
 
+/// `cmp-sign`: a short field compared zero-extended prints its `(uint2)` cast from the
+/// original's `AND EAX,0xffff` ahead of the compare.
+#[test]
+fn compare_operand_the_original_zero_extends_prints_the_cast() {
+    let (f, insns) = decompiled("x86_watcom_cmp_sign.xml");
+    let (c, recovered) = recovered_print(&f, &insns);
+    assert!(!recovered.cmp_unsigned_sites.is_empty(), "the witness read the AND: {:?}\n{c}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
+    assert!(c.contains("(uint2)"), "the compared short is re-signed:\n{c}");
+}
+
 /// `ptr-offset`: a field read at a constant offset from a pointer prints as byte-pointer
 /// arithmetic where the original folds the displacement into the access.
 #[test]

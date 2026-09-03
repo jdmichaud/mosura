@@ -132,6 +132,7 @@ impl State {
 }
 
 pub mod cmp_order;
+pub mod cmp_sign;
 pub mod complement_cmp;
 pub mod ext_cast;
 pub mod mask_cast;
@@ -273,6 +274,7 @@ mod tests {
     const ARM_SOURCES: [(&str, &str); 21] = [
         ("ptr_offset.rs", include_str!("ptr_offset.rs")),
         ("cmp_order.rs", include_str!("cmp_order.rs")),
+        ("cmp_sign.rs", include_str!("cmp_sign.rs")),
         ("return_widen.rs", include_str!("return_widen.rs")),
         ("ext_cast.rs", include_str!("ext_cast.rs")),
         ("mask_cast.rs", include_str!("mask_cast.rs")),
@@ -412,6 +414,12 @@ pub enum ValueSite<'v> {
     /// prints as `(uintN)x sym 0xffN`. Replaces the inline block at printc.rs:1941-1966 (33d6e37);
     /// R2b, commit 1.
     Equality { op: OpId, sym: &'static str, prec: u8 },
+    /// `render_negated`'s equality flip (`!(a == b)` printed `a != b`): the same compare
+    /// reached through a negated branch. Only `cmp-sign` answers here — an operand's sign
+    /// must not depend on the branch's orientation; `unsigned-cmp` does not (measured: on the
+    /// negated sites it re-spelled FUN_0002dfb0's `param_4 != -1` as `(uint2)param_4 !=
+    /// 0xffff`, −0.258, round e16).
+    NegatedEquality { op: OpId, sym: &'static str, prec: u8 },
     /// `cmp_bin`: a `<`/`<=` (`strict`, at the port's precedence `prec`) the port is about to
     /// render — a compare the original spelled through the complemented condition prints
     /// complemented. Replaces the inline consult at the head of cmp_bin (33d6e37); R2b, commit 2.
@@ -456,6 +464,7 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
     //   OpRoot:      string-ops, sdiv-pow2, struct-return (a witnessed CALL)
     //   Compare:     complement-cmp (the immediate flavour), then cmp-order (the operand swap), then cmp-sign
     //   Equality:    unsigned-cmp, then cmp-sign (a narrow signed operand the original zero-extends)
+    //   NegatedEquality: cmp-sign only
     //   ReturnValue: return-widen (the sign of a widened narrow return)
     //   Extension:   ext-cast (the promotion rendering of INT_ZEXT / INT_SEXT)
     //   CallArg:     mask-cast (a call argument the original masks before the call)
@@ -470,8 +479,11 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
             .or_else(|| sdiv_pow2::render(p, op))
             .or_else(|| struct_return::render_value(p, &ValueSite::OpRoot { op })),
         ValueSite::Var { v } => struct_return::render_value(p, &ValueSite::Var { v }).or_else(|| string_ops::render_var_value(p, v)),
-        ValueSite::Equality { op, sym, prec } => unsigned_cmp::render(p, op, sym, prec),
-        ValueSite::Compare { op, strict, prec } => complement_cmp::render(p, op, strict, prec).or_else(|| cmp_order::render(p, op, strict, prec)),
+        ValueSite::Equality { op, sym, prec } => unsigned_cmp::render(p, op, sym, prec).or_else(|| cmp_sign::render(p, op, sym, prec)),
+        ValueSite::NegatedEquality { op, sym, prec } => cmp_sign::render(p, op, sym, prec),
+        ValueSite::Compare { op, strict, prec } => complement_cmp::render(p, op, strict, prec)
+            .or_else(|| cmp_order::render(p, op, strict, prec))
+            .or_else(|| cmp_sign::render(p, op, if strict { "<" } else { "<=" }, prec)),
         ValueSite::ReturnValue { v } => return_widen::render(p, v),
         ValueSite::Extension { op, signed } => ext_cast::render(p, op, signed),
         ValueSite::CallArg { op, slot } => mask_cast::render(p, op, slot),

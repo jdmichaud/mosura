@@ -37,6 +37,7 @@ pub fn recover(
     let call_arg_orders = call_arg_orders(&report);
     // One witness, two fields: whether the return declaration narrows, and whether that narrow
     // declaration is signed (the sign-extended-constant idiom).
+    let cmp_sign = crate::recompile::buildconfig::cmp_signs_from_evidence(&report.cmp_sign_candidates, insns);
     let narrow_ret = crate::recompile::buildconfig::narrow_return_from_evidence(
         &report.return_width_candidates,
         insns,
@@ -66,6 +67,8 @@ pub fn recover(
             &report.const_phi_candidates,
             insns,
         ),
+        cmp_unsigned_sites: cmp_sign.0,
+        cmp_unsigned_globals: cmp_sign.1,
         ptr_offset_sites: crate::recompile::buildconfig::ptr_offsets_from_evidence(
             &report.ptr_offset_candidates,
             insns,

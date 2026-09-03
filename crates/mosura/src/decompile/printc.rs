@@ -159,6 +159,10 @@ pub struct EmitReport {
     /// that constant on its own path after the branch (a `XOR AL,AL` / `MOV EAX,k` right before
     /// an epilogue) — the per-path returns — or hoists it above the test (the merged form).
     pub const_phi_candidates: Vec<(u64, u64)>,
+    /// Every compare with a narrow SIGNED non-constant operand (`cmp-sign`), as `(compare
+    /// address, operand size)`: the original's extension idiom before the compare decides the
+    /// operand's promotion.
+    pub cmp_sign_candidates: Vec<(u64, u32, Option<u64>)>,
     /// Every dereference at a constant offset from a pointer-typed base (`ptr-offset`), as
     /// `(the sum's address, offset)`: the original folds the offset into the addressing mode
     /// or materializes the sum.
@@ -280,6 +284,12 @@ pub struct RecoveredChoices {
     /// Guarding-if branch addresses whose constant-phi tail splits per path (`return-split`,
     /// `const_phi_candidates` evidence, `buildconfig::const_phi_returns_from_evidence`).
     pub const_phi_sites: std::collections::HashSet<u64>,
+    /// Compare addresses whose narrow signed operands the original zero-extended (`cmp-sign`,
+    /// `cmp_sign_candidates` evidence, `buildconfig::cmp_signs_from_evidence`).
+    pub cmp_unsigned_sites: std::collections::HashSet<u64>,
+    /// The globals those witnessed sites compare (`cmp-sign`): every compare of such a global
+    /// in the function casts, so the recompile keeps one load.
+    pub cmp_unsigned_globals: std::collections::HashSet<u64>,
     /// Sum addresses whose offset the original folds into the addressing mode (`ptr-offset`,
     /// `ptr_offset_candidates` evidence, `buildconfig::ptr_offsets_from_evidence`).
     pub ptr_offset_sites: std::collections::HashSet<u64>,
@@ -2938,6 +2948,13 @@ impl<'a> PrintC<'a> {
                 // the `!(...)` fallback below.
                 OpCode::IntEqual | OpCode::IntNotequal => {
                     let sym = if code == OpCode::IntEqual { "!=" } else { "==" };
+                    // the negated twin of the `ValueSite::Equality` seam the positive path
+                    // consults (:2032), with the flipped token: an emit arm's OPERAND rendering
+                    // (cmp-sign) must not depend on which way the branch was oriented; the
+                    // spelling arms stay out of the negated site (see the seam's doc)
+                    if let Some((r, _)) = arms::render_value(self, ValueSite::NegatedEquality { op: def, sym, prec: 9 }) {
+                        return r;
+                    }
                     let l = self.cast_operand(def, 0, 9, false);
                     let r = self.cast_operand(def, 1, 9, true);
                     return format!("{l} {sym} {r}");
