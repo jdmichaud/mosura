@@ -20,7 +20,7 @@
 //! functions and hurts 15 is a net loss globally and a pure gain per function.
 use mosura::analysis;
 use mosura::decompile::space::Address;
-use mosura::recompile::toolchain::{Cached, CompileUnit, Toolchain, WatcomDos};
+use mosura::recompile::toolchain::{spec, Cached, CompileUnit, CompilerDriver, DriverRole, Toolchain};
 use mosura::recompile::{emitted_symbol_address, verify, ByteVerdict, Subject};
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
@@ -88,10 +88,16 @@ fn main() {
     for arm in &arms {
         let prelude = std::fs::read_to_string(Path::new(&arm.srcdir).join("../prelude.h")).unwrap_or_default();
         let work = std::env::temp_dir().join(format!("mosura-search-{}-{}", std::process::id(), arm.label));
-        let wcc = WatcomDos::new(watcom, &work, "10.0a")
-            .expect("work dir")
-            .with_prelude(prelude)
-            .owning_work_dir();
+        // Role DEVELOPMENT-ASSISTANCE: searching build configurations to LEARN which one the
+        // original used is offline work whose answer then ships without a compiler.
+        let wcc = CompilerDriver::new(
+            spec::watcom_10_0a_dos(prelude),
+            watcom,
+            &work,
+            DriverRole::DevelopmentAssistance,
+        )
+        .expect("work dir")
+        .owning_work_dir();
         let tc = Cached::new(wcc, &cache_dir).expect("cache dir");
 
         let rows = read_manifest(&arm.manifest);
