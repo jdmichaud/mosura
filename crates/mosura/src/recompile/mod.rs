@@ -48,7 +48,7 @@ pub mod x86enc;
 pub use buildconfig::{BuildConfig, Evidence, Profile};
 pub use align::{AlignOp, Divergence, DivergenceClass, FnDiff, Verdict, compare};
 pub use candidate::{CandTable, Candidate, CandFixup, SymbolResolver, load_object_function};
-pub use convention::callee_stack_cleanup;
+pub use convention::{callee_stack_cleanup, declared_pop_contract, own_pop_contract, OwnPopContract};
 pub use insn::{NormInsn, normalize};
 pub use report::{DIVERGENCE_HEADER, FnKey, write_divergence_rows};
 pub use toolchain::{CompileOutput, CompileUnit, Toolchain};

@@ -2491,26 +2491,14 @@ fn main() {
         // That is the same boundary error that made the walk wrong above, so it must not fall
         // through to the walk: an undecided body declares nothing and is counted, which turns a
         // silent mis-attribution into a visible one.
-        let own = mosura::sleigh::disassemble(SURVEY_LANG, &region, *va).ok();
-        let has_own_return = own.as_ref().is_some_and(|insns| {
-            insns.iter().any(|i| {
-                i.ops.iter().any(|o| o.opcode == mosura::decompile::opcode::OpCode::Return as u32)
-            })
-        });
-        let cleanup = match esp_off
-            .zip(own.as_ref())
-            .and_then(|(sp, insns)| mosura::recompile::callee_stack_cleanup(insns, sp))
-        {
-            // the function's own returns agree — direct evidence, and it outranks the walk
-            Some(n) => Some(n),
-            // no return in the body at all (the tail-JMP shape): the walk is the only evidence
-            None if !has_own_return => f.ret_pop,
-            // returns that disagree: a boundary error, not a contract
-            None => {
-                cleanup_undecided += 1;
-                None
-            }
-        };
+        let own = esp_off
+            .zip(mosura::sleigh::disassemble(SURVEY_LANG, &region, *va).ok())
+            .map(|(sp, insns)| mosura::recompile::own_pop_contract(&insns, sp))
+            .unwrap_or(mosura::recompile::OwnPopContract::Silent);
+        if own == mosura::recompile::OwnPopContract::Undecided {
+            cleanup_undecided += 1;
+        }
+        let cleanup = mosura::recompile::declared_pop_contract(own, f.ret_pop);
         let contract = own_contract(&f, &watreg, stack_convention, cleanup);
         // CALLER-SIDE REGISTER CONTRACTS, definition-side truth. The `parm [..]` pragma
         // below tells Watcom the callee's true argument registers — but only in the callee's

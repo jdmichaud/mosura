@@ -25,6 +25,51 @@ fn is(op: &PcodeOp, code: OpCode) -> bool {
     OpCode::from_u32(op.opcode) == Some(code)
 }
 
+/// What a definition's own pop-contract reading amounts to, which is three answers and not two.
+///
+/// [`callee_stack_cleanup`] returns `None` both for a body with no return at all and for one whose
+/// returns disagree, and the two must be treated differently: the first is a function whose
+/// contract simply is not written in its own region (a tail `JMP` into a shared epilogue), where
+/// weaker evidence is the only evidence there is; the second is a function that appears to hold two
+/// contracts, which no function does — it means the region boundary took in a neighbour's `RET`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OwnPopContract {
+    /// The function's own returns agree: direct evidence, and it outranks anything indirect.
+    Agreed(u32),
+    /// No return in the region at all — the contract is not stated here.
+    Silent,
+    /// Returns that disagree: a boundary error, not a second contract.
+    Undecided,
+}
+
+/// Read a definition's own pop-contract, separating "not stated here" from "states two things".
+pub fn own_pop_contract(insns: &[Instruction], sp: u64) -> OwnPopContract {
+    let has_return = insns.iter().any(|i| i.ops.iter().any(|o| is(o, OpCode::Return)));
+    match (callee_stack_cleanup(insns, sp), has_return) {
+        (Some(n), _) => OwnPopContract::Agreed(n),
+        (None, false) => OwnPopContract::Silent,
+        (None, true) => OwnPopContract::Undecided,
+    }
+}
+
+/// The contract a definition should DECLARE, given its own reading and a CFG walk's answer
+/// (`Funcdata::ret_pop`, which is what every CALLER of this function uses).
+///
+/// The walk is the fallback and never the override. It can leave the function through a shared
+/// epilogue and read a return belonging to someone else's contract — measured on WAR2: taking it
+/// unconditionally put `RET 0x4`/`RET 0x8`/`RET 0x18` on 8 library functions whose originals end in
+/// a bare `RET`. So it answers only where the body is SILENT, which is exactly the tail-JMP case
+/// where the definition would otherwise fall back on the callee-pops default and contradict every
+/// caller. `Undecided` declares nothing: covering a boundary error with a walk that has the same
+/// weakness would hide it.
+pub fn declared_pop_contract(own: OwnPopContract, walked: Option<u32>) -> Option<u32> {
+    match own {
+        OwnPopContract::Agreed(n) => Some(n),
+        OwnPopContract::Silent => walked,
+        OwnPopContract::Undecided => None,
+    }
+}
+
 /// Bytes the **callee** removes from the stack beyond the return address — Ghidra's
 /// `extrapop` less the return address itself.
 ///
@@ -181,6 +226,39 @@ mod tests {
     #[test]
     fn a_plain_return_cleans_up_nothing() {
         assert_eq!(callee_stack_cleanup(&lift("c3"), esp()), Some(0));
+    }
+
+    /// The three readings a body admits, which `callee_stack_cleanup`'s `Option` cannot tell apart:
+    /// a return that answers, no return at all, and returns that contradict each other.
+    #[test]
+    fn a_body_states_its_contract_or_states_nothing_or_states_two_things() {
+        // ret
+        assert_eq!(own_pop_contract(&lift("c3"), esp()), OwnPopContract::Agreed(0));
+        // ret 8
+        assert_eq!(own_pop_contract(&lift("c20800"), esp()), OwnPopContract::Agreed(8));
+        // jmp +0 — a body that never returns inside its own region (the tail-JMP shape)
+        assert_eq!(own_pop_contract(&lift("eb00"), esp()), OwnPopContract::Silent);
+        // ret 8 ; ret — one function cannot pop two different amounts
+        assert_eq!(own_pop_contract(&lift("c20800c3"), esp()), OwnPopContract::Undecided);
+    }
+
+    /// The walk is a FALLBACK. It answers only for a silent body; it never overrides the function's
+    /// own returns, and it never covers a boundary error.
+    ///
+    /// Both directions are pinned because taking the walk unconditionally was measurably wrong:
+    /// on WAR2 it put `RET 0x4`/`RET 0x8`/`RET 0x18` on 8 library functions whose originals end in
+    /// a bare `RET`, the walk having left the function through a shared epilogue.
+    #[test]
+    fn the_walk_fills_a_silent_body_and_never_overrides_one_that_speaks() {
+        use OwnPopContract::*;
+        // silent: the walk is the only evidence there is — this is the case that fixes the defect
+        assert_eq!(declared_pop_contract(Silent, Some(0)), Some(0));
+        assert_eq!(declared_pop_contract(Silent, None), None);
+        // the body speaks: the walk cannot contradict it, in either direction
+        assert_eq!(declared_pop_contract(Agreed(0), Some(8)), Some(0));
+        assert_eq!(declared_pop_contract(Agreed(8), Some(0)), Some(8));
+        // a boundary error declares nothing rather than borrowing an answer with the same weakness
+        assert_eq!(declared_pop_contract(Undecided, Some(0)), None);
     }
 
     /// `RET n` is the whole point: the callee removes n bytes of arguments, so its declaration has
