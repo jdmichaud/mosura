@@ -129,6 +129,7 @@ impl State {
     }
 }
 
+pub mod cmp_order;
 pub mod complement_cmp;
 pub mod array_index;
 pub mod frame_fill;
@@ -231,7 +232,7 @@ pub fn try_emit(p: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<
 #[cfg_attr(not(test), allow(dead_code))] // the documented list; read by the surface test
 pub const SURFACE_FIELDS: &[&str] = &[
     "arms", "f", "recovered", "report", "h", "force_explicit", "suppressed", "names", "decls",
-    "stack_declared", "stack_space", "stack_syms", "high_stack_off", "high_of", "high_members",
+    "stack_declared", "stack_space", "stack_syms", "high_stack_off", "high_ram_off", "high_of", "high_members",
     "nonprinting", "labels", "comma_separate", "sparse_consumed", "sparse_cond_override", "covered_nodes",
     "var_counter",
 ];
@@ -262,7 +263,8 @@ mod tests {
     /// The arm files, as text, for the surface scan — every `pub mod` of this module must be here
     /// (`arms_touch_only_the_documented_surface` checks that against this file's own source, so a
     /// new arm file cannot slip past the scan).
-    const ARM_SOURCES: [(&str, &str); 15] = [
+    const ARM_SOURCES: [(&str, &str); 16] = [
+        ("cmp_order.rs", include_str!("cmp_order.rs")),
         ("string_ops.rs", include_str!("string_ops.rs")),
         ("struct_copy.rs", include_str!("struct_copy.rs")),
         ("sparse_switch.rs", include_str!("sparse_switch.rs")),
@@ -432,6 +434,7 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
     // THE ORDERED ANSWERERS (explicit, documented here; a site with two answerers lists them in
     // the order they are asked, first answer wins):
     //   OpRoot:      string-ops, sdiv-pow2, struct-return (a witnessed CALL)
+    //   Compare:     complement-cmp (the immediate flavour), then cmp-order (the operand swap)
     //   Var:         struct-return (the hidden pointer -> `__ret`), string-ops
     //   Deref:       struct-return (a field write through the hidden pointer), array-index
     //   SlotName / SlotOffset / SlotAddress / SlotPiece / FusedStore:
@@ -444,7 +447,7 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
             .or_else(|| struct_return::render_value(p, &ValueSite::OpRoot { op })),
         ValueSite::Var { v } => struct_return::render_value(p, &ValueSite::Var { v }).or_else(|| string_ops::render_var_value(p, v)),
         ValueSite::Equality { op, sym, prec } => unsigned_cmp::render(p, op, sym, prec),
-        ValueSite::Compare { op, strict, prec } => complement_cmp::render(p, op, strict, prec),
+        ValueSite::Compare { op, strict, prec } => complement_cmp::render(p, op, strict, prec).or_else(|| cmp_order::render(p, op, strict, prec)),
         ValueSite::Load { out, addr } => testmem::render(p, out, addr),
         ValueSite::Sum { op } => sum_order::render(p, op),
         ValueSite::Deref { addr } => struct_return::render_value(p, &ValueSite::Deref { addr }).or_else(|| array_index::render(p, addr)),

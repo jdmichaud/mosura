@@ -17,9 +17,7 @@ chain	0x23c40	no-switch	-	w5c/8e8e956
 chain	0x45ba0	no-switch	-	w5c/8e8e956
 chain	0x28d98	no-switch	-	w5c/8e8e956
 chain	0x21f30	no-switch	-	w5c/8e8e956
-chain	0x14b44	no-switch	-	w5c/8e8e956
 chain	0x18b98	no-switch	-	w5c/8e8e956
-chain	0x3d470	no-switch	-	w5c/8e8e956
 chain	0x12360	no-switch	-	w5c/8e8e956
 chain	0x124ec	no-switch	-	w5c/8e8e956
 chain	0x1812c	no-switch	-	w5c/8e8e956
@@ -36,12 +34,12 @@ switch_labels	0x4a640	==	3	w5c/8e8e956
 switch_labels	0x14ac8	==	3	w5c/8e8e956
 switch_labels	0x151ac	==	3	w5c/8e8e956
 switch_labels	0x151e8	==	3	w5c/8e8e956
-switch_labels	0x49a20	==	3	w5c/8e8e956
+switch_labels	0x49a20	==	4	e2/narrow-switch
 switch_labels	0x4822c	==	4	w5c/8e8e956
-switch_labels	0x3ea40	==	4	w5c/8e8e956
+switch_labels	0x3ea40	==	5	e2/narrow-switch
 switch_labels	0x4ccc4	==	6	w5c/8e8e956
 switch_labels	0x29dcc	==	8	w5c/8e8e956
-switch_labels	0x173b4	==	0	w5c/8e8e956
+switch_labels	0x173b4	==	1	e2/narrow-switch
 switch_labels	0x1201c	==	0	w5c/8e8e956
 guard_frame	0x225e0	EXACT	-	w4/8dc191d
 guard_frame	0x29af0	EXACT	-	w4/8dc191d

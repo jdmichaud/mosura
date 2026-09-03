@@ -45,6 +45,34 @@ impl State {
 /// the initializer names the global itself.
 pub(crate) fn recognize(pr: &mut PrintC<'_>, f: &Funcdata) {
         let ram = f.spaces.by_name("ram");
+        let stack = f.spaces.by_name("stack");
+        // globals this function WRITES directly (a live COPY into the ram location): a value read,
+        // masked and written back is not a snapshot — the original re-reads it at the write
+        // (measured: FUN_0002b184 lost EXACT to a snapshot of its `|= 2` flag byte, round e3)
+        // the global's address for a written varnode: the ram location itself, or — when the
+        // pipeline restructured the store into an explicit unique the naming machinery renders
+        // AS the global — the `high_ram_off` mapping (rounds e4/e5: the `|= 2` write-back of
+        // FUN_0002b184 and the `g1 = g2` copy of FUN_00014214 both live in such uniques)
+        let written: std::collections::HashSet<u64> = (0..f.num_varnodes() as u32)
+            .map(VarnodeId)
+            .filter(|&w| {
+                let wn = f.vn(w);
+                wn.def.is_some_and(|d| {
+                    // a REAL write: not heritage's return-guard COPY of a persistent global
+                    // (`markReturnCopy`, every global at every RETURN) — round e4 counted
+                    // those and un-snapshotted the whole 0x39554 family
+                    f.op(d).code() == OpCode::Copy && !f.op(d).is_dead() && !f.op(d).is_return_copy()
+                })
+            })
+            .filter_map(|w| {
+                let wn = f.vn(w);
+                if Some(wn.loc.space) == ram {
+                    Some(wn.loc.offset)
+                } else {
+                    pr.high_ram_off.get(&pr.high_of[w.0 as usize]).copied()
+                }
+            })
+            .collect();
         for i in 0..f.num_varnodes() as u32 {
             let v = VarnodeId(i);
             let vn = f.vn(v);
@@ -52,6 +80,7 @@ pub(crate) fn recognize(pr: &mut PrintC<'_>, f: &Funcdata) {
                 || Some(vn.loc.space) != ram
                 || vn.size == 0
                 || vn.size >= f.size_of_int()
+                || written.contains(&vn.loc.offset)
             {
                 continue;
             }
@@ -64,12 +93,30 @@ pub(crate) fn recognize(pr: &mut PrintC<'_>, f: &Funcdata) {
                 .copied()
                 .filter(|&u| !f.op(u).is_dead() && !f.op(u).is_marker())
                 .collect();
-            let all_call_args = !live.is_empty()
+            // the probe family's shape: every use is a call argument — or, since round e3, any
+            // READ of the value (an index, an arithmetic operand: WAR2's 0x39554 family indexes a
+            // table by the byte global and then passes it to a call, and the original snapshots it
+            // once into AL for both). A STORE of the value stays outside the shape (measured:
+            // FUN_00011a50's store use perturbs allocation when materialized).
+            let all_reads = !live.is_empty()
                 && live.iter().all(|&u| {
-                    matches!(f.op(u).code(), OpCode::Call | OpCode::Callind)
-                        && f.op(u).inrefs.iter().skip(1).any(|&a| a == v)
+                    let o = f.op(u);
+                    match o.code() {
+                        OpCode::Call | OpCode::Callind => o.inrefs.iter().skip(1).any(|&a| a == v),
+                        OpCode::Store => false,
+                        // a COPY into another global or a frame slot is a store too (measured:
+                        // FUN_00014214's `xRam00080004 = xRam0008f046`, round e3) — by its ram
+                        // or stack location, or by the unique's name mapping
+                        _ => !o.output.is_some_and(|out| {
+                            let os = f.vn(out).loc.space;
+                            Some(os) == ram
+                                || Some(os) == stack
+                                || pr.high_ram_off.contains_key(&pr.high_of[out.0 as usize])
+                                || pr.high_stack_off.contains_key(&pr.high_of[out.0 as usize])
+                        }),
+                    }
                 });
-            if !all_call_args {
+            if !all_reads {
                 continue;
             }
             pr.report.snapshot_candidates.push((v, vn.loc.offset, vn.size));

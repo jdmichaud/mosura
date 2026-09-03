@@ -125,7 +125,11 @@ fn complemented_cmp(pr: &mut PrintC<'_>, op: crate::decompile::op::OpId, strict:
     if !valid {
         return None;
     }
-    let lit = render_const(adj, size);
+    // the adjusted literal at the compare's OWN signedness: an unsigned compare's bound is a
+    // non-negative value whatever its top bit (`0x7f < x` on a byte complements to `0x80 <= x`,
+    // never `-0x80 <= x` — which this compiler encodes as the sign-extended imm8 and so compares
+    // a different value: WAR2 FUN_00041a6c's `CMP EAX,0x80`)
+    let lit = if signed { render_const(adj, size) } else { format!("0x{adj:x}") };
     let other = pr.cast_operand(op, vslot, prec, cslot == 0);
     let sym = if strict { "<=" } else { "<" };
     Some(if cslot == 1 { format!("{other} {sym} {lit}") } else { format!("{lit} {sym} {other}") })

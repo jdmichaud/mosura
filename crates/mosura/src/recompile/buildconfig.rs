@@ -222,6 +222,107 @@ pub fn complement_compares_from_evidence(
     out
 }
 
+/// Decide the narrow-extension sites
+/// ([`crate::decompile::printc::EmitReport::narrow_zext_candidates`]): a sub-int zero-extension
+/// keeps its `(uint2)` cast where the original widened with the 16-BIT idiom — a high-byte zero
+/// (`XOR AH,AH`) within four instructions before or two after the extension's address (the
+/// scheduler interleaves, and the extension op carries the pc of its consumer, not of the load:
+/// FUN_00019344's zero sits three instructions above the multiply the IR attributes it to). The full-register zero (`XOR EDX,EDX`) is the
+/// compiler's ordinary widening of a value it then computes at 32 bits, and prints bare.
+pub fn narrow_zexts_from_evidence(
+    cands: &[(u64, u32, u32)],
+    insns: &[NormInsn],
+) -> std::collections::HashSet<u64> {
+    let mut out = std::collections::HashSet::new();
+    let high_zero = |t: &str| -> bool {
+        matches!(t, "XOR AH,AH" | "XOR BH,BH" | "XOR CH,CH" | "XOR DH,DH")
+    };
+    for &(pc, _, _) in cands {
+        let Some(i) = insns.iter().position(|x| x.addr == pc) else { continue };
+        let lo = i.saturating_sub(4);
+        let hi = (i + 2).min(insns.len() - 1);
+        if insns[lo..=hi].iter().any(|x| high_zero(&x.text)) {
+            out.insert(pc);
+        }
+    }
+    out
+}
+
+/// Decide the `cmp-order` sites ([`crate::decompile::printc::EmitReport::cmp_order_candidates`]):
+/// at each two-operand order comparison the original's own `CMP` — found the way
+/// [`complement_compares_from_evidence`] finds it, within the three instructions before the
+/// comparison's address — names its operands in SOURCE order, while the port prints the IR's
+/// canonical `a < b`. Where the CMP's FIRST operand is a register that is the port's RIGHT operand
+/// (or its SECOND operand a register that is the port's LEFT one), the source wrote the mirrored
+/// `b > a`. Only a register the disassembly names decides, matched on its containing 32-bit
+/// register (the port may hold the value as `AL` where the CMP names `EAX`); a memory operand's
+/// text is not matched, and a site with no decisive register stays as the port prints it.
+pub fn cmp_orders_from_evidence(
+    cands: &[(u64, Option<(u64, u32)>, Option<(u64, u32)>)],
+    insns: &[NormInsn],
+) -> std::collections::HashSet<u64> {
+    let mut out = std::collections::HashSet::new();
+    let same = |r: Option<(u64, u32)>, c: Option<(u64, u32)>| -> bool {
+        match (r, c) {
+            (Some((ro, _)), Some((co, _))) => ro & !3 == co & !3,
+            _ => false,
+        }
+    };
+    for &(pc, left, right) in cands {
+        let Some(i) = insns.iter().position(|x| x.addr == pc) else { continue };
+        let Some(cmp) = (i.saturating_sub(3)..=i).rev().find_map(|j| insns[j].text.strip_prefix("CMP ")) else {
+            continue;
+        };
+        let Some((first, second)) = cmp.split_once(',') else { continue };
+        let (first, second) = (x86_reg_by_name(first.trim()), x86_reg_by_name(second.trim()));
+        // whichever CMP operand names one of the port's operands decides: the first operand
+        // naming the port's LEFT (or the second its RIGHT) is the port's order; the first naming
+        // the RIGHT (or the second the LEFT) is the mirrored one. A narrowed compare may hold
+        // one side in a temporary the disassembly cannot name — the other side still decides.
+        let names = |r: Option<(u64, u32)>, c: Option<(u64, u32)>, other: Option<(u64, u32)>| same(r, c) && !same(r, other);
+        let mirrored = if names(first, left, right) || names(second, right, left) {
+            false
+        } else {
+            names(first, right, left) || names(second, left, right)
+        };
+        if mirrored {
+            out.insert(pc);
+        }
+    }
+    out
+}
+
+/// The x86 general register a disassembly operand names, as `(offset, size)` in the register
+/// space (the SLEIGH x86 layout: EAX ECX EDX EBX ESP EBP ESI EDI at 0, 4, .., 28; a high byte one
+/// past its low byte); `None` for anything that is not a bare general register.
+fn x86_reg_by_name(name: &str) -> Option<(u64, u32)> {
+    let n = name.to_ascii_uppercase();
+    let base = |s: &str| -> Option<u64> {
+        Some(match s {
+            "A" => 0,
+            "C" => 4,
+            "D" => 8,
+            "B" => 12,
+            _ => return None,
+        })
+    };
+    Some(match n.as_str() {
+        "EAX" | "ECX" | "EDX" | "EBX" => (base(&n[1..2])?, 4),
+        "ESP" => (16, 4),
+        "EBP" => (20, 4),
+        "ESI" => (24, 4),
+        "EDI" => (28, 4),
+        "AX" | "CX" | "DX" | "BX" => (base(&n[..1])?, 2),
+        "SP" => (16, 2),
+        "BP" => (20, 2),
+        "SI" => (24, 2),
+        "DI" => (28, 2),
+        "AL" | "CL" | "DL" | "BL" => (base(&n[..1])?, 1),
+        "AH" | "CH" | "DH" | "BH" => (base(&n[..1])? + 1, 1),
+        _ => return None,
+    })
+}
+
 /// Decide the `unsigned-cmp` sites from the original's own compare immediate
 /// ([`crate::decompile::printc::EmitReport::allones_cmp_candidates`]): at the site, an
 /// original `CMP`/`TEST` whose FIRST operand is a 32-bit register and whose immediate
@@ -336,6 +437,9 @@ pub struct NarrowReturn {
     pub narrow: bool,
     /// That narrow declaration is SIGNED (witnessed by a sign-extended constant return).
     pub signed: bool,
+    /// The witnessed width in bytes: the widest A-family sub-register the return sites write
+    /// (`AL`/`AH` = 1, `AX` = 2); 0 when not narrow.
+    pub width: u32,
 }
 
 /// Decide the `return-width` axis PER FUNCTION from the original's bytes. The candidates are
@@ -376,6 +480,14 @@ pub fn narrow_return_from_evidence(candidates: &[(u64, u32, u32)], insns: &[Norm
             }
         }
     };
+    // the width a narrow A-family write carries: `AL`/`AH` one byte, `AX` two
+    let narrow_width = |t: &str| -> u32 {
+        match t.split_whitespace().nth(1).and_then(|r| r.split(',').next()) {
+            Some("AX") => 2,
+            _ => 1,
+        }
+    };
+    let mut width = 0u32;
     // ANCHORED-ONLY (the sign-extended-constant arm below): a genuine narrow write must be seen at
     // some return site before a sext-looking constant at another site is read as narrowness.
     let mut anchored = false;
@@ -386,6 +498,13 @@ pub fn narrow_return_from_evidence(candidates: &[(u64, u32, u32)], insns: &[Norm
             return wide;
         };
         if writes_a(&insns[last].text) != Some(true) {
+            // A return site whose value is a CALLEE's (`CALL f ; RET`, the passthrough) says
+            // nothing about the width: the callee's `AL` is this function's `AL` and its `EAX`
+            // this function's `EAX`. Neutral — it neither anchors nor vetoes (WAR2 FUN_00014114:
+            // `MOV AL,8` / `MOV AL,9` at two sites and a passthrough at the third).
+            if insns[last].text.starts_with("CALL") {
+                continue;
+            }
             // Full-register write. The widened declaration is right for all but ONE idiom: a
             // SIGN-EXTENDED NARROW CONSTANT, which is how a signed narrow return carries a
             // constant. It never anchors — it can only decline to veto.
@@ -414,6 +533,7 @@ pub fn narrow_return_from_evidence(candidates: &[(u64, u32, u32)], insns: &[Norm
             return wide;
         }
         anchored = true; // a real narrow write, surviving the widening carve-out: this site anchors
+        width = width.max(narrow_width(&insns[last].text));
     }
     if !anchored {
         return wide;
@@ -421,7 +541,7 @@ pub fn narrow_return_from_evidence(candidates: &[(u64, u32, u32)], insns: &[Norm
     // SIGNEDNESS comes only from the sext-constant path. A function whose every return site writes
     // narrow keeps exactly today's rendering (`signed: false`), so this carries no change into any
     // firing that already existed.
-    NarrowReturn { narrow: true, signed: sext_seen }
+    NarrowReturn { narrow: true, signed: sext_seen, width }
 }
 
 /// Whether a full-register A-family write is Watcom's **sign-extended narrow constant** idiom:
@@ -650,6 +770,73 @@ pub fn store_orders_from_evidence(
                 .iter()
                 .enumerate()
                 .filter(|(_, x)| x.text.starts_with("MOV ") && x.text.contains(&dest))
+                .map(|(i, _)| i)
+                .collect();
+            if hits.len() != 1 {
+                ok = false;
+                break;
+            }
+            order.push((hits[0], op));
+        }
+        if !ok {
+            continue;
+        }
+        order.sort_by_key(|&(i, _)| i);
+        let ops: Vec<_> = order.iter().map(|&(_, op)| op).collect();
+        let ours: Vec<_> = run.iter().map(|r| r.0).collect();
+        if ops != ours {
+            out.insert(ours[0], ops);
+        }
+    }
+    out
+}
+
+/// The STACK twin of [`store_orders_from_evidence`]
+/// ([`crate::decompile::printc::EmitReport::stack_store_runs`]): runs of consecutive pure stores
+/// into frame slots, ordered by the original's own `MOV .. ptr [EBP + off],..` instructions. A
+/// stack-space offset `s` (relative to the entry stack pointer) is the displacement `s + 4k` off
+/// EBP, `k` the PUSHes up to and including the frame's `PUSH EBP` — an EBP-less function decides
+/// nothing. Only a complete, unambiguous readout acts: every slot stored exactly once, and the
+/// order differing from ours.
+pub fn stack_store_orders_from_evidence(
+    runs: &[Vec<(crate::decompile::op::OpId, i64, u32)>],
+    insns: &[NormInsn],
+) -> std::collections::HashMap<crate::decompile::op::OpId, Vec<crate::decompile::op::OpId>> {
+    let mut out = std::collections::HashMap::new();
+    if runs.is_empty() {
+        return out;
+    }
+    // the frame's EBP bias: PUSHes before and including `PUSH EBP`, up to `MOV EBP,ESP`
+    let mut pushes = 0i64;
+    let mut framed = false;
+    for x in insns {
+        if x.text.starts_with("PUSH E") {
+            pushes += 1;
+        } else if x.text == "MOV EBP,ESP" {
+            framed = true;
+            break;
+        } else {
+            break;
+        }
+    }
+    if !framed {
+        return out;
+    }
+    for run in runs {
+        let mut order: Vec<(usize, crate::decompile::op::OpId)> = Vec::new();
+        let mut ok = true;
+        for &(op, off, _sz) in run {
+            let disp = off + 4 * pushes;
+            // the disassembly spells a byte displacement `-0x8` and a dword one `0xffffff38`
+            let dests = if disp < 0 {
+                vec![format!("[EBP + -0x{:x}],", -disp), format!("[EBP + 0x{:x}],", disp as u32)]
+            } else {
+                vec![format!("[EBP + 0x{disp:x}],"), format!("[EBP],")]
+            };
+            let hits: Vec<usize> = insns
+                .iter()
+                .enumerate()
+                .filter(|(_, x)| x.text.starts_with("MOV ") && dests.iter().any(|d| x.text.contains(d.as_str())))
                 .map(|(i, _)| i)
                 .collect();
             if hits.len() != 1 {
@@ -1124,6 +1311,51 @@ mod tests {
             .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
             .collect();
         normalize("x86:LE:32:default", &bytes, 0x1000, &NoReloc).expect("language tables")
+    }
+
+    /// `cmp-order`: the original `CMP EDX,EAX ; SETGE AL` names the port's RIGHT operand (EDX)
+    /// first — the source wrote `edx >= eax`; the same bytes with the port's operands the other
+    /// way round are the source's order already; no register on either side decides nothing.
+    #[test]
+    fn cmp_order_witness_reads_the_cmp_operand_order() {
+        let insns = lift("39c20f9dc0"); // CMP EDX,EAX ; SETGE AL
+        let (eax, edx) = (Some((0u64, 4u32)), Some((8u64, 4u32)));
+        assert!(cmp_orders_from_evidence(&[(0x1002, eax, edx)], &insns).contains(&0x1002), "EDX first, EDX the port's right operand: mirror");
+        assert!(cmp_orders_from_evidence(&[(0x1002, edx, eax)], &insns).is_empty(), "the port already prints the CMP's order");
+        assert!(cmp_orders_from_evidence(&[(0x1002, None, None)], &insns).is_empty(), "no register to match, no decision");
+        // the port holds the value in a sub-register (AL) where the CMP names EAX: the container matches
+        assert!(cmp_orders_from_evidence(&[(0x1002, Some((0, 1)), edx)], &insns).contains(&0x1002));
+    }
+
+    /// The narrow zero-extension keeps its cast where the original zeroes only the high byte
+    /// (`XOR AH,AH`, up to four instructions above the consumer the IR attributes the extension
+    /// to) and prints bare where it zeroes the whole register.
+    #[test]
+    fn narrow_zext_witness_reads_the_high_byte_zero() {
+        // XOR AH,AH ; MOV AL,[EDX+0x99a42] ; XOR ECX,ECX ; ADD EAX,EAX
+        let idiom = lift("30e48a82429a090031c901c0");
+        let add = 0x1000 + 2 + 6 + 2;
+        assert!(narrow_zexts_from_evidence(&[(add, 1, 2)], &idiom).contains(&add), "XOR AH,AH three above the ADD");
+        // XOR EAX,EAX ; MOV AL,[EDX+0x99a42] ; XOR ECX,ECX ; ADD EAX,EAX
+        let wide = lift("31c08a82429a090031c901c0");
+        assert!(narrow_zexts_from_evidence(&[(add, 1, 2)], &wide).is_empty(), "the full-register zero is the compiler's ordinary widening");
+    }
+
+    /// The stack twin of the store-order witness: the original stores `[EBP-8]` (the parameter)
+    /// first, then `[EBP-6]`, then `[EBP-0xc]`; the port's run has the parameter LAST. Slots are
+    /// stack-space offsets — EBP is the entry ESP minus 4 after the frame's one PUSH — and a
+    /// function without a frame decides nothing.
+    #[test]
+    fn stack_store_order_witness_reads_the_frame_stores() {
+        use crate::decompile::op::OpId;
+        // PUSH EBP ; MOV EBP,ESP ; SUB ESP,0xc ; MOV [EBP-8],AL ; MOV byte [EBP-6],0xe ; MOV byte [EBP-0xc],9
+        let insns = lift("5589e583ec0c8845f8c645fa0ec645f409");
+        let (c6, c0, al) = (OpId(1), OpId(2), OpId(3));
+        let run = vec![(c6, -6i64 - 4, 1u32), (c0, -0xc - 4, 1), (al, -8 - 4, 1)];
+        let orders = stack_store_orders_from_evidence(&[run.clone()], &insns);
+        assert_eq!(orders.get(&c6), Some(&vec![al, c6, c0]), "the original's order, keyed by the run's first op: {orders:?}");
+        let frameless = lift("8845f8c645fa0ec645f409");
+        assert!(stack_store_orders_from_evidence(&[run], &frameless).is_empty(), "no frame, no readout");
     }
 
     /// BOTH encodings of `mov ebp,esp` are a frame setup. The script this replaces matched hex, and

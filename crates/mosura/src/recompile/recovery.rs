@@ -46,6 +46,14 @@ pub fn recover(
             &report.compare_sites,
             insns,
         ),
+        cmp_order_sites: crate::recompile::buildconfig::cmp_orders_from_evidence(
+            &report.cmp_order_candidates,
+            insns,
+        ),
+        narrow_zext_sites: crate::recompile::buildconfig::narrow_zexts_from_evidence(
+            &report.narrow_zext_candidates,
+            insns,
+        ),
         return_split_sites: crate::recompile::buildconfig::split_returns_from_evidence(
             &report.return_split_candidates,
             insns,
@@ -56,6 +64,7 @@ pub fn recover(
         ),
         narrow_return: narrow_ret.narrow,
         narrow_return_signed: narrow_ret.signed,
+        narrow_return_width: narrow_ret.width,
         widen_local_reps: widen.0,
         tier2_sites: widen.1,
         snapshot_sites: crate::recompile::buildconfig::entry_snapshots_from_evidence(
@@ -66,10 +75,11 @@ pub fn recover(
             &report.testmem_candidates,
             insns,
         ),
-        store_orders: crate::recompile::buildconfig::store_orders_from_evidence(
-            &report.store_runs,
-            insns,
-        ),
+        store_orders: {
+            let mut m = crate::recompile::buildconfig::store_orders_from_evidence(&report.store_runs, insns);
+            m.extend(crate::recompile::buildconfig::stack_store_orders_from_evidence(&report.stack_store_runs, insns));
+            m
+        },
         call_arg_orders,
         arm_swap_sites: crate::recompile::buildconfig::arm_swaps_from_evidence(
             &report.arm_swap_candidates,

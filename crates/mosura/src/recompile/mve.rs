@@ -290,6 +290,84 @@ pub struct Mve {
     pub writes: &'static [(&'static str, &'static str, usize)],
 }
 
+/// The 16-bit message dispatcher (WAR2's 0x4921c family, 89 functions): a `switch` on a short
+/// field with ONE case, nested once. Watcom compiles the selector as a 16-bit register compare
+/// (`MOV AX,[EDX] ; CMP AX,9`) where an `if` on the same field compares at int width — the byte
+/// witness the narrow one-case switch of the sparse-switch arm reads.
+const NARROW_SWITCH_SRC: &str = r#"
+extern void act(int a);
+extern int dflt(int a, short *p);
+int mve(int a, short *p)
+{
+    switch (*p) {
+    case 9:
+        switch (p[1]) {
+        case 0:
+            act(a);
+            break;
+        }
+        break;
+    }
+    return dflt(a, p);
+}
+"#;
+
+/// An order comparison written `table >= field` (WAR2 FUN_0002530c): Ghidra canonicalizes it to
+/// `field <= table`, Watcom compiles the `CMP` in source order — the `cmp-order` arm mirrors the
+/// print back from the CMP's operand order.
+const CMP_ORDER_SRC: &str = r#"
+extern unsigned short tbl[];
+extern unsigned char idx;
+int mve(unsigned char *p)
+{
+    return tbl[idx] >= p[0x13];
+}
+"#;
+
+/// A byte-returning function whose IR value is a full-width constant (WAR2 FUN_0002a16c): every
+/// return site writes `AL` (`XOR AL,AL` / `MOV AL,1`), which is what the return declaration must
+/// carry for this compiler to write the byte — the `return-width` witness's width.
+const BYTE_RETURN_SRC: &str = r#"
+extern int limit;
+extern int total;
+unsigned char mve(int a)
+{
+    if (limit < a)
+        return 5;
+    limit -= a;
+    total += a;
+    return 9;
+}
+"#;
+
+/// Three stores into a stack buffer passed to a call (WAR2 FUN_00012e40): the parameter's store
+/// FIRST in the source. The pipeline snips it into a COPY placed before the call (Ghidra's
+/// `Merge::snipIndirect`), so the print orders it last; the stack twin of the store-order
+/// witness restores the original's order.
+const STACK_ORDER_SRC: &str = r#"
+extern void use(unsigned char *b, int x);
+void mve(unsigned char c, int x)
+{
+    unsigned char buf[16];
+    buf[8] = c;
+    buf[6] = 0xe;
+    buf[0] = 9;
+    use(buf, x);
+}
+"#;
+
+/// A 16-bit product of a zero-extended byte stored to a short (WAR2 FUN_00019344): the source's
+/// `(unsigned short)` pins the width and Watcom zero-extends with `XOR AH,AH` — the witness that
+/// keeps the `(uint2)` cast under `ext-cast=promotion`.
+const NARROW_ZEXT_SRC: &str = r#"
+extern unsigned char t[];
+extern unsigned short g;
+void mve(unsigned char i)
+{
+    g = (unsigned short)t[i] * 2;
+}
+"#;
+
 /// Every MVE, in the generator's order.
 pub const MVES: &[Mve] = &[
     Mve { key: "CSAVE", sym: "mve_", source: CALLEE_SAVE_SRC, fixture: "x86_watcom_callee_save.xml", base: 0x100000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(1));", "LOG_RET(mve(3));", "LOG_RET(mve(16));"], writes: &[("read16", "dst", 16)] },
@@ -306,6 +384,11 @@ pub const MVES: &[Mve] = &[
     Mve { key: "MEMCPY", sym: "mve_", source: MEMCPY_STACK_SRC, fixture: "x86_32c00.xml", base: 0x1b0000, inputs: &["mve((int *)buf);"], writes: &[] },
     Mve { key: "FRAMEST", sym: "mve_", source: FRAME_STORE_SRC, fixture: "x86_2dcd4_frame.xml", base: 0x1c0000, inputs: &["mve(0, 0, 0);", "mve(7, 1, 3);", "mve(0xffff, -1, 255);"], writes: &[] },
     Mve { key: "FRAMEIX", sym: "mve_", source: FRAME_INDEX_SRC, fixture: "x86_4e06e_frame_index.xml", base: 0x1d0000, inputs: &["mve(0);", "mve(1);", "mve(5);", "mve(11);"], writes: &[("keep", "s", 44)] },
+    Mve { key: "NSWITCH", sym: "mve_", source: NARROW_SWITCH_SRC, fixture: "x86_watcom_narrow_switch.xml", base: 0x1e0000, inputs: &["{ short m[2]; m[0] = 9; m[1] = 0; LOG_RET(mve(1, m)); m[1] = 2; LOG_RET(mve(2, m)); m[0] = 3; LOG_RET(mve(3, m)); }"], writes: &[] },
+    Mve { key: "CMPORD", sym: "mve_", source: CMP_ORDER_SRC, fixture: "x86_watcom_cmp_order.xml", base: 0x1f0000, inputs: &["{ tbl[0] = 5; idx = 0; buf[0x13] = 3; LOG_RET(mve(buf)); buf[0x13] = 9; LOG_RET(mve(buf)); buf[0x13] = 5; LOG_RET(mve(buf)); }"], writes: &[] },
+    Mve { key: "BYTERET", sym: "mve_", source: BYTE_RETURN_SRC, fixture: "x86_watcom_byte_return.xml", base: 0x200000, inputs: &["{ limit = 10; total = 0; LOG_RET(mve(3)); LOG_RET(mve(20)); LOG_RET(mve(7)); LOG_RET(mve(1)); }"], writes: &[] },
+    Mve { key: "STACKORD", sym: "mve_", source: STACK_ORDER_SRC, fixture: "x86_watcom_stack_order.xml", base: 0x210000, inputs: &["mve(1, 2);", "mve(0xff, -1);"], writes: &[] },
+    Mve { key: "NZEXT", sym: "mve_", source: NARROW_ZEXT_SRC, fixture: "x86_watcom_narrow_zext.xml", base: 0x220000, inputs: &["{ t[0] = 3; t[1] = 200; mve(0); mve(1); }"], writes: &[] },
 ];
 
 /// The names an MVE declares `extern`, by kind: a declarator followed by `(` is a function, anything

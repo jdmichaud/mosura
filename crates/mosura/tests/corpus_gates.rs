@@ -199,7 +199,9 @@ fn baseline_parses_rules_and_rejects_the_wrong_ones() {
 fn the_committed_baseline_loads_with_the_expected_sets() {
     let b = Baseline::load(&mosura::paths::corpus_gates_file()).unwrap();
     assert_eq!(b.string_ops_bar().len(), 4);
-    assert_eq!(b.chains().len(), 12);
+    // 12 at w5c; 0x14b44 and 0x3d470 left the chain set when the narrow one-case switch printed
+    // in them and recompiled closer (round e2: 0.455 -> 0.545, 0.438 -> 0.500)
+    assert_eq!(b.chains().len(), 10);
     assert_eq!(b.switch_labels().len(), 19);
     assert_eq!(b.guards("guard_frame").len(), 16);
     assert_eq!(b.guards("guard_volatile").len(), 14);

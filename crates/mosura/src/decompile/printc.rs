@@ -125,6 +125,23 @@ pub struct EmitReport {
     /// than the axis (per function) can act on; whether that finer grain is needed is the
     /// measurement in byte-exact-status.md.
     pub compare_sites: Vec<(u64, u64, u64)>,
+    /// Every ORDER comparison (`<` / `<=`) of two NON-constant operands, as `(instruction
+    /// address, left operand's register, right operand's register)` — a register is `(offset,
+    /// size)` in the register space, `None` for a memory, temporary or stack operand. Ghidra
+    /// canonicalizes `a > b` to `b < a` (and `>=` to `<=`), so the IR has forgotten which operand
+    /// the source wrote first; the original's own `CMP` at that address has not — this compiler
+    /// emits `CMP a,b` for `a < b` and `CMP b,a` for `b > a`. A target rule reads the CMP's operand
+    /// order and decides the `cmp-order` sites (`buildconfig::cmp_orders_from_evidence`).
+    pub cmp_order_candidates: Vec<(u64, Option<(u64, u32)>, Option<(u64, u32)>)>,
+    /// Every zero-extension NARROWER than int (`(uint2)byte`, the IR's 16-bit arithmetic) the
+    /// `ext-cast=promotion` arm would print bare, as `(instruction address, in size, out size)`.
+    /// The IR's 2-byte ZEXT does not say how the compiler widened: this one zero-extends into
+    /// the full register (`XOR EDX,EDX ; MOV DL,..`, and computes at 32 bits) unless the source
+    /// pinned the 16-bit width, when it zeroes only the high byte (`XOR AH,AH ; MOV AL,..`,
+    /// WAR2 FUN_00019344's `(ushort)byte * 2`). A target rule reads which idiom the original used
+    /// at the site and keeps the cast only for the 16-bit one (`narrow_zexts_from_evidence`);
+    /// printing it everywhere measured −3 EXACT / +1 (round e1, 2026-09-03).
+    pub narrow_zext_candidates: Vec<(u64, u32, u32)>,
     /// Every tail pair the `return-split` axis could rewrite, keyed by the guarding `if`'s
     /// CBRANCH instruction address. The target rule reads whether the ORIGINAL materialized
     /// the tail boolean (a `SETcc` in the region after the branch) or stayed branch-only —
@@ -141,6 +158,15 @@ pub struct EmitReport {
     /// named local), and every address is a distinct constant global, so any order computes
     /// the same state.
     pub store_runs: Vec<Vec<(OpId, u64, u32)>>,
+    /// The same runs for STACK stores, as `(op, stack-space offset, size)` — a frame slot or an
+    /// element of the frame aggregate written from a constant, a parameter or a named local. The
+    /// pipeline's own placement of such a store is not the source's: a slot the callee reads
+    /// through an INDIRECT is snipped into a COPY placed right before the call (Ghidra's
+    /// `Merge::snipIndirect`, ported), so the parameter's store prints after the constant stores
+    /// the original wrote it before (WAR2 FUN_00012e40's `[8] = param_1` after `[6] = 0xe; [0] =
+    /// 9`). A target rule reads the original's own `MOV [EBP + off],..` sequence
+    /// (`buildconfig::stack_store_orders_from_evidence`) and returns the emission order.
+    pub stack_store_runs: Vec<Vec<(OpId, i64, u32)>>,
     /// Every masked narrow load — a LOAD of less than int width whose (possibly
     /// zext-linked) single value use is an `INT_AND` with a constant that fits the loaded
     /// width, feeding an equality against zero — as `(load output, instruction address)`.
@@ -214,6 +240,16 @@ pub struct EmitReport {
 pub struct RecoveredChoices {
     /// Comparison sites to render complemented (`compare-form`).
     pub complement_sites: std::collections::HashSet<u64>,
+    /// Order-comparison sites to render MIRRORED — operands swapped, operator reflected (`b > a`
+    /// for the port's `a < b`): the original's `CMP` names the port's right operand first
+    /// (`cmp_order_candidates` evidence, `buildconfig::cmp_orders_from_evidence`).
+    pub cmp_order_sites: std::collections::HashSet<u64>,
+    /// The witnessed narrow return WIDTH in bytes (`AL` = 1, `AX` = 2; 0 = not witnessed, the
+    /// value's own width applies) — meaningful only with `narrow_return`.
+    pub narrow_return_width: u32,
+    /// Sub-int zero-extension sites (`narrow_zext_candidates`) whose original widens with the
+    /// 16-bit idiom (`XOR xH,xH`): the `ext-cast=promotion` arm keeps the `(uint2)` cast there.
+    pub narrow_zext_sites: std::collections::HashSet<u64>,
     /// Sites from [`EmitReport::allones_cmp_candidates`] whose ORIGINAL compare immediate is
     /// the zero-extended (unsigned) spelling — render `(uintN)x == 0xffN` instead of the
     /// signed `x == -1` (see the candidate's doc; decided by
@@ -424,6 +460,10 @@ pub(crate) struct PrintC<'a> {
     tier2_widen: std::collections::HashMap<VarnodeId, Tier2Widen>,
     pub(crate) var_counter: u32,
     ret_val: Option<VarnodeId>,
+    /// The returned HighVariable and the width a witnessed narrow return declares it at
+    /// (`return-width`): its every member types at that width — the local the return sites
+    /// assign is the byte the function returns.
+    narrow_ret_high: Option<(u32, u32)>,
     /// WhileDo block index → (initializer value, iterator op, loop variable) for `for`-loops.
     for_loops: HashMap<usize, (Option<VarnodeId>, OpId, VarnodeId)>,
     /// Ops emitted in a `for` header (initializer/iterator) — suppressed in their block.
@@ -456,7 +496,7 @@ pub(crate) struct PrintC<'a> {
     /// HighVariable representative → the `ram` address of its global member, so a value merged into
     /// a global's HighVariable (e.g. `iRam.. = COPY(param_1 + 1)` after `merge_copy`) is named and
     /// materialized by that global's address `iRam<addr>` — the ram analogue of `high_stack_off`.
-    high_ram_off: HashMap<u32, u64>,
+    pub(crate) high_ram_off: HashMap<u32, u64>,
     /// The stack space's address size in bits minus one — the sign bit a raw `stack` offset is
     /// extended from to get a FRAME offset (Ghidra `sign_extend(start, addr.getAddrSize()*8-1)`,
     /// varmap.cc:557). On a 32-bit target a frame slot's raw offset is the wrapped `0xffffffdc`, not
@@ -504,6 +544,14 @@ pub(crate) struct PrintC<'a> {
 
 impl PrintC<'_> {
     pub(crate) fn type_of(&self, v: VarnodeId) -> Datatype {
+        // the returned variable of a witnessed narrow return, at the declared width (see
+        // `narrow_ret_high` where it is set)
+        if let Some((h, w)) = self.narrow_ret_high {
+            if self.high_of.get(v.0 as usize) == Some(&h) {
+                let base = super::merge::high_type_read_facing(self.f, v);
+                return fit_to_storage(&base, w);
+            }
+        }
         // A varnode's type is its inferred HighVariable type — the same value Ghidra's prototype
         // recovery reads (`FuncProto::updateInputTypes`/`updateOutputTypes`, fspec.cc:4076/4159:
         // `vn->getHigh()->getType()`) and the C printer declares for the symbol. Ghidra applies no
@@ -650,8 +698,75 @@ impl PrintC<'_> {
 
     /// MARK `narrow_return` (witness `buildconfig::narrow_return_from_evidence`): the function's
     /// return type at the returned value's own width instead of the storage-widened one.
+    /// Does `v` render as an expression C's own promotion widens FAITHFULLY — a declared variable
+    /// or parameter, a load, a cast, a boolean, a mask or right shift (nothing above the narrow
+    /// width can appear), a call result (`int` under its `extern int`, and the original does not
+    /// mask it: round e4 measured the mask as −0.23 on FUN_0005dd14)? The exceptions are the
+    /// OVERFLOWING arithmetic ops — add, subtract, multiply, shift left, negate, divide — whose
+    /// narrow IR width is Ghidra's subvariable narrowing of a 32-bit computation the original
+    /// truncates (`(cond) + 0xbf8` masked with `AND EAX,0xffff`, WAR2 FUN_0004a194): printed
+    /// bare they compute at int width and skip the truncation, so those keep the cast.
+    fn narrow_typed_operand(&self, v: VarnodeId) -> bool {
+        if self.f.vn(v).is_constant() {
+            return false;
+        }
+        if self.is_explicit(v) {
+            return true;
+        }
+        let Some(d) = self.f.vn(v).def else { return true };
+        match self.f.op(d).code() {
+            OpCode::IntAdd
+            | OpCode::IntSub
+            | OpCode::IntMult
+            | OpCode::IntLeft
+            | OpCode::IntNegate
+            | OpCode::Int2comp
+            | OpCode::IntDiv
+            | OpCode::IntSdiv
+            | OpCode::IntRem
+            | OpCode::IntSrem => false,
+            OpCode::Copy => self.f.op(d).input(0).is_none_or(|x| self.narrow_typed_operand(x)),
+            _ => true,
+        }
+    }
+
     fn apply_narrow_return(&self, f: &Funcdata, vn: &super::varnode::Varnode, choices: &EmitChoices) -> u32 {
-        if self.recovered.narrow_return { vn.size } else { return_width(f, vn, choices) }
+        if self.recovered.narrow_return {
+            // the value's own width where the IR already narrowed it (Ghidra's subvariable
+            // analysis, the reference); the witnessed width — the register the original's return
+            // sites write: `AL` = 1, `AX` = 2 — only where the IR still carries the full register
+            // (measured: overriding an IR `uint2` with the bytes' `AL` cost FUN_00031880, round e3)
+            if vn.size < f.size_of_int() || self.recovered.narrow_return_width == 0 {
+                vn.size
+            } else {
+                self.recovered.narrow_return_width.min(vn.size)
+            }
+        } else {
+            return_width(f, vn, choices)
+        }
+    }
+
+    /// The value a NARROWED return statement prints: a PIECE whose low bytes are exactly the
+    /// declared width returns its low part alone — the high bytes are the register's leftovers
+    /// (`return CONCAT31((int3)(uVar1 >> 8), byte)` under a `uint1` declaration recompiled the
+    /// concatenation, WAR2 FUN_000130ec 0.735 -> 0.326 in round e3); anything else is unchanged.
+    fn narrow_return_low(&self, v: VarnodeId) -> VarnodeId {
+        if !self.recovered.narrow_return {
+            return v;
+        }
+        let w = self.recovered.narrow_return_width;
+        let vn = self.f.vn(v);
+        if w == 0 || w >= vn.size || vn.size >= self.f.size_of_int() && w >= self.f.size_of_int() {
+            return v;
+        }
+        let Some(d) = vn.def else { return v };
+        if self.f.op(d).code() != OpCode::Piece {
+            return v;
+        }
+        match self.f.op(d).input(1) {
+            Some(lo) if self.f.vn(lo).size == w => lo,
+            _ => v,
+        }
     }
 
     /// MARK `tier2_sites` (witness: the survey's tier-2 recovery over `tier2_candidates`): the
@@ -2010,9 +2125,35 @@ impl<'a> PrintC<'a> {
                 if self.f.vn(out).size > self.f.size_of_int() && !self.wide_int_declarable() {
                     return self.render_var(in0);
                 }
-                // EmitChoices `ext-cast=promotion`: the bare operand, C's promotion widens it.
+                // EmitChoices `ext-cast=promotion`: the bare operand, C's promotion widens it —
+                // but only where C's promotion IS this extension, i.e. at int width. A narrower
+                // extension (`(uint2)byte`, the IR's 16-bit arithmetic) is not a promotion: printed
+                // bare, the C computes at int width and the compiler widens to 32 bits (`XOR
+                // EAX,EAX` for WAR2's `XOR AH,AH` at FUN_00019344/000207b8, whose original
+                // multiplies at 16 bits) — the value can differ too once the 16-bit result is
+                // read wider. Below int width the faithful cast stands (Ghidra prints it as well).
                 if self.ext_cast_promotion {
-                    return self.render_var(in0);
+                    let (insize, outsize) = (self.f.vn(in0).size, self.f.vn(out).size);
+                    if outsize >= self.f.size_of_int() {
+                        // C's promotion widens a NARROW-TYPED operand — a variable, a load, a
+                        // parameter, a truncation cast. An arithmetic operand is already an
+                        // `int` expression in C (its narrow IR width is Ghidra's subvariable
+                        // narrowing of a 32-bit computation), so the bare form skips the
+                        // truncation the IR performs: `(cond) + 0xbf8` passed where the
+                        // original masks with `AND EAX,0xffff` (WAR2 FUN_0004a194) — and a call
+                        // result is `int` under its `extern int` declaration. Both keep the cast.
+                        if self.narrow_typed_operand(in0) {
+                            return self.render_var(in0);
+                        }
+                        return (format!("({}){}", Datatype::Uint(insize).name(), self.operand(in0, 14, false)), 14);
+                    }
+                    // a sub-int extension: bare unless the original's own widening idiom at the
+                    // site is the 16-bit one (`narrow_zext_sites`, witnessed) — the cast below
+                    let pc = o.seqnum.pc.offset;
+                    self.report.narrow_zext_candidates.push((pc, insize, outsize));
+                    if !self.recovered.narrow_zext_sites.contains(&pc) {
+                        return self.render_var(in0);
+                    }
                 }
                 let (outty, inty) = (self.type_of(out), self.type_of(in0));
                 if is_zext_cast(&outty, &inty) {
@@ -2085,7 +2226,22 @@ impl<'a> PrintC<'a> {
                 // (the same target arm as IntZext: the pre-port `(int8)x` form, which the
                 // Subpiece arm's narrowed divide consumes)
                 if (n > self.f.size_of_int() && !self.wide_int_declarable()) || self.ext_cast_promotion {
-                    return (format!("(int{n}){}", self.cast_operand(op, 0, 14, false)), 14);
+                    // The operand's C type must be SIGNED at its own width for `(intN)x` to
+                    // sign-extend: `(int4)uVar` / `(int4)xStack_18._2_2_` (the accessor the emitter
+                    // makes compilable as `*(uint2 *)..`) ZERO-extend in C where the IR — and the
+                    // original's `MOVSX` — sign-extend (WAR2 FUN_00024a3c: the pieces of a split
+                    // point passed as arguments; 21 sites in 18 TUs, wrong code). An unsigned,
+                    // unknown, bool or `char` operand (Watcom's plain `char` is unsigned) is first
+                    // cast to the signed type of its own width.
+                    let insize = self.f.vn(in0).size;
+                    // (and, as for the zero-extension, an arithmetic or call operand is an `int`
+                    // expression in C whatever the IR's width — the inner cast re-narrows it)
+                    let inner = if matches!(inty, Datatype::Int(sz) if sz == insize) && self.narrow_typed_operand(in0) {
+                        String::new()
+                    } else {
+                        format!("(int{insize})")
+                    };
+                    return (format!("(int{n}){inner}{}", self.cast_operand(op, 0, 14, false)), 14);
                 }
                 if is_sext_cast(&outty, &inty) {
                     if self.extension_hidden(op) {
@@ -3598,6 +3754,7 @@ impl<'a> PrintC<'a> {
                 OpCode::Cbranch | OpCode::Branch | OpCode::Branchind | OpCode::Multiequal | OpCode::Indirect => None,
                 OpCode::Return => match o.input(1) {
                     Some(v) => {
+                        let v = self.narrow_return_low(v);
                         let e = self.render_var(v).0; // wired return value (inlined when single-use)
                         Some(format!("return {e}"))
                     }
@@ -4303,6 +4460,21 @@ fn return_width(f: &Funcdata, vn: &super::varnode::Varnode, choices: &EmitChoice
     w.max(vn.size)
 }
 
+/// A recovered type at exactly `width` bytes: widened as [`widen_to_storage`] does, or NARROWED
+/// to the witnessed return width (a `uint4` IR value whose original writes only `AL` declares
+/// `uint1`); a non-scalar stays as it is.
+fn fit_to_storage(ty: &Datatype, width: u32) -> Datatype {
+    if width == 0 || ty.size() <= width {
+        return widen_to_storage(ty, width);
+    }
+    match ty {
+        Datatype::Int(_) => Datatype::Int(width),
+        Datatype::Uint(_) => Datatype::Uint(width),
+        Datatype::Unknown(_) => Datatype::Unknown(width),
+        other => other.clone(),
+    }
+}
+
 fn widen_to_storage(ty: &Datatype, width: u32) -> Datatype {
     if width == 0 || ty.size() >= width {
         return ty.clone();
@@ -4737,6 +4909,7 @@ fn print_c_inner(
         tier2_widen: std::collections::HashMap::new(),
         var_counter: 0,
         ret_val: None,
+        narrow_ret_high: None,
         for_loops: HashMap::new(),
         suppressed: HashSet::new(),
         arms: arms::State::new(choices),
@@ -4898,19 +5071,30 @@ fn print_c_inner(
         // record the candidacy for the target profile: every RETURN site, when the value is
         // narrower than what the recovery credited
         let recovered_w = f.output_storage_size.unwrap_or(vn.size);
-        if vn.size < recovered_w {
-            for id in f.op_ids() {
-                let o = f.op(id);
-                if !o.is_dead() && o.code() == OpCode::Return {
-                    p.report.return_width_candidates.push((
-                        o.seqnum.pc.offset,
-                        vn.size,
-                        recovered_w,
-                    ));
-                }
+        // EVERY return site is a candidate (since round e3), not only those the IR already
+        // narrowed: a function whose IR returns a full-width constant or expression still
+        // returns a BYTE when the original's every return site writes only `AL` (`XOR AL,AL` /
+        // `MOV AL,1` / `MOV AL,DL` — WAR2's boolean-returning family, 0x2a16c and kin), and the
+        // declared width is what makes this compiler write the byte. The witness reads the
+        // width off the bytes (`narrow_return_from_evidence`).
+        for id in f.op_ids() {
+            let o = f.op(id);
+            if !o.is_dead() && o.code() == OpCode::Return {
+                p.report.return_width_candidates.push((
+                    o.seqnum.pc.offset,
+                    vn.size,
+                    recovered_w,
+                ));
             }
         }
         let w = p.apply_narrow_return(f, vn, choices);
+        // a NARROWED return retypes the returned variable itself: `xVar = 8; .. return xVar;`
+        // under a byte declaration keeps `xVar` a byte (the original's `MOV AL,8`), where a
+        // full-width local materializes `MOV EDX,8` and truncates at the return (WAR2
+        // FUN_00014114, round e4: SAME_SHAPE -> MISMATCH). Only a scalar, only narrower.
+        if p.recovered.narrow_return && w < vn.size && !vn.is_constant() {
+            p.narrow_ret_high = Some((p.high_of[v.0 as usize], w));
+        }
         let base = p.type_of(v);
         // The sign-extended-constant witness says the narrow return is SIGNED, and the spelling is
         // what carries it into the compiler: `int2` sign-extends the constant into the full return
@@ -4926,7 +5110,7 @@ fn print_c_inner(
         {
             Datatype::Int(w).name()
         } else {
-            widen_to_storage(&base, w).name()
+            fit_to_storage(&base, w).name()
         }
     });
     // Signature parameters in convention order, each typed from its backing input Varnode.
@@ -5111,9 +5295,24 @@ fn print_c_inner(
     // consecutive statement ops that are pure stores to distinct constant globals.
     {
         let ram = f.spaces.by_name("ram");
+        let stack = f.spaces.by_name("stack");
         for bi in 0..f.num_blocks() as u32 {
             let bid = BlockId(bi);
             let mut run: Vec<(OpId, u64, u32)> = Vec::new();
+            // the stack-store run, tracked beside the global one: a store of the other kind
+            // ends a run (the two witnesses read different operand spellings)
+            let mut srun: Vec<(OpId, i64, u32)> = Vec::new();
+            let flush_stack = |srun: &mut Vec<(OpId, i64, u32)>, rep: &mut EmitReport| {
+                if srun.len() >= 2 {
+                    let mut addrs: Vec<i64> = srun.iter().map(|r| r.1).collect();
+                    addrs.sort_unstable();
+                    addrs.dedup();
+                    if addrs.len() == srun.len() {
+                        rep.stack_store_runs.push(srun.clone());
+                    }
+                }
+                srun.clear();
+            };
             let flush = |run: &mut Vec<(OpId, u64, u32)>, rep: &mut EmitReport| {
                 if run.len() >= 2 {
                     let mut addrs: Vec<u64> = run.iter().map(|r| r.1).collect();
@@ -5131,6 +5330,13 @@ fn print_c_inner(
                 // INDIRECT is dead-flagged yet prints its assignment (measured — the first
                 // scan found zero runs corpus-wide because of this)
                 if p.suppressed.contains(&op) || p.nonprinting.contains(&op) {
+                    continue;
+                }
+                // a marker prints no statement (`emit_basic` skips it), so it neither joins nor
+                // breaks a run: the INDIRECTs heritage spliced before a call sit between the
+                // constant stores and the parameter's snipped COPY (the stack MVE), and had been
+                // cutting that run in two
+                if matches!(o.code(), OpCode::Indirect | OpCode::Multiequal) {
                     continue;
                 }
                 let stmt = o.output.is_some_and(|v| p.is_explicit(v))
@@ -5202,22 +5408,54 @@ fn print_c_inner(
                     let rhs = o.input(0)?;
                     pure_expr(f, &p, rhs, 4).then_some((out, addr, vn.size))
                 })();
+                // the stack twin: a COPY into an addrtied frame slot from a pure value — or, as
+                // for the global, into the explicit UNIQUE the naming machinery renders AS the
+                // slot (`high_stack_off`: the COPY the pipeline snipped in before a call)
+                let pure_stack_store = (|| {
+                    if o.code() != OpCode::Copy || p.nonprinting.contains(&op) {
+                        return None;
+                    }
+                    let out = o.output?;
+                    let vn = f.vn(out);
+                    if !p.is_explicit(out) {
+                        return None;
+                    }
+                    let off = if Some(vn.loc.space) == stack && vn.is_addrtied() {
+                        vn.loc.offset
+                    } else {
+                        *p.high_stack_off.get(&p.high_of[out.0 as usize])?
+                    };
+                    let rhs = o.input(0)?;
+                    pure_expr(f, &p, rhs, 4).then_some((out, off as i32 as i64, vn.size))
+                })();
                 if crate::debug::on(crate::debug::Topic::Printc) {
                     let od = o.output.map(|v| {
                         let vn = f.vn(v);
                         format!("{:?} sp{} off{:#x} expl={}", v, vn.loc.space.0, vn.loc.offset, p.is_explicit(v))
                     });
                     debug!(crate::debug::Topic::Printc, 
-                        "[srun] op={:?} pc={:#x} code={:?} out={:?} pure={:?}",
-                        op, o.seqnum.pc.offset, o.code(), od, pure_store
+                        "[srun] op={:?} pc={:#x} code={:?} out={:?} pure={:?} stack={:?} nonprinting={} stackoff={:?}",
+                        op, o.seqnum.pc.offset, o.code(), od, pure_store, pure_stack_store, p.nonprinting.contains(&op),
+                        o.output.and_then(|v| p.high_stack_off.get(&p.high_of[v.0 as usize]).copied())
                     );
                 }
-                match pure_store {
-                    Some((_, addr, sz)) => run.push((op, addr, sz)),
-                    None => flush(&mut run, &mut p.report),
+                match (pure_store, pure_stack_store) {
+                    (Some((_, addr, sz)), _) => {
+                        run.push((op, addr, sz));
+                        flush_stack(&mut srun, &mut p.report);
+                    }
+                    (None, Some((_, off, sz))) => {
+                        srun.push((op, off, sz));
+                        flush(&mut run, &mut p.report);
+                    }
+                    (None, None) => {
+                        flush(&mut run, &mut p.report);
+                        flush_stack(&mut srun, &mut p.report);
+                    }
                 }
             }
             flush(&mut run, &mut p.report);
+            flush_stack(&mut srun, &mut p.report);
         }
     }
 

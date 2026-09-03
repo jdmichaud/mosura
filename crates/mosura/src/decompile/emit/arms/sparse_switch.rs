@@ -37,7 +37,8 @@ pub const ARM: Arm = Arm {
 
 fn try_emit(pr: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<Answer> {
     let Site::IfEntry { s, idx, indent } = site else { return None };
-    (pr.arms.sparse_switch.switch && try_emit_sparse_switch(pr, s, idx, indent, out)).then_some(Answer::Emitted)
+    (pr.arms.sparse_switch.switch && (try_emit_sparse_switch(pr, s, idx, indent, out) || try_emit_narrow_switch(pr, s, idx, indent, out)))
+        .then_some(Answer::Emitted)
 }
 
 /// A set of closed integer ranges — the values a path through the compare tree admits.
@@ -647,6 +648,91 @@ fn try_emit_sparse_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
     true
 }
 
+
+/// `sparse-switch=switch`, the ONE-CASE tree: `if (x == k)` — or a conjunction of such tests —
+/// where every scrutinee is a 16-bit value whose ORIGINAL compare is a 16-bit REGISTER compare
+/// (`MOV AX,[..] ; CMP AX,k` / `TEST AX,AX`: the `sparse_cmp_sites` witness at the branch with a
+/// 2-byte register and the case's constant) prints as nested one-case switches. The bytes say the
+/// source wrote a switch: this compiler compares a 16-bit `if` operand at int width (`MOVSX` /
+/// `XOR ; MOV` then `CMP EAX,k`, or `CMP word ptr [mem],k` in place — measured on WAR2
+/// FUN_0004921c under every `if` spelling), and only a `switch` selector is loaded into a 16-bit
+/// register and compared there; `switch (*param_2) { case 9: .. }` is EXACT, and 89 message
+/// dispatchers share the shape (`if ((*p == 9) && (p[1] == 0))` = two nested one-case switches).
+/// A plain `if` with no else only, every clause a witnessed equality, and a body that does not
+/// `break` out of an enclosing loop — the switch would capture the break.
+fn try_emit_narrow_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, indent: usize, out: &mut String) -> bool {
+    if !matches!(s.blocks[idx].kind, FlowKind::If) || s.blocks[idx].components.len() != 2 {
+        return false;
+    }
+    let (cond_node, body) = (s.blocks[idx].components[0], s.blocks[idx].components[1]);
+    let mut clauses: Vec<(usize, bool)> = Vec::new();
+    pr.collect_conj_clauses(s, cond_node, s.blocks[idx].negated, &mut clauses);
+    if clauses.is_empty() {
+        return false;
+    }
+    let mut cases: Vec<(VarnodeId, i64)> = Vec::new();
+    for &(node, neg) in &clauses {
+        // a clause with a cut edge of its own is not a plain test
+        let FlowKind::Basic(bid) = s.blocks[node].kind else { return false };
+        if s.gotos.contains_key(&bid) || s.node_gotos.contains_key(&node) {
+            return false;
+        }
+        let Some(cb) = pr.f.block(bid).ops.iter().rev().copied().find(|&op| !pr.f.op(op).is_dead() && pr.f.op(op).code() == OpCode::Cbranch) else { return false };
+        let Some(cond) = pr.f.op(cb).input(1) else { return false };
+        let Some((x, code, k, cneg)) = sparse_compare(pr, cond) else { return false };
+        // the clause holds iff `x == k`: an equality printed straight, or an inequality negated
+        let is_eq = match code {
+            OpCode::IntEqual => true,
+            OpCode::IntNotequal => false,
+            _ => return false,
+        };
+        if is_eq == (neg ^ cneg) {
+            return false;
+        }
+        if pr.f.vn(x).size != 2 {
+            return false;
+        }
+        let pc = pr.f.op(cb).seqnum.pc.offset;
+        let Some(&(imm, kind, (_, rsize))) = pr.recovered.sparse_cmp_sites.get(&pc) else { return false };
+        if kind != CMP_EQ || rsize != 2 || imm & 0xffff != (k as u64) & 0xffff {
+            return false;
+        }
+        // (a scrutinee compared elsewhere too — a tree the full recognizer declined, or a chain
+        // — still prints: declining measured net negative, -0.70 sim over 47 TUs in round e3,
+        // the one-case switch fragment recompiling closer than the `if` more often than not)
+        cases.push((x, k));
+    }
+    // a `break;` inside the body would bind to the switch instead of the loop it exits
+    let mut stack = vec![body];
+    while let Some(n) = stack.pop() {
+        if s.node_gotos.get(&n).is_some_and(|rs| rs.iter().any(|r| r.is_break)) {
+            return false;
+        }
+        if let FlowKind::Basic(b) = s.blocks[n].kind {
+            if s.gotos.get(&b).is_some_and(|rs| rs.iter().any(|r| r.is_break)) {
+                return false;
+            }
+        }
+        stack.extend(s.blocks[n].components.iter().copied());
+    }
+    debug!(crate::debug::Topic::SparseSwitch, "{:#x} narrow switch at node {idx}: {} case(s)", pr.f.addr.offset, cases.len());
+    // the condition block's own statements first, as the if emitter prints them
+    pr.emit_structured(s, cond_node, indent, out);
+    let n = cases.len();
+    for (i, &(x, k)) in cases.iter().enumerate() {
+        let pad = "  ".repeat(indent + i);
+        let sv = pr.operand(x, 0, false);
+        let _ = writeln!(out, "{pad}switch ({sv}) {{");
+        let _ = writeln!(out, "{pad}case {}:", render_const_typed((k as u64) & 0xffff, 2, false));
+    }
+    pr.emit_structured(s, body, indent + n, out);
+    for i in (0..n).rev() {
+        let pad = "  ".repeat(indent + i);
+        let _ = writeln!(out, "{pad}  break;");
+        let _ = writeln!(out, "{pad}}}");
+    }
+    true
+}
 
 /// The identity of a compare operand across the tree (see [`SparseKey`]).
 fn sparse_key(pr: &PrintC<'_>, x: VarnodeId) -> SparseKey {
