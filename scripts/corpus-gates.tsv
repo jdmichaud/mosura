@@ -76,6 +76,7 @@ guard_phantom	0x2c160	EXACT	-	e10/exact-1000
 guard_phantom	0x11f18	EXACT	-	e10/exact-1000
 guard_contract	0x58840	EXACT	-	e15/exact-1000
 guard_contract	0x4dd2c	EXACT	-	e15/exact-1000
+guard_contract	0x30dc8	EXACT	-	e34/exact-1000
 guard_contract	0x4e820	EXACT	-	e15/exact-1000
 guard_contract	0x19e38	EXACT	-	e18/exact-1000
 guard_contract	0x19e98	EXACT	-	e18/exact-1000

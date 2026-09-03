@@ -3062,8 +3062,15 @@ fn main() {
                     // a narrower argument binds the register's low part (measured EXACT —
                     // the byte index into `parm [edx]`), while a narrower REGISTER
                     // overflows the argument to the stack (the `parm [bx]` failure above).
+                    // A STACK-convention callee (`parm []`) takes every argument in a
+                    // 4-byte slot: the caller pushes the promoted value and the callee reads
+                    // its own width off the slot, so a `char` parameter meeting a 4-byte
+                    // argument is the normal case, not an overflow (FUN_00030dc8's `PUSH 0`
+                    // for FUN_00060ad0's byte parameter, one row from EXACT without the
+                    // clause) — arity gates, width does not.
+                    let stack_slots = decl == "[]";
                     if !(asizes.len() == psizes.len()
-                        && asizes.iter().zip(psizes).all(|(a, p)| a <= p))
+                        && (stack_slots || asizes.iter().zip(psizes).all(|(a, p)| a <= p)))
                     {
                         continue;
                     }
