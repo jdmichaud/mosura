@@ -21,6 +21,19 @@ target-informed emit choice in the survey's recovered rendering, off in the refe
 | stack store order (`stack_store_orders_from_evidence`) | the original's own `MOV [EBP + off],..` sequence over a run of pure frame-slot stores | a parameter stored into a buffer passed to a call, printed after the constants | `x86_watcom_stack_order.xml` |
 | entry snapshot, widened (`snapshot.rs`) | unchanged (one narrow load at entry); the candidate set now admits any READ of the global, never a written global | `MOV AL,[g]` then `MOV DL,AL`: the 0x39554 family | (the arm's own fixture) |
 
+Three more arms followed in the same method (rounds e8–e10):
+
+| arm | witness | family | fixture |
+| --- | --- | --- | --- |
+| `mask-cast` (`mask_cast.rs`, at `ValueSite::CallArg`) | the original's `AND r,0xff\|0xffff` on the argument's register, the LAST write of that register before the call | a `WORD` argument Ghidra's `RuleAndMask` proved redundant and dropped: the `+ 0xbbb` message-id family, 23 near-miss functions | `x86_watcom_mask_arg.xml` |
+| stack-convention clause to callers (survey `parm_map`) | the callee's own `parm []` (every recovered parameter on the stack, callee pops) | callers compiling a stack callee under the register convention (`XOR EAX,EAX ; CALL` for `PUSH 0 ; CALL`) | — |
+| dropped parameters (`Funcdata::dropped_params`, `buildconfig::phantom_params_from_evidence`) | the register of the LAST recovered parameter pushed among the function's leading saves and popped before its returns, the parameter flowing only into callees | the callee-save family: `PUSH EDX .. POP EDX` missing because the pass-through EDX was declared a parameter (an argument register is the caller's to lose; a preserved one was never an argument), 87 functions | corpus guard `guard_phantom` (0x2c160, 0x11f18) |
+
+The dropped-parameter fact has no self-compiled fixture: a callee stub of the generator never
+reads a second register, so no MVE recovers the phantom; the byte half of the witness
+(`preserved_registers`) is unit-tested and the two specimens are pinned as an EXACT guard set in
+`scripts/corpus-gates.tsv` (gate 7).
+
 Two corrections rode along, both value-preserving and both measured:
 
 - A promoted sign-extension re-signs its operand at its own width unless the operand's C type is
@@ -44,6 +57,11 @@ Two corrections rode along, both value-preserving and both measured:
 | e3 | leaf-only cmp-order, complement literal sign, byte return, snapshot widened | 920 | 0.6276 | 1 EXACT lost to a snapshot of a written global |
 | e4 | zext leaf rule, stack store order, passthrough-neutral byte return, elsewhere-gate dropped | 918 | 0.6281 | the written-global test counted heritage's return copies |
 | e5 | returned variable retyped, snapshot fixes | 925 | 0.6288 | |
+| e6 | snapshot writes through renamed uniques, marker-transparent store runs, either CMP operand decides the mirror | 932 | 0.6291 | landed `974d872` |
+| e7 | the promotion rendering moved out of printc (`ext_cast.rs`), accessor re-sign | 936 | 0.6292 | landed `4e987bf`; identity except the 25 accessor TUs |
+| e8 | mask-cast, stack clause to callers | 944 | 0.6286 | 19 downs: the mask witness matched any earlier AND on the register |
+| e9 | the mask must be the register's last write before the call | 944 | 0.6306 | |
+| e10 | dropped (phantom) parameters | 950 | 0.6320 | 3 downs in a three-level pass-through chain (0x2f650 → 0x2f5e4 → 0x2f474): the freed register re-allocates |
 
 The scrutinee-compared-elsewhere gate on the narrow switch was measured and dropped: declining a
 one-case switch whose scrutinee has other compares cost −0.70 sim over 47 TUs (the fragment
@@ -60,5 +78,7 @@ after improving, three switch-label counts grew by one.
 - The AIL-region constant store (`MOV EBX,1 ; MOV [g],EBX` for `g = 1`, 5 third-party functions):
   not volatile, not a flag (`-ot`, `-os`, `-od`, `-oe`, `-3r`, `-4r` all keep the register form).
 - A callee declared to clobber a register the original saves (`PUSH EDX .. POP EDX` in a body
-  that never writes it) does not make Watcom save it; the mechanism of that 36-function family is
-  still open.
+  that never writes it) does not make Watcom save it. The mechanism was the phantom parameter
+  (the third arm above): the register was declared an argument, and this compiler never
+  preserves an argument register; dropping the parameter and its pass-through brings the save
+  back (FUN_0002c160, FUN_00011f18 EXACT).
