@@ -417,6 +417,17 @@ int mve(int a)
 }
 "#;
 
+/// A field read at a constant offset from a pointer (WAR2 FUN_0003ca54's `p->flags < 0`): the
+/// decompiler prints the int-cast sum `*(int4 *)((int4)p + 6)`, which this compiler
+/// materializes with an `LEA`; the original folds the displacement (`[EAX + 0x6]`) — the
+/// ptr-offset arm's byte-pointer form.
+const PTR_OFFSET_SRC: &str = r#"
+int mve(int *p)
+{
+    return p[0] + *(int *)((char *)p + 6);
+}
+"#;
+
 /// A stack-convention callback that never reads its argument (WAR2 FUN_0004dd2c, FUN_0004e820:
 /// `return 0;` under `RET 4`): the decompiler recovers no parameter, so the recompile pops
 /// nothing — the dummy stack parameter the `RET n` witnesses restores the pop.
@@ -466,6 +477,7 @@ pub const MVES: &[Mve] = &[
     Mve { key: "RETZX", sym: "mve_", source: RET_ZX_SRC, fixture: "x86_watcom_return_zx.xml", base: 0x250000, inputs: &["{ g = -5; LOG_RET(mve(0)); g = 7; LOG_RET(mve(3)); g = 7; LOG_RET(mve(9)); }"], writes: &[] },
     Mve { key: "DUMMY", sym: "mve_", source: DUMMY_PARAM_SRC, fixture: "x86_watcom_dummy_param.xml", base: 0x280000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(5));"], writes: &[] },
     Mve { key: "FARRET", sym: "mve_", source: FAR_RETURN_SRC, fixture: "x86_watcom_far_return.xml", base: 0x290000, inputs: &["{ total = 1; LOG_RET(mve(2)); LOG_RET(total); }"], writes: &[] },
+    Mve { key: "PTROFF", sym: "mve_", source: PTR_OFFSET_SRC, fixture: "x86_watcom_ptr_offset.xml", base: 0x270000, inputs: &["{ int m[4]; m[0] = 5; m[1] = 0x00030000; m[2] = 0x7fff0003; m[3] = 0; LOG_RET(mve(m)); m[2] = 0xfffe0000; LOG_RET(mve(m)); }"], writes: &[] },
 ];
 
 /// The names an MVE declares `extern`, by kind: a declarator followed by `(` is a function, anything

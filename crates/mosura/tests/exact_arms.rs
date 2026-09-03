@@ -137,6 +137,20 @@ fn widened_return_of_a_signed_short_zero_extends() {
     assert!(c.contains("return (uint2)"), "the returned short is re-signed:\n{c}");
 }
 
+/// `ptr-offset`: a field read at a constant offset from a pointer prints as byte-pointer
+/// arithmetic where the original folds the displacement into the access.
+#[test]
+fn pointer_offset_deref_prints_byte_pointer_arithmetic() {
+    let (f, insns) = decompiled("x86_watcom_ptr_offset.xml");
+    let reference = reference_print(&f);
+    let (c, recovered) = recovered_print(&f, &insns);
+    assert!(!recovered.ptr_offset_sites.is_empty(), "the witness read the displacement: {:?}\n{c}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
+    assert!(c.contains("(char *)"), "the recovered rendering folds:\n{c}\nreference:\n{reference}");
+}
+
+/// The dummy stack parameter: a `RET 4` with no recovered parameter declares one unused stack
+/// parameter, and the signature carries it.
+#[test]
 fn ret_n_without_parameters_declares_dummy_stack_parameters() {
     let (mut f, insns) = decompiled("x86_watcom_dummy_param.xml");
     assert!(insns.iter().any(|x| x.text == "RET 0x4"), "the fixture pops its argument: {:?}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());

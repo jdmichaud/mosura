@@ -533,6 +533,27 @@ pub fn dummy_stack_params(f: &crate::decompile::funcdata::Funcdata) -> u32 {
     n / 4
 }
 
+/// Decide the `ptr-offset` sites ([`crate::decompile::printc::EmitReport::ptr_offset_candidates`]):
+/// the original's instruction at the sum's address is a memory access carrying the offset as
+/// its displacement (`[EDX + 0x1a]`), not an `LEA` or an `ADD` materializing the sum. Returns
+/// the sum addresses whose offset folds.
+pub fn ptr_offsets_from_evidence(candidates: &[(u64, u64)], insns: &[NormInsn]) -> std::collections::HashSet<u64> {
+    let mut out = std::collections::HashSet::new();
+    for &(pc, k) in candidates {
+        let Some(x) = insns.iter().find(|x| x.addr == pc) else { continue };
+        // an `LEA` materializes the sum; so does a register-only `ADD`/`SUB` — an `ADD` with a
+        // memory operand (`ADD EAX,dword ptr [EDX + 0x6]`) is an access that folded it
+        if x.text.starts_with("LEA ") || !x.text.contains('[') {
+            continue;
+        }
+        let disp = format!("+ 0x{k:x}]");
+        if x.text.contains(&disp) {
+            out.insert(pc);
+        }
+    }
+    out
+}
+
 /// Decide the constant-phi `return-split` sites
 /// ([`crate::decompile::printc::EmitReport::const_phi_candidates`]). This compiler compiles
 /// `if (x == 0) return 0; ..; return 1;` by REUSING the tested register as the return value:
@@ -1537,6 +1558,18 @@ mod tests {
         assert!(far_return_from_evidence(&lift("5dcb"))); // POP EBP ; RETF
         assert!(!far_return_from_evidence(&lift("5dc3"))); // POP EBP ; RET
         assert!(!far_return_from_evidence(&lift("cbc3"))); // RETF ; RET (mixed)
+    }
+
+    /// `ptr-offset`: the offset folded into the access's displacement says fold; an `LEA`
+    /// materializing the sum says keep the port's integer sum.
+    #[test]
+    fn ptr_offset_witness_reads_the_displacement() {
+        // CMP word ptr [EDX + 0x1a],0x0 ; LEA EAX,[EDX + 0x1a] ; ADD EAX,dword ptr [EDX + 0x1a]
+        let insns = lift("66837a1a008d421a03421a");
+        assert!(ptr_offsets_from_evidence(&[(0x1008, 0x1a)], &insns).contains(&0x1008), "{:?}", insns.iter().map(|x| (x.addr, &x.text)).collect::<Vec<_>>());
+        assert!(ptr_offsets_from_evidence(&[(0x1000, 0x1a)], &insns).contains(&0x1000), "{:?}", insns.iter().map(|x| (x.addr, &x.text)).collect::<Vec<_>>());
+        assert!(ptr_offsets_from_evidence(&[(0x1005, 0x1a)], &insns).is_empty());
+        assert!(ptr_offsets_from_evidence(&[(0x1000, 0x1c)], &insns).is_empty());
     }
 
     /// The constant-phi split: `TEST EAX,EAX ; JZ epilogue` reuses the tested register as the

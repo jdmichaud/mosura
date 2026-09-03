@@ -225,7 +225,7 @@ pub(crate) fn render_value(p: &mut PrintC<'_>, site: &ValueSite<'_>) -> Option<(
             let def = p.arms.struct_return.def.as_ref()?;
             (v == def.hidden).then(|| (RET_NAME.to_string(), 16))
         }
-        ValueSite::Deref { addr } => {
+        ValueSite::Deref { addr, .. } => {
             let def = p.arms.struct_return.def.clone()?;
             let disp = displacement(p.f, def.hidden, addr)?;
             let off = field_at(&def.shape, disp)?;

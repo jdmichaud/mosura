@@ -159,6 +159,10 @@ pub struct EmitReport {
     /// that constant on its own path after the branch (a `XOR AL,AL` / `MOV EAX,k` right before
     /// an epilogue) — the per-path returns — or hoists it above the test (the merged form).
     pub const_phi_candidates: Vec<(u64, u64)>,
+    /// Every dereference at a constant offset from a pointer-typed base (`ptr-offset`), as
+    /// `(the sum's address, offset)`: the original folds the offset into the addressing mode
+    /// or materializes the sum.
+    pub ptr_offset_candidates: Vec<(u64, u64)>,
     /// Runs of two or more CONSECUTIVE pure global-store statements, as
     /// `(op, global address, size)` per store in OUR statement order — the persist-store
     /// ordering candidates. Ghidra's rendering order for adjacent global stores is
@@ -276,6 +280,9 @@ pub struct RecoveredChoices {
     /// Guarding-if branch addresses whose constant-phi tail splits per path (`return-split`,
     /// `const_phi_candidates` evidence, `buildconfig::const_phi_returns_from_evidence`).
     pub const_phi_sites: std::collections::HashSet<u64>,
+    /// Sum addresses whose offset the original folds into the addressing mode (`ptr-offset`,
+    /// `ptr_offset_candidates` evidence, `buildconfig::ptr_offsets_from_evidence`).
+    pub ptr_offset_sites: std::collections::HashSet<u64>,
     /// The `return-width` witness saw the widening carve-out (`XOR EAX,EAX` completing a narrow
     /// write): the widened return zero-extends its narrow value (`return-widen`).
     pub return_zero_widened: bool,
@@ -490,7 +497,7 @@ pub(crate) struct PrintC<'a> {
     pub(crate) suppressed: HashSet<OpId>,
     /// Pointer base → element size, for bases accessed uniformly as an array (so the access
     /// renders `base[i]`). Non-uniform bases (struct-like) are absent and stay `*(base+k)`.
-    array_elem: HashMap<VarnodeId, u32>,
+    pub(crate) array_elem: HashMap<VarnodeId, u32>,
     /// The unstructured branches cut by the collapse driver, keyed by the source basic block
     /// whose exit emits them (in insertion = cut order).
     gotos: HashMap<BlockId, Vec<GotoRecord>>,
@@ -1738,7 +1745,7 @@ impl<'a> PrintC<'a> {
     /// `TypeOpLoad`/`TypeOpStore::getInputCast` on the pointer operand → `*(xunknown4 *)(addr)`).
     pub(crate) fn render_mem(&mut self, addr: VarnodeId, size: u32, vty: &Datatype) -> (String, u8) {
         // array-index (emit/arms/array_index.rs): an inlined scaled-index temp renders as the subscript
-        if let Some(r) = arms::render_value(self, ValueSite::Deref { addr }) {
+        if let Some(r) = arms::render_value(self, ValueSite::Deref { addr, vty }) {
             return r;
         }
         // Ghidra `PrintC::checkArrayDeref` (printc.cc): the subscript/member form absorbs the

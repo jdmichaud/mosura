@@ -135,6 +135,7 @@ pub mod cmp_order;
 pub mod complement_cmp;
 pub mod ext_cast;
 pub mod mask_cast;
+pub mod ptr_offset;
 pub mod return_widen;
 pub mod array_index;
 pub mod frame_fill;
@@ -239,7 +240,7 @@ pub const SURFACE_FIELDS: &[&str] = &[
     "arms", "f", "recovered", "report", "h", "force_explicit", "suppressed", "names", "decls",
     "stack_declared", "stack_space", "stack_syms", "high_stack_off", "high_ram_off", "high_of", "high_members",
     "nonprinting", "labels", "comma_separate", "sparse_consumed", "sparse_cond_override", "covered_nodes",
-    "var_counter",
+    "var_counter", "array_elem",
 ];
 #[cfg_attr(not(test), allow(dead_code))] // the documented list; read by the surface test
 pub const SURFACE_METHODS: &[&str] = &[
@@ -269,7 +270,8 @@ mod tests {
     /// The arm files, as text, for the surface scan — every `pub mod` of this module must be here
     /// (`arms_touch_only_the_documented_surface` checks that against this file's own source, so a
     /// new arm file cannot slip past the scan).
-    const ARM_SOURCES: [(&str, &str); 18] = [
+    const ARM_SOURCES: [(&str, &str); 21] = [
+        ("ptr_offset.rs", include_str!("ptr_offset.rs")),
         ("cmp_order.rs", include_str!("cmp_order.rs")),
         ("return_widen.rs", include_str!("return_widen.rs")),
         ("ext_cast.rs", include_str!("ext_cast.rs")),
@@ -434,7 +436,7 @@ pub enum ValueSite<'v> {
     /// `render_mem`: `addr` the address it is about to dereference — an inlined scaled-index temp
     /// renders as the subscript. Replaces the inline consult at the head of render_mem (8bd43ce);
     /// R2b, commit 6.
-    Deref { addr: VarnodeId },
+    Deref { addr: VarnodeId, vty: &'v Datatype },
     /// `render_var`, before anything else: `v` the value about to render — a snapshotted entry
     /// value renders as its temp's name. Replaces the inline consult at the head of render_var
     /// (8bd43ce); R2b, commit 8.
@@ -475,7 +477,9 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
         ValueSite::CallArg { op, slot } => mask_cast::render(p, op, slot),
         ValueSite::Load { out, addr } => testmem::render(p, out, addr),
         ValueSite::Sum { op } => sum_order::render(p, op),
-        ValueSite::Deref { addr } => struct_return::render_value(p, &ValueSite::Deref { addr }).or_else(|| array_index::render(p, addr)),
+        ValueSite::Deref { addr, vty } => struct_return::render_value(p, &ValueSite::Deref { addr, vty })
+            .or_else(|| array_index::render(p, addr))
+            .or_else(|| ptr_offset::render(p, addr, vty)),
         ValueSite::VarEntry { v } => snapshot::render(p, v),
         other => struct_return::render_value(p, &other).or_else(|| frame_fill::render_value(p, &other)),
     }
