@@ -250,3 +250,15 @@ fn narrow_switch_prints_a_memory_tail_clause_as_the_inner_if() {
     let next = inner.lines().nth(1).unwrap_or("").trim_start();
     assert!(next.starts_with("if ("), "the tail clause is the inner if:\n{c}");
 }
+
+/// `sparse-switch`, the range case list: `CMP r16,1 ; JA` lifts as `*p < 2`, which the reference
+/// prints as the `if`; the recovered rendering prints `case 0: case 1:`.
+#[test]
+fn narrow_switch_prints_a_small_range_as_the_case_list() {
+    let (f, insns) = decompiled("x86_watcom_switch_range.xml");
+    let reference = reference_print(&f);
+    assert!(!reference.contains("switch (") && reference.contains(" < 2)"), "the reference rendering is the if:\n{reference}");
+    let (c, _) = recovered_print(&f, &insns);
+    assert!(c.contains("switch (*param_2) {") && c.contains("case 0:\n") && c.contains("case 1:\n"), "the two-label case:\n{c}");
+    assert!(!c.contains(" < 2)"), "no if remains:\n{c}");
+}

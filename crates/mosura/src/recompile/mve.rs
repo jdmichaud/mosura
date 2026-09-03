@@ -550,6 +550,24 @@ int mve(int a, short *p)
 }
 "#;
 
+/// `sparse-switch`, the range case list (docs/exact-arms.md): `case 0: case 1:` on an unsigned
+/// 16-bit selector — the compiler's range check is `CMP r16,1 ; JA`, which Ghidra reads as
+/// `*p < 2`; the reference prints that `if`, the recovered rendering the two-label case.
+const SWITCH_RANGE_SRC: &str = r#"
+extern void act(int a);
+extern int dflt(int a, unsigned short *p);
+int mve(int a, unsigned short *p)
+{
+    switch (*p) {
+    case 0:
+    case 1:
+        act(a);
+        break;
+    }
+    return dflt(a, p);
+}
+"#;
+
 /// Every MVE, in the generator's order.
 pub const MVES: &[Mve] = &[
     Mve { key: "CSAVE", sym: "mve_", source: CALLEE_SAVE_SRC, fixture: "x86_watcom_callee_save.xml", base: 0x100000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(1));", "LOG_RET(mve(3));", "LOG_RET(mve(16));"], writes: &[("read16", "dst", 16)] },
@@ -582,6 +600,7 @@ pub const MVES: &[Mve] = &[
     Mve { key: "BRRET", sym: "mve_", source: BRANCH_RET_SRC, fixture: "x86_watcom_branch_ret.xml", base: 0x2c0000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(5));"], writes: &[] },
     Mve { key: "STFWD", sym: "mve_", source: STORE_FWD_SRC, fixture: "x86_watcom_store_fwd.xml", base: 0x2d0000, inputs: &["{ a = 7; b = 0; LOG_RET(mve()); LOG_RET(b); }"], writes: &[] },
     Mve { key: "SWTAIL", sym: "mve_", source: SWITCH_TAIL_SRC, fixture: "x86_watcom_switch_tail.xml", base: 0x2e0000, inputs: &["{ short m[2]; m[0] = 9; m[1] = 5; g = 1; LOG_RET(mve(1, m)); g = 0; LOG_RET(mve(2, m)); m[1] = 0; g = 1; LOG_RET(mve(3, m)); m[0] = 3; LOG_RET(mve(4, m)); }"], writes: &[] },
+    Mve { key: "SWRANGE", sym: "mve_", source: SWITCH_RANGE_SRC, fixture: "x86_watcom_switch_range.xml", base: 0x2f0000, inputs: &["{ unsigned short m[1]; m[0] = 0; LOG_RET(mve(1, m)); m[0] = 1; LOG_RET(mve(2, m)); m[0] = 2; LOG_RET(mve(3, m)); m[0] = 0xffff; LOG_RET(mve(4, m)); }"], writes: &[] },
     Mve { key: "PTROFF", sym: "mve_", source: PTR_OFFSET_SRC, fixture: "x86_watcom_ptr_offset.xml", base: 0x270000, inputs: &["{ int m[4]; m[0] = 5; m[1] = 0x00030000; m[2] = 0x7fff0003; m[3] = 0; LOG_RET(mve(m)); m[2] = 0xfffe0000; LOG_RET(mve(m)); }"], writes: &[] },
 ];
 

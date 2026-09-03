@@ -697,18 +697,41 @@ fn try_emit_narrow_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
             }
             let pc = pr.f.op(cb).seqnum.pc.offset;
             let &(imm, kind, (_, rsize)) = pr.recovered.sparse_cmp_sites.get(&pc)?;
-            if rsize != 2 || imm & 0xffff != (k as u64) & 0xffff {
+            if rsize != 2 {
                 return None;
             }
+            let imm = (imm & 0xffff) as i64;
             match code {
                 // the clause holds iff `x == k`: an equality printed straight, or an inequality
                 // negated
                 OpCode::IntEqual | OpCode::IntNotequal => {
                     let is_eq = code == OpCode::IntEqual;
-                    if is_eq == (neg ^ cneg) || kind != CMP_EQ {
+                    if is_eq == (neg ^ cneg) || kind != CMP_EQ || imm != k & 0xffff {
                         return None;
                     }
                     Some((x, vec![k]))
+                }
+                // an UNSIGNED 16-bit range `x <= k` / `x < k` for a small k, witnessed by the
+                // original's `CMP r16,k ; JBE/JA` (or `JB/JAE`): the case list `0 .. k` — the
+                // switch compares at 16 bits where the `if` promotes and compares signed
+                // (`XOR EBX,EBX ; .. CMP EBX,1 ; JLE` for `CMP BX,1 ; JBE`, WAR2 FUN_0002bb98,
+                // probed EXACT as `case 0: case 1:`)
+                OpCode::IntLessequal | OpCode::IntLess => {
+                    // `sparse_compare` folds a mirrored compare into `cneg`: the clause holds
+                    // iff `x code k` XOR (neg ^ cneg) -- a PREFIX range `0 .. top` when not
+                    // negated (`x < k` = `0 .. k-1`, `x <= k` = `0 .. k`), a suffix otherwise.
+                    // The witness is the switch's own range check, `CMP r16,top ; JA` (an
+                    // LE-kind jump whose immediate IS the top): Ghidra's normalization moves
+                    // the IR constant (`x <= 1` lifts as `x < 2`), so the RANGE has to agree,
+                    // not the immediate
+                    if neg ^ cneg || !scrutinee_is_memory(pr, x) {
+                        return None;
+                    }
+                    let top = if code == OpCode::IntLessequal { k } else { k - 1 };
+                    if kind != CMP_LE || imm != top || !(0..=3).contains(&top) {
+                        return None;
+                    }
+                    Some((x, (0..=top).collect()))
                 }
                 _ => None,
             }
@@ -809,6 +832,16 @@ fn sparse_key(pr: &PrintC<'_>, x: VarnodeId) -> SparseKey {
 /// A clause whose compare reads MEMORY — a global or a load, never a register-held local — on
 /// at least one side, with no explicit local on either: the tail form of the narrow switch is
 /// admitted for these only (see `try_emit_narrow_switch`).
+/// Whether the range form's scrutinee is a memory read — a global, or a load inlined at the
+/// compare: the switch SELECTOR's shape (`MOV AX,[..] ; CMP AX,k`). A named 16-bit local
+/// compares at 16 bits under an `if` as well, so the range on one is no witness: the two
+/// locals the form reached in round e32 measured 0 and −0.066 (FUN_0005dd14).
+fn scrutinee_is_memory(pr: &PrintC<'_>, x: VarnodeId) -> bool {
+    let vn = pr.f.vn(x);
+    let ram = pr.f.spaces.by_name("ram");
+    Some(vn.loc.space) == ram || (!pr.is_explicit(x) && vn.def.is_some_and(|d| pr.f.op(d).code() == OpCode::Load))
+}
+
 fn clause_reads_memory(pr: &PrintC<'_>, s: &Structured, node: usize) -> bool {
     let FlowKind::Basic(bid) = s.blocks[node].kind else { return false };
     let Some(cb) = pr.f.block(bid).ops.iter().rev().copied().find(|&op| !pr.f.op(op).is_dead() && pr.f.op(op).code() == OpCode::Cbranch) else { return false };
