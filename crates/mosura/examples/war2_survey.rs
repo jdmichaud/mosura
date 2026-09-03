@@ -2330,6 +2330,17 @@ fn main() {
             end -= 1;
         }
         let orig_len = region.len();
+        // DROPPED PARAMETERS (a convention fact from the function's own saves, applied by the
+        // port as the `dropped_params` mark): a register this function pushes at entry and pops
+        // before its returns is not an argument register — the last parameter the decompiler
+        // recovered in it, when it only flows into callees, is the caller's preserved value
+        // (`buildconfig::phantom_params_from_evidence`).
+        let f = {
+            let mut f = f;
+            let insns = mosura::recompile::insn::normalize(SURVEY_LANG, &region, *va, &mosura::recompile::insn::NoReloc).unwrap_or_default();
+            f.dropped_params = mosura::recompile::buildconfig::phantom_params_from_evidence(&f, &insns);
+            f
+        };
 
         // CALLS PRESENT IN THE FINAL IR. The absolute call gauge counts calls in the RENDER, which
         // cannot distinguish "the decompiler never recovered it" from "the decompiler recovered it and

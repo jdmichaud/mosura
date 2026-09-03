@@ -207,6 +207,13 @@ pub struct Funcdata {
     /// list, and a backend that must reproduce the original's register saves needs it: without a
     /// declaration Watcom preserves registers the original destroys, costing a push/pop pair each.
     pub own_modify: Option<Vec<u64>>,
+    /// Input varnodes the EMITTER drops from the signature and from every call that passes them
+    /// through — a recovered convention fact, decided outside the port
+    /// (`recompile::buildconfig::phantom_params_from_evidence`): a register this function saves
+    /// and restores is not an argument register of its convention, so an input in it that only
+    /// flows into callees is the caller's preserved value, not a parameter. Empty for every
+    /// rendering but the survey's recovered one. mosura-only.
+    pub dropped_params: std::collections::HashSet<VarnodeId>,
 
     /// Register offsets this function SAVES AND RESTORES (a `push`/`pop` pair). They are
     /// callee-saved storage, never parameters — see `recover_input_params`' custom-register branch.
@@ -419,6 +426,7 @@ impl Funcdata {
             active_inputs: std::collections::HashMap::new(),
             call_specs: std::collections::HashMap::new(),
             own_modify: None,
+            dropped_params: Default::default(),
             own_saved: None,
             not_mapped: super::space::RangeList::default(),
             call_guards_active: false,

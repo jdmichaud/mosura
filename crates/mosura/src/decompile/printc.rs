@@ -991,14 +991,19 @@ impl<'a> PrintC<'a> {
         self.partial_symbol(v, false).unwrap_or_else(|| self.name_of(v))
     }
 
-    /// One argument of a CALL/CALLIND: the `mask-cast` arm's rendering (emit/arms/mask_cast.rs)
-    /// where the original masks the argument, else the value's own.
-    fn render_call_arg(&mut self, op: OpId, slot: usize) -> String {
-        if let Some((s, _)) = arms::render_value(self, ValueSite::CallArg { op, slot }) {
-            return s;
-        }
+    /// One argument of a CALL/CALLIND: `None` for a dropped input passed through (MARK
+    /// `dropped_params` — the argument is omitted, the callee reads the register as the original
+    /// does), else the `mask-cast` arm's rendering (emit/arms/mask_cast.rs) where the original
+    /// masks the argument, else the value's own.
+    fn render_call_arg(&mut self, op: OpId, slot: usize) -> Option<String> {
         let v = self.f.op(op).input(slot).unwrap();
-        self.render_var(v).0
+        if self.f.dropped_params.contains(&v) {
+            return None;
+        }
+        if let Some((s, _)) = arms::render_value(self, ValueSite::CallArg { op, slot }) {
+            return Some(s);
+        }
+        Some(self.render_var(v).0)
     }
 
     /// The name of `v`'s variable, assigning one on first use.
@@ -2351,9 +2356,12 @@ impl<'a> PrintC<'a> {
                         .collect();
                     debug!(crate::debug::Topic::Printc, "{name} op={} args=[{}]", op.0, facts.join(" | "));
                 }
-                let args: Vec<String> = (1..o.num_inputs()).map(|i| self.render_call_arg(op, i)).collect();
-                // call-arg-orders MARK: the candidacy report and the recovered permutation
-                let args = self.apply_call_arg_orders(op, args);
+                let rendered: Vec<Option<String>> = (1..o.num_inputs()).map(|i| self.render_call_arg(op, i)).collect();
+                let omitted = rendered.iter().any(Option::is_none);
+                let args: Vec<String> = rendered.into_iter().flatten().collect();
+                // call-arg-orders MARK: the candidacy report and the recovered permutation — not
+                // over a list an omitted argument shortened
+                let args = if omitted { args } else { self.apply_call_arg_orders(op, args) };
                 (format!("{name}({})", args.join(", ")), 16)
             }
             OpCode::Callind => {
@@ -2377,7 +2385,7 @@ impl<'a> PrintC<'a> {
                 // global function lookup at this point, so it takes the second path: an explicit
                 // `(code *)` on the constant, which is what makes `(*(code *)0x1006ca)()` valid C.
                 let t0 = a(0);
-                let args: Vec<String> = (1..o.num_inputs()).map(|i| self.render_call_arg(op, i)).collect();
+                let args: Vec<String> = (1..o.num_inputs()).filter_map(|i| self.render_call_arg(op, i)).collect();
                 if self.f.vn(t0).is_constant() {
                     // A pointer-typed constant already renders with its cast (`render_var`).
                     if matches!(self.type_of(t0), Datatype::Pointer(..)) {
@@ -4242,8 +4250,15 @@ pub fn rendered_param_slots(f: &Funcdata) -> Vec<RenderedParam> {
     // print-time reconstruction does not carry — it walks the recovered prototype, not a
     // `ParamActive`. The shape it would exclude is three-plus consecutive dead slots followed by a
     // used one; with at most four register slots that is the whole of it.
-    let used: Vec<Option<VarnodeId>> =
-        proto.params.iter().map(|s| find_used_input(s.addr, s.size)).collect();
+    // MARK dropped_params (`Funcdata::dropped_params`, decided by the survey from the
+    // original's own register saves): a dropped input is an unused slot — the emitter's
+    // convention fact, applied here generically so the signature, the callers' pragma and the
+    // consistency gates all read one parameter list.
+    let used: Vec<Option<VarnodeId>> = proto
+        .params
+        .iter()
+        .map(|s| find_used_input(s.addr, s.size).filter(|v| !f.dropped_params.contains(v)))
+        .collect();
     let last_used = used.iter().rposition(Option::is_some);
     let mut out = Vec::new();
     for (i, slot) in proto.params.iter().enumerate() {

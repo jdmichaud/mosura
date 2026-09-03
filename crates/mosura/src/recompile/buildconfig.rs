@@ -248,6 +248,75 @@ pub fn narrow_zexts_from_evidence(
     out
 }
 
+/// Decide the dropped ("phantom") parameters of `f` from its own prologue and epilogue: the LAST
+/// rendered register parameter whose input only flows into calls (every live use a CALL/CALLIND
+/// argument) and whose register the function PUSHes among its leading saves and POPs before its
+/// returns. Under this compiler's register convention an argument register is the caller's to
+/// lose — a callee that preserves one did not receive an argument in it; the input the
+/// decompiler saw is the caller's preserved value reaching the callee's callee, and the
+/// original passes it by leaving the register alone (WAR2 FUN_0002c160 / FUN_00011f18: EXACT once
+/// the `param_2` in EDX and its pass-through go, the saved EDX then reappears; 87 functions
+/// carry the shape on round e6). Only the last parameter is dropped, so the signature shrinks
+/// without a hole.
+pub fn phantom_params_from_evidence(f: &crate::decompile::funcdata::Funcdata, insns: &[NormInsn]) -> std::collections::HashSet<crate::decompile::varnode::VarnodeId> {
+    use crate::decompile::opcode::OpCode;
+    let mut out = std::collections::HashSet::new();
+    let Some(reg) = f.spaces.by_name("register") else { return out };
+    let slots = crate::decompile::printc::rendered_param_slots(f);
+    let Some(last) = slots.last() else { return out };
+    let Some(v) = last.vn else { return out };
+    if last.addr.space != reg {
+        return out;
+    }
+    let container = last.addr.offset & !3;
+    // every live use a call argument (never the call's target)
+    let uses: Vec<_> = f.vn(v).descend.iter().copied().filter(|&u| !f.op(u).is_dead() && !f.op(u).is_marker()).collect();
+    if uses.is_empty()
+        || !uses.iter().all(|&u| {
+            let o = f.op(u);
+            matches!(o.code(), OpCode::Call | OpCode::Callind) && (1..o.num_inputs()).any(|i| o.input(i) == Some(v))
+        })
+    {
+        return out;
+    }
+    if preserved_registers(insns).contains(&container) {
+        out.insert(v);
+    }
+    out
+}
+
+/// The general registers a function PRESERVES by its own prologue and epilogue: pushed among
+/// the leading saves (before the frame's `MOV EBP,ESP` or the first other instruction) and
+/// popped right before a `RET`, as register-space offsets (EAX 0, ECX 4, EDX 8, EBX 12, ESI 24,
+/// EDI 28; the frame pointer is not a save).
+pub fn preserved_registers(insns: &[NormInsn]) -> Vec<u64> {
+    let names = ["EAX", "ECX", "EDX", "EBX", "ESP", "EBP", "ESI", "EDI"];
+    let pushed: Vec<u64> = insns
+        .iter()
+        .take_while(|x| x.text.starts_with("PUSH E") || x.text == "MOV EBP,ESP")
+        .filter_map(|x| x86enc::push_r32(&x.bytes).map(|r| u64::from(r) * 4))
+        .filter(|&r| r != 20)
+        .collect();
+    if pushed.is_empty() {
+        return Vec::new();
+    }
+    // the pops that lead into a return: walk back from each RET over POPs
+    let mut popped = std::collections::HashSet::new();
+    for (i, x) in insns.iter().enumerate() {
+        if !(x.text == "RET" || x.text.starts_with("RET ") || x.text == "RETF") {
+            continue;
+        }
+        let mut j = i;
+        while j > 0 && insns[j - 1].text.starts_with("POP E") {
+            j -= 1;
+            if let Some(r) = names.iter().position(|n| insns[j].text == format!("POP {n}")) {
+                popped.insert(r as u64 * 4);
+            }
+        }
+    }
+    pushed.into_iter().filter(|r| popped.contains(r)).collect()
+}
+
 /// Decide the `mask-cast` sites ([`crate::decompile::printc::EmitReport::mask_candidates`]): a
 /// call argument whose register the original masks with `AND r,0xff` / `AND r,0xffff` between
 /// the argument's definition and the call — the last write of the argument's register in that
@@ -1382,6 +1451,19 @@ mod tests {
         // XOR EAX,EAX ; MOV AL,[EDX+0x99a42] ; XOR ECX,ECX ; ADD EAX,EAX
         let wide = lift("31c08a82429a090031c901c0");
         assert!(narrow_zexts_from_evidence(&[(add, 1, 2)], &wide).is_empty(), "the full-register zero is the compiler's ordinary widening");
+    }
+
+    /// The registers a function preserves: pushed among its leading saves and popped before its
+    /// return — EDX and EBX here, not EBP (the frame) and not a register pushed mid-body.
+    #[test]
+    fn preserved_registers_reads_the_saves_around_the_body() {
+        // PUSH EBX ; PUSH EDX ; PUSH EBP ; MOV EBP,ESP ; XOR EAX,EAX ; PUSH ECX ; POP ECX ; POP EBP ; POP EDX ; POP EBX ; RET
+        let insns = lift("53525589e531c051595d5a5bc3");
+        let mut regs = preserved_registers(&insns);
+        regs.sort_unstable();
+        assert_eq!(regs, vec![8, 12], "EDX and EBX: {regs:?}");
+        // no leading saves: nothing preserved
+        assert!(preserved_registers(&lift("31c0c3")).is_empty());
     }
 
     /// `mask-cast`: the argument's register masked between its definition and the call decides the
