@@ -85,6 +85,7 @@ Two corrections rode along, both value-preserving and both measured:
 | e21 | `load-hoist` on a stepped base pointer too | 971 | 0.6367 | 3 downs, no flip (FUN_00022638 −0.083: the value takes a scratch register, the original's lives in ESI) — not landed |
 | e22 | the scaled-index witness alone | 971 | 0.6367 | identical to e20 |
 | e23 | `return-split`: negation-aware bool shape, the lone return's branch form | 975 | 0.6369 | 9 TUs, 6 up / 1 down, +4 EXACT |
+| e24 | the witnessed narrow zext cast SPELLED (`(uint2)x`) + the tier-2 widening gate opened to computed narrow loads | — | — | REFUTED, not landed: the spelled cast reached 131 TUs (33 up / 43 down, +1 −3 EXACT) for a 15-function family — the `XOR xH,xH` window witness cannot tell which register it zeroes; the opened tier-2 gate reached 424 TUs (58 up / 119 down, −20 EXACT): a widened local re-allocates far beyond its own load |
 
 The scrutinee-compared-elsewhere gate on the narrow switch was measured and dropped: declining a
 one-case switch whose scrutinee has other compares cost −0.70 sim over 47 TUs (the fragment
@@ -109,6 +110,9 @@ after improving, three switch-label counts grew by one.
   (`MOV [0x88bcc],EDX` after the call took `0x2c160` in EDX, FUN_0002c204; 13 functions store a
   register where the recompile stores the immediate): a local holding the constant is
   propagated back into the immediate by this compiler.
+- The sound family (`ADD EDX,k ; MOV EAX,EDX` for `return rem % 4 + k`, 14 functions) is not a
+  flags matter either: `-os`, `-onasx`, `-onax`, `-ot`, `-oe`, `-ol`, `-oi`, `-onalx` and no
+  `-d1+` all keep the `LEA` (or change unrelated code). Closed.
 - The byte register zeroed then stored (`XOR DL,DL ; MOV [..],DL` for `p[i] = 0`, FUN_00057fcc
   and the 0x2c08c loop trio): `'\0'`, a `(uint1)0` cast, a `char *` pointee, and a zero-initialized
   byte local (declared before or at the store) all compile to the immediate store.
