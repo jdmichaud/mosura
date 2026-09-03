@@ -403,6 +403,20 @@ int mve(int a)
 }
 "#;
 
+/// A widened narrow return of a SIGNED global (WAR2 FUN_000243bc): the compiler returns
+/// `(unsigned short)g` as `XOR EAX,EAX ; MOV AX,[g]`; the decompiler types `g` short from the
+/// signed compare and returns it bare, which C would sign-extend — the return-widen arm's
+/// `(uint2)` cast from the same witness.
+const RET_ZX_SRC: &str = r#"
+extern short g;
+int mve(int a)
+{
+    if (g < a)
+        g = 0;
+    return (unsigned short)g;
+}
+"#;
+
 /// A stack-convention callback that never reads its argument (WAR2 FUN_0004dd2c, FUN_0004e820:
 /// `return 0;` under `RET 4`): the decompiler recovers no parameter, so the recompile pops
 /// nothing — the dummy stack parameter the `RET n` witnesses restores the pop.
@@ -449,6 +463,7 @@ pub const MVES: &[Mve] = &[
     Mve { key: "NZEXT", sym: "mve_", source: NARROW_ZEXT_SRC, fixture: "x86_watcom_narrow_zext.xml", base: 0x220000, inputs: &["{ t[0] = 3; t[1] = 200; mve(0); mve(1); }"], writes: &[] },
     Mve { key: "MASKARG", sym: "mve_", source: MASK_ARG_SRC, fixture: "x86_watcom_mask_arg.xml", base: 0x230000, inputs: &["{ t[0] = 3; t[1] = 200; LOG_RET(mve(0)); LOG_RET(mve(1)); }"], writes: &[] },
     Mve { key: "CPHI", sym: "mve_", source: CONST_PHI_SRC, fixture: "x86_watcom_const_phi.xml", base: 0x240000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(7));"], writes: &[("chk", "p", 16), ("work", "p", 16)] },
+    Mve { key: "RETZX", sym: "mve_", source: RET_ZX_SRC, fixture: "x86_watcom_return_zx.xml", base: 0x250000, inputs: &["{ g = -5; LOG_RET(mve(0)); g = 7; LOG_RET(mve(3)); g = 7; LOG_RET(mve(9)); }"], writes: &[] },
     Mve { key: "DUMMY", sym: "mve_", source: DUMMY_PARAM_SRC, fixture: "x86_watcom_dummy_param.xml", base: 0x280000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(5));"], writes: &[] },
     Mve { key: "FARRET", sym: "mve_", source: FAR_RETURN_SRC, fixture: "x86_watcom_far_return.xml", base: 0x290000, inputs: &["{ total = 1; LOG_RET(mve(2)); LOG_RET(total); }"], writes: &[] },
 ];

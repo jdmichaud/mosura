@@ -276,6 +276,9 @@ pub struct RecoveredChoices {
     /// Guarding-if branch addresses whose constant-phi tail splits per path (`return-split`,
     /// `const_phi_candidates` evidence, `buildconfig::const_phi_returns_from_evidence`).
     pub const_phi_sites: std::collections::HashSet<u64>,
+    /// The `return-width` witness saw the widening carve-out (`XOR EAX,EAX` completing a narrow
+    /// write): the widened return zero-extends its narrow value (`return-widen`).
+    pub return_zero_widened: bool,
     /// Short-circuit keys (first-clause branch address) to render as nested ifs
     /// (`cond-form`).
     pub nested_sites: std::collections::HashSet<u64>,
@@ -3733,7 +3736,11 @@ impl<'a> PrintC<'a> {
                 OpCode::Return => match o.input(1) {
                     Some(v) => {
                         let v = self.narrow_return_low(v);
-                        let e = self.render_var(v).0; // wired return value (inlined when single-use)
+                        // return-widen (emit/arms/return_widen.rs): a widened narrow return's sign
+                        let e = match arms::render_value(self, ValueSite::ReturnValue { v }) {
+                            Some((e, _)) => e,
+                            None => self.render_var(v).0, // wired return value (inlined when single-use)
+                        };
                         Some(format!("return {e}"))
                     }
                     None => Some("return".to_string()),

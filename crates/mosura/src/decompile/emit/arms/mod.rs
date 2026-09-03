@@ -135,6 +135,7 @@ pub mod cmp_order;
 pub mod complement_cmp;
 pub mod ext_cast;
 pub mod mask_cast;
+pub mod return_widen;
 pub mod array_index;
 pub mod frame_fill;
 pub mod nested_conds;
@@ -270,6 +271,7 @@ mod tests {
     /// new arm file cannot slip past the scan).
     const ARM_SOURCES: [(&str, &str); 18] = [
         ("cmp_order.rs", include_str!("cmp_order.rs")),
+        ("return_widen.rs", include_str!("return_widen.rs")),
         ("ext_cast.rs", include_str!("ext_cast.rs")),
         ("mask_cast.rs", include_str!("mask_cast.rs")),
         ("string_ops.rs", include_str!("string_ops.rs")),
@@ -418,6 +420,9 @@ pub enum ValueSite<'v> {
     /// One argument (`slot`, an input index) of the CALL/CALLIND `op` the port is about to
     /// render: the `mask-cast` arm's narrow cast where the original masks it (emit/arms/mask_cast.rs).
     CallArg { op: OpId, slot: usize },
+    /// The value a `return` statement returns (after the narrowed return's low-part selection):
+    /// a widened return's sign (`return-widen`).
+    ReturnValue { v: VarnodeId },
     /// `render_op_inner`'s `Load` arm: `out` the loaded value, `addr` its address — a witnessed
     /// masked narrow load prints its deref at int width. Replaces the inline width consult
     /// (33d6e37); R2b, commit 3.
@@ -465,6 +470,7 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
         ValueSite::Var { v } => struct_return::render_value(p, &ValueSite::Var { v }).or_else(|| string_ops::render_var_value(p, v)),
         ValueSite::Equality { op, sym, prec } => unsigned_cmp::render(p, op, sym, prec),
         ValueSite::Compare { op, strict, prec } => complement_cmp::render(p, op, strict, prec).or_else(|| cmp_order::render(p, op, strict, prec)),
+        ValueSite::ReturnValue { v } => return_widen::render(p, v),
         ValueSite::Extension { op, signed } => ext_cast::render(p, op, signed),
         ValueSite::CallArg { op, slot } => mask_cast::render(p, op, slot),
         ValueSite::Load { out, addr } => testmem::render(p, out, addr),

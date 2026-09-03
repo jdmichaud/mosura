@@ -614,6 +614,9 @@ pub struct NarrowReturn {
     /// The witnessed width in bytes: the widest A-family sub-register the return sites write
     /// (`AL`/`AH` = 1, `AX` = 2); 0 when not narrow.
     pub width: u32,
+    /// Wide BECAUSE a narrow write completes a widening (`XOR EAX,EAX ; MOV AX,[g]`): the
+    /// original zero-extends the narrow value it returns (`return-widen`).
+    pub zero_widened: bool,
 }
 
 /// Decide the `return-width` axis PER FUNCTION from the original's bytes. The candidates are
@@ -704,7 +707,7 @@ pub fn narrow_return_from_evidence(candidates: &[(u64, u32, u32)], insns: &[Norm
             }
         }
         if widening {
-            return wide;
+            return NarrowReturn { zero_widened: true, ..wide };
         }
         anchored = true; // a real narrow write, surviving the widening carve-out: this site anchors
         width = width.max(narrow_width(&insns[last].text));
@@ -715,7 +718,7 @@ pub fn narrow_return_from_evidence(candidates: &[(u64, u32, u32)], insns: &[Norm
     // SIGNEDNESS comes only from the sext-constant path. A function whose every return site writes
     // narrow keeps exactly today's rendering (`signed: false`), so this carries no change into any
     // firing that already existed.
-    NarrowReturn { narrow: true, signed: sext_seen, width }
+    NarrowReturn { narrow: true, signed: sext_seen, width, zero_widened: false }
 }
 
 /// Whether a full-register A-family write is Watcom's **sign-extended narrow constant** idiom:

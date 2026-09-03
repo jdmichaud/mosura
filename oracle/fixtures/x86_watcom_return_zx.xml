@@ -1,0 +1,20 @@
+<!-- SELF-COMPILED fixture: wcc386 10.0a (in-house), flags -5r -fpi87 -s -onatx -d1+ -zq. No third-party
+     bytes — the source is this comment; regenerate with examples/watcom_mve_fixtures.rs.
+     Externs: code from 0x251000 (one RET stub per callee, 0x10 apart), data from 0x252000 (0x100 apart).
+     externs: g=0x252000
+  extern short g;
+  int mve(int a)
+  {
+      if (g < a)
+          g = 0;
+      return (unsigned short)g;
+  }
+-->
+<binaryimage arch="x86:LE:32:default:watcom">
+  <bytechunk space="ram" offset="0x250000" readonly="true">
+53525589e5668b1d002025000fbfd339c27d0231db31c06689d866891d002025005d5a5bc3
+  </bytechunk>
+  <bytechunk space="ram" offset="0x251000" readonly="true">
+c3
+  </bytechunk>
+</binaryimage>

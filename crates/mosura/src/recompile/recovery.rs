@@ -73,6 +73,7 @@ pub fn recover(
         narrow_return: narrow_ret.narrow,
         narrow_return_signed: narrow_ret.signed,
         narrow_return_width: narrow_ret.width,
+        return_zero_widened: narrow_ret.zero_widened,
         widen_local_reps: widen.0,
         tier2_sites: widen.1,
         snapshot_sites: crate::recompile::buildconfig::entry_snapshots_from_evidence(

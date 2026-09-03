@@ -127,6 +127,16 @@ fn const_phi_tail_returns_per_path() {
     assert!(c.contains("return 1;") && c.contains("return 0;") && !c.contains(" = 0;"), "per-path returns, no merged variable:\n{c}");
 }
 
+/// `return-widen`: a widened return of a signed short (the reference returns it bare, which C
+/// would sign-extend) prints the `(uint2)` cast the original's `XOR EAX,EAX ; MOV AX` performs.
+#[test]
+fn widened_return_of_a_signed_short_zero_extends() {
+    let (f, insns) = decompiled("x86_watcom_return_zx.xml");
+    let (c, recovered) = recovered_print(&f, &insns);
+    assert!(recovered.return_zero_widened || c.contains("(uint2)"), "the widening is witnessed or the IR keeps the ZEXT: {:?}\n{c}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
+    assert!(c.contains("return (uint2)"), "the returned short is re-signed:\n{c}");
+}
+
 fn ret_n_without_parameters_declares_dummy_stack_parameters() {
     let (mut f, insns) = decompiled("x86_watcom_dummy_param.xml");
     assert!(insns.iter().any(|x| x.text == "RET 0x4"), "the fixture pops its argument: {:?}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
