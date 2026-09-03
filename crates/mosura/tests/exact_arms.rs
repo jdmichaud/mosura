@@ -234,3 +234,19 @@ fn sign_extension_re_signs_an_unsigned_operand() {
     let (c, _) = recovered_print(&f, &insns);
     assert!(c.matches("(int4)(int2)").count() >= 2, "both halves sign-extend from a signed narrow cast:\n{c}");
 }
+
+/// `sparse-switch`, the tail clause: the reference prints the three tests as one `if`; the
+/// recovered rendering prints the two witnessed 16-bit compares as the switch nest and the byte
+/// global's test as an `if` inside the innermost case.
+#[test]
+fn narrow_switch_prints_a_memory_tail_clause_as_the_inner_if() {
+    let (f, insns) = decompiled("x86_watcom_switch_tail.xml");
+    let reference = reference_print(&f);
+    assert!(!reference.contains("switch ("), "the reference rendering is the if:\n{reference}");
+    let (c, _) = recovered_print(&f, &insns);
+    assert!(c.contains("switch (*param_2) {") && c.contains("case 9:"), "the outer one-case switch:\n{c}");
+    assert!(c.contains("switch (param_2[1]) {") && c.contains("case 5:"), "the inner one-case switch:\n{c}");
+    let inner = c.find("case 5:").map(|i| &c[i..]).unwrap_or("");
+    let next = inner.lines().nth(1).unwrap_or("").trim_start();
+    assert!(next.starts_with("if ("), "the tail clause is the inner if:\n{c}");
+}

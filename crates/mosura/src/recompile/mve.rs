@@ -526,6 +526,30 @@ int mve(void)
 }
 "#;
 
+/// `sparse-switch`, the tail clause (docs/exact-arms.md): a switch nest whose innermost case
+/// tests a byte GLOBAL — the reference reads the three tests as one `if` conjunction; the
+/// witnessed 16-bit compares are the two switches, the global's test the inner `if`.
+const SWITCH_TAIL_SRC: &str = r#"
+extern void act(int a);
+extern int dflt(int a, short *p);
+extern unsigned char g;
+int mve(int a, short *p)
+{
+    switch (*p) {
+    case 9:
+        switch (p[1]) {
+        case 5:
+            if (g != 0) {
+                act(a);
+            }
+            break;
+        }
+        break;
+    }
+    return dflt(a, p);
+}
+"#;
+
 /// Every MVE, in the generator's order.
 pub const MVES: &[Mve] = &[
     Mve { key: "CSAVE", sym: "mve_", source: CALLEE_SAVE_SRC, fixture: "x86_watcom_callee_save.xml", base: 0x100000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(1));", "LOG_RET(mve(3));", "LOG_RET(mve(16));"], writes: &[("read16", "dst", 16)] },
@@ -557,6 +581,7 @@ pub const MVES: &[Mve] = &[
     Mve { key: "LDHOIST", sym: "mve_", source: LOAD_HOIST_SRC, fixture: "x86_watcom_load_hoist.xml", base: 0x2b0000, inputs: &["{ mve(); LOG_BYTES(g, 68); }"], writes: &[("fill", "p", 32)] },
     Mve { key: "BRRET", sym: "mve_", source: BRANCH_RET_SRC, fixture: "x86_watcom_branch_ret.xml", base: 0x2c0000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(5));"], writes: &[] },
     Mve { key: "STFWD", sym: "mve_", source: STORE_FWD_SRC, fixture: "x86_watcom_store_fwd.xml", base: 0x2d0000, inputs: &["{ a = 7; b = 0; LOG_RET(mve()); LOG_RET(b); }"], writes: &[] },
+    Mve { key: "SWTAIL", sym: "mve_", source: SWITCH_TAIL_SRC, fixture: "x86_watcom_switch_tail.xml", base: 0x2e0000, inputs: &["{ short m[2]; m[0] = 9; m[1] = 5; g = 1; LOG_RET(mve(1, m)); g = 0; LOG_RET(mve(2, m)); m[1] = 0; g = 1; LOG_RET(mve(3, m)); m[0] = 3; LOG_RET(mve(4, m)); }"], writes: &[] },
     Mve { key: "PTROFF", sym: "mve_", source: PTR_OFFSET_SRC, fixture: "x86_watcom_ptr_offset.xml", base: 0x270000, inputs: &["{ int m[4]; m[0] = 5; m[1] = 0x00030000; m[2] = 0x7fff0003; m[3] = 0; LOG_RET(mve(m)); m[2] = 0xfffe0000; LOG_RET(mve(m)); }"], writes: &[] },
 ];
 

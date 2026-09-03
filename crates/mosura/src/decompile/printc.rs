@@ -2948,7 +2948,7 @@ impl<'a> PrintC<'a> {
     /// The condition of an `if`/`while`, negated when the body is on the false edge. The
     /// negation is pushed into the expression (Ghidra's print-time boolean negation) rather
     /// than wrapped in `!(...)`: `!(!x)` cancels, `==`/`!=` flip, `&&`/`||` De Morgan.
-    fn render_condition(&mut self, s: &Structured, cond_idx: usize, negated: bool) -> String {
+    pub(crate) fn render_condition(&mut self, s: &Structured, cond_idx: usize, negated: bool) -> String {
         self.render_cond_expr(s, cond_idx, negated)
     }
 

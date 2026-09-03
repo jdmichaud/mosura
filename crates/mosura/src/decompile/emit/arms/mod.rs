@@ -249,7 +249,7 @@ pub const SURFACE_FIELDS: &[&str] = &[
 ];
 #[cfg_attr(not(test), allow(dead_code))] // the documented list; read by the surface test
 pub const SURFACE_METHODS: &[&str] = &[
-    "name_of", "render_var", "lvalue_of", "is_explicit", "strlen_arg", "emit_structured", "render_op",
+    "name_of", "render_var", "lvalue_of", "is_explicit", "strlen_arg", "emit_structured", "render_op", "render_condition",
     "lab_name", "first_pc", "next_flow_after", "plain_if_condition_vn", "spacebase_sym_at", "frame_off",
     "type_of", "stack_slot_name", "declare_stack", "collect_conj_clauses", "render_cond_expr", "emit_basic",
     "cast_operand",

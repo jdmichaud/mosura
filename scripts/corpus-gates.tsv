@@ -14,6 +14,7 @@ string_ops_bar	memcmp(	>=	22	w6a/1f83faa
 string_ops_bar	strlen(	>=	24	w6a/1f83faa
 chain	0x429d0	no-switch	-	w5c/8e8e956
 chain	0x23c40	no-switch	-	w5c/8e8e956
+chain	0x47594	no-switch	-	e31/exact-1000
 chain	0x45ba0	no-switch	-	w5c/8e8e956
 chain	0x28d98	no-switch	-	w5c/8e8e956
 chain	0x21f30	no-switch	-	w5c/8e8e956

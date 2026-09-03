@@ -670,37 +670,60 @@ fn try_emit_narrow_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
     if clauses.is_empty() {
         return false;
     }
-    let mut cases: Vec<(VarnodeId, i64)> = Vec::new();
+    let mut cases: Vec<(VarnodeId, Vec<i64>)> = Vec::new();
+    // the leading clauses that are witnessed 16-bit equalities become the switch nest; a TAIL of
+    // other clauses (a byte global's test after the two message compares, WAR2 FUN_0003ec58)
+    // prints as an inner `if` in the innermost case — the switch owns exactly the compares the
+    // original made at 16 bits. One tail clause, and only one that reads MEMORY: a tail testing
+    // a register local measured 10 downs in the long dispatcher chains (round e30), the switch
+    // nest re-laying their blocks
+    let mut tail: Vec<(usize, bool)> = Vec::new();
     for &(node, neg) in &clauses {
         // a clause with a cut edge of its own is not a plain test
         let FlowKind::Basic(bid) = s.blocks[node].kind else { return false };
         if s.gotos.contains_key(&bid) || s.node_gotos.contains_key(&node) {
             return false;
         }
+        if !tail.is_empty() {
+            tail.push((node, neg));
+            continue;
+        }
         let Some(cb) = pr.f.block(bid).ops.iter().rev().copied().find(|&op| !pr.f.op(op).is_dead() && pr.f.op(op).code() == OpCode::Cbranch) else { return false };
-        let Some(cond) = pr.f.op(cb).input(1) else { return false };
-        let Some((x, code, k, cneg)) = sparse_compare(pr, cond) else { return false };
-        // the clause holds iff `x == k`: an equality printed straight, or an inequality negated
-        let is_eq = match code {
-            OpCode::IntEqual => true,
-            OpCode::IntNotequal => false,
-            _ => return false,
-        };
-        if is_eq == (neg ^ cneg) {
-            return false;
+        let narrow = (|| {
+            let cond = pr.f.op(cb).input(1)?;
+            let (x, code, k, cneg) = sparse_compare(pr, cond)?;
+            if pr.f.vn(x).size != 2 {
+                return None;
+            }
+            let pc = pr.f.op(cb).seqnum.pc.offset;
+            let &(imm, kind, (_, rsize)) = pr.recovered.sparse_cmp_sites.get(&pc)?;
+            if rsize != 2 || imm & 0xffff != (k as u64) & 0xffff {
+                return None;
+            }
+            match code {
+                // the clause holds iff `x == k`: an equality printed straight, or an inequality
+                // negated
+                OpCode::IntEqual | OpCode::IntNotequal => {
+                    let is_eq = code == OpCode::IntEqual;
+                    if is_eq == (neg ^ cneg) || kind != CMP_EQ {
+                        return None;
+                    }
+                    Some((x, vec![k]))
+                }
+                _ => None,
+            }
+        })();
+        match narrow {
+            // (a scrutinee compared elsewhere too — a tree the full recognizer declined, or a
+            // chain — still prints: declining measured net negative, -0.70 sim over 47 TUs in
+            // round e3, the one-case switch fragment recompiling closer than the `if` more often
+            // than not)
+            Some(case) => cases.push(case),
+            None => tail.push((node, neg)),
         }
-        if pr.f.vn(x).size != 2 {
-            return false;
-        }
-        let pc = pr.f.op(cb).seqnum.pc.offset;
-        let Some(&(imm, kind, (_, rsize))) = pr.recovered.sparse_cmp_sites.get(&pc) else { return false };
-        if kind != CMP_EQ || rsize != 2 || imm & 0xffff != (k as u64) & 0xffff {
-            return false;
-        }
-        // (a scrutinee compared elsewhere too — a tree the full recognizer declined, or a chain
-        // — still prints: declining measured net negative, -0.70 sim over 47 TUs in round e3,
-        // the one-case switch fragment recompiling closer than the `if` more often than not)
-        cases.push((x, k));
+    }
+    if cases.is_empty() || tail.len() > 1 || tail.iter().any(|&(node, _)| !clause_reads_memory(pr, s, node)) {
+        return false;
     }
     // a `break;` inside the body would bind to the switch instead of the loop it exits
     let mut stack = vec![body];
@@ -719,13 +742,23 @@ fn try_emit_narrow_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
     // the condition block's own statements first, as the if emitter prints them
     pr.emit_structured(s, cond_node, indent, out);
     let n = cases.len();
-    for (i, &(x, k)) in cases.iter().enumerate() {
+    for (i, (x, ks)) in cases.iter().enumerate() {
         let pad = "  ".repeat(indent + i);
-        let sv = pr.operand(x, 0, false);
+        let sv = pr.operand(*x, 0, false);
         let _ = writeln!(out, "{pad}switch ({sv}) {{");
-        let _ = writeln!(out, "{pad}case {}:", render_const_typed((k as u64) & 0xffff, 2, false));
+        for &k in ks {
+            let _ = writeln!(out, "{pad}case {}:", render_const_typed((k as u64) & 0xffff, 2, false));
+        }
     }
-    pr.emit_structured(s, body, indent + n, out);
+    if tail.is_empty() {
+        pr.emit_structured(s, body, indent + n, out);
+    } else {
+        let conds: Vec<String> = tail.iter().map(|&(node, neg)| pr.render_condition(s, node, neg)).collect();
+        let pad = "  ".repeat(indent + n);
+        let _ = writeln!(out, "{pad}if ({}) {{", conds.join(" && "));
+        pr.emit_structured(s, body, indent + n + 1, out);
+        let _ = writeln!(out, "{pad}}}");
+    }
     for i in (0..n).rev() {
         let pad = "  ".repeat(indent + i);
         let _ = writeln!(out, "{pad}  break;");
@@ -773,6 +806,50 @@ fn sparse_key(pr: &PrintC<'_>, x: VarnodeId) -> SparseKey {
 
 /// The compare a condition varnode expresses on a scrutinee: `(scrutinee, opcode, constant,
 /// negated)` — through one BOOL_NEGATE, with the constant on either side (mirrored).
+/// A clause whose compare reads MEMORY — a global or a load, never a register-held local — on
+/// at least one side, with no explicit local on either: the tail form of the narrow switch is
+/// admitted for these only (see `try_emit_narrow_switch`).
+fn clause_reads_memory(pr: &PrintC<'_>, s: &Structured, node: usize) -> bool {
+    let FlowKind::Basic(bid) = s.blocks[node].kind else { return false };
+    let Some(cb) = pr.f.block(bid).ops.iter().rev().copied().find(|&op| !pr.f.op(op).is_dead() && pr.f.op(op).code() == OpCode::Cbranch) else { return false };
+    let Some(mut cond) = pr.f.op(cb).input(1) else { return false };
+    for _ in 0..3 {
+        let Some(d) = pr.f.vn(cond).def else { return false };
+        let o = pr.f.op(d);
+        match o.code() {
+            OpCode::BoolNegate | OpCode::Copy => {
+                let Some(x) = o.input(0) else { return false };
+                cond = x;
+            }
+            _ => break,
+        }
+    }
+    let Some(d) = pr.f.vn(cond).def else { return false };
+    let o = pr.f.op(d);
+    if !o.is_bool_output() {
+        return false;
+    }
+    let ram = pr.f.spaces.by_name("ram");
+    let mut memory = false;
+    for i in 0..o.num_inputs() {
+        let Some(v) = o.input(i) else { return false };
+        let vn = pr.f.vn(v);
+        if vn.is_constant() {
+            continue;
+        }
+        // a global, or a load INLINED at the compare; a named local — even one holding a load
+        // (FUN_00047594's `iVar2 != 10`, a down of round e30) — is a register-held value
+        let global = Some(vn.loc.space) == ram;
+        let inline_load = !pr.is_explicit(v) && vn.def.is_some_and(|dd| pr.f.op(dd).code() == OpCode::Load);
+        if global || inline_load {
+            memory = true;
+        } else if pr.is_explicit(v) {
+            return false;
+        }
+    }
+    memory
+}
+
 fn sparse_compare(pr: &PrintC<'_>, cond: VarnodeId) -> Option<(VarnodeId, OpCode, i64, bool)> {
     let mut v = cond;
     let mut neg = false;
