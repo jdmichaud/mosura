@@ -214,6 +214,13 @@ pub struct Funcdata {
     /// flows into callees is the caller's preserved value, not a parameter. Empty for every
     /// rendering but the survey's recovered one. mosura-only.
     pub dropped_params: std::collections::HashSet<VarnodeId>,
+    /// MARK (decided by the survey from the original's bytes): the function returns FAR
+    /// (`RETF`); its own contract declares `far` (WAR2 FUN_00058840, a far-called handler).
+    pub far_return: bool,
+    /// MARK (decided by the survey from the original's `RET n`): stack parameter slots the
+    /// function pops but never reads — declared as unused parameters under the stack
+    /// convention so the recompile pops them too (WAR2 FUN_0004dd2c: `return 0;` with `RET 4`).
+    pub extra_stack_params: u32,
 
     /// Register offsets this function SAVES AND RESTORES (a `push`/`pop` pair). They are
     /// callee-saved storage, never parameters — see `recover_input_params`' custom-register branch.
@@ -427,6 +434,8 @@ impl Funcdata {
             call_specs: std::collections::HashMap::new(),
             own_modify: None,
             dropped_params: Default::default(),
+            far_return: false,
+            extra_stack_params: 0,
             own_saved: None,
             not_mapped: super::space::RangeList::default(),
             call_guards_active: false,

@@ -127,6 +127,24 @@ fn const_phi_tail_returns_per_path() {
     assert!(c.contains("return 1;") && c.contains("return 0;") && !c.contains(" = 0;"), "per-path returns, no merged variable:\n{c}");
 }
 
+fn ret_n_without_parameters_declares_dummy_stack_parameters() {
+    let (mut f, insns) = decompiled("x86_watcom_dummy_param.xml");
+    assert!(insns.iter().any(|x| x.text == "RET 0x4"), "the fixture pops its argument: {:?}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
+    f.ret_pop = Some(4); // the survey's flow analysis reads it off the `RET n`
+    assert_eq!(mosura::recompile::buildconfig::dummy_stack_params(&f), 1);
+    f.extra_stack_params = 1;
+    let c = reference_print(&f);
+    assert!(c.contains("func(xunknown4 param_1)"), "the signature declares the popped slot:\n{c}");
+}
+
+/// The far return: every return a `RETF`.
+#[test]
+fn far_return_is_witnessed_by_retf() {
+    let (_f, insns) = decompiled("x86_watcom_far_return.xml");
+    assert!(insns.iter().any(|x| x.text == "RETF"), "{:?}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
+    assert!(mosura::recompile::buildconfig::far_return_from_evidence(&insns));
+}
+
 /// A sign-extension of an unsigned-typed piece re-signs the operand at its own width: the
 /// split local's high half is `(int4)(int2)` like its low half, never a zero-extending `(int4)`
 /// of the unsigned accessor.

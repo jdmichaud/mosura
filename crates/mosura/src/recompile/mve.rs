@@ -403,6 +403,29 @@ int mve(int a)
 }
 "#;
 
+/// A stack-convention callback that never reads its argument (WAR2 FUN_0004dd2c, FUN_0004e820:
+/// `return 0;` under `RET 4`): the decompiler recovers no parameter, so the recompile pops
+/// nothing — the dummy stack parameter the `RET n` witnesses restores the pop.
+const DUMMY_PARAM_SRC: &str = r#"
+#pragma aux mve parm [];
+int mve(int unused)
+{
+    return 0;
+}
+"#;
+
+/// A far-returning function (WAR2 FUN_00058840, a far-called handler): `RETF` witnesses the
+/// `far` clause of its contract.
+const FAR_RETURN_SRC: &str = r#"
+#pragma aux mve far;
+extern int total;
+int mve(int a)
+{
+    total += a;
+    return 3;
+}
+"#;
+
 /// Every MVE, in the generator's order.
 pub const MVES: &[Mve] = &[
     Mve { key: "CSAVE", sym: "mve_", source: CALLEE_SAVE_SRC, fixture: "x86_watcom_callee_save.xml", base: 0x100000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(1));", "LOG_RET(mve(3));", "LOG_RET(mve(16));"], writes: &[("read16", "dst", 16)] },
@@ -426,6 +449,8 @@ pub const MVES: &[Mve] = &[
     Mve { key: "NZEXT", sym: "mve_", source: NARROW_ZEXT_SRC, fixture: "x86_watcom_narrow_zext.xml", base: 0x220000, inputs: &["{ t[0] = 3; t[1] = 200; mve(0); mve(1); }"], writes: &[] },
     Mve { key: "MASKARG", sym: "mve_", source: MASK_ARG_SRC, fixture: "x86_watcom_mask_arg.xml", base: 0x230000, inputs: &["{ t[0] = 3; t[1] = 200; LOG_RET(mve(0)); LOG_RET(mve(1)); }"], writes: &[] },
     Mve { key: "CPHI", sym: "mve_", source: CONST_PHI_SRC, fixture: "x86_watcom_const_phi.xml", base: 0x240000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(7));"], writes: &[("chk", "p", 16), ("work", "p", 16)] },
+    Mve { key: "DUMMY", sym: "mve_", source: DUMMY_PARAM_SRC, fixture: "x86_watcom_dummy_param.xml", base: 0x280000, inputs: &["LOG_RET(mve(0));", "LOG_RET(mve(5));"], writes: &[] },
+    Mve { key: "FARRET", sym: "mve_", source: FAR_RETURN_SRC, fixture: "x86_watcom_far_return.xml", base: 0x290000, inputs: &["{ total = 1; LOG_RET(mve(2)); LOG_RET(total); }"], writes: &[] },
 ];
 
 /// The names an MVE declares `extern`, by kind: a declarator followed by `(` is a function, anything

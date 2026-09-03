@@ -1,6 +1,6 @@
 # Corpus gates (review R4, 2026-08-27) — the bars and sets a round must hold; `recompile::gates` reads this
 # file (war2_survey post-emit, recompile_check post-verdict, examples/corpus_gates.rs). One row per bar or TU:
-#   gate: string_ops_bar | chain | switch_labels | guard_frame | guard_volatile | guard_phantom
+#   gate: string_ops_bar | chain | switch_labels | guard_frame | guard_volatile | guard_phantom | guard_contract
 #   rule: `>=` the count is a FLOOR; `==` the count is exact; `no-switch` the TU prints no `switch (`;
 #         `EXACT` the TU's verdict is EXACT
 #   set_at: the round (and commit) the row was set at — a landing that legitimately moves a row re-stamps it here.
@@ -73,3 +73,6 @@ guard_volatile	0x4f130	EXACT	-	f695/38590d8
 guard_volatile	0x4ccc4	EXACT	-	f695/38590d8
 guard_phantom	0x2c160	EXACT	-	e10/exact-1000
 guard_phantom	0x11f18	EXACT	-	e10/exact-1000
+guard_contract	0x58840	EXACT	-	e15/exact-1000
+guard_contract	0x4dd2c	EXACT	-	e15/exact-1000
+guard_contract	0x4e820	EXACT	-	e15/exact-1000

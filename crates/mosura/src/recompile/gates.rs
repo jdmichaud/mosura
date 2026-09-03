@@ -186,7 +186,7 @@ fn rule_of(gate: &str) -> Option<&'static str> {
         "string_ops_bar" => ">=",
         "switch_labels" => "==",
         "chain" => "no-switch",
-        "guard_frame" | "guard_volatile" | "guard_phantom" => "EXACT",
+        "guard_frame" | "guard_volatile" | "guard_phantom" | "guard_contract" => "EXACT",
         _ => return None,
     })
 }
@@ -492,7 +492,7 @@ fn is_failure(verdict: &str) -> bool {
 /// Gate 7 — guard sets stay EXACT: the frame guards (frame-fill, W4) and the volatile guards (field
 /// 695) are the TUs whose EXACT the corresponding arm must never cost. A guard absent from a
 /// partial (`--only`) table is skipped audibly; absent from a full one it is a hit.
-pub fn guard_sets_exact(rows: &BTreeMap<u64, VerdictRow>, frame: &[u64], volatile: &[u64], phantom: &[u64], partial: bool) -> GateReport {
+pub fn guard_sets_exact(rows: &BTreeMap<u64, VerdictRow>, frame: &[u64], volatile: &[u64], phantom: &[u64], contract: &[u64], partial: bool) -> GateReport {
     let mut hits = Vec::new();
     let mut skipped = 0usize;
     for (set, va) in frame
@@ -500,6 +500,7 @@ pub fn guard_sets_exact(rows: &BTreeMap<u64, VerdictRow>, frame: &[u64], volatil
         .map(|v| ("frame", *v))
         .chain(volatile.iter().map(|v| ("volatile", *v)))
         .chain(phantom.iter().map(|v| ("phantom", *v)))
+        .chain(contract.iter().map(|v| ("contract", *v)))
     {
         match rows.get(&va) {
             None if partial => skipped += 1,
@@ -626,7 +627,7 @@ pub fn run_verdict_gates(
     partial: bool,
 ) -> Vec<GateReport> {
     vec![
-        guard_sets_exact(cur, &baseline.guards("guard_frame"), &baseline.guards("guard_volatile"), &baseline.guards("guard_phantom"), partial),
+        guard_sets_exact(cur, &baseline.guards("guard_frame"), &baseline.guards("guard_volatile"), &baseline.guards("guard_phantom"), &baseline.guards("guard_contract"), partial),
         match prev {
             Some(p) => verdict_regressions(p, cur),
             None => GateReport::skip("8 verdict-regressions", "no --prev"),

@@ -126,13 +126,13 @@ fn verdict_rows_parse_by_header_and_wgss_is_the_canonical_census() {
 #[test]
 fn guard_sets_exact_skip_only_on_a_partial_table() {
     let rows = table(&[(0x100, "EXACT", 1.0, 10, 10), (0x200, "SAME_SHAPE", 0.8, 8, 10)]);
-    let r = guard_sets_exact(&rows, &[0x100], &[0x200], &[], false);
+    let r = guard_sets_exact(&rows, &[0x100], &[0x200], &[], &[], false);
     assert!(r.failed() && r.hits().len() == 1 && r.hits()[0].detail.starts_with("volatile guard is SAME_SHAPE"), "{r}");
-    let r = guard_sets_exact(&rows, &[0x100, 0x300], &[], &[], false);
+    let r = guard_sets_exact(&rows, &[0x100, 0x300], &[], &[], &[], false);
     assert!(r.failed() && r.hits()[0].detail == "frame guard not in the verdict table", "{r}");
-    let r = guard_sets_exact(&rows, &[0x100, 0x300], &[], &[], true);
+    let r = guard_sets_exact(&rows, &[0x100, 0x300], &[], &[], &[], true);
     assert!(!r.failed() && r.note.contains("1 outside --only skipped"), "{r}");
-    let r = guard_sets_exact(&rows, &[0x300], &[0x400], &[], true);
+    let r = guard_sets_exact(&rows, &[0x300], &[0x400], &[], &[], true);
     assert!(matches!(r.outcome, Outcome::Skip(_)), "all guards outside --only: SKIP, never a silent pass: {r}");
 }
 
@@ -207,6 +207,8 @@ fn the_committed_baseline_loads_with_the_expected_sets() {
     assert_eq!(b.guards("guard_volatile").len(), 14);
     // the dropped-parameter (phantom) specimens, EXACT since round e10 (docs/exact-arms.md)
     assert_eq!(b.guards("guard_phantom").len(), 2);
+    // the far-return and dummy-stack-parameter contracts (docs/exact-arms.md)
+    assert_eq!(b.guards("guard_contract").len(), 3);
     assert!(b.rows.iter().all(|r| !r.set_at.is_empty()));
 }
 

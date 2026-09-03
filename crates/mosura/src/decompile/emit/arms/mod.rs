@@ -447,7 +447,9 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
     // THE ORDERED ANSWERERS (explicit, documented here; a site with two answerers lists them in
     // the order they are asked, first answer wins):
     //   OpRoot:      string-ops, sdiv-pow2, struct-return (a witnessed CALL)
-    //   Compare:     complement-cmp (the immediate flavour), then cmp-order (the operand swap)
+    //   Compare:     complement-cmp (the immediate flavour), then cmp-order (the operand swap), then cmp-sign
+    //   Equality:    unsigned-cmp, then cmp-sign (a narrow signed operand the original zero-extends)
+    //   ReturnValue: return-widen (the sign of a widened narrow return)
     //   Extension:   ext-cast (the promotion rendering of INT_ZEXT / INT_SEXT)
     //   CallArg:     mask-cast (a call argument the original masks before the call)
     //   Var:         struct-return (the hidden pointer -> `__ret`), string-ops

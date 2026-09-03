@@ -735,6 +735,10 @@ fn own_contract(
     cleanup: Option<u32>,
 ) -> Option<String> {
     let mut parts = Vec::new();
+    // A FAR return (`RETF`, `Funcdata::far_return` from the original's bytes): `far` first.
+    if f.far_return {
+        parts.push("far".to_string());
+    }
     // A STACK-BASED prototype is `parm []`. It used to short-circuit the whole declaration, so
     // these functions never got their `modify` list — the two are independent facts about the
     // contract and both belong in the same pragma.
@@ -2339,6 +2343,10 @@ fn main() {
             let mut f = f;
             let insns = mosura::recompile::insn::normalize(SURVEY_LANG, &region, *va, &mosura::recompile::insn::NoReloc).unwrap_or_default();
             f.dropped_params = mosura::recompile::buildconfig::phantom_params_from_evidence(&f, &insns);
+            // a `RETF` return declares the function `far`; a `RET n` popping slots no parameter
+            // reads declares the popped slots as unused stack parameters
+            f.far_return = mosura::recompile::buildconfig::far_return_from_evidence(&insns);
+            f.extra_stack_params = mosura::recompile::buildconfig::dummy_stack_params(&f);
             f
         };
 
@@ -2463,10 +2471,11 @@ fn main() {
         // `parm []` and not `parm caller []`: the caller-pop form leaves a bare `ret`, and the
         // callee-pop default is what produces the `ret N` these functions carry.
         let proto = mosura::decompile::fspec::recover_func_proto(&f);
-        let stack_convention = !proto.params.is_empty()
+        let stack_convention = (!proto.params.is_empty()
             && proto.params.iter().all(|p| {
                 f.spaces.get(p.addr.space).kind == mosura::decompile::space::SpaceKind::Spacebase
-            });
+            }))
+            || f.extra_stack_params > 0;
         // The callee's stack-cleanup contract, read from its own return instruction — and read
         // the SAME WAY THE CALLERS READ IT, which is the whole point of using `ret_pop` here.
         //

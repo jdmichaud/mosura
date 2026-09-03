@@ -4276,6 +4276,18 @@ pub fn rendered_param_slots(f: &Funcdata) -> Vec<RenderedParam> {
             out.push(RenderedParam { addr: slot.addr, size: slot.size, vn: None });
         }
     }
+    // MARK extra_stack_params (`Funcdata::extra_stack_params`, decided by the survey from the
+    // original's `RET n`, `buildconfig::dummy_stack_params`): the popped slots no parameter
+    // reads, declared as unused stack parameters after the recovered ones
+    if f.extra_stack_params > 0 {
+        if let Some(stack) = f.spaces.by_name("stack") {
+            let int = f.size_of_int();
+            for i in 0..f.extra_stack_params {
+                let off = u64::from(int) * u64::from(i + 1);
+                out.push(RenderedParam { addr: Address::new(stack, off), size: int, vn: None });
+            }
+        }
+    }
     out
 }
 

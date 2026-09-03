@@ -510,6 +510,29 @@ pub fn split_returns_from_evidence(
     out
 }
 
+/// The function returns FAR: its return instructions are `RETF` (WAR2 FUN_00058840).
+pub fn far_return_from_evidence(insns: &[NormInsn]) -> bool {
+    let rets: Vec<&NormInsn> = insns.iter().filter(|x| x.text.starts_with("RET")).collect();
+    !rets.is_empty() && rets.iter().all(|x| x.text == "RETF" || x.text.starts_with("RETF "))
+}
+
+/// Stack parameter slots the function POPS (`RET n`, `Funcdata::ret_pop`) beyond the ones the
+/// decompiler recovered: a function with no recovered parameter at all and a `RET 4` took one
+/// argument it never read (WAR2 FUN_0004dd2c, FUN_0004e820: `return 0;` / `return 1;` under
+/// `RET 4`). Only the all-or-nothing case: a function with recovered register parameters and
+/// a `RET n` mixes conventions this reading does not decide.
+pub fn dummy_stack_params(f: &crate::decompile::funcdata::Funcdata) -> u32 {
+    let Some(n) = f.ret_pop else { return 0 };
+    if n == 0 || n % 4 != 0 {
+        return 0;
+    }
+    let proto = crate::decompile::fspec::recover_func_proto(f);
+    if !proto.params.is_empty() {
+        return 0;
+    }
+    n / 4
+}
+
 /// Decide the constant-phi `return-split` sites
 /// ([`crate::decompile::printc::EmitReport::const_phi_candidates`]). This compiler compiles
 /// `if (x == 0) return 0; ..; return 1;` by REUSING the tested register as the return value:
@@ -1503,6 +1526,14 @@ mod tests {
         assert_eq!(regs, vec![8, 12], "EDX and EBX: {regs:?}");
         // no leading saves: nothing preserved
         assert!(preserved_registers(&lift("31c0c3")).is_empty());
+    }
+
+    /// A far return: every `RET` is a `RETF`.
+    #[test]
+    fn far_return_witness_needs_every_return_far() {
+        assert!(far_return_from_evidence(&lift("5dcb"))); // POP EBP ; RETF
+        assert!(!far_return_from_evidence(&lift("5dc3"))); // POP EBP ; RET
+        assert!(!far_return_from_evidence(&lift("cbc3"))); // RETF ; RET (mixed)
     }
 
     /// The constant-phi split: `TEST EAX,EAX ; JZ epilogue` reuses the tested register as the
