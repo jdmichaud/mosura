@@ -581,10 +581,12 @@ pub fn cmp_signs_from_evidence(
         if signs {
             continue;
         }
-        // the mask on the candidate's OWN load: `MOV r16,[..] ; AND r32,0xffff` on one register
-        // (a global's load names its address); a mask on some other register is another
-        // value's (measured: FUN_0004753c lost EXACT to the mask of a flag test two
-        // instructions earlier, round e15)
+        // the mask on the candidate's OWN value: the most recent write of the masked register
+        // ahead of the `AND r32,0xffff` is a plain MOV — a narrow load from memory (a global's
+        // load names its address) or a whole-register copy of one — with no arithmetic on the
+        // register in between; an ALU write there makes it some other value's mask (measured:
+        // FUN_0004753c lost EXACT to the `AND EBX,0xffff` of a flag test, `AND BL,0x8` just
+        // before it, round e15)
         let and_mask = window.iter().enumerate().any(|(j, x)| {
             let Some(reg) = x.text.strip_prefix("AND ").and_then(|r| r.split(',').next()) else { return false };
             if !reg.starts_with('E') || !x.text.ends_with(mask) {
@@ -592,11 +594,16 @@ pub fn cmp_signs_from_evidence(
             }
             let low = &reg[1..];
             let byte = format!("{}L", &low[..1]);
-            window[..j].iter().any(|y| {
-                y.text.starts_with("MOV ")
-                    && y.text[4..].split(',').next().is_some_and(|d| d == low || d == byte)
-                    && y.text.contains('[')
-                    && global.is_none_or(|g| y.text.ends_with(&format!("[0x{g:x}]")))
+            let family = [reg, low, &byte, &format!("{}H", &low[..1])];
+            let last_write = window[..j].iter().rev().find(|y| {
+                y.text.split_whitespace().nth(1).and_then(|o| o.split(',').next()).is_some_and(|d| family.contains(&d))
+            });
+            last_write.is_some_and(|y| {
+                let Some(rest) = y.text.strip_prefix("MOV ") else { return false };
+                let (dst, src) = rest.split_once(',').unwrap_or((rest, ""));
+                let load = src.contains('[') && (dst == low || dst == byte);
+                let copy = dst == reg && !src.contains('[');
+                (load && global.is_none_or(|g| src.ends_with(&format!("[0x{g:x}]")))) || copy
             })
         });
         // the `XOR r,r ; MOV r16,[global]` pair: the zero-extending load of THE candidate global
@@ -1657,6 +1664,13 @@ mod tests {
         // AND EBX,0xffff ; CMP DX,word ptr [0x973d8] — a mask on another register is not evidence
         let other = lift("81e3ffff0000663b15d8730900");
         assert!(cmp_signs_from_evidence(&[(0x1006, 2, Some(0x973d8))], &other).0.is_empty(), "{:?}", other.iter().map(|x| (x.addr, &x.text)).collect::<Vec<_>>());
+        // MOV BX,[EAX+0x18] ; AND BL,0x8 ; AND EBX,0xffff ; CMP EBX,1 — an ALU write between
+        // the load and the mask: another value's mask
+        let flag = lift("668b581880e30881e3ffff000083fb01");
+        assert!(cmp_signs_from_evidence(&[(0x100d, 2, None)], &flag).0.is_empty(), "{:?}", flag.iter().map(|x| (x.addr, &x.text)).collect::<Vec<_>>());
+        // MOV EAX,EDX ; AND EAX,0xffff ; CMP EAX,1 — the mask on a register copy of the load
+        let copy = lift("89d025ffff000083f801");
+        assert!(cmp_signs_from_evidence(&[(0x1007, 2, None)], &copy).0.contains(&0x1007), "{:?}", copy.iter().map(|x| (x.addr, &x.text)).collect::<Vec<_>>());
         // MOV EAX,[EAX+0x1a] ; SAR EAX,0x10 ; CMP EAX,1
         let sext = lift("8b401ac1f81083f801");
         assert_eq!(sext[2].addr, 0x1006);
