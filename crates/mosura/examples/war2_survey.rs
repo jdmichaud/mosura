@@ -969,6 +969,9 @@ fn main() {
 
     // The stack pointer's register-space offset, from the language tables rather than a constant.
     let esp_off = mosura::lang::load_cached(SURVEY_LANG).and_then(|(spec, _)| spec.register_offset("ESP"));
+    // Functions whose own returns disagree about the pop — a region-boundary symptom, counted so
+    // it cannot be silent. Zero is the expected reading; a nonzero one is a finding to chase.
+    let mut cleanup_undecided = 0usize;
 
     eprintln!("loading WAR2 via analyze_le_file ...");
     let mut prog = analysis::analyze_le_file(std::path::Path::new(&bin)).expect("analyze_le_file");
@@ -2453,14 +2456,61 @@ fn main() {
             && proto.params.iter().all(|p| {
                 f.spaces.get(p.addr.space).kind == mosura::decompile::space::SpaceKind::Spacebase
             });
-        // The callee's stack-cleanup contract, read from its own return instruction. Lifting the
-        // already-decoded bytes again costs a disassembly per function, which is nothing beside the
-        // decompile that just ran, and keeps this a property of the SUBJECT rather than of our IR.
-        let cleanup = esp_off.and_then(|sp| {
-            mosura::sleigh::disassemble(SURVEY_LANG, &region, *va)
-                .ok()
-                .and_then(|insns| mosura::recompile::callee_stack_cleanup(&insns, sp))
+        // The callee's stack-cleanup contract, read from its own return instruction — and read
+        // the SAME WAY THE CALLERS READ IT, which is the whole point of using `ret_pop` here.
+        //
+        // This used to lift the function's own byte region and scan it linearly for a `RET`. A
+        // caller decides the same fact with `analysis::decompiler::callee_cleanup`, which walks
+        // the callee's CFG from its entry — so for a function whose epilogue is a tail `JMP` into
+        // a SHARED epilogue the two disagreed: the linear scan finds no return at all and the
+        // callee-pops DEFAULT stood, while the walk follows the jump, finds the bare `RET`, and
+        // the caller emits `parm caller []` plus its `ADD ESP,n`. BOTH SIDES THEN POP, and every
+        // such call unbalances the stack by 4n bytes — emitted wrong code, in 55 of the 77
+        // functions declaring `parm []` (152 caller TUs), unanimous per callee.
+        //
+        // `Funcdata::ret_pop` is that same CFG walk's answer for THIS function, already computed
+        // in the decompile that just ran — so consulting it closes the disagreement at its source.
+        //
+        // But the walk is the FALLBACK, not the replacement, and that ordering is measured rather
+        // than assumed. Reading `ret_pop` alone also flipped 8 functions the other way, and their
+        // originals end in a bare `RET` while the walk had them popping: `FUN_00069980` got
+        // `RET 0x4`, `FUN_0006cfd0` `RET 0x8`, `FUN_00079130` `RET 0x18`. All 8 are shared-epilogue
+        // library code, where following control flow out of the function reaches a return that is
+        // not this function's contract. A return in the function's OWN body is direct evidence and
+        // outranks it.
+        //
+        // So: the function's own returns decide when it has any; the walk answers only when the
+        // body is SILENT, which is exactly the tail-JMP case that produced the defect. The two
+        // sides can then still differ in principle — but only where the definition has evidence the
+        // caller's reading lacks, which is the direction that is safe.
+        //
+        // SILENT is not the same as UNDECIDED, and the difference is load-bearing.
+        // `callee_stack_cleanup` answers `None` both for a body with no return at all and for one
+        // whose returns DISAGREE — and a single function has a single pop-contract, so disagreement
+        // is not two contracts, it is the region boundary having swallowed a neighbour's `RET`.
+        // That is the same boundary error that made the walk wrong above, so it must not fall
+        // through to the walk: an undecided body declares nothing and is counted, which turns a
+        // silent mis-attribution into a visible one.
+        let own = mosura::sleigh::disassemble(SURVEY_LANG, &region, *va).ok();
+        let has_own_return = own.as_ref().is_some_and(|insns| {
+            insns.iter().any(|i| {
+                i.ops.iter().any(|o| o.opcode == mosura::decompile::opcode::OpCode::Return as u32)
+            })
         });
+        let cleanup = match esp_off
+            .zip(own.as_ref())
+            .and_then(|(sp, insns)| mosura::recompile::callee_stack_cleanup(insns, sp))
+        {
+            // the function's own returns agree — direct evidence, and it outranks the walk
+            Some(n) => Some(n),
+            // no return in the body at all (the tail-JMP shape): the walk is the only evidence
+            None if !has_own_return => f.ret_pop,
+            // returns that disagree: a boundary error, not a contract
+            None => {
+                cleanup_undecided += 1;
+                None
+            }
+        };
         let contract = own_contract(&f, &watreg, stack_convention, cleanup);
         // CALLER-SIDE REGISTER CONTRACTS, definition-side truth. The `parm [..]` pragma
         // below tells Watcom the callee's true argument registers — but only in the callee's
@@ -2988,6 +3038,13 @@ fn main() {
         eprintln!("caller-side parm pragmas: {patched} TU(s) patched");
     }
     eprintln!("EMIT done: ok={ok} fail={fail} in {:?}", t0.elapsed());
+    if cleanup_undecided > 0 {
+        eprintln!(
+            "stack-cleanup UNDECIDED: {cleanup_undecided} function(s) whose own returns disagree \
+             about the pop — a single function has one contract, so this is the region boundary \
+             taking in a neighbour's RET. They declare no convention rather than guess one."
+        );
+    }
     if contract_bad > 0 {
         let mut top: Vec<_> = contract_counts.iter().collect();
         top.sort_by(|a, b| b.1.cmp(a.1));
