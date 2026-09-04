@@ -2320,6 +2320,19 @@ mod tests {
         assert!(!p.contains_key(&0x1200));
     }
 
+    /// `Fact::ALL` is a hand list; this exhaustive `match` is the guard (a new variant fails to
+    /// compile here until it is listed).
+    #[test]
+    fn every_fact_is_in_all() {
+        for f in Fact::ALL {
+            let listed = match f {
+                Fact::Frame | Fact::SavesBeforeFrame | Fact::PrePentiumTuning | Fact::NoReorderer => Fact::ALL.contains(&f),
+            };
+            assert!(listed, "{f:?}");
+        }
+        assert_eq!(Fact::ALL.len(), 4);
+    }
+
     /// Either reorderer shape proves the one fact `NoReorderer`, which is the one rule; a shape
     /// proves nothing about the other facts.
     #[test]

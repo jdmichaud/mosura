@@ -131,6 +131,338 @@ impl Recovered {
     }
 }
 
+/// The decisions this registry has that `prev` does not — a site, key or flag a further render
+/// INTRODUCED (review F3's fixpoint check; finding 3: each arm compares its own `Sites`, and
+/// `Recovered::grown_over` destructures the registry WITHOUT `..`, so a new arm is a compile
+/// error until it is compared — a check that quietly narrows is worse than no check). Growth
+/// only: a decision whose candidate the render consumed vanishes by design. The widening
+/// compares its decided candidates' ADDRESSES (`port::Sites::widen_local_pcs`), never the
+/// representative indices a re-render can renumber.
+pub trait Grown {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str>;
+}
+impl Grown for super::port::Sites {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.narrow_return && self.narrow_return_width != prev.narrow_return_width {
+            out.push("narrow_return_width");
+        }
+        if self.narrow_return && !prev.narrow_return {
+            out.push("narrow_return");
+        }
+        if self.narrow_return_signed && !prev.narrow_return_signed {
+            out.push("narrow_return_signed");
+        }
+        if self.widen_local_pcs.iter().any(|x| !prev.widen_local_pcs.contains(x)) {
+            out.push("widen_local_pcs");
+        }
+        if self.tier2_sites.iter().any(|x| !prev.tier2_sites.contains(x)) {
+            out.push("tier2_sites");
+        }
+        if self.store_orders.keys().any(|k| !prev.store_orders.contains_key(k)) {
+            out.push("store_orders");
+        }
+        if self.call_arg_orders.keys().any(|k| !prev.call_arg_orders.contains_key(k)) {
+            out.push("call_arg_orders");
+        }
+        if self.arm_swap_sites.iter().any(|x| !prev.arm_swap_sites.contains(x)) {
+            out.push("arm_swap_sites");
+        }
+        if self.ilv_orders.keys().any(|k| !prev.ilv_orders.contains_key(k)) {
+            out.push("ilv_orders");
+        }
+        out
+    }
+}
+impl Grown for super::complement_cmp::Sites {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.sites.iter().any(|x| !prev.sites.contains(x)) {
+            out.push("sites");
+        }
+        out
+    }
+}
+impl Grown for super::cmp_order::Sites {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.sites.iter().any(|x| !prev.sites.contains(x)) {
+            out.push("sites");
+        }
+        out
+    }
+}
+impl Grown for super::ext_cast::Sites {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.sites.iter().any(|x| !prev.sites.contains(x)) {
+            out.push("sites");
+        }
+        out
+    }
+}
+impl Grown for super::mask_cast::Sites {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.sites.keys().any(|k| !prev.sites.contains_key(k)) {
+            out.push("sites");
+        }
+        out
+    }
+}
+impl Grown for super::unsigned_cmp::Sites {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.sites.iter().any(|x| !prev.sites.contains(x)) {
+            out.push("sites");
+        }
+        out
+    }
+}
+impl Grown for super::return_split::Sites {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.split.iter().any(|x| !prev.split.contains(x)) {
+            out.push("split");
+        }
+        if self.const_phi.iter().any(|x| !prev.const_phi.contains(x)) {
+            out.push("const_phi");
+        }
+        if self.early_return.iter().any(|x| !prev.early_return.contains(x)) {
+            out.push("early_return");
+        }
+        if self.branch_return.iter().any(|x| !prev.branch_return.contains(x)) {
+            out.push("branch_return");
+        }
+        out
+    }
+}
+impl Grown for super::counted_loop::Sites {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.sites.iter().any(|x| !prev.sites.contains(x)) {
+            out.push("sites");
+        }
+        out
+    }
+}
+impl Grown for super::store_forward::Sites {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.sites.iter().any(|x| !prev.sites.contains(x)) {
+            out.push("sites");
+        }
+        out
+    }
+}
+impl Grown for super::cmp_sign::Sites {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.sites.iter().any(|x| !prev.sites.contains(x)) {
+            out.push("sites");
+        }
+        if self.globals.iter().any(|x| !prev.globals.contains(x)) {
+            out.push("globals");
+        }
+        out
+    }
+}
+impl Grown for super::ptr_offset::Sites {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.sites.iter().any(|x| !prev.sites.contains(x)) {
+            out.push("sites");
+        }
+        out
+    }
+}
+impl Grown for super::load_hoist::Sites {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.sites.iter().any(|x| !prev.sites.contains(x)) {
+            out.push("sites");
+        }
+        out
+    }
+}
+impl Grown for super::return_widen::Sites {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.zero_widened && !prev.zero_widened {
+            out.push("zero_widened");
+        }
+        out
+    }
+}
+impl Grown for super::nested_conds::Sites {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.sites.iter().any(|x| !prev.sites.contains(x)) {
+            out.push("sites");
+        }
+        out
+    }
+}
+impl Grown for super::snapshot::Sites {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.sites.keys().any(|k| !prev.sites.contains_key(k)) {
+            out.push("sites");
+        }
+        out
+    }
+}
+impl Grown for super::testmem::Sites {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.sites.iter().any(|x| !prev.sites.contains(x)) {
+            out.push("sites");
+        }
+        out
+    }
+}
+impl Grown for super::array_index::Sites {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.sites.iter().any(|x| !prev.sites.contains(x)) {
+            out.push("sites");
+        }
+        out
+    }
+}
+impl Grown for super::join_narrow::Sites {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.sites.iter().any(|x| !prev.sites.contains(x)) {
+            out.push("sites");
+        }
+        out
+    }
+}
+impl Grown for super::string_ops::Sites {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.sites.iter().any(|x| !prev.sites.contains(x)) {
+            out.push("sites");
+        }
+        out
+    }
+}
+impl Grown for super::sdiv_pow2::Sites {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.sites.iter().any(|x| !prev.sites.contains(x)) {
+            out.push("sites");
+        }
+        out
+    }
+}
+impl Grown for super::frame_fill::Sites {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.frame.is_some() && self.frame != prev.frame {
+            out.push("frame");
+        }
+        out
+    }
+}
+impl Grown for super::sparse_switch::Sites {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.sites.keys().any(|k| !prev.sites.contains_key(k)) {
+            out.push("sites");
+        }
+        out
+    }
+}
+impl Grown for super::struct_copy::Sites {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.runs.keys().any(|k| !prev.runs.contains_key(k)) {
+            out.push("runs");
+        }
+        out
+    }
+}
+
+impl Recovered {
+    /// The decisions of `self` that `prev` lacks, as `arm.field` names.
+    pub fn grown_over(&self, prev: &Recovered) -> Vec<String> {
+        let Recovered { port, complement_cmp, cmp_order, ext_cast, mask_cast, unsigned_cmp, return_split, counted_loop, store_forward, cmp_sign, ptr_offset, load_hoist, return_widen, nested_conds, snapshot, testmem, array_index, join_narrow, string_ops, sdiv_pow2, frame_fill, sparse_switch, struct_copy } = self;
+        let mut out = Vec::new();
+        for f in port.grown_over(&prev.port) {
+            out.push(format!("port.{f}"));
+        }
+        for f in complement_cmp.grown_over(&prev.complement_cmp) {
+            out.push(format!("complement_cmp.{f}"));
+        }
+        for f in cmp_order.grown_over(&prev.cmp_order) {
+            out.push(format!("cmp_order.{f}"));
+        }
+        for f in ext_cast.grown_over(&prev.ext_cast) {
+            out.push(format!("ext_cast.{f}"));
+        }
+        for f in mask_cast.grown_over(&prev.mask_cast) {
+            out.push(format!("mask_cast.{f}"));
+        }
+        for f in unsigned_cmp.grown_over(&prev.unsigned_cmp) {
+            out.push(format!("unsigned_cmp.{f}"));
+        }
+        for f in return_split.grown_over(&prev.return_split) {
+            out.push(format!("return_split.{f}"));
+        }
+        for f in counted_loop.grown_over(&prev.counted_loop) {
+            out.push(format!("counted_loop.{f}"));
+        }
+        for f in store_forward.grown_over(&prev.store_forward) {
+            out.push(format!("store_forward.{f}"));
+        }
+        for f in cmp_sign.grown_over(&prev.cmp_sign) {
+            out.push(format!("cmp_sign.{f}"));
+        }
+        for f in ptr_offset.grown_over(&prev.ptr_offset) {
+            out.push(format!("ptr_offset.{f}"));
+        }
+        for f in load_hoist.grown_over(&prev.load_hoist) {
+            out.push(format!("load_hoist.{f}"));
+        }
+        for f in return_widen.grown_over(&prev.return_widen) {
+            out.push(format!("return_widen.{f}"));
+        }
+        for f in nested_conds.grown_over(&prev.nested_conds) {
+            out.push(format!("nested_conds.{f}"));
+        }
+        for f in snapshot.grown_over(&prev.snapshot) {
+            out.push(format!("snapshot.{f}"));
+        }
+        for f in testmem.grown_over(&prev.testmem) {
+            out.push(format!("testmem.{f}"));
+        }
+        for f in array_index.grown_over(&prev.array_index) {
+            out.push(format!("array_index.{f}"));
+        }
+        for f in join_narrow.grown_over(&prev.join_narrow) {
+            out.push(format!("join_narrow.{f}"));
+        }
+        for f in string_ops.grown_over(&prev.string_ops) {
+            out.push(format!("string_ops.{f}"));
+        }
+        for f in sdiv_pow2.grown_over(&prev.sdiv_pow2) {
+            out.push(format!("sdiv_pow2.{f}"));
+        }
+        for f in frame_fill.grown_over(&prev.frame_fill) {
+            out.push(format!("frame_fill.{f}"));
+        }
+        for f in sparse_switch.grown_over(&prev.sparse_switch) {
+            out.push(format!("sparse_switch.{f}"));
+        }
+        for f in struct_copy.grown_over(&prev.struct_copy) {
+            out.push(format!("struct_copy.{f}"));
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -138,6 +470,20 @@ mod tests {
     /// Every registry arm switches off by name (either spelling), an unknown name is refused
     /// with the switchable list, and the R2b block goes off as one unit — a widened
     /// declaration never survives without the rendering that consumes it.
+    /// Every registry arm is switchable and compared: destructured WITHOUT `..`, so a new arm
+    /// sub-struct fails to compile here until it is in `ARMS` (loud) — the guarantee F2 exists
+    /// to give, enforced by the compiler instead of a hand list.
+    #[test]
+    fn every_registry_arm_is_in_arms() {
+        let Recovered { port, complement_cmp, cmp_order, ext_cast, mask_cast, unsigned_cmp, return_split, counted_loop, store_forward, cmp_sign, ptr_offset, load_hoist, return_widen, nested_conds, snapshot, testmem, array_index, join_narrow, string_ops, sdiv_pow2, frame_fill, sparse_switch, struct_copy } = Recovered::default();
+        let names = ["port", "complement_cmp", "cmp_order", "ext_cast", "mask_cast", "unsigned_cmp", "return_split", "counted_loop", "store_forward", "cmp_sign", "ptr_offset", "load_hoist", "return_widen", "nested_conds", "snapshot", "testmem", "array_index", "join_narrow", "string_ops", "sdiv_pow2", "frame_fill", "sparse_switch", "struct_copy"];
+        let _ = (&port, &complement_cmp, &cmp_order, &ext_cast, &mask_cast, &unsigned_cmp, &return_split, &counted_loop, &store_forward, &cmp_sign, &ptr_offset, &load_hoist, &return_widen, &nested_conds, &snapshot, &testmem, &array_index, &join_narrow, &string_ops, &sdiv_pow2, &frame_fill, &sparse_switch, &struct_copy);
+        assert_eq!(names.len(), Recovered::ARMS.len());
+        for n in names {
+            assert!(Recovered::ARMS.contains(&n), "{n} is a registry arm but not switchable");
+        }
+    }
+
     #[test]
     fn switch_off_is_by_name_and_atomic_per_arm() {
         let mut r = Recovered::default();

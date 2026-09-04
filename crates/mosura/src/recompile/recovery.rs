@@ -14,6 +14,7 @@
 //! and fills the survey's pragma list, so it comes in as a closure over the report.
 use crate::decompile::emit::{EmitChoices, ShiftMask};
 use crate::decompile::funcdata::Funcdata;
+use crate::decompile::emit::arms::registry::Grown;
 use crate::decompile::printc::{EmitReport, RecoveredChoices};
 use crate::recompile::insn::NormInsn;
 use std::collections::HashMap;
@@ -55,7 +56,7 @@ pub fn recover(
         let (_, report3) = crate::decompile::printc::print_c_recovered_report(f, rec_choices, &recovered);
         let mut again = derive(&report3, insns, call_arg_orders);
         again.nested_conds.sites.extend(crate::recompile::buildconfig::nested_conds_from_evidence(&report3.nested_conds.candidates, insns));
-        let grown = new_decisions(&recovered, &again);
+        let grown = again.grown_over(&recovered);
         if !grown.is_empty() {
             eprintln!("[recover] FIXPOINT VIOLATION {}: the third render introduces [{}]", f.name, grown.join(" "));
         }
@@ -91,6 +92,13 @@ fn derive(report: &EmitReport, insns: &[NormInsn], call_arg_orders: HashMap<u64,
             narrow_return: narrow_ret.narrow,
             narrow_return_signed: narrow_ret.signed,
             narrow_return_width: narrow_ret.width,
+            widen_local_pcs: report
+                .port
+                .local_width_candidates
+                .iter()
+                .filter(|(rep, _)| widen.0.contains(rep))
+                .map(|&(_, pc)| pc)
+                .collect(),
             widen_local_reps: widen.0,
             tier2_sites: widen.1,
             store_orders: {
@@ -238,119 +246,6 @@ fn derive(report: &EmitReport, insns: &[NormInsn], call_arg_orders: HashMap<u64,
     }
 }
 
-/// The decisions `b` (a derivation from a render under `a`) has that `a` does not: a site,
-/// key or flag introduced by the further render — growth, the one direction that means the
-/// rounds have not converged. A decision that vanishes because its candidate was consumed is
-/// not counted (the rounds accumulate by design).
-fn new_decisions(a: &RecoveredChoices, b: &RecoveredChoices) -> Vec<&'static str> {
-    let mut out = Vec::new();
-    if b.complement_cmp.sites.iter().any(|x| !a.complement_cmp.sites.contains(x)) {
-        out.push("complement_cmp.sites");
-    }
-    if b.cmp_order.sites.iter().any(|x| !a.cmp_order.sites.contains(x)) {
-        out.push("cmp_order.sites");
-    }
-    if b.ext_cast.sites.iter().any(|x| !a.ext_cast.sites.contains(x)) {
-        out.push("ext_cast.sites");
-    }
-    if b.unsigned_cmp.sites.iter().any(|x| !a.unsigned_cmp.sites.contains(x)) {
-        out.push("unsigned_cmp.sites");
-    }
-    if b.return_split.split.iter().any(|x| !a.return_split.split.contains(x)) {
-        out.push("return_split.split");
-    }
-    if b.return_split.const_phi.iter().any(|x| !a.return_split.const_phi.contains(x)) {
-        out.push("return_split.const_phi");
-    }
-    if b.return_split.early_return.iter().any(|x| !a.return_split.early_return.contains(x)) {
-        out.push("return_split.early_return");
-    }
-    if b.counted_loop.sites.iter().any(|x| !a.counted_loop.sites.contains(x)) {
-        out.push("counted_loop.sites");
-    }
-    if b.return_split.branch_return.iter().any(|x| !a.return_split.branch_return.contains(x)) {
-        out.push("return_split.branch_return");
-    }
-    if b.store_forward.sites.iter().any(|x| !a.store_forward.sites.contains(x)) {
-        out.push("store_forward.sites");
-    }
-    if b.cmp_sign.sites.iter().any(|x| !a.cmp_sign.sites.contains(x)) {
-        out.push("cmp_sign.sites");
-    }
-    if b.cmp_sign.globals.iter().any(|x| !a.cmp_sign.globals.contains(x)) {
-        out.push("cmp_sign.globals");
-    }
-    if b.ptr_offset.sites.iter().any(|x| !a.ptr_offset.sites.contains(x)) {
-        out.push("ptr_offset.sites");
-    }
-    if b.load_hoist.sites.iter().any(|x| !a.load_hoist.sites.contains(x)) {
-        out.push("load_hoist.sites");
-    }
-    if b.nested_conds.sites.iter().any(|x| !a.nested_conds.sites.contains(x)) {
-        out.push("nested_conds.sites");
-    }
-    if b.port.widen_local_reps.iter().any(|x| !a.port.widen_local_reps.contains(x)) {
-        out.push("port.widen_local_reps");
-    }
-    if b.port.tier2_sites.iter().any(|x| !a.port.tier2_sites.contains(x)) {
-        out.push("port.tier2_sites");
-    }
-    if b.testmem.sites.iter().any(|x| !a.testmem.sites.contains(x)) {
-        out.push("testmem.sites");
-    }
-    if b.port.arm_swap_sites.iter().any(|x| !a.port.arm_swap_sites.contains(x)) {
-        out.push("port.arm_swap_sites");
-    }
-    if b.array_index.sites.iter().any(|x| !a.array_index.sites.contains(x)) {
-        out.push("array_index.sites");
-    }
-    if b.join_narrow.sites.iter().any(|x| !a.join_narrow.sites.contains(x)) {
-        out.push("join_narrow.sites");
-    }
-    if b.string_ops.sites.iter().any(|x| !a.string_ops.sites.contains(x)) {
-        out.push("string_ops.sites");
-    }
-    if b.sdiv_pow2.sites.iter().any(|x| !a.sdiv_pow2.sites.contains(x)) {
-        out.push("sdiv_pow2.sites");
-    }
-    if b.mask_cast.sites.keys().any(|k| !a.mask_cast.sites.contains_key(k)) {
-        out.push("mask_cast.sites");
-    }
-    if b.snapshot.sites.keys().any(|k| !a.snapshot.sites.contains_key(k)) {
-        out.push("snapshot.sites");
-    }
-    if b.port.store_orders.keys().any(|k| !a.port.store_orders.contains_key(k)) {
-        out.push("port.store_orders");
-    }
-    if b.port.call_arg_orders.keys().any(|k| !a.port.call_arg_orders.contains_key(k)) {
-        out.push("port.call_arg_orders");
-    }
-    if b.sparse_switch.sites.keys().any(|k| !a.sparse_switch.sites.contains_key(k)) {
-        out.push("sparse_switch.sites");
-    }
-    if b.struct_copy.runs.keys().any(|k| !a.struct_copy.runs.contains_key(k)) {
-        out.push("struct_copy.runs");
-    }
-    if b.port.ilv_orders.keys().any(|k| !a.port.ilv_orders.contains_key(k)) {
-        out.push("port.ilv_orders");
-    }
-    if b.return_widen.zero_widened && !a.return_widen.zero_widened {
-        out.push("return_widen.zero_widened");
-    }
-    if b.port.narrow_return && !a.port.narrow_return {
-        out.push("port.narrow_return");
-    }
-    if b.port.narrow_return_signed && !a.port.narrow_return_signed {
-        out.push("port.narrow_return_signed");
-    }
-    if a.port.narrow_return_width != b.port.narrow_return_width && b.port.narrow_return {
-        out.push("port.narrow_return_width");
-    }
-    if b.frame_fill.frame.is_some() && a.frame_fill.frame != b.frame_fill.frame {
-        out.push("frame_fill.frame");
-    }
-    out
-}
 
 /// The hidden struct-return DECISION for `f` — the shape (`analysis::sret::sret_shape`) plus its
 /// byte witness: on the cdecl side the function's own `ret $4` (it pops exactly the pointer's

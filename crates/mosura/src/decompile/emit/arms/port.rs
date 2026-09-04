@@ -82,6 +82,11 @@ pub struct Sites {
     /// HighVariable representatives whose declaration widens to int width (`local-width`,
     /// per declared local instead of the arm's whole-function blanket).
     pub widen_local_reps: std::collections::HashSet<u32>,
+    /// The widened representatives' candidate ADDRESSES (`local_width_candidates`' defining
+    /// instruction per decided rep) — the stable key the fixpoint check compares: a
+    /// representative index is a HighVariable number a re-render can renumber, an address is
+    /// not (review finding 3, 2026-09-04).
+    pub widen_local_pcs: std::collections::HashSet<u64>,
     /// Values whose tier-2 materialization applies (`local-width` tier 2, per site).
     pub tier2_sites: std::collections::HashSet<VarnodeId>,
     /// Per store-run emission orders, keyed by the run's FIRST op in block order: the ops
