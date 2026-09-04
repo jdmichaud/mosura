@@ -776,6 +776,211 @@ fn constant_arg_sites(
     out
 }
 
+/// An argument CARRIED across a call (2026-09-04): a register the landed function passes to call
+/// `from` BEYOND that callee's own recovered arity, which the callee's recovered clobber set
+/// preserves, and which the NEXT call `to` consumes — `to`'s own arity names the register at the
+/// same positional slot and the landed site does not pass that slot. The decompiler attributes a
+/// register set up before a call to that call; the bytes attribute it to the consumer: the value
+/// is placed before `from` (a constant by `MOV r,k` / `XOR r,r` in the pre-call window), the
+/// register is never written between the two calls, and `from` preserves it. `f1(x, 8, 0x14);
+/// f2();` is `f2(f1(x), 8, 0x14);` — FUN_00030ca0, FUN_0004c364; `f1(x, g); f2(k);` is
+/// `f1(x); f2(k, g);` — FUN_00034370. Probed EXACT on all three before the rule was written.
+///
+/// `fill`: the consumer's slot 1 when the landed consumer passes nothing — `Return` when `from`
+/// clobbers EAX (its value at `to` is whatever `from` returned: the nested form), `Same(v)` when
+/// `from` preserves EAX (the consumer receives `from`'s own first argument).
+enum CarryFill {
+    None,
+    Return,
+}
+struct CarrySite {
+    from: mosura::decompile::op::OpId,
+    to: mosura::decompile::op::OpId,
+    /// (positional slot, the landed varnode at `from`), ascending
+    slots: Vec<(usize, mosura::decompile::varnode::VarnodeId)>,
+    fill: CarryFill,
+}
+
+fn carry_arg_sites(
+    fl: &mosura::decompile::funcdata::Funcdata,
+    protos: &std::collections::HashMap<u64, mosura::decompile::fspec::FuncProto>,
+    // each direct callee's own entry-block testimony per argument register ([`callee_input_evidence`])
+    evidence: &HashMap<u64, Vec<Option<bool>>>,
+    insns: &[mosura::recompile::insn::NormInsn],
+    arg_reg_offs: &[u64],
+) -> Vec<CarrySite> {
+    use mosura::recompile::insn::{NormInsn, SemArg};
+    let Some(reg) = fl.spaces.by_name("register") else { return Vec::new() };
+    // register-only AND positional: slot k lives in the convention's k-th register, so a slot
+    // beyond the recovered arity has one register too
+    let positional = |p: &mosura::decompile::fspec::FuncProto| -> bool {
+        !p.params.is_empty()
+            && p.params.len() <= arg_reg_offs.len()
+            && p.params.iter().enumerate().all(|(k, s)| s.addr.space == reg && s.addr.offset == arg_reg_offs[k])
+    };
+    let writes = |x: &NormInsn, r: u64| -> bool {
+        x.sem.iter().any(|op| matches!(op.out, Some(SemArg::Reg(o, _)) if o & !3 == r & !3))
+    };
+    let mut calls: Vec<(u64, mosura::decompile::op::OpId, u64)> = fl
+        .op_ids()
+        .filter(|&op| fl.op(op).code() == OpCode::Call && fl.op(op).flags & (flags::DEAD | flags::MARKER) == 0)
+        .filter_map(|op| fl.op(op).input(0).map(|t| (fl.op(op).seqnum.pc.offset, op, fl.vn(t).loc.offset)))
+        .filter(|&(_, _, c)| c != 0)
+        .collect();
+    calls.sort();
+    let mut out = Vec::new();
+    for w in calls.windows(2) {
+        let ((pc1, c1, a), (pc2, c2, b)) = (w[0], w[1]);
+        if fl.op(c1).parent.is_none() || fl.op(c1).parent != fl.op(c2).parent {
+            continue;
+        }
+        let (Some(pa), Some(pb)) = (protos.get(&a), protos.get(&b)) else { continue };
+        // `from`'s own parameters positional, so its extra slots have positional registers too;
+        // `to` register-only — the CALLER renders its call positionally (a K&R extern without a
+        // `parm` clause), whatever register names its own prototype recovered
+        if !positional(pa) || pb.params.is_empty() || !pb.params.iter().all(|s| s.addr.space == reg) {
+            continue;
+        }
+        // the consumer's arity, witnessed: its use-based proto is routinely UNDER-recovered
+        // (0x16bdc's body reads eax/edx/ebx, its proto shows 2), so take the widest count the
+        // LANDED function itself passes to this callee anywhere as the floor. A callee the
+        // program only ever calls with N args does not silently take an (N+1)th here — that is
+        // 0x40490's `func_0x0004fe64(0x1cc, 4)`, whose `ebx` set before the PRIOR call is that
+        // call's own third argument, not a carry.
+        let nb_wit = fl
+            .op_ids()
+            .filter(|&op| fl.op(op).code() == OpCode::Call && fl.op(op).flags & (flags::DEAD | flags::MARKER) == 0)
+            .filter(|&op| fl.op(op).input(0).map(|t| fl.vn(t).loc.offset) == Some(b))
+            .map(|op| fl.op(op).num_inputs() - 1)
+            .max()
+            .unwrap_or(0)
+            .max(pb.params.len());
+        let (n1, n2) = (fl.op(c1).num_inputs() - 1, fl.op(c2).num_inputs() - 1);
+        let na = pa.params.len();
+        if n1 <= na {
+            continue;
+        }
+        let Some(modify) = fl.call_specs.get(&c1).and_then(|cs| cs.cdecl_modify.as_ref()) else { continue };
+        let preserved = |r: u64| !modify.iter().any(|&c| c & !3 == r & !3);
+        let (Some(ca), Some(cb)) = (
+            insns.iter().position(|x| x.is_call && x.addr == pc1),
+            insns.iter().position(|x| x.is_call && x.addr == pc2),
+        ) else {
+            continue;
+        };
+        if ca >= cb {
+            continue;
+        }
+        let between = &insns[ca + 1..cb];
+        // Between the two calls, only ARGUMENT-REGISTER SETUP is allowed: every instruction
+        // writes an argument register and touches no memory. A store between them (0x12360's
+        // `mov [0x81288],eax`, consuming the prior return) means the second call is NOT reusing
+        // the first's register environment — the args are separately set up and this is not a
+        // carry. Nothing between (0x30ca0) or a plain `mov argreg,K` (0x34370) is the carry shape.
+        let arg_set: std::collections::HashSet<u64> = arg_reg_offs.iter().map(|&r| r & !3).collect();
+        let clean_between = between.iter().all(|x| {
+            // writes ONLY argument registers (a `mov argreg,K`, `lea argreg,[..]`, `mov argreg,[g]`
+            // consumer-arg setup) and writes NO memory. A store — 0x12360's `mov [0x81288],eax`
+            // consuming the prior return — means the second call is not reusing the first's
+            // register environment, so it is not a carry. Address computation and loads into an
+            // arg register are the consumer setting up its own arguments and are fine.
+            let is_store = x.mnemonic == "MOV" && x.sem.iter().any(|op| matches!(op.out, Some(SemArg::Mem(..)) | Some(SemArg::Space(..))));
+            !x.is_call
+                && !x.is_branch
+                && !is_store
+                && x.sem.iter().all(|op| match op.out {
+                    Some(SemArg::Reg(o, _)) => arg_set.contains(&(o & !3)),
+                    None => true,
+                    _ => false,
+                })
+                && x.sem.iter().any(|op| matches!(op.out, Some(SemArg::Reg(o, _)) if arg_set.contains(&(o & !3))))
+        });
+        if !clean_between {
+            continue;
+        }
+        // a SUFFIX of `from`'s extra slots (removing a middle slot would shift the ones above it
+        // into other registers), each consumed at the same positional slot of `to`: the slot
+        // exists in `to`'s arity, the landed consumer does not pass it, `to`'s entry block does
+        // not refute the register and `from`'s does not claim it
+        let (ea, eb) = (evidence.get(&a), evidence.get(&b));
+        let claimed = |e: Option<&Vec<Option<bool>>>, i: usize| e.and_then(|v| v.get(i - 1).copied().flatten()) == Some(true);
+        let refuted = |e: Option<&Vec<Option<bool>>>, i: usize| e.and_then(|v| v.get(i - 1).copied().flatten()) == Some(false);
+        let mut slots = Vec::new();
+        for i in ((na + 1)..=n1).rev() {
+            // bounded by the consumer's WITNESSED arity (nb_wit), not its under-recovered
+            // proto: a slot beyond every landed call to this callee is the FROM call's own
+            // argument, not a carry
+            if i > nb_wit || i <= n2 || claimed(ea, i) || refuted(eb, i) {
+                break;
+            }
+            // the caller renders `to` POSITIONALLY: the emitted extern carries a `modify` pragma
+            // only (the callee's own `parm [..]` clause lives in its own TU, not the caller's), so
+            // argument i lands in the i-th positional register. 0x1755c's `0x17530` is in EBX =
+            // slot 3's positional register, matching the original `mov ebx,0x17530`.
+            let r = arg_reg_offs[i - 1];
+            if !preserved(r) || between.iter().any(|x| writes(x, r)) {
+                break;
+            }
+            let Some(vn) = fl.op(c1).input(i) else { break };
+            let v = fl.vn(vn);
+            if v.is_constant() {
+                // the constant is placed right before `from`: the first write of r walking back
+                // is `MOV r,k` (or `XOR r,r` for 0), no call and no branch crossed
+                let k = v.constant_value();
+                let mask = if v.size >= 8 { u64::MAX } else { (1u64 << (8 * v.size)) - 1 };
+                let mut placed = false;
+                for x in insns[..ca].iter().rev() {
+                    if x.is_call || x.is_branch {
+                        break;
+                    }
+                    if !writes(x, r) {
+                        continue;
+                    }
+                    placed = (x.mnemonic == "MOV"
+                        && x.sem.iter().any(|op| {
+                            matches!(op.out, Some(SemArg::Reg(o, _)) if o & !3 == r & !3)
+                                && matches!(op.ins.as_slice(), [SemArg::Const(c, _)] if c & mask == k & mask)
+                        }))
+                        || (x.mnemonic == "XOR" && k & mask == 0 && x.regs.iter().all(|&(o, _)| o & !3 == r & !3));
+                    break;
+                }
+                if !placed {
+                    break;
+                }
+            }
+            slots.push((i, vn));
+        }
+        if slots.is_empty() {
+            continue;
+        }
+        slots.reverse();
+        // the consumer's slots stay contiguous from its landed count up to the highest carried
+        // one; slot 1 may be filled when the landed consumer passes nothing
+        let max = slots.iter().map(|s| s.0).max().unwrap();
+        let mut fill = CarryFill::None;
+        let eax = arg_reg_offs[0];
+        let contiguous = (n2 + 1..=max).all(|s| {
+            if slots.iter().any(|t| t.0 == s) {
+                return true;
+            }
+            // slot 1 only, and only as the FROM call's RETURN (from clobbers eax, passes nothing
+            // of its own there): the nested form `to(from(..), ..)`. The `Same` fill — reusing
+            // from's own first argument — was removed: 0x2a6e0 rendered `f(param_1, param_1)`,
+            // an argument the original never places.
+            if s == 1 && n2 == 0 && !between.iter().any(|x| writes(x, eax)) && !preserved(eax) && fl.op(c1).output.is_none() {
+                fill = CarryFill::Return;
+                return true;
+            }
+            false
+        });
+        if !contiguous {
+            continue;
+        }
+        out.push(CarrySite { from: c1, to: c2, slots, fill });
+    }
+    out
+}
+
 fn nondefault_parm_regs(
     f: &mosura::decompile::funcdata::Funcdata,
     table: &[(u64, u32, &'static str)],
@@ -2327,6 +2532,7 @@ fn main() {
                                 }
                             }
                         }
+                        let carry = carry_arg_sites(fl, &pp.recovered_protos, &evidence, &insns, &arg_reg_offs);
                         match f3 {
                             Some(f3)
                                 if resolves_contradictions(&f3, &contradicted)
@@ -2409,6 +2615,49 @@ fn main() {
                                 ok = true;
                                 consistency_forced = true;
                                 eprintln!("[consistency] {name}: PER-SITE constant arguments adopted at [{}]", added.join(" "));
+                                f_forced = Some(fp);
+                            }
+                            // ARGUMENT CARRY (2026-09-04): the register arguments the landed
+                            // function passes to a call beyond that callee's own arity, which the
+                            // callee preserves and the NEXT call's arity names, move to the next
+                            // call — `f1(x, 8, 0x14); f2();` becomes `f2(f1(x), 8, 0x14);`. Decided
+                            // from the landed function and the bytes alone ([`carry_arg_sites`]);
+                            // nothing else of any candidate crosses over.
+                            _ if !carry.is_empty() => {
+                                let mut fp = fl.clone();
+                                let mut moved: Vec<String> = Vec::new();
+                                for site in &carry {
+                                    for &(slot, _) in site.slots.iter().rev() {
+                                        fp.op_remove_input(site.from, slot);
+                                    }
+                                    match site.fill {
+                                        CarryFill::None => {}
+                                        CarryFill::Return => {
+                                            let v = fp.new_unique(4);
+                                            fp.op_set_output(site.from, v);
+                                            fp.op_insert_input(site.to, 1, v);
+                                        }
+                                    }
+                                    for &(slot, vn) in &site.slots {
+                                        let v = if fp.vn(vn).is_constant() {
+                                            let (sz, k) = (fp.vn(vn).size, fp.vn(vn).constant_value());
+                                            fp.new_const(sz, k)
+                                        } else {
+                                            vn
+                                        };
+                                        fp.op_insert_input(site.to, slot, v);
+                                    }
+                                    moved.push(format!(
+                                        "{:#x}->{:#x}+{}{}",
+                                        fp.op(site.from).seqnum.pc.offset,
+                                        fp.op(site.to).seqnum.pc.offset,
+                                        site.slots.len(),
+                                        match site.fill { CarryFill::None => "", CarryFill::Return => "r" }
+                                    ));
+                                }
+                                ok = true;
+                                consistency_forced = true;
+                                eprintln!("[consistency] {name}: CARRY adopted [{}]", moved.join(" "));
                                 f_forced = Some(fp);
                             }
                             _ => {
