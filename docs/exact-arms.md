@@ -214,3 +214,65 @@ across three construction phases with four signatures) — one line per arm, not
   (the third arm above): the register was declared an argument, and this compiler never
   preserves an argument register; dropping the parameter and its pass-through brings the save
   back (FUN_0002c160, FUN_00011f18 EXACT).
+
+## The second push (2026-09-04, evening) — from a fresh census
+
+A fresh near-miss census over the divergence rows (root rows = every class but layout-shift and
+branch-target) at 1007 EXACT: 80 functions within 2 root rows, 129 within 3, 196 within 4, 320
+within 6. Each family below was settled the same way as the first push: a hand-edited probe TU
+through `recompile_check --only` to find the C the original compiled from, then a witness the
+survey reads from the original's bytes, then the arm; every arm is off in the reference rendering.
+
+| arm | witness | family (f0) | probe |
+| --- | --- | --- | --- |
+| callee clobber, saved-for-callee (survey, `buildconfig::saved_for_callees`) | a register pushed among the leading saves and popped before every `RET` that no body instruction reads or writes — preserved only for a callee DECLARED to clobber it; every callee clause of the TU takes it | `PUSH EBX .. POP EBX` missing around a call to a callee whose recovered clobber set is `[eax ecx edx]`: FUN_0004f850, 14 carriers | FUN_0004f850 EXACT with `ebx` in the clause |
+| ~~callee clobber, below-call constant~~ | a constant materialized into a register right after a `CALL`, untouched between, read as the original declaring the callee to clobber the register | REFUTED (round f5): the extra `modify` regs re-rolled allocation across the whole corpus — 62 up / 71 down, −10 EXACT net; the scheduler does not always hoist such a load, so the shape is no witness; removed | — |
+| `testmem` on INDIRECT-defined globals (`testmem.rs`, `global_read`) | unchanged (the original's `TEST byte ptr [g],imm`); the candidate may be a global version heritage renamed through an INDIRECT (after a call) or a MULTIEQUAL, not only an input | FUN_000229b4's second `TEST byte ptr [0x8196c],0x1` follows a call | FUN_000229b4 EXACT |
+| `inline-call` (`inline_call.rs`, a setup mark into `force_implied`) | no `SETcc` between the call and the clause's branch | a comma clause `(iVar1 = f(), iVar1 == 0)` this compiler materializes (`SETZ AL ; AND EAX,0xff`) where the original branches on the flags: 55 TUs, 50 with the extra `SETcc` | FUN_0004d0f8 EXACT, FUN_000164cc one branch-target row from EXACT |
+| `for-rotate` (`for_rotate.rs`, asked first by the overflow `while( true )` emission) | the first clause's branch jumps BACKWARD (the test at the loop end): this compiler rotates a `for` and never a `while`; declined when the initializer and the bound are both constants (the compiler folds the entry test of the port's form itself) or when the iterate's block is labeled (`LAB: }`) | Ghidra's overflow loop `while( true ) { if ((A) \|\| (B)) break; .. i++ }` for a `for` with a break: 146 functions carry the top/bottom test swap | FUN_0005beb0 EXACT as `for (i = 0; i < n; i++) { if (B) break; }` |
+| `narrow-cmp` (`narrow_cmp.rs`, last at `Compare`/`Equality`) | the original's `CMP` names a register or memory operand of the value's width (`CMP AL,0x8`, `CMP BX,0x1`) | a sub-int value compared against a constant, promoted and compared signed at int width (`XOR EDX,EDX ; MOV DL,AL ; CMP EDX,0x8 ; JG` for `CMP AL,0x8 ; JA`): 65 functions, 144 rows | FUN_00020220 EXACT with `param_1 <= (uint1)0x8`; FUN_00049b84's rows with `(uint2)1 < *p` |
+| `signed-load` (`signed_load.rs`, at `Load` after testmem) | a `CWDE`/`CBW`/`MOVSX` within five instructions after the load | a masked 16-bit load in a zero test typed unsigned (`AND EAX,0xffff`) where the original sign-extends (the source read a `short`): FUN_0002ebd0, FUN_00043514, FUN_0002ea18 (four sites) | FUN_0002ebd0 EXACT with `*(int2 *)` |
+| `table-base` (`table_base.rs`, at `Sum` after sum-order; survey declares `extern char aRam<base>[]`) | a `MOV r32,imm` / `ADD r32,imm` (never an `LEA`) whose immediate is the sum's constant or within 0x100 below it | a table element's address as a value, `idx * 0x24 + 0x8f070`, folded into one `LEA` where the original keeps the symbol as its own operand (`MOV EDX,0x8f070 ; ADD EDX,EAX`): 126 functions carry such an immediate | FUN_00013bfc, FUN_00013a9c EXACT with the symbol |
+| `zero-cmp` (`zero_cmp.rs`, last at `Equality`) | the branch at the compare is `JBE`/`JA` | an unsigned zero-equality Ghidra folded from `x <= 0` / `0 < x`, branched `JZ`/`JNZ` where the original branches on the unsigned order flags: 14 functions, 19 rows | FUN_0003dd60's four sites |
+
+Probed and not built: the sound family's `ADD EDX,k ; MOV EAX,EDX` (five more forms, all the
+`LEA`); a constant the original keeps in a byte register across two stores (`MOV BL,1`, a byte
+local is propagated back); a pointer temp the original computes in the argument's register
+(`MOV EDX,[g] ; MOV EDX,[EDX]`, the local changes nothing); the early `return` whose epilogue the
+original duplicates inline (`JNZ ; POP EBP ; POP EDX ; RET`, FUN_0004644c: neither the `while`
+form nor a guarded do-while reproduces it); a read-modify-write the original does in memory
+(`OR byte ptr [EDI + 0x6],0x20`) — the compound assignment compiles to the same load/op/store
+through a register, so the difference is elsewhere (the callee clobber declarations letting the
+recompile keep the global in a register are the suspect); a byte flag tested twice from one
+register (`TEST DL,0x1f .. TEST DL,0x8`, a byte local reshuffles the allocation); the constant
+argument-order swap of FUN_00021870 (a stale `EDX=1` the recompile re-materializes — the callee's
+arity, not the order).
+
+Two shapes found and left for a later arm: a two-case `switch {0, 2}` Ghidra prints as
+`if (x != 0) { switch (x) { case 2: .. } } else { .. }` (FUN_000487cc EXACT as the switch, three
+carriers with the `TEST AX,AX ; JBE` witness), and the three-input constant phi of an early
+return nested in an else branch (`r = 0; if (c) r = f();` for `if (!c) return 0; return f();`,
+FUN_0003d188, 16 carriers of the `MOV EDX,EAX ; XOR EAX,EAX ; TEST EDX,EDX` signature).
+
+
+### What the rounds said (second push)
+
+| round | change | EXACT | WGSS | notes |
+| --- | --- | --- | --- | --- |
+| base (master `943ccc4`) | — | 1007 | 0.6383 | |
+| f1 | inline-call, testmem on post-call globals, callee-clobber-from-saves | 1013 | 0.6402 | +6, 0 lost |
+| f3 | narrow-cmp, signed-load, for-rotate (gated to a constant-init/labeled-iterate decline) | 1017 | — | +4, 0 lost |
+| f4 | table-base, zero-cmp | 1024 | 0.6438 | +7, 0 lost (1 SAME_SHAPE→MISMATCH: table-base on an assigned local, gated to inline sums) |
+| f5 | below-call clobber (REFUTED) | 1014 | — | −10, reverted |
+| f6 | signed-load fix, zero-cmp on negated compares, zero-case switch, paired 16-bit zext, tier-2 zext-to-narrow | 1029 | — | +5 but 1 EXACT regression (tier-2 widened a value feeding a signed `IDIV`) and gate 6 hit (a genuine +0.30-sim switch grew a case) |
+| f7 | f6 with the tier-2 division gate + the gate re-stamp + value-phi split | **1031** | **0.6443** | +7 over f4, 0 lost, all gates OK |
+
+The value-phi split (`x = k; if (c) x = expr; return x` → `if (!c) return k; return expr`, the
+`MOV EDX,EAX ; XOR EAX,EAX ; TEST EDX,EDX` signature) reuses the constant-phi's branch-lands-on-
+epilogue witness; 17 functions carry the signature, 2 are near-EXACT (FUN_0005a028 landed).
+
+Probed and not built this push: the SETcc-plus-constant byte store (`(cond) + 0x1c` to a byte —
+Watcom always materializes the bool `SETZ AL ; AND EAX,0xff`); the duplicated early-return
+epilogue (`JNZ ; POP ; POP ; RET` inline — no flag variant reproduces it); the read-modify-write
+in memory (`OR byte ptr [g],k` — the compound assignment still loads/ops/stores through a
+register); pointer-field store order and mid-parameter phantoms (allocation-coupled).

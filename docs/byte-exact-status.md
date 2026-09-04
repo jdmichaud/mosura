@@ -1,5 +1,16 @@
 # Byte-exact — where this stands
 
+**CURRENT (2026-09-04, session master `943ccc4` + uncommitted arms): 1031 EXACT / WGSS 0.6443**
+(insn-weighted, full denominator; `/data/be2/f7-rec.tsv`). Up from 1007 at the session start via
+ten witnessed emit arms — see `docs/exact-arms.md` "The second push". Corpus gates OK, disasm/IR
+parity green, zero EXACT regressions. The remaining near-misses are register-allocation and
+codegen-scheduling classes (85 pure-allocation functions with mixed EAX↔EDX↔EBX swap directions,
+the byte-widening ORDER no C form moves, the closed "sound" family) — the boundary
+`docs/byte-exact-source-forms.md` names: structure converges, allocation stalls. Reaching 1200
+needs the P3 compile-in-the-loop search over (declaration order × statement form), not more
+idiom arms.
+
+
 *Re-measured from scratch on branch `be2`. Regenerate rather than quote these after any change:
 `war2_survey <exe> <out>` then `recompile_check <exe> <out>/manifest.tsv <out>/src recover
 <WATCOM> --out <tsv> --divergences <tsv>`. Before ANY corpus round, run the ~3-minute
