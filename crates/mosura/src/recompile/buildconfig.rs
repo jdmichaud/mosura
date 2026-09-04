@@ -68,6 +68,18 @@ pub struct Evidence {
     /// source modules built without the reorderer); the seven constant stores that follow a
     /// bare `CALL` split 3 no-reorderer / 3 reorderer / 1 indifferent, as the rover predicts.
     pub immediate_store_after_cleanup: bool,
+    /// A window keeps in program order an indexed load immediately followed by an independent
+    /// stack-argument load (`MOV EDX,[EAX*4+tab] ; MOV EBX,[ESP+8]`) that the scheduler model
+    /// swaps: `InsStallable` (inssched.c:125) weighs the indexed operand 3 and the stack
+    /// temporary 0, and `ScheduleIns` builds the block bottom-up taking the more stallable
+    /// ready instruction first — so the reorderer places the table load LAST of the two, and
+    /// the original's order proves it was compiled without `-or`. Decided by the model itself
+    /// (`watsched::schedule` over each window, with the source's weights), and only for that
+    /// pair shape: the general "predicted motion" is not evidence (the model over-predicts
+    /// elsewhere). Measured on the two-way recompile: WAR2 FUN_00068bca and FUN_0006b496
+    /// (byte-exact only without `-or`), FUN_00069430 (up), and one foreign function at
+    /// sim 0.115 either way.
+    pub unscheduled_load_pair: bool,
 }
 
 /// A rule mapping evidence to option changes, for one toolchain.
@@ -77,6 +89,7 @@ pub struct Rule {
     pub when_saves_before_frame: Option<bool>,
     pub when_in_place_scaled_lea: Option<bool>,
     pub when_immediate_store_after_cleanup: Option<bool>,
+    pub when_unscheduled_load_pair: Option<bool>,
     pub add: Vec<String>,
     pub remove: Vec<String>,
 }
@@ -104,6 +117,9 @@ impl Profile {
                 continue;
             }
             if r.when_immediate_store_after_cleanup.is_some_and(|w| w != ev.immediate_store_after_cleanup) {
+                continue;
+            }
+            if r.when_unscheduled_load_pair.is_some_and(|w| w != ev.unscheduled_load_pair) {
                 continue;
             }
             out.retain(|f| !r.remove.contains(f));
@@ -1656,6 +1672,7 @@ pub fn watcom_10_0a() -> Profile {
                 when_saves_before_frame: None,
                 when_in_place_scaled_lea: None,
                 when_immediate_store_after_cleanup: None,
+                when_unscheduled_load_pair: None,
                 add: vec!["-d1+".into()],
                 remove: vec!["-of".into(), "-of+".into()],
             },
@@ -1665,6 +1682,7 @@ pub fn watcom_10_0a() -> Profile {
                 when_saves_before_frame: None,
                 when_in_place_scaled_lea: Some(true),
                 when_immediate_store_after_cleanup: None,
+                when_unscheduled_load_pair: None,
                 add: vec!["-4r".into()],
                 remove: vec!["-5r".into()],
             },
@@ -1675,6 +1693,17 @@ pub fn watcom_10_0a() -> Profile {
                 when_saves_before_frame: None,
                 when_in_place_scaled_lea: None,
                 when_immediate_store_after_cleanup: Some(true),
+                when_unscheduled_load_pair: None,
+                add: vec!["-onatmil".into()],
+                remove: vec!["-onatx".into()],
+            },
+            // The second reorderer witness: see `Evidence::unscheduled_load_pair`.
+            Rule {
+                when_frame_prologue: None,
+                when_saves_before_frame: None,
+                when_in_place_scaled_lea: None,
+                when_immediate_store_after_cleanup: None,
+                when_unscheduled_load_pair: Some(true),
                 add: vec!["-onatmil".into()],
                 remove: vec!["-onatx".into()],
             },
@@ -1731,7 +1760,53 @@ pub fn detect(insns: &[NormInsn], sp: (u64, u32), fp: (u64, u32)) -> Evidence {
             break;
         }
     }
+    // Body evidence: an indexed load kept ahead of an independent stack-argument load the
+    // reorderer would have swapped (see `Evidence`).
+    ev.unscheduled_load_pair = unscheduled_load_pair(insns);
     ev
+}
+
+/// Whether some window of `insns` keeps an indexed load immediately ahead of an independent
+/// `[ESP+k]` load while the scheduler model predicts exactly their transposition.
+pub fn unscheduled_load_pair(insns: &[NormInsn]) -> bool {
+    let none = std::collections::HashSet::new();
+    let is_indexed_load = |x: &NormInsn| {
+        x.text.starts_with("MOV E") && x.text.contains("dword ptr [") && !x.text.contains("[ESP") && !x.text.contains("[EBP") && !x.text.contains("[0x")
+    };
+    let is_stack_load = |x: &NormInsn| x.text.starts_with("MOV E") && x.text.contains("dword ptr [ESP + 0x");
+    for w in super::watsched::windows(insns) {
+        let win = &insns[w];
+        if win.len() < 2 {
+            continue;
+        }
+        let Some(order) = super::watsched::schedule(win, &none) else { continue };
+        let mut k = 0usize;
+        let mut swapped: Option<usize> = None;
+        let mut only_that = true;
+        while k < order.len() {
+            if k + 1 < order.len() && order[k] == k + 1 && order[k + 1] == k {
+                if swapped.is_some() {
+                    only_that = false;
+                }
+                swapped = Some(k);
+                k += 2;
+            } else {
+                if order[k] != k {
+                    only_that = false;
+                }
+                k += 1;
+            }
+        }
+        if let (Some(k), true) = (swapped, only_that) {
+            let (a, b) = (&win[k], &win[k + 1]);
+            // independent: the stack load's destination is not the indexed load's base
+            let dest_b = b.text[4..].split(',').next().unwrap_or("");
+            if is_indexed_load(a) && is_stack_load(b) && !a.text.contains(&format!("[{dest_b}")) && !a.text.contains(&format!("+ {dest_b}")) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// How many instructions into the function a frame setup may appear. Registers are saved first on
@@ -2255,6 +2330,22 @@ mod tests {
         assert_eq!(p[&0x1000], vec![0x8, 0xc, 0x0]);
         assert_eq!(p[&0x1100], vec![0xc, 0x8, 0x0]);
         assert!(!p.contains_key(&0x1200));
+    }
+
+    /// An indexed load kept ahead of an independent stack-argument load that the model swaps
+    /// drops the reorderer; a frame-local load beside a global load (which the model keeps in
+    /// order) does not.
+    #[test]
+    fn an_unswapped_indexed_and_stack_load_pair_drops_the_reorderer() {
+        // mov edx,[eax*4+0xa867c] ; mov ebx,[esp+8] ; mov [eax*4+0xa867c],ebx ; mov eax,edx ; ret
+        let ev = detect(&lift("8b14857c860a008b5c2408891c857c860a0089d0c3"), ESP, EBP);
+        assert!(ev.unscheduled_load_pair);
+        // mov edi,[ebp-0xc] ; mov ebx,[0x8f3f8] ; add ebx,edi ; ret
+        let ev2 = detect(&lift("8b7df48b1df83f080001fbc3"), ESP, EBP);
+        assert!(!ev2.unscheduled_load_pair);
+        let p = watcom_10_0a();
+        assert!(p.flags_for(&ev).contains(&"-onatmil".to_string()));
+        assert!(p.flags_for(&ev2).contains(&"-onatx".to_string()));
     }
 
     /// A constant dword store to a global right after a stack cleanup is the form the
