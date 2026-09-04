@@ -143,6 +143,26 @@ The suite run once for the batch found two defects of the push itself, fixed in 
 branch-return form had made `return_split` a second owner of `SiteKind::Return` (now the one owner,
 chaining to `struct_return::render_return`), and two pinned gate sets had grown without their test.
 
+mosura's review of the batch (channel seq 1563) confirmed the four items — printc.rs's arm-named
+fields went 43 (`974d872`) → 63 (`934c4e9`) → 0 — and added three findings, all landed:
+
+- **The Return site's owners are in the table again** (`8a10d8f`): 337e83f had restored the
+  one-owner invariant with a cross-arm call; both arms declare `Return`, `SHARED_KINDS` documents the
+  owner order (`return-split` before `struct-return`) and the test asserts it.
+- **The fixpoint check compares each arm's own decisions** (`3d2e3f0`): `Grown` per `Sites`,
+  `Recovered::grown_over` destructuring the registry without `..` (a new arm is a compile error until
+  compared), the same destructuring backing the ARMS completeness test, and `Fact::ALL` guarded by an
+  exhaustive match. The widening compares its decided candidates' ADDRESSES (`port::Sites::widen_local_pcs`),
+  not representative indices a re-render can renumber.
+- **The re-keyed count, in both units** (mosura's caution, seq 1565): old instrument 183 growers = 171
+  rep-keyed widening + 12 address-keyed (11 `complement_cmp`, 1 `cmp_order`); new instrument 179 pc-keyed
+  widening growers, and the 12 address-keyed ones held exactly (12 of 12) — so the instrument did not narrow and the widening
+  figure is a measurement.
+
+The residual mosura named stands: printc.rs still names each arm once, at setup (13 `recognize` calls
+across three construction phases with four signatures) — one line per arm, not two struct fields; and
+`Fact` is one global enum a second compiler would extend.
+
 ## What did not work (probed, not built)
 
 - The sound family (16 functions, `ADD EDX,k ; MOV EAX,EDX` for `return (rand() >> 8) % 4 + k`):
