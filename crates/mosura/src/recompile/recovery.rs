@@ -156,6 +156,12 @@ fn derive(report: &EmitReport, insns: &[NormInsn], call_arg_orders: HashMap<u64,
                 insns,
             ),
         },
+        inline_call: crate::decompile::emit::arms::inline_call::Sites {
+            sites: crate::recompile::buildconfig::inline_calls_from_evidence(
+                &report.inline_call.candidates,
+                insns,
+            ),
+        },
         load_hoist: crate::decompile::emit::arms::load_hoist::Sites {
             sites: crate::recompile::buildconfig::load_hoists_from_evidence(
                 &report.load_hoist.candidates,

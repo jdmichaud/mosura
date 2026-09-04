@@ -2554,3 +2554,25 @@ pub fn frame_from_evidence(insns: &[NormInsn]) -> Option<(u32, u32)> {
     }
     None
 }
+
+
+/// Decide the `inline-call` sites (`emit/arms/inline_call.rs`): a comma-clause call whose result
+/// the clause's branch consumes prints inline in the compare where the ORIGINAL carries no
+/// materialized boolean — no `SETcc` between the call and the clause's branch. Candidates are
+/// `(call address, branch address)`; returns the call addresses to inline.
+pub fn inline_calls_from_evidence(cands: &[(u64, u64)], insns: &[NormInsn]) -> std::collections::HashSet<u64> {
+    let mut out = std::collections::HashSet::new();
+    for &(call_pc, branch_pc) in cands {
+        if branch_pc <= call_pc {
+            continue;
+        }
+        let materialized = insns
+            .iter()
+            .filter(|x| x.addr > call_pc && x.addr <= branch_pc)
+            .any(|x| x.text.starts_with("SET"));
+        if !materialized {
+            out.insert(call_pc);
+        }
+    }
+    out
+}

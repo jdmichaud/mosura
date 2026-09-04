@@ -137,6 +137,7 @@ pub mod cmp_order;
 pub mod cmp_sign;
 pub mod complement_cmp;
 pub mod ext_cast;
+pub mod inline_call;
 pub mod load_hoist;
 pub mod mask_cast;
 pub mod ptr_offset;
@@ -289,7 +290,8 @@ mod tests {
     /// The arm files, as text, for the surface scan — every `pub mod` of this module must be here
     /// (`arms_touch_only_the_documented_surface` checks that against this file's own source, so a
     /// new arm file cannot slip past the scan).
-    const ARM_SOURCES: [(&str, &str); 26] = [
+    const ARM_SOURCES: [(&str, &str); 27] = [
+        ("inline_call.rs", include_str!("inline_call.rs")),
         ("port.rs", include_str!("port.rs")),
         ("registry.rs", include_str!("registry.rs")),
         ("counted_loop.rs", include_str!("counted_loop.rs")),

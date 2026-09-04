@@ -5019,6 +5019,9 @@ fn print_c_inner(
     for &root in &s.roots {
         arms::counted_loop::recognize(&mut p, &s, root);
     }
+    // inline-call: a comma clause's call result printed inside its compare where the original
+    // materializes no boolean (emit/arms/inline_call.rs) — arm setup, after the structure
+    arms::inline_call::recognize(&mut p, &s);
     // local-width=storage, tier 2 (see the `tier2_widen` field doc): a narrow LOAD whose
     // value a comparison consumes against a positive-at-width constant materializes as an
     // explicit unsigned widened temp — the statement prints at the load op's own position,
