@@ -319,14 +319,31 @@ pub fn narrow_zexts_from_evidence(
     insns: &[NormInsn],
 ) -> std::collections::HashSet<u64> {
     let mut out = std::collections::HashSet::new();
-    let high_zero = |t: &str| -> bool {
-        matches!(t, "XOR AH,AH" | "XOR BH,BH" | "XOR CH,CH" | "XOR DH,DH")
+    let high_zero = |t: &str| -> Option<char> {
+        match t {
+            "XOR AH,AH" => Some('A'),
+            "XOR BH,BH" => Some('B'),
+            "XOR CH,CH" => Some('C'),
+            "XOR DH,DH" => Some('D'),
+            _ => None,
+        }
     };
-    for &(pc, _, _) in cands {
+    for &(pc, _, outsize) in cands {
         let Some(i) = insns.iter().position(|x| x.addr == pc) else { continue };
         let lo = i.saturating_sub(4);
         let hi = (i + 2).min(insns.len() - 1);
-        if insns[lo..=hi].iter().any(|x| high_zero(&x.text)) {
+        let window = &insns[lo..=hi];
+        // an extension to INT width (the `(uint2)x` on a byte, ext_cast.rs): the high-byte zero
+        // must PAIR with a low-byte write of the same register in the window — the byte-to-word
+        // widening itself, not a zero that belongs to some other value (round e24's lesson)
+        let hit = if outsize >= 4 {
+            window.iter().any(|x| {
+                high_zero(&x.text).is_some_and(|fam| window.iter().any(|y| y.text.starts_with(&format!("MOV {fam}L,"))))
+            })
+        } else {
+            window.iter().any(|x| high_zero(&x.text).is_some())
+        };
+        if hit {
             out.insert(pc);
         }
     }

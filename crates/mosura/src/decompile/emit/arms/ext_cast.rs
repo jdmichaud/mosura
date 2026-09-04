@@ -64,6 +64,21 @@ pub(crate) fn render(pr: &mut PrintC<'_>, op: OpId, signed: bool) -> Option<(Str
     if !signed {
         if outsize >= int {
             if narrow_typed_operand(pr, in0) {
+                // the 16-BIT widening of a byte: `XOR AH,AH ; MOV AL,..` paired in the original
+                // (this compiler zero-extends a byte to 16 bits when the value is consumed
+                // at 16 bits — a short global's store, WAR2 FUN_000207b8 EXACT with `(uint2)x`;
+                // 21 functions carry the pair against the recompile's `XOR EAX,EAX` on round
+                // f4). The cast is the identity on a zero-extended byte. Witnessed by the
+                // PAIR (`buildconfig::narrow_zexts_from_evidence`, the int-width arm), never
+                // by a lone high-byte zero — round e24's lone-zero spelling reached 131 TUs.
+                if insize == 1 {
+                    let pc = o.seqnum.pc.offset;
+                    pr.report.ext_cast.candidates.push((pc, insize, outsize));
+                    if pr.recovered.ext_cast.sites.contains(&pc) {
+                        let operand = pr.operand(in0, 14, false);
+                        return Some((format!("({}){operand}", Datatype::Uint(2).name()), 14));
+                    }
+                }
                 return Some(pr.render_var(in0));
             }
             let operand = pr.operand(in0, 14, false);

@@ -5066,7 +5066,35 @@ fn print_c_inner(
                                     && (kvn.constant_value() >> (kvn.size * 8 - 1)) & 1 == 0
                             })
                     });
-                    if cmp_pos_const {
+                    // a byte load consumed at 16 bits (its single use a ZEXT to a width below
+                    // int — a short global's store): the int-typed temp the original's
+                    // `XOR EAX,EAX ; MOV AL,[..]` shows (WAR2 FUN_00064a18 EXACT with the temp;
+                    // 28 functions carry the full-register zero against the recompile's
+                    // `XOR AH,AH` on round f4). The same def-site witness decides.
+                    let zext_to_narrow = {
+                        let uses: Vec<OpId> = f.vn(out).descend.iter().copied().filter(|&u| !f.op(u).is_dead()).collect();
+                        uses.len() == 1 && {
+                            let uo = f.op(uses[0]);
+                            // the byte's widened value must reach a narrow (< int) result and be
+                            // used only where zero-extension preserves the meaning — NOT a
+                            // division/remainder/arithmetic-shift, which the original does signed
+                            // (WAR2 FUN_000377a4: `XOR EDX,EDX ; MOV DL ; SAR EDX,0x1f ; IDIV` —
+                            // the widened temp made an unsigned `DIV`, EXACT lost)
+                            uo.code() == OpCode::IntZext
+                                && uo.output.is_some_and(|z| {
+                                    f.vn(z).size > sz
+                                        && f.vn(z).size < f.size_of_int()
+                                        && !f.vn(z).descend.iter().any(|&w| {
+                                            matches!(
+                                                f.op(w).code(),
+                                                OpCode::IntSdiv | OpCode::IntSrem | OpCode::IntSright
+                                                    | OpCode::IntDiv | OpCode::IntRem | OpCode::IntMult
+                                            )
+                                        })
+                                })
+                        }
+                    };
+                    if cmp_pos_const || zext_to_narrow {
                         p.apply_tier2_sites(out, o.seqnum.pc.offset, Tier2Widen::NarrowLoad);
                     }
                 }
