@@ -87,8 +87,23 @@ pub struct Evidence {
 /// options and never sees a shape. So a fact proven by several shapes (`NoReorderer`, two of
 /// them today) is one rule, not one per shape, and a second toolchain reuses every shape and
 /// writes only its own fact-to-option mapping (review F4, 2026-09-04).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Fact {
+///
+/// The enum and [`Fact::ALL`] come from ONE token list (`facts!`), so the list cannot miss a
+/// variant by construction — the property asserted, not prompted (review round two).
+macro_rules! facts {
+    ($( $(#[$m:meta])* $v:ident ),+ $(,)?) => {
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub enum Fact {
+            $( $(#[$m])* $v ),+
+        }
+        impl Fact {
+            /// Every fact, in declaration order.
+            pub const ALL: [Fact; [$(stringify!($v)),+].len()] = [$(Fact::$v),+];
+        }
+    };
+}
+
+facts! {
     /// The function builds a frame (`Evidence::frame_prologue`).
     Frame,
     /// Callee-saved registers are pushed before the frame is built
@@ -101,11 +116,6 @@ pub enum Fact {
     /// adjacent to a stack cleanup (`Evidence::immediate_store_after_cleanup`) or an indexed
     /// load kept ahead of a stack-argument load (`Evidence::unscheduled_load_pair`).
     NoReorderer,
-}
-
-impl Fact {
-    /// Every fact, in declaration order.
-    pub const ALL: [Fact; 4] = [Fact::Frame, Fact::SavesBeforeFrame, Fact::PrePentiumTuning, Fact::NoReorderer];
 }
 
 impl Evidence {
@@ -2320,17 +2330,15 @@ mod tests {
         assert!(!p.contains_key(&0x1200));
     }
 
-    /// `Fact::ALL` is a hand list; this exhaustive `match` is the guard (a new variant fails to
-    /// compile here until it is listed).
+    /// `Fact::ALL` and the enum come from one token list: `ALL` holds every variant once, in
+    /// declaration order, and `Evidence::has` (an exhaustive match) answers for each.
     #[test]
     fn every_fact_is_in_all() {
-        for f in Fact::ALL {
-            let listed = match f {
-                Fact::Frame | Fact::SavesBeforeFrame | Fact::PrePentiumTuning | Fact::NoReorderer => Fact::ALL.contains(&f),
-            };
-            assert!(listed, "{f:?}");
-        }
         assert_eq!(Fact::ALL.len(), 4);
+        for (i, f) in Fact::ALL.iter().enumerate() {
+            assert_eq!(Fact::ALL.iter().position(|g| g == f), Some(i), "{f:?} listed once");
+            let _ = Evidence::default().has(*f);
+        }
     }
 
     /// Either reorderer shape proves the one fact `NoReorderer`, which is the one rule; a shape
