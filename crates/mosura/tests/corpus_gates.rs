@@ -201,14 +201,17 @@ fn the_committed_baseline_loads_with_the_expected_sets() {
     assert_eq!(b.string_ops_bar().len(), 4);
     // 12 at w5c; 0x14b44 and 0x3d470 left the chain set when the narrow one-case switch printed
     // in them and recompiled closer (round e2: 0.455 -> 0.545, 0.438 -> 0.500)
-    assert_eq!(b.chains().len(), 10);
+    // 11 since round e31: 0x47594 pinned as an if-chain — the narrow switch's tail clause must not
+    // reach a register-local tail (docs/exact-arms.md)
+    assert_eq!(b.chains().len(), 11);
     assert_eq!(b.switch_labels().len(), 19);
     assert_eq!(b.guards("guard_frame").len(), 16);
     assert_eq!(b.guards("guard_volatile").len(), 14);
     // the dropped-parameter (phantom) specimens, EXACT since round e10 (docs/exact-arms.md)
     assert_eq!(b.guards("guard_phantom").len(), 2);
     // the far-return, dummy-stack-parameter and narrow-parameter contracts (docs/exact-arms.md)
-    assert_eq!(b.guards("guard_contract").len(), 6);
+    // 7 since round e34: 0x30dc8's stack-convention callee clause (docs/exact-arms.md)
+    assert_eq!(b.guards("guard_contract").len(), 7);
     assert!(b.rows.iter().all(|r| !r.set_at.is_empty()));
 }
 

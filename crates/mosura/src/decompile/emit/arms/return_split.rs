@@ -4,7 +4,7 @@
 //! is the negation). Value-identical by construction — the returned varnode IS the tested one, so
 //! it is true exactly on the taken path; gates: no else arm, no goto records on either component,
 //! nothing else printable in the tail block. Per function under the `return-split` axis, or per
-//! site by witness (`recovered.return_split_sites`, from `buildconfig::split_returns_from_evidence`
+//! site by witness (`recovered.return_split.split`, from `buildconfig::split_returns_from_evidence`
 //! over this arm's `return_split_candidates` report). A target-informed emit choice, NOT Ghidra:
 //! the reference decompiler prints the merged boolean return.
 //!
@@ -21,7 +21,7 @@
 //! block ahead of the branch (`x = 0;`), the other at the end of the if body (`x = 1;`) — the
 //! merged form Ghidra builds when the compiler shares one epilogue between `return 0;` and
 //! `return 1;`. The original materializes each constant on its own path (a `XOR AL,AL`
-//! right before an epilogue, after the branch — the witness `recovered.const_phi_sites`, from
+//! right before an epilogue, after the branch — the witness `recovered.return_split.const_phi`, from
 //! `buildconfig::const_phi_returns_from_evidence` over this arm's `const_phi_candidates`); the
 //! arm suppresses both assignments and prints the per-path returns. Value-identical: the phi's
 //! value on each path IS that path's constant.
@@ -31,7 +31,7 @@
 //! `if (x != 0) { .. } return 0;`. The original's `JZ` lands on the bare epilogue past the
 //! shared `XOR EAX,EAX` (the tested return register already holds the 0), which only a
 //! source-level early return produces; the merged form's jump lands on the load. Under the
-//! witness (`recovered.early_return_sites`, the same byte fact as the constant-phi shape's, over
+//! witness (`recovered.return_split.early_return`, the same byte fact as the constant-phi shape's, over
 //! this arm's `early_return_candidates`) the pair prints as `if (x == 0) { return 0; }`, the
 //! body UN-NESTED at the same level, and the tail's `return 0;` — value-identical: the body's
 //! fall-through reaches the same return either way.
@@ -77,7 +77,10 @@ pub const ARM: Arm = Arm {
 
 fn try_emit(pr: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<Answer> {
     if let Site::Return { op, pad } = site {
-        return branch_return(pr, op, pad, out);
+        // the Return site's one owner: the branch form first, then the struct-return arm's
+        // answer (`struct_return::render_return`) — the order the table gave the two arms
+        // when both declared the kind
+        return branch_return(pr, op, pad, out).or_else(|| super::struct_return::render_return(pr, op));
     }
     let Site::ListTail { s, c, tail, indent } = site else { return None };
     if matches!(s.blocks[c].kind, FlowKind::If)
@@ -93,11 +96,11 @@ fn try_emit(pr: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<Ans
             // OR a recovered per-site decision
             let key = pr.plain_if_branch_pc(s, c);
             if let Some(pc) = key {
-                pr.report.return_split_candidates.push(pc);
+                pr.report.return_split.split.push(pc);
             }
             let apply = pr.arms.return_split.paths
                 || key.is_some_and(|pc| {
-                    pr.recovered.return_split_sites.contains(&pc)
+                    pr.recovered.return_split.split.contains(&pc)
                 });
             // the branch may test the NEGATION of the returned bool (`JZ` over `x != 0`: the
             // CBRANCH input is a BOOL_NEGATE the structure prints back positive) — peel it and
@@ -116,8 +119,8 @@ fn try_emit(pr: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<Ans
         }
         // the early-return shape (see the module doc)
         if let Some(split) = early_return_split(pr, s, c, tail) {
-            pr.report.early_return_candidates.push((split.branch_pc, split.k));
-            if pr.recovered.early_return_sites.contains(&split.branch_pc) {
+            pr.report.return_split.early_return.push((split.branch_pc, split.k));
+            if pr.recovered.return_split.early_return.contains(&split.branch_pc) {
                 let fb = &s.blocks[c];
                 let (cond_node, body) = (fb.components[0], fb.components[1]);
                 let negated = fb.negated;
@@ -137,8 +140,8 @@ fn try_emit(pr: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<Ans
         }
         // the constant-phi shape (see the module doc)
         if let Some(split) = const_phi_split(pr, s, c, tail) {
-            pr.report.const_phi_candidates.push((split.branch_pc, split.k_tail));
-            if pr.recovered.const_phi_sites.contains(&split.branch_pc) {
+            pr.report.return_split.const_phi.push((split.branch_pc, split.k_tail));
+            if pr.recovered.return_split.const_phi.contains(&split.branch_pc) {
                 if let Some(copy_tail) = split.copy_tail {
                     pr.suppressed.insert(copy_tail);
                 }
@@ -464,8 +467,8 @@ fn branch_return(pr: &mut PrintC<'_>, op: OpId, pad: &str, out: &mut String) -> 
         return None;
     }
     let pc = bo.seqnum.pc.offset;
-    pr.report.branch_return_candidates.push(pc);
-    if !pr.recovered.branch_return_sites.contains(&pc) {
+    pr.report.return_split.branch_return.push(pc);
+    if !pr.recovered.return_split.branch_return.contains(&pc) {
         return None;
     }
     let cond = pr.render_var(v).0;
@@ -520,4 +523,47 @@ fn emit_if_with_tail(pr: &mut PrintC<'_>, s: &Structured, idx: usize, indent: us
     let inner_pad = "  ".repeat(indent + 1);
     buf.insert_str(insert_at, &format!("{inner_pad}{tail}\n"));
     out.push_str(&buf);
+}
+
+/// The return-split's candidates the report pass collects (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Report {
+    /// Every tail pair the `return-split` axis could rewrite, keyed by the guarding `if`'s
+    /// CBRANCH instruction address. The target rule reads whether the ORIGINAL materialized
+    /// the tail boolean (a `SETcc` in the region after the branch) or stayed branch-only —
+    /// branch-only is what the split rendering compiles to.
+    pub split: Vec<u64>,
+    /// Every constant-phi tail the `return-split` arm could split (see its module doc), as
+    /// `(guarding branch address, the fall-through constant)`. The original either materializes
+    /// that constant on its own path after the branch (a `XOR AL,AL` / `MOV EAX,k` right before
+    /// an epilogue) — the per-path returns — or hoists it above the test (the merged form).
+    pub const_phi: Vec<(u64, u64)>,
+    /// Every early-return tail the `return-split` arm could rewrite (see its module doc): an
+    /// if without an else whose join is a lone `return <constant>`, as `(guarding branch
+    /// address, the constant)`. The original either lands the branch PAST the constant's load,
+    /// on the bare epilogue (the tested return register already holds it — the early return),
+    /// or on the load (the merged form).
+    pub early_return: Vec<(u64, u64)>,
+    /// Every lone `return <bool>;` statement (`return-split`, the branch form), by the address
+    /// of the compare that computes the bool: the original either branches over a constant
+    /// (`JZ ; MOV AL,1`) or materializes it (`SETNZ AL`).
+    pub branch_return: Vec<u64>,
+}
+
+/// The return-split's witnessed decisions the recovered pass renders (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Sites {
+    /// Guarding-if branch addresses whose tail boolean return splits per path
+    /// (`return-split`).
+    pub split: std::collections::HashSet<u64>,
+    /// Guarding-if branch addresses whose constant-phi tail splits per path (`return-split`,
+    /// `const_phi_candidates` evidence, `buildconfig::const_phi_returns_from_evidence`).
+    pub const_phi: std::collections::HashSet<u64>,
+    /// Guarding-if branch addresses whose constant join prints as the early return
+    /// (`return-split`, `early_return_candidates` evidence, the same byte fact as
+    /// `buildconfig::const_phi_returns_from_evidence`).
+    pub early_return: std::collections::HashSet<u64>,
+    /// Compare addresses whose lone bool return the original branches over (`return-split`,
+    /// `branch_return_candidates` evidence, `buildconfig::branch_returns_from_evidence`).
+    pub branch_return: std::collections::HashSet<u64>,
 }

@@ -102,14 +102,24 @@ impl State {
 /// The arm, as the [`super::ARMS`] table holds it: the RETURN statement site — a definition whose
 /// RETURN carries no value (slot 0 is the untouched return register, the void form of "returned
 /// unchanged") prints `return __ret`; a RETURN with a value renders it through the value seam.
+/// The arm declares NO site kind of its own: `SiteKind::Return` has one owner, `return_split`,
+/// which chains to [`render_return`] when its own branch form declines (the branch form
+/// answered first since 29b5a89, when both arms declared the kind; the chain keeps that order
+/// explicit and the table disjoint — `tests::arms_declare_disjoint_site_kinds`).
 pub const ARM: Arm = Arm {
     name: "struct-return: a hidden-return-pointer function as the struct-returning function (docs/struct-return-arm.md)",
-    kinds: &[SiteKind::Return],
+    kinds: &[],
     try_emit,
 };
 
 fn try_emit(p: &mut PrintC<'_>, site: Site<'_>, _out: &mut String) -> Option<Answer> {
     let Site::Return { op, .. } = site else { return None };
+    render_return(p, op)
+}
+
+/// The Return site's struct-return answer: the hidden return pointer's function returns the
+/// struct local by name. `None` outside a witnessed struct-return function.
+pub(crate) fn render_return(p: &mut PrintC<'_>, op: crate::decompile::op::OpId) -> Option<Answer> {
     if !p.arms.struct_return.witness || p.arms.struct_return.def.is_none() || p.f.op(op).num_inputs() > 1 {
         return None;
     }
