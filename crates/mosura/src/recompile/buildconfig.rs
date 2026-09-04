@@ -49,16 +49,24 @@ pub struct Evidence {
     /// why the CPU digit is per-function evidence and not only a profile constant.
     pub in_place_scaled_lea: bool,
     /// The body stores a 4-byte CONSTANT to a global within two instructions after a cdecl
-    /// stack cleanup (`ADD ESP,8 ; MOV dword ptr [g],1`). Under `-or` (the instruction
-    /// reorderer, part of `-ox`) this compiler never leaves that form: it lifts the constant
-    /// into a free callee-saved register above the cleanup and stores the register
-    /// (`MOV EBX,1 ; ADD ESP,8 ; MOV [g],EBX` — every recompile of the shape, under every
-    /// other flag, callee contract and declaration probed). So the immediate form PROVES the
-    /// function was compiled without the reorderer; the evidence is one-sided. Measured on
-    /// the two-way recompile of the whole corpus (2026-09-04, `-onatx` against `-onatmil`):
-    /// the shape occurs in four functions, all four byte-exact only without `-or`, and in
-    /// none of the 342 EXACT functions that need it (WAR2 FUN_00051764, FUN_00068789,
-    /// FUN_000692f0, FUN_0006ae98 — two source modules built without `-or`).
+    /// stack cleanup (`ADD ESP,8 ; MOV dword ptr [g],1`) — the form the instruction
+    /// reorderer (`-or`, part of `-ox`) never leaves. The mechanism, from the Open Watcom 1.0
+    /// code generator (`/data/ow100-src/bld/cg`): `LdStAlloc` (intel/c/i86ldstr.c, run under
+    /// any `-o` on a 486+) splits every constant store to memory into `MOV r,imm ; MOV [g],r`
+    /// ("the 486 has a 1 cycle stall", `Enregister`), taking `r` from a rover pointer over the
+    /// free registers (`FindRegister`); `Schedule()` (c/inssched.c, the ONLY pass
+    /// `INS_SCHEDULING` gates, c/generate.c:466) then builds the block bottom-up and, between
+    /// the ready constant load and the ready cleanup, places the cleanup first by the
+    /// `InsStallable` tie-break — so the load lands ABOVE the `ADD ESP`; `LdStCompress`
+    /// (i86ldstr.c, `CompressIns`) merges a pair back only while it is still adjacent.
+    /// Above an `ADD ESP` any register hoists; above a bare `CALL` only a callee-saved one
+    /// survives, and which register the rover hands out is not readable off the bytes — hence
+    /// the cleanup, not the call, is the witness. Measured on the two-way recompile of the
+    /// whole corpus (2026-09-04, `-onatx` against `-onatmil`): the shape occurs in four
+    /// functions, all four byte-exact only without `-or`, none among the 342 EXACT functions
+    /// that need it (WAR2 FUN_00051764, FUN_00068789, FUN_000692f0, FUN_0006ae98 — two
+    /// source modules built without the reorderer); the seven constant stores that follow a
+    /// bare `CALL` split 3 no-reorderer / 3 reorderer / 1 indifferent, as the rover predicts.
     pub immediate_store_after_cleanup: bool,
 }
 
