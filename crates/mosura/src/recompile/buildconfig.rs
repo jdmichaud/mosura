@@ -2690,3 +2690,32 @@ pub fn signed_loads_from_evidence(
     }
     out
 }
+
+
+/// Decide the `table-base` sites (`emit/arms/table_base.rs`): a sum of a value and an
+/// address-range constant prints through the base's array symbol where the ORIGINAL
+/// materializes that base as an immediate — a `MOV r32,imm` or `ADD r32,imm` (never an `LEA`,
+/// whose displacement is the folded form) anywhere in the function with `imm` equal to the
+/// constant or within 0x100 below it (a field of the element). Candidates are `(sum address,
+/// constant)`; returns `sum address → base` with the closest such immediate.
+pub fn table_bases_from_evidence(cands: &[(u64, u64)], insns: &[NormInsn]) -> std::collections::HashMap<u64, u64> {
+    let mut out = std::collections::HashMap::new();
+    let imms: Vec<u64> = insns
+        .iter()
+        .filter_map(|x| {
+            let rest = x.text.strip_prefix("MOV E").or_else(|| x.text.strip_prefix("ADD E"))?;
+            let (reg, imm) = rest.split_once(',')?;
+            if reg.len() != 2 || !imm.starts_with("0x") {
+                return None;
+            }
+            u64::from_str_radix(&imm[2..], 16).ok()
+        })
+        .collect();
+    for &(pc, k) in cands {
+        let best = imms.iter().copied().filter(|&imm| imm <= k && k - imm < 0x100).max();
+        if let Some(base) = best {
+            out.insert(pc, base);
+        }
+    }
+    out
+}

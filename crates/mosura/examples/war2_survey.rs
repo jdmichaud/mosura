@@ -4208,6 +4208,12 @@ fn build_tu(
         if ptr_idents.contains(n) || declared_locals.contains(n.as_str()) || agg_names.contains(n.as_str()) {
             continue;
         }
+        // `aRam<hex>`: a TABLE the table-base arm names by its base (emit/arms/table_base.rs) —
+        // an extern array of unknown size, so the symbol is an address and never a load
+        if *pfx == 'a' {
+            names.insert(format!("extern char {n}[];"));
+            continue;
+        }
         // Prefer the width the decompiler recovered for this address over the prefix's default.
         let ty = ram_addr_of(n)
             .and_then(|a| gsizes.get(&a).copied())
@@ -4239,11 +4245,15 @@ fn build_tu(
             if declared_locals.contains(cap)
                 || ptr_idents.contains(cap)
                 || agg_names.contains(cap)
-                || names.iter().any(|d| d.split_whitespace().any(|t| t.trim_end_matches(';') == cap))
+                || names.iter().any(|d| d.split_whitespace().any(|t| t.trim_end_matches(';').trim_end_matches("[]") == cap))
             {
                 continue;
             }
             let pfx = cap.as_bytes()[0] as char;
+            if pfx == 'a' {
+                extra.push(format!("extern char {cap}[];"));
+                continue;
+            }
             let ty = ram_addr_of(cap)
                 .and_then(|a| gsizes.get(&a).copied())
                 .and_then(|sz| sized_ctype(pfx, sz))

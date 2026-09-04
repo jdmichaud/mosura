@@ -160,6 +160,7 @@ pub mod snapshot;
 pub mod return_split;
 pub mod join_narrow;
 pub mod sum_order;
+pub mod table_base;
 pub mod testmem;
 pub mod struct_return;
 pub mod counted_loop;
@@ -296,7 +297,8 @@ mod tests {
     /// The arm files, as text, for the surface scan — every `pub mod` of this module must be here
     /// (`arms_touch_only_the_documented_surface` checks that against this file's own source, so a
     /// new arm file cannot slip past the scan).
-    const ARM_SOURCES: [(&str, &str); 30] = [
+    const ARM_SOURCES: [(&str, &str); 31] = [
+        ("table_base.rs", include_str!("table_base.rs")),
         ("narrow_cmp.rs", include_str!("narrow_cmp.rs")),
         ("signed_load.rs", include_str!("signed_load.rs")),
         ("for_rotate.rs", include_str!("for_rotate.rs")),
@@ -512,6 +514,7 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
     //   Extension:   ext-cast (the promotion rendering of INT_ZEXT / INT_SEXT)
     //   CallArg:     mask-cast (a call argument the original masks before the call), then store-forward
     //   Load:        testmem (the int-wide deref), then signed-load (the signed narrow deref)
+    //   Sum:         sum-order (the original's term order), then table-base (a data address as its array symbol)
     //   Var:         struct-return (the hidden pointer -> `__ret`), string-ops
     //   Deref:       struct-return (a field write through the hidden pointer), array-index
     //   SlotName / SlotOffset / SlotAddress / SlotPiece / FusedStore:
@@ -535,7 +538,7 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
         ValueSite::Extension { op, signed } => ext_cast::render(p, op, signed),
         ValueSite::CallArg { op, slot } => mask_cast::render(p, op, slot).or_else(|| store_forward::render(p, op, slot)),
         ValueSite::Load { out, addr } => testmem::render(p, out, addr).or_else(|| signed_load::render(p, out, addr)),
-        ValueSite::Sum { op } => sum_order::render(p, op),
+        ValueSite::Sum { op } => sum_order::render(p, op).or_else(|| table_base::render(p, op)),
         ValueSite::Deref { addr, vty } => struct_return::render_value(p, &ValueSite::Deref { addr, vty })
             .or_else(|| array_index::render(p, addr))
             .or_else(|| ptr_offset::render(p, addr, vty)),

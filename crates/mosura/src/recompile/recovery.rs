@@ -255,6 +255,12 @@ fn derive(report: &EmitReport, insns: &[NormInsn], call_arg_orders: HashMap<u64,
         struct_copy: crate::decompile::emit::arms::struct_copy::Sites {
             runs: crate::recompile::buildconfig::movsd_runs_from_evidence(insns),
         },
+        table_base: crate::decompile::emit::arms::table_base::Sites {
+            sites: crate::recompile::buildconfig::table_bases_from_evidence(
+                &report.table_base.candidates,
+                insns,
+            ),
+        },
         testmem: crate::decompile::emit::arms::testmem::Sites {
             sites: crate::recompile::buildconfig::testmem_from_evidence(
                 &report.testmem.candidates,
