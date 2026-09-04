@@ -5027,11 +5027,6 @@ fn print_c_inner(
     // inline-call: a comma clause's call result printed inside its compare where the original
     // materializes no boolean (emit/arms/inline_call.rs) — arm setup, after the structure
     arms::inline_call::recognize(&mut p, &s);
-    // for-rotate: the witnessed rotated overflow loops (emit/arms/for_rotate.rs) — arm setup,
-    // after the tier-2 widening has decided which header values print as statements
-    for &root in &s.roots {
-        arms::for_rotate::recognize(&mut p, &s, root);
-    }
     // local-width=storage, tier 2 (see the `tier2_widen` field doc): a narrow LOAD whose
     // value a comparison consumes against a positive-at-width constant materializes as an
     // explicit unsigned widened temp — the statement prints at the load op's own position,
@@ -5152,6 +5147,11 @@ fn print_c_inner(
         }
     }
 
+    // for-rotate: the witnessed rotated overflow loops (emit/arms/for_rotate.rs) — arm setup,
+    // after the tier-2 widening has decided which header values print as statements
+    for &root in &s.roots {
+        arms::for_rotate::recognize(&mut p, &s, root);
+    }
     // entry-snapshot candidates (emit/arms/snapshot.rs): the census is the arm's
     arms::snapshot::recognize(&mut p, f);
 
