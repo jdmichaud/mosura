@@ -124,6 +124,25 @@ recompiles closer than the `if` more often than not). The corpus-gate rows the s
 re-stamped in `scripts/corpus-gates.tsv`: two chain TUs (0x14b44, 0x3d470) left the chain set
 after improving, three switch-label counts grew by one.
 
+## The design review of the push (2026-09-04) and its four items
+
+mosura reviewed the range `974d872..934c4e9` on design and long-term viability (stay close to
+Ghidra, adapt per compiler). Verdict: the two-pass witness protocol, the printer surface (18 fields
+before and after eight new arms), the protected sweep instrument and the fixture provenance are the
+load-bearing parts; four things would not survive a second target unchanged. All four landed,
+byte-neutral against the e42 tree (re-emit + diff, 0 differing units), suite once per batch:
+
+| item | what changed | commit |
+| --- | --- | --- |
+| F4 facts | `Evidence` proves named `Fact`s (`Frame`, `SavesBeforeFrame`, `PrePentiumTuning`, `NoReorderer`); a `Rule` is `when: Fact` — the two reorderer shapes are one rule; `buildconfig::recover` shares `Profile::apply_rules` (its own copy applied two rules) | `afe3388` |
+| F3 fixpoint | `recovery::derive` applied once more under the decisions in debug builds or `MOSURA_RECOVER_FIXPOINT=1`; a decision the third render INTRODUCES is named on stderr. Corpus: 183 functions grow (171 `widen_local_reps`, 11 `complement_sites`, 1 `cmp_order_sites`; 37 EXACT today) — the tier-2 widening does not converge at two rounds; counted as any difference it was 217, mostly consumed candidates | `ecacc7e` |
+| F1 registry | `EmitReport`/`RecoveredChoices` left printc.rs for `emit::arms::registry::{Report, Recovered}`, one typed sub-struct per arm in its own module, the R2b backlog as `arms::port`; printc keeps the two names as aliases and holds two opaque fields | `04fca4e` |
+| F2 switch | `war2_survey --arms-off <arm>,..`: `Recovered::switch_off` empties the named arm's witnessed decisions (`Off`, arm-owned: `port` switches the backlog as one block so a widened declaration never outlives its rendering); the manifest's `arms:` line is stamped `; off: ..`. Measured: `--arms-off cmp-sign` changes exactly the 22 units that arm decided, each compare reverting to the port's rendering, stamp on the manifest and on stderr | `F2` |
+
+The suite run once for the batch found two defects of the push itself, fixed in `337e83f`: the
+branch-return form had made `return_split` a second owner of `SiteKind::Return` (now the one owner,
+chaining to `struct_return::render_return`), and two pinned gate sets had grown without their test.
+
 ## What did not work (probed, not built)
 
 - The sound family (16 functions, `ADD EDX,k ; MOV EAX,EDX` for `return (rand() >> 8) % 4 + k`):

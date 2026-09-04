@@ -981,6 +981,21 @@ fn main() {
                 .collect()
         })
         .unwrap_or_else(|| vec![mosura::recompile::recovery::canonical_arm()]);
+    // `--arms-off cmp-sign,load-hoist`: the named arms' witnessed decisions are dropped after
+    // recovery (review F2: one generic switch on the registry, `Recovered::switch_off`), so the
+    // recovered tree prints those sites as the port does — per-arm isolation and re-measurement
+    // without reverting code. The tree says so: the manifest's `arms:` line carries the names.
+    let arms_off: Vec<String> = rest
+        .iter()
+        .position(|a| a == "--arms-off")
+        .and_then(|i| rest.get(i + 1))
+        .map(|v| v.split(',').map(str::trim).filter(|t| !t.is_empty()).map(|t| t.replace('-', "_")).collect())
+        .unwrap_or_default();
+    for a in &arms_off {
+        if !mosura::decompile::emit::arms::registry::Recovered::ARMS.contains(&a.as_str()) {
+            panic!("--arms-off: unknown arm `{a}` (switchable: {})", mosura::decompile::emit::arms::registry::Recovered::ARMS.join(", "));
+        }
+    }
     // Like the loop-overflow branch form below: this survey's output exists to be RECOMPILED,
     // and the target's shift instructions perform the `& 0x1f` count mask themselves, so every
     // arm elides the lifter's hardware mask (`EmitChoices` shift-mask=hardware; the axis doc in
@@ -1322,8 +1337,9 @@ fn main() {
     // The arm set this tree was MEASURED with (the recovered emit's choices, every axis spelled
     // out), so a tree or a copied manifest is self-describing about its arm set (code review
     // 2026-08-27: measurement documents carry their arm set). `#` lines are skipped by every reader.
-    writeln!(mf, "# arms: {rec_arm}").unwrap();
-    eprintln!("arms (recovered emit): {rec_arm}");
+    let off_stamp = if arms_off.is_empty() { String::new() } else { format!("; off: {}", arms_off.join(",")) };
+    writeln!(mf, "# arms: {rec_arm}{off_stamp}").unwrap();
+    eprintln!("arms (recovered emit): {rec_arm}{off_stamp}");
     writeln!(
         mf,
         "idx\tva\tname\tstatus\torig_len\tcov_lo\tcov_hi\tsmells\torig_hex\tir_calls\tblocks_cfg\tblocks_reached\tkind\tcontract"
@@ -2908,6 +2924,13 @@ fn main() {
                 }
                 call_arg_orders
             });
+            let recovered = {
+                let mut r = recovered;
+                for a in &arms_off {
+                    r.switch_off(a).expect("--arms-off names were checked at startup");
+                }
+                r
+            };
             // the interleave census (was `MOSURA_ILV_CENSUS`): a diagnostic, so under the facility's
             // `recover` topic like its siblings (review R6, commit 3b); it also reports the orders the
             // parked lever would apply -- printc::interleave_orders keeps its caller here since the
