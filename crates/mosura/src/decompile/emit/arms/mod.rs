@@ -226,6 +226,11 @@ pub struct Arm {
 /// The arms in the order they are tried, each with the site kinds it declares. First match wins;
 /// no two arms declare the same kind (`tests::arms_declare_disjoint_site_kinds`). An arm not yet
 /// moved out of printc.rs sits here as a thin delegate.
+/// The site kinds more than one arm declares, each with its owners in `ARMS` order — the
+/// order `try_emit` asks them, the first answer winning. `Return`: the branch form of a lone
+/// bool return (`return_split`) answers before the struct-return's `return <local>`.
+pub const SHARED_KINDS: &[(SiteKind, &[&str])] = &[(SiteKind::Return, &["return-split", "struct-return"])];
+
 pub const ARMS: [Arm; 6] = [
     string_ops::ARM,
     sparse_switch::ARM,
@@ -380,19 +385,28 @@ mod tests {
         }
     }
 
-    /// The at-most-one-arm-per-site-kind rule is a static property of the table: every pair of
-    /// arms declares disjoint kinds, so "first match wins" never has two candidates.
+    /// A site kind has one owner, or several in a DOCUMENTED order: `SHARED_KINDS` names every
+    /// kind more than one arm declares and its owners in the order `ARMS` asks them (the first
+    /// answer wins, `try_emit`). An undocumented sharing, or a table order that disagrees with
+    /// the documented one, fails here — resolution stays in data, never in a cross-arm call.
     #[test]
     fn arms_declare_disjoint_site_kinds() {
-        for (i, a) in ARMS.iter().enumerate() {
-            for b in ARMS.iter().skip(i + 1) {
-                for k in a.kinds {
-                    assert!(!b.kinds.contains(k), "arms `{}` and `{}` both declare {k:?}", a.name, b.name);
+        let mut owners: Vec<(SiteKind, Vec<&str>)> = Vec::new();
+        for arm in ARMS.iter() {
+            for k in arm.kinds {
+                match owners.iter_mut().find(|(kind, _)| kind == k) {
+                    Some((_, names)) => names.push(arm.name.split(':').next().unwrap()),
+                    None => owners.push((*k, vec![arm.name.split(':').next().unwrap()])),
                 }
             }
         }
-        for kind in [SiteKind::LoopNode, SiteKind::IfEntry, SiteKind::IfWithoutElse, SiteKind::BlockOp, SiteKind::Return] {
-            assert_eq!(ARMS.iter().filter(|a| a.kinds.contains(&kind)).count(), 1, "{kind:?} has exactly one arm");
+        for (kind, names) in &owners {
+            if names.len() == 1 {
+                assert!(!SHARED_KINDS.iter().any(|(k, _)| k == kind), "{kind:?} is documented as shared but has one owner");
+                continue;
+            }
+            let documented = SHARED_KINDS.iter().find(|(k, _)| k == kind).map(|(_, o)| *o);
+            assert_eq!(documented, Some(names.as_slice()), "{kind:?}: owners {names:?} must be documented in SHARED_KINDS in ARMS order");
         }
     }
 }

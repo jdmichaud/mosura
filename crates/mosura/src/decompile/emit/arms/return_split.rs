@@ -77,10 +77,7 @@ pub const ARM: Arm = Arm {
 
 fn try_emit(pr: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<Answer> {
     if let Site::Return { op, pad } = site {
-        // the Return site's one owner: the branch form first, then the struct-return arm's
-        // answer (`struct_return::render_return`) — the order the table gave the two arms
-        // when both declared the kind
-        return branch_return(pr, op, pad, out).or_else(|| super::struct_return::render_return(pr, op));
+        return branch_return(pr, op, pad, out);
     }
     let Site::ListTail { s, c, tail, indent } = site else { return None };
     if matches!(s.blocks[c].kind, FlowKind::If)

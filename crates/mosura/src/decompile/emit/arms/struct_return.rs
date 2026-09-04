@@ -102,13 +102,12 @@ impl State {
 /// The arm, as the [`super::ARMS`] table holds it: the RETURN statement site — a definition whose
 /// RETURN carries no value (slot 0 is the untouched return register, the void form of "returned
 /// unchanged") prints `return __ret`; a RETURN with a value renders it through the value seam.
-/// The arm declares NO site kind of its own: `SiteKind::Return` has one owner, `return_split`,
-/// which chains to [`render_return`] when its own branch form declines (the branch form
-/// answered first since 29b5a89, when both arms declared the kind; the chain keeps that order
-/// explicit and the table disjoint — `tests::arms_declare_disjoint_site_kinds`).
+/// `SiteKind::Return` has two owners, this arm and `return_split`; the table order decides
+/// (`return_split` first, the branch form; then this answer) and `SHARED_KINDS` in
+/// `arms/mod.rs` documents that order — resolution in data, not a cross-arm call.
 pub const ARM: Arm = Arm {
     name: "struct-return: a hidden-return-pointer function as the struct-returning function (docs/struct-return-arm.md)",
-    kinds: &[],
+    kinds: &[SiteKind::Return],
     try_emit,
 };
 
