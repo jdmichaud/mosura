@@ -598,7 +598,8 @@ fn call_shapes_stable(
     // an arity whose registers the callee is byte-proven to WRITE first.
     evidence: &HashMap<u64, Vec<Option<bool>>>,
 ) -> bool {
-    type Shape = (usize, Option<u32>, u64); // (args, output width, direct-callee va or 0)
+    // (args, output width, direct-callee va or 0, the output is consumed by something)
+    type Shape = (usize, Option<u32>, u64, bool);
     let shapes = |f: &mosura::decompile::funcdata::Funcdata| -> HashMap<u64, Shape> {
         let mut m = HashMap::new();
         for op in f.op_ids() {
@@ -614,14 +615,15 @@ fn call_shapes_stable(
                 0
             };
             let outw = o.output.map(|v| f.vn(v).size);
-            m.insert(o.seqnum.pc.offset, (o.num_inputs() - 1, outw, callee));
+            let out_used = o.output.is_some_and(|v| !f.vn(v).descend.is_empty());
+            m.insert(o.seqnum.pc.offset, (o.num_inputs() - 1, outw, callee, out_used));
         }
         m
     };
     let (l, x) = (shapes(fl), shapes(fx));
     let reg = fx.spaces.by_name("register");
-    l.iter().all(|(pc, &(n, outw, callee))| {
-        x.get(pc).is_some_and(|&(m, outw2, _)| {
+    l.iter().all(|(pc, &(n, outw, callee, _))| {
+        x.get(pc).is_some_and(|&(m, outw2, _, out_used2)| {
             let grows_ok = contradicted.iter().any(|&(c, _)| c == callee);
             // The candidate lands EXACTLY on a register-only recovered contract the landed world
             // missed: the drift is that callee's own testimony, not churn. Output width still has
@@ -649,9 +651,129 @@ fn call_shapes_stable(
                         && p.params.len() == m
                         && p.params.len() != n
                 });
-            outw2 == outw && (contract_ok || if grows_ok { m >= n } else { m == n })
+            // A return value the candidate MATERIALIZES but never consumes prints the same
+            // call statement as no return at all — the callee's prototype says it returns,
+            // nothing in this function reads it. Only the unused case is licensed; a consumed
+            // materialized return stays the different class it always was (JD's decision 2,
+            // 2026-09-04: adopt the callee's arity site by site — FUN_00033668's `-2`, whose
+            // five contracted drifts all land on their callees' arities and were held by
+            // exactly this width change on three of them).
+            let outw_ok = outw2 == outw || (outw.is_none() && outw2.is_some() && !out_used2);
+            outw_ok && (contract_ok || if grows_ok { m >= n } else { m == n })
         })
     })
+}
+
+/// The per-site half of the consistency adoption (JD decision 2, 2026-09-04): the landed
+/// calls whose candidate counterpart passes MORE arguments, every extra one a CONSTANT, where
+/// the drift is licensed exactly as [`call_shapes_stable`] licenses one — the callee's
+/// register-only recovered arity is the candidate's count and the callee's entry block refutes
+/// none of the passed registers — but WITHOUT the output-width condition (the call's return is
+/// not what is adopted). Returns `(landed call op, [(input slot, value, size)])` per site, the
+/// slots in ascending order so insertion keeps the candidate's argument order.
+///
+/// The SITE's own bytes decide (JD's design): each extra constant must be MATERIALIZED into
+/// its parameter register right before the call — the first write of that register walking
+/// back from the call is `MOV r,imm` of that value (or `XOR r,r` for 0), with no call and no
+/// branch crossed. A constant that reaches the call from an earlier write across other calls
+/// (the Y-series' `func_0x00050108(0x3c, 0x1cc, 0x21330)`, FUN_00040490) is real to the
+/// callee but not to the bytes: this compiler re-materializes an explicit argument, and the
+/// function lost EXACT to it in round e41.
+fn constant_arg_sites(
+    fl: &mosura::decompile::funcdata::Funcdata,
+    fx: &mosura::decompile::funcdata::Funcdata,
+    contradicted: &[(u64, usize)],
+    protos: Option<&std::collections::HashMap<u64, mosura::decompile::fspec::FuncProto>>,
+    evidence: &HashMap<u64, Vec<Option<bool>>>,
+    insns: &[mosura::recompile::insn::NormInsn],
+) -> Vec<(mosura::decompile::op::OpId, Vec<(usize, u64, u32)>)> {
+    use mosura::recompile::insn::SemArg;
+    // the first write of register `r` (container) walking back from instruction `ci`, if it
+    // is a materialization of `value` and nothing crossed is a call or a branch
+    let materialized_before = |ci: usize, r: u64, value: u64, size: u32| -> bool {
+        let mask = if size >= 8 { u64::MAX } else { (1u64 << (8 * size)) - 1 };
+        for x in insns[..ci].iter().rev() {
+            if x.is_call || x.is_branch {
+                return false;
+            }
+            let writes_r = x.sem.iter().any(|op| matches!(op.out, Some(SemArg::Reg(o, _)) if o & !3 == r & !3));
+            if !writes_r {
+                continue;
+            }
+            let mov_imm = x.mnemonic == "MOV"
+                && x.sem.iter().any(|op| {
+                    matches!(op.out, Some(SemArg::Reg(o, _)) if o & !3 == r & !3)
+                        && matches!(op.ins.as_slice(), [SemArg::Const(c, _)] if c & mask == value & mask)
+                });
+            let xor_zero = x.mnemonic == "XOR" && value & mask == 0 && x.regs.iter().all(|&(o, _)| o & !3 == r & !3);
+            return mov_imm || xor_zero;
+        }
+        false
+    };
+    let reg = fx.spaces.by_name("register");
+    let calls = |f: &mosura::decompile::funcdata::Funcdata| -> HashMap<u64, mosura::decompile::op::OpId> {
+        f.op_ids()
+            .filter(|&op| f.op(op).code() == OpCode::Call && f.op(op).flags & (flags::DEAD | flags::MARKER) == 0)
+            .map(|op| (f.op(op).seqnum.pc.offset, op))
+            .collect()
+    };
+    let (l, x) = (calls(fl), calls(fx));
+    let mut out = Vec::new();
+    let mut pcs: Vec<&u64> = l.keys().collect();
+    pcs.sort();
+    for pc in pcs {
+        let lop = l[pc];
+        let Some(&xop) = x.get(pc) else { continue };
+        let (lo, xo) = (fl.op(lop), fx.op(xop));
+        let Some(t) = lo.input(0) else { continue };
+        let callee = fl.vn(t).loc.offset;
+        if callee == 0 || xo.input(0).map(|t2| fx.vn(t2).loc.offset) != Some(callee) {
+            continue;
+        }
+        let (n, m) = (lo.num_inputs() - 1, xo.num_inputs() - 1);
+        if m <= n || !contradicted.iter().any(|&(c, _)| c == callee) {
+            continue;
+        }
+        let byte_ok = evidence.get(&callee).is_some_and(|e| (0..m).all(|i| e.get(i).copied().flatten() != Some(false)));
+        let contract_ok = byte_ok
+            && protos.and_then(|p| p.get(&callee)).is_some_and(|p| {
+                !p.params.is_empty() && p.params.iter().all(|s| Some(s.addr.space) == reg) && p.params.len() == m
+            });
+        if !contract_ok {
+            continue;
+        }
+        // the landed prefix must be the candidate's prefix (same values), and every extra a constant
+        let same_prefix = (1..=n).all(|i| match (lo.input(i), xo.input(i)) {
+            (Some(a), Some(b)) => {
+                let (va, vb) = (fl.vn(a), fx.vn(b));
+                va.loc == vb.loc && va.size == vb.size && (!va.is_constant() || va.constant_value() == vb.constant_value())
+            }
+            _ => false,
+        });
+        if !same_prefix {
+            continue;
+        }
+        let Some(ci) = insns.iter().position(|x| x.addr == *pc) else { continue };
+        let params = protos.and_then(|p| p.get(&callee)).map(|p| &p.params);
+        let mut consts = Vec::new();
+        for i in (n + 1)..=m {
+            let Some(v) = xo.input(i) else { break };
+            let vn = fx.vn(v);
+            if !vn.is_constant() {
+                break;
+            }
+            // the parameter register of slot `i` (the candidate's order is the prototype's)
+            let Some(r) = params.and_then(|ps| ps.get(i - 1)).map(|s| s.addr.offset) else { break };
+            if !materialized_before(ci, r, vn.constant_value(), vn.size) {
+                break;
+            }
+            consts.push((i, vn.constant_value(), vn.size));
+        }
+        if consts.len() == m - n {
+            out.push((lop, consts));
+        }
+    }
+    out
 }
 
 fn nondefault_parm_regs(
@@ -2104,6 +2226,8 @@ fn main() {
                                                         !p.params.is_empty()
                                                             && p.params.iter().all(|s| Some(s.addr.space) == reg)
                                                     });
+                                                    let out_used2 = fx.op_ids().find(|&o| fx.op(o).seqnum.pc.offset == *pc && matches!(fx.op(o).code(), OpCode::Call | OpCode::Callind)).and_then(|o| fx.op(o).output).map(|v| fx.vn(v).descend.len());
+                                                    eprintln!("[cons-shape]   evidence {:?} cand-out-uses {:?}", evidence.get(&callee), out_used2);
                                                     eprintln!(
                                                         "[cons-shape] {name} {pc:#x} callee {callee:#x} args {n}->{m} outw {ow:?}->{ow2:?} contradicted={cont} proto_arity={parity:?} regonly={regonly:?}"
                                                     );
@@ -2238,6 +2362,38 @@ fn main() {
                                     list.join(" ")
                                 );
                                 f_forced = Some(f3);
+                            }
+                            // PER-SITE CONSTANT-ARGUMENT ADOPTION (JD decision 2, 2026-09-04): the
+                            // candidate is sound everywhere but its call shapes — it also
+                            // materializes a return the next call consumes, or widens one — so the
+                            // whole function stays HELD, but a call whose extra arguments are all
+                            // CONSTANTS, licensed the way `call_shapes_stable` licenses a drift (the
+                            // callee's register-only recovered arity, its entry block not refuting
+                            // the register), takes just those constants into the LANDED function:
+                            // FUN_00033668's `func_0x000596b0(g, -2)`, the `MOV EDX,-2` its bytes
+                            // carry and the landed world dropped. The constants are the candidate's
+                            // witnessed values (`consts_witnessed`); nothing else of the candidate
+                            // crosses over — the return widths, the other calls, the signature.
+                            Some(f3)
+                                if resolves_contradictions(&f3, &contradicted)
+                                    && sig_stable_vs(&f3)
+                                    && consts_witnessed(&f3)
+                                    && !constant_arg_sites(fl, &f3, &contradicted, reach_mode.then_some(&pp.recovered_protos), &evidence, &insns).is_empty() =>
+                            {
+                                let sites = constant_arg_sites(fl, &f3, &contradicted, reach_mode.then_some(&pp.recovered_protos), &evidence, &insns);
+                                let mut fp = fl.clone();
+                                let mut added: Vec<String> = Vec::new();
+                                for (op, consts) in &sites {
+                                    for &(slot, value, size) in consts {
+                                        let c = fp.new_const(size, value);
+                                        fp.op_insert_input(*op, slot, c);
+                                    }
+                                    added.push(format!("{:#x}+{}", fp.op(*op).seqnum.pc.offset, consts.len()));
+                                }
+                                ok = true;
+                                consistency_forced = true;
+                                eprintln!("[consistency] {name}: PER-SITE constant arguments adopted at [{}]", added.join(" "));
+                                f_forced = Some(fp);
                             }
                             _ => {
                                 eprintln!(
