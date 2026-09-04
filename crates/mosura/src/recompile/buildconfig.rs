@@ -82,19 +82,58 @@ pub struct Evidence {
     pub unscheduled_load_pair: bool,
 }
 
-/// A rule mapping evidence to option changes, for one toolchain.
+/// A compiler-level FACT the byte shapes prove — the currency a profile's rules trade in.
+/// The evidence layer derives facts from shapes ([`Evidence::has`]); the profile maps facts to
+/// options and never sees a shape. So a fact proven by several shapes (`NoReorderer`, two of
+/// them today) is one rule, not one per shape, and a second toolchain reuses every shape and
+/// writes only its own fact-to-option mapping (review F4, 2026-09-04).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fact {
+    /// The function builds a frame (`Evidence::frame_prologue`).
+    Frame,
+    /// Callee-saved registers are pushed before the frame is built
+    /// (`Evidence::saves_before_frame`).
+    SavesBeforeFrame,
+    /// Tuned for a pre-Pentium CPU: an in-place scaled LEA (`Evidence::in_place_scaled_lea`),
+    /// a form Pentium tuning never selects.
+    PrePentiumTuning,
+    /// Compiled without the instruction reorderer: either byte shape — a constant store kept
+    /// adjacent to a stack cleanup (`Evidence::immediate_store_after_cleanup`) or an indexed
+    /// load kept ahead of a stack-argument load (`Evidence::unscheduled_load_pair`).
+    NoReorderer,
+}
+
+impl Fact {
+    /// Every fact, in declaration order.
+    pub const ALL: [Fact; 4] = [Fact::Frame, Fact::SavesBeforeFrame, Fact::PrePentiumTuning, Fact::NoReorderer];
+}
+
+impl Evidence {
+    /// Whether the shapes prove `fact`.
+    pub fn has(&self, fact: Fact) -> bool {
+        match fact {
+            Fact::Frame => self.frame_prologue,
+            Fact::SavesBeforeFrame => self.saves_before_frame,
+            Fact::PrePentiumTuning => self.in_place_scaled_lea,
+            Fact::NoReorderer => self.immediate_store_after_cleanup || self.unscheduled_load_pair,
+        }
+    }
+
+    /// The facts the shapes prove.
+    pub fn facts(&self) -> Vec<Fact> {
+        Fact::ALL.iter().copied().filter(|&f| self.has(f)).collect()
+    }
+}
+
+/// A rule mapping one fact to option changes, for one toolchain.
 #[derive(Debug, Clone)]
 pub struct Rule {
-    pub when_frame_prologue: Option<bool>,
-    pub when_saves_before_frame: Option<bool>,
-    pub when_in_place_scaled_lea: Option<bool>,
-    pub when_immediate_store_after_cleanup: Option<bool>,
-    pub when_unscheduled_load_pair: Option<bool>,
+    pub when: Fact,
     pub add: Vec<String>,
     pub remove: Vec<String>,
 }
 
-/// One toolchain's base options and evidence rules.
+/// One toolchain's base options and fact rules.
 #[derive(Debug, Clone)]
 pub struct Profile {
     pub name: String,
@@ -103,33 +142,28 @@ pub struct Profile {
 }
 
 impl Profile {
-    /// Options for a function with this evidence.
+    /// Options for a function with this evidence: the base, then every rule whose fact the
+    /// evidence proves, in order.
     pub fn flags_for(&self, ev: &Evidence) -> Vec<String> {
-        let mut out = self.base.clone();
+        self.apply_rules(ev, self.base.clone())
+    }
+
+    /// The rules applied on top of `flags` (the base, or a stated build): every rule whose
+    /// fact the evidence proves, in order — the ONE application both `flags_for` and
+    /// [`recover`] use (the latter carried its own copy that applied two of the rules).
+    pub fn apply_rules(&self, ev: &Evidence, mut flags: Vec<String>) -> Vec<String> {
         for r in &self.rules {
-            if r.when_frame_prologue.is_some_and(|w| w != ev.frame_prologue) {
+            if !ev.has(r.when) {
                 continue;
             }
-            if r.when_saves_before_frame.is_some_and(|w| w != ev.saves_before_frame) {
-                continue;
-            }
-            if r.when_in_place_scaled_lea.is_some_and(|w| w != ev.in_place_scaled_lea) {
-                continue;
-            }
-            if r.when_immediate_store_after_cleanup.is_some_and(|w| w != ev.immediate_store_after_cleanup) {
-                continue;
-            }
-            if r.when_unscheduled_load_pair.is_some_and(|w| w != ev.unscheduled_load_pair) {
-                continue;
-            }
-            out.retain(|f| !r.remove.contains(f));
+            flags.retain(|f| !r.remove.contains(f));
             for a in &r.add {
-                if !out.contains(a) {
-                    out.push(a.clone());
+                if !flags.contains(a) {
+                    flags.push(a.clone());
                 }
             }
         }
-        out
+        flags
     }
 }
 
@@ -1667,46 +1701,14 @@ pub fn watcom_10_0a() -> Profile {
         name: "watcom-10.0a".into(),
         base: ["-5r", "-fpi87", "-s", "-onatx"].iter().map(|s| s.to_string()).collect(),
         rules: vec![
-            Rule {
-                when_frame_prologue: Some(true),
-                when_saves_before_frame: None,
-                when_in_place_scaled_lea: None,
-                when_immediate_store_after_cleanup: None,
-                when_unscheduled_load_pair: None,
-                add: vec!["-d1+".into()],
-                remove: vec!["-of".into(), "-of+".into()],
-            },
+            // Line-number debug information on the frame path (see the function doc).
+            Rule { when: Fact::Frame, add: vec!["-d1+".into()], remove: vec!["-of".into(), "-of+".into()] },
             // The per-function CPU-digit downgrade: see `Evidence::in_place_scaled_lea`.
-            Rule {
-                when_frame_prologue: None,
-                when_saves_before_frame: None,
-                when_in_place_scaled_lea: Some(true),
-                when_immediate_store_after_cleanup: None,
-                when_unscheduled_load_pair: None,
-                add: vec!["-4r".into()],
-                remove: vec!["-5r".into()],
-            },
-            // The per-function reorderer switch: see `Evidence::immediate_store_after_cleanup`.
+            Rule { when: Fact::PrePentiumTuning, add: vec!["-4r".into()], remove: vec!["-5r".into()] },
+            // The per-function reorderer switch, proven by either of its two shapes (see
+            // `Evidence::immediate_store_after_cleanup` and `Evidence::unscheduled_load_pair`).
             // `-onatmil` is `-onatx` without `-or` (Watcom 10.0a rejects the letter `b`).
-            Rule {
-                when_frame_prologue: None,
-                when_saves_before_frame: None,
-                when_in_place_scaled_lea: None,
-                when_immediate_store_after_cleanup: Some(true),
-                when_unscheduled_load_pair: None,
-                add: vec!["-onatmil".into()],
-                remove: vec!["-onatx".into()],
-            },
-            // The second reorderer witness: see `Evidence::unscheduled_load_pair`.
-            Rule {
-                when_frame_prologue: None,
-                when_saves_before_frame: None,
-                when_in_place_scaled_lea: None,
-                when_immediate_store_after_cleanup: None,
-                when_unscheduled_load_pair: Some(true),
-                add: vec!["-onatmil".into()],
-                remove: vec!["-onatx".into()],
-            },
+            Rule { when: Fact::NoReorderer, add: vec!["-onatmil".into()], remove: vec!["-onatx".into()] },
         ],
     }
 }
@@ -1906,28 +1908,14 @@ pub fn recover(
     let mut flags = HashMap::with_capacity(functions.len());
     for (entry, insns) in functions {
         let ev = detect(insns, sp, fp);
-        let mut f = match overrides.get(entry) {
+        let start = match overrides.get(entry) {
             // An override states the build, not the evidence, so the evidence rules still apply on
             // top: the two answer different questions and the override does not know this
             // function's prologue.
             Some(o) => o.clone(),
             None => profile.base.clone(),
         };
-        for r in &profile.rules {
-            if r.when_frame_prologue.is_some_and(|w| w != ev.frame_prologue) {
-                continue;
-            }
-            if r.when_saves_before_frame.is_some_and(|w| w != ev.saves_before_frame) {
-                continue;
-            }
-            f.retain(|x| !r.remove.contains(x));
-            for a in &r.add {
-                if !f.contains(a) {
-                    f.push(a.clone());
-                }
-            }
-        }
-        flags.insert(*entry, f);
+        flags.insert(*entry, profile.apply_rules(&ev, start));
     }
     BuildConfig { flags, profile: profile.name.clone() }
 }
@@ -2330,6 +2318,24 @@ mod tests {
         assert_eq!(p[&0x1000], vec![0x8, 0xc, 0x0]);
         assert_eq!(p[&0x1100], vec![0xc, 0x8, 0x0]);
         assert!(!p.contains_key(&0x1200));
+    }
+
+    /// Either reorderer shape proves the one fact `NoReorderer`, which is the one rule; a shape
+    /// proves nothing about the other facts.
+    #[test]
+    fn both_reorderer_shapes_prove_the_one_fact_and_its_one_rule() {
+        let store = Evidence { immediate_store_after_cleanup: true, ..Evidence::default() };
+        let pair = Evidence { unscheduled_load_pair: true, ..Evidence::default() };
+        assert_eq!(store.facts(), vec![Fact::NoReorderer]);
+        assert_eq!(pair.facts(), vec![Fact::NoReorderer]);
+        let p = watcom_10_0a();
+        assert_eq!(p.rules.iter().filter(|r| r.when == Fact::NoReorderer).count(), 1);
+        for ev in [store, pair] {
+            let f = p.flags_for(&ev);
+            assert!(f.contains(&"-onatmil".to_string()) && !f.contains(&"-onatx".to_string()));
+            assert!(f.contains(&"-5r".to_string()) && !f.contains(&"-d1+".to_string()));
+        }
+        assert!(Evidence::default().facts().is_empty());
     }
 
     /// An indexed load kept ahead of an independent stack-argument load that the model swaps
