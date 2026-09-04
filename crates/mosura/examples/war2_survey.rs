@@ -1047,6 +1047,43 @@ fn main() {
             }
             Some(scope)
         };
+        // TAIL RETURN WRITE MARK (`Program::tail_return_writes`, decided from every
+        // function's own bytes ahead of its decompile — a pre-pipeline mark, unlike the
+        // post-decompile ones below): every return path writes EAX from a register right
+        // before the epilogue (`buildconfig::tail_return_write_from_evidence`).
+        {
+            let entry_offs: std::collections::BTreeSet<u64> =
+                prog.function_manager.functions().map(|f| f.entry.offset).collect();
+            for &va in &entry_offs {
+                // the function's OWN body (its recorded extent), never the gap to the next
+                // entry: a neighbour's returns would veto the mark
+                let next = entry_offs.range(va + 1..).next().copied().unwrap_or(va + 0x1000);
+                let end = prog
+                    .function_manager
+                    .function_at(Address::new(prog.default_space, va))
+                    .and_then(|f| f.body().max_address())
+                    .map_or(next, |a| (a.offset + 1).min(next))
+                    .max(va + 1);
+                let region = prog
+                    .memory
+                    .read_window(Address::new(prog.default_space, va), (end - va) as usize);
+                let insns = mosura::recompile::insn::normalize(
+                    SURVEY_LANG,
+                    &region,
+                    va,
+                    &mosura::recompile::insn::NoReloc,
+                )
+                .unwrap_or_default();
+                if mosura::recompile::buildconfig::tail_return_write_from_evidence(&insns) {
+                    prog.tail_return_writes.insert(va);
+                }
+                if only.contains(&va) {
+                    let tail: Vec<&str> = insns.iter().rev().take(6).map(|x| x.text.as_str()).collect();
+                    eprintln!("[survey] tail-return-write {va:#x}: {} — last insns (reversed): {tail:?}", prog.tail_return_writes.contains(&va));
+                }
+            }
+            eprintln!("[survey] tail-return-write mark: {} functions", prog.tail_return_writes.len());
+        }
         prog.recovered_protos = match &probe_scope {
             None => analysis::interface::recover_prototypes(&prog),
             Some(scope) => analysis::interface::recover_prototypes_for(&prog, scope),

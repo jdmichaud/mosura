@@ -18,8 +18,11 @@ fn decompiled(fixture: &str) -> (Funcdata, Vec<NormInsn>) {
     let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
     let entry = dt.chunks[0].offset;
     let mut f = build::raw_funcdata_flow_image_arch(spec, "func", &image, entry, ctx, &dt.arch);
-    pipeline::decompile(&mut f);
     let insns = normalize(lang_id, dt.chunks[0].bytes.as_slice(), entry, &NoReloc).unwrap_or_default();
+    // the survey's one PRE-pipeline mark, decided from the fixture's own bytes as the survey
+    // decides it from the original's (`Program::tail_return_writes`)
+    f.tail_return_write = mosura::recompile::buildconfig::tail_return_write_from_evidence(&insns);
+    pipeline::decompile(&mut f);
     (f, insns)
 }
 
@@ -288,4 +291,16 @@ fn counted_do_while_prints_as_the_for_loop() {
     assert!(!recovered.counted_loop_sites.is_empty(), "the witness saw the iterate after the call");
     assert!(c.contains("for (") && c.contains("= 1; ") && c.contains(" + 1) {"), "the for loop:\n{c}");
     assert!(!c.contains("do {"), "no do-while remains:\n{c}");
+}
+
+/// The tail-return-write mark: the original's `MOV EAX,EDX` before the epilogue keeps the
+/// EAX return trial the port's `ancestorOpUse` gate would discard (the buffer is also filled),
+/// so the function returns the buffer instead of printing `void`.
+#[test]
+fn tail_return_write_keeps_the_discarded_return() {
+    let (f, _insns) = decompiled("x86_watcom_dead_return.xml");
+    assert!(f.tail_return_write, "the witness saw the tail write of EAX");
+    let c = reference_print(&f);
+    assert!(!c.starts_with("void "), "the function returns its buffer:\n{c}");
+    assert!(c.contains("return "), "a return statement:\n{c}");
 }

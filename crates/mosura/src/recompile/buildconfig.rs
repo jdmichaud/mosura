@@ -620,6 +620,31 @@ pub fn load_hoists_from_evidence(candidates: &[(u64, u64)], insns: &[NormInsn]) 
     out
 }
 
+/// The function ends by WRITING EAX from a register on every return path — `MOV EAX,EDX`
+/// right before the epilogue (`POP` / `LEAVE` / `MOV ESP,EBP` / `ADD ESP,n` up to the `RET`)
+/// — a return value whose producer is also used elsewhere, which the decompiler's own
+/// return-trial gate discards (WAR2 FUN_0004984c: the buffer it fills and returns; Ghidra
+/// prints `void`). The mark reaches the pipeline through `Program::tail_return_writes`.
+pub fn tail_return_write_from_evidence(insns: &[NormInsn]) -> bool {
+    let rets: Vec<usize> = insns.iter().enumerate().filter(|(_, x)| x.text.starts_with("RET")).map(|(i, _)| i).collect();
+    !rets.is_empty()
+        && rets.iter().all(|&r| {
+            let mut j = r;
+            while j > 0 {
+                j -= 1;
+                let t = insns[j].text.as_str();
+                if t.starts_with("POP ") || t == "LEAVE" || t == "MOV ESP,EBP" || t.starts_with("ADD ESP,") {
+                    continue;
+                }
+                // a general register into EAX — not a self-move, not a stack/frame pointer
+                return t.len() == "MOV EAX,EDX".len()
+                    && t.starts_with("MOV EAX,E")
+                    && !matches!(t, "MOV EAX,EAX" | "MOV EAX,ESP" | "MOV EAX,EBP");
+            }
+            false
+        })
+}
+
 /// The function returns FAR: its return instructions are `RETF` (WAR2 FUN_00058840).
 pub fn far_return_from_evidence(insns: &[NormInsn]) -> bool {
     let rets: Vec<&NormInsn> = insns.iter().filter(|x| x.text.starts_with("RET")).collect();

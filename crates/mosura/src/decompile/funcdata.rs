@@ -226,6 +226,12 @@ pub struct Funcdata {
     /// function pops but never reads — declared as unused parameters under the stack
     /// convention so the recompile pops them too (WAR2 FUN_0004dd2c: `return 0;` with `RET 4`).
     pub extra_stack_params: u32,
+    /// MARK (decided by the survey from the original's bytes, BEFORE the pipeline): every
+    /// return path writes EAX from a register right before the epilogue — the function
+    /// returns that value, and the return-trial gate keeps the EAX trial regardless of the
+    /// value's other uses (`recover::check_output_trial_use`; WAR2 FUN_0004984c returns the
+    /// buffer it filled, which Ghidra prints as `void`).
+    pub tail_return_write: bool,
 
     /// Register offsets this function SAVES AND RESTORES (a `push`/`pop` pair). They are
     /// callee-saved storage, never parameters — see `recover_input_params`' custom-register branch.
@@ -442,6 +448,7 @@ impl Funcdata {
             far_return: false,
             narrow_params: Default::default(),
             extra_stack_params: 0,
+            tail_return_write: false,
             own_saved: None,
             not_mapped: super::space::RangeList::default(),
             call_guards_active: false,

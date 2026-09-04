@@ -945,7 +945,15 @@ fn check_output_trial_use(f: &mut Funcdata) -> u32 {
             continue;
         }
         count += 1; // coreaction.cc:1933 — an unchecked trial evaluation is a change
-        let kept = rets.iter().any(|&ret| return_trial_kept(f, ret, slot));
+        // MARK `tail_return_write` (`Funcdata::tail_return_write`, from the original's bytes):
+        // the EAX trial is kept on the bytes' word — every return path writes EAX right
+        // before its epilogue — where `ancestorOpUse` would discard a value that is also
+        // consumed elsewhere (the buffer a function fills AND returns).
+        let forced = f.tail_return_write && {
+            let t = &f.active_output.as_ref().unwrap().trial[ti];
+            Some(t.addr.space) == f.spaces.by_name("register") && t.addr.offset == 0 && t.size == 4
+        };
+        let kept = forced || rets.iter().any(|&ret| return_trial_kept(f, ret, slot));
         if kept {
             verdicts.push(ti);
         }

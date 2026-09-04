@@ -106,6 +106,8 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
             &program.compiler_spec_id,
         );
         f.readonly_ranges = readonly_ranges.clone();
+        // the survey's tail-return-write MARK (see `Program::tail_return_writes`)
+        f.tail_return_write = program.tail_return_writes.contains(&entry.offset);
         // The uninitialized blocks (`.bss`) are loaded memory too — a constant inside one is a
         // data pointer (`ActionConstantPtr` → `&xRam…`), not an integer.
         f.uninitialized_ranges = program

@@ -139,6 +139,12 @@ pub struct Program {
     /// slot-0 shape and the bytes the function pops on return. Consulted like `recovered_protos`
     /// (under `proto_scope`) when a call to the function is analyzed.
     pub recovered_sret: std::collections::HashMap<u64, crate::analysis::sret::SretFact>,
+    /// MARK (decided by the survey from each function's own bytes, before its decompile):
+    /// the functions whose every return path writes EAX from a register right before the
+    /// epilogue (`MOV EAX,EDX ; POP .. ; RET`) — a return value the port's own return-trial
+    /// gate discards when the value is also used elsewhere (`recover::check_output_trial_use`,
+    /// `buildconfig::tail_return_write_from_evidence`).
+    pub tail_return_writes: std::collections::HashSet<u64>,
     /// The call-site EVIDENCE the pass collected per CALLEE: what every analyzed call to it says
     /// about its returned pointer and slot-0 argument (`analysis::sret::CallEvidence`).
     pub sret_callers: std::collections::HashMap<u64, Vec<crate::analysis::sret::CallEvidence>>,
@@ -219,6 +225,7 @@ impl Program {
             indirect_branches: std::collections::HashSet::new(),
             recovered_protos: std::collections::HashMap::new(),
             recovered_sret: std::collections::HashMap::new(),
+            tail_return_writes: std::collections::HashSet::new(),
             sret_callers: std::collections::HashMap::new(),
             proto_scope: None,
             noreturn_functions: std::collections::HashSet::new(),
