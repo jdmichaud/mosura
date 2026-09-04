@@ -5129,6 +5129,8 @@ fn print_c_inner(
 
     // testmem candidates (emit/arms/testmem.rs): the census is the arm's
     arms::testmem::recognize(&mut p, f);
+    // signed-load: the arm's census (emit/arms/signed_load.rs)
+    arms::signed_load::recognize(&mut p, f);
 
     // store-run candidates (see EmitReport::store_runs): per block, maximal runs of
     // consecutive statement ops that are pure stores to distinct constant globals.

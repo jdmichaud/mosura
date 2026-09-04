@@ -147,7 +147,9 @@ pub mod ptr_offset;
 pub mod return_widen;
 pub mod array_index;
 pub mod frame_fill;
+pub mod narrow_cmp;
 pub mod nested_conds;
+pub mod signed_load;
 pub mod sdiv_pow2;
 pub mod sparse_switch;
 pub mod store_forward;
@@ -294,7 +296,9 @@ mod tests {
     /// The arm files, as text, for the surface scan — every `pub mod` of this module must be here
     /// (`arms_touch_only_the_documented_surface` checks that against this file's own source, so a
     /// new arm file cannot slip past the scan).
-    const ARM_SOURCES: [(&str, &str); 28] = [
+    const ARM_SOURCES: [(&str, &str); 30] = [
+        ("narrow_cmp.rs", include_str!("narrow_cmp.rs")),
+        ("signed_load.rs", include_str!("signed_load.rs")),
         ("for_rotate.rs", include_str!("for_rotate.rs")),
         ("inline_call.rs", include_str!("inline_call.rs")),
         ("port.rs", include_str!("port.rs")),
@@ -501,12 +505,13 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
     // THE ORDERED ANSWERERS (explicit, documented here; a site with two answerers lists them in
     // the order they are asked, first answer wins):
     //   OpRoot:      string-ops, sdiv-pow2, struct-return (a witnessed CALL)
-    //   Compare:     complement-cmp (the immediate flavour), then cmp-order (the operand swap), then cmp-sign
-    //   Equality:    unsigned-cmp, then cmp-sign (a narrow signed operand the original zero-extends)
+    //   Compare:     complement-cmp (the immediate flavour), then cmp-order (the operand swap), then cmp-sign, then narrow-cmp
+    //   Equality:    unsigned-cmp, then cmp-sign (a narrow signed operand the original zero-extends), then narrow-cmp
     //   NegatedEquality: cmp-sign only
     //   ReturnValue: return-widen (the sign of a widened narrow return)
     //   Extension:   ext-cast (the promotion rendering of INT_ZEXT / INT_SEXT)
     //   CallArg:     mask-cast (a call argument the original masks before the call), then store-forward
+    //   Load:        testmem (the int-wide deref), then signed-load (the signed narrow deref)
     //   Var:         struct-return (the hidden pointer -> `__ret`), string-ops
     //   Deref:       struct-return (a field write through the hidden pointer), array-index
     //   SlotName / SlotOffset / SlotAddress / SlotPiece / FusedStore:
@@ -518,15 +523,18 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
             .or_else(|| sdiv_pow2::render(p, op))
             .or_else(|| struct_return::render_value(p, &ValueSite::OpRoot { op })),
         ValueSite::Var { v } => struct_return::render_value(p, &ValueSite::Var { v }).or_else(|| string_ops::render_var_value(p, v)),
-        ValueSite::Equality { op, sym, prec } => unsigned_cmp::render(p, op, sym, prec).or_else(|| cmp_sign::render(p, op, sym, prec)),
+        ValueSite::Equality { op, sym, prec } => unsigned_cmp::render(p, op, sym, prec)
+            .or_else(|| cmp_sign::render(p, op, sym, prec))
+            .or_else(|| narrow_cmp::render(p, op, sym, prec)),
         ValueSite::NegatedEquality { op, sym, prec } => cmp_sign::render(p, op, sym, prec),
         ValueSite::Compare { op, strict, prec } => complement_cmp::render(p, op, strict, prec)
             .or_else(|| cmp_order::render(p, op, strict, prec))
-            .or_else(|| cmp_sign::render(p, op, if strict { "<" } else { "<=" }, prec)),
+            .or_else(|| cmp_sign::render(p, op, if strict { "<" } else { "<=" }, prec))
+            .or_else(|| narrow_cmp::render(p, op, if strict { "<" } else { "<=" }, prec)),
         ValueSite::ReturnValue { v } => return_widen::render(p, v),
         ValueSite::Extension { op, signed } => ext_cast::render(p, op, signed),
         ValueSite::CallArg { op, slot } => mask_cast::render(p, op, slot).or_else(|| store_forward::render(p, op, slot)),
-        ValueSite::Load { out, addr } => testmem::render(p, out, addr),
+        ValueSite::Load { out, addr } => testmem::render(p, out, addr).or_else(|| signed_load::render(p, out, addr)),
         ValueSite::Sum { op } => sum_order::render(p, op),
         ValueSite::Deref { addr, vty } => struct_return::render_value(p, &ValueSite::Deref { addr, vty })
             .or_else(|| array_index::render(p, addr))

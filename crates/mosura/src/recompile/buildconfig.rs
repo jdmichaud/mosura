@@ -2639,3 +2639,54 @@ pub fn rotated_loops_from_evidence(cands: &[u64], insns: &[NormInsn]) -> std::co
     }
     out
 }
+
+
+/// Decide the `narrow-cmp` sites (`emit/arms/narrow_cmp.rs`): a compare of a sub-int value
+/// against a constant prints the constant cast to the value's type where the ORIGINAL's
+/// flag-setting `CMP`, within the three instructions before the compare's address, names a
+/// register or memory operand of the value's width (`CMP AL,0x8`, `CMP BX,0x1`, `CMP byte ptr
+/// [..],0x2`). Candidates are `(compare address, operand size)`; returns the addresses to cast.
+pub fn narrow_cmps_from_evidence(cands: &[(u64, u32)], insns: &[NormInsn]) -> std::collections::HashSet<u64> {
+    let mut out = std::collections::HashSet::new();
+    for &(pc, size) in cands {
+        let Some(i) = insns.iter().position(|x| x.addr == pc) else { continue };
+        let lo = i.saturating_sub(3);
+        let narrow = insns[lo..=i].iter().rev().find(|x| x.text.starts_with("CMP ")).is_some_and(|x| {
+            let Some(dst) = x.text.strip_prefix("CMP ").and_then(|r| r.split(',').next()) else { return false };
+            let dst = dst.trim();
+            if let Some((_, sz)) = x86_reg_by_name(dst) {
+                sz == size
+            } else if dst.starts_with("byte ptr") {
+                size == 1
+            } else if dst.starts_with("word ptr") {
+                size == 2
+            } else {
+                false
+            }
+        });
+        if narrow {
+            out.insert(pc);
+        }
+    }
+    out
+}
+
+
+/// Decide the `signed-load` sites (`emit/arms/signed_load.rs`): a masked narrow load feeding a
+/// zero-equality prints its deref SIGNED where the ORIGINAL sign-extends the masked value — a
+/// `CWDE`, `CBW` or `MOVSX` within the five instructions after the load's address. Candidates
+/// are `(load output, load address)`; returns the outputs to render signed.
+pub fn signed_loads_from_evidence(
+    cands: &[(crate::decompile::varnode::VarnodeId, u64)],
+    insns: &[NormInsn],
+) -> std::collections::HashSet<crate::decompile::varnode::VarnodeId> {
+    let mut out = std::collections::HashSet::new();
+    for &(v, pc) in cands {
+        let Some(i) = insns.iter().position(|x| x.addr == pc) else { continue };
+        let hi = (i + 5).min(insns.len() - 1);
+        if insns[i..=hi].iter().any(|x| x.text == "CWDE" || x.text == "CBW" || x.text.starts_with("MOVSX ")) {
+            out.insert(v);
+        }
+    }
+    out
+}

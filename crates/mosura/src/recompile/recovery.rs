@@ -180,6 +180,18 @@ fn derive(report: &EmitReport, insns: &[NormInsn], call_arg_orders: HashMap<u64,
                 insns,
             ),
         },
+        narrow_cmp: crate::decompile::emit::arms::narrow_cmp::Sites {
+            sites: crate::recompile::buildconfig::narrow_cmps_from_evidence(
+                &report.narrow_cmp.candidates,
+                insns,
+            ),
+        },
+        signed_load: crate::decompile::emit::arms::signed_load::Sites {
+            sites: crate::recompile::buildconfig::signed_loads_from_evidence(
+                &report.signed_load.candidates,
+                insns,
+            ),
+        },
         nested_conds: crate::decompile::emit::arms::nested_conds::Sites {
             sites: crate::recompile::buildconfig::nested_conds_from_evidence(
                 &report.nested_conds.candidates,

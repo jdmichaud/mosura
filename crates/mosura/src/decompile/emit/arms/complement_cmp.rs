@@ -130,6 +130,13 @@ fn complemented_cmp(pr: &mut PrintC<'_>, op: crate::decompile::op::OpId, strict:
     // never `-0x80 <= x` — which this compiler encodes as the sign-extended imm8 and so compares
     // a different value: WAR2 FUN_00041a6c's `CMP EAX,0x80`)
     let lit = if signed { render_const(adj, size) } else { format!("0x{adj:x}") };
+    // narrow-cmp (emit/arms/narrow_cmp.rs): the adjusted constant keeps the value's own width
+    // where the original compares narrow — the complement answers the seam first, so the cast
+    // rides on its literal
+    let lit = match super::narrow_cmp::cast_for(pr, op) {
+        Some((_, ty)) => format!("({}){lit}", ty.name()),
+        None => lit,
+    };
     let other = pr.cast_operand(op, vslot, prec, cslot == 0);
     let sym = if strict { "<=" } else { "<" };
     Some(if cslot == 1 { format!("{other} {sym} {lit}") } else { format!("{lit} {sym} {other}") })
