@@ -48,6 +48,18 @@ pub struct Evidence {
     /// Pentium-tuned build. A per-module CFLAGS difference in the original Makefile, which is
     /// why the CPU digit is per-function evidence and not only a profile constant.
     pub in_place_scaled_lea: bool,
+    /// The body stores a 4-byte CONSTANT to a global within two instructions after a cdecl
+    /// stack cleanup (`ADD ESP,8 ; MOV dword ptr [g],1`). Under `-or` (the instruction
+    /// reorderer, part of `-ox`) this compiler never leaves that form: it lifts the constant
+    /// into a free callee-saved register above the cleanup and stores the register
+    /// (`MOV EBX,1 ; ADD ESP,8 ; MOV [g],EBX` — every recompile of the shape, under every
+    /// other flag, callee contract and declaration probed). So the immediate form PROVES the
+    /// function was compiled without the reorderer; the evidence is one-sided. Measured on
+    /// the two-way recompile of the whole corpus (2026-09-04, `-onatx` against `-onatmil`):
+    /// the shape occurs in four functions, all four byte-exact only without `-or`, and in
+    /// none of the 342 EXACT functions that need it (WAR2 FUN_00051764, FUN_00068789,
+    /// FUN_000692f0, FUN_0006ae98 — two source modules built without `-or`).
+    pub immediate_store_after_cleanup: bool,
 }
 
 /// A rule mapping evidence to option changes, for one toolchain.
@@ -56,6 +68,7 @@ pub struct Rule {
     pub when_frame_prologue: Option<bool>,
     pub when_saves_before_frame: Option<bool>,
     pub when_in_place_scaled_lea: Option<bool>,
+    pub when_immediate_store_after_cleanup: Option<bool>,
     pub add: Vec<String>,
     pub remove: Vec<String>,
 }
@@ -80,6 +93,9 @@ impl Profile {
                 continue;
             }
             if r.when_in_place_scaled_lea.is_some_and(|w| w != ev.in_place_scaled_lea) {
+                continue;
+            }
+            if r.when_immediate_store_after_cleanup.is_some_and(|w| w != ev.immediate_store_after_cleanup) {
                 continue;
             }
             out.retain(|f| !r.remove.contains(f));
@@ -1631,6 +1647,7 @@ pub fn watcom_10_0a() -> Profile {
                 when_frame_prologue: Some(true),
                 when_saves_before_frame: None,
                 when_in_place_scaled_lea: None,
+                when_immediate_store_after_cleanup: None,
                 add: vec!["-d1+".into()],
                 remove: vec!["-of".into(), "-of+".into()],
             },
@@ -1639,8 +1656,19 @@ pub fn watcom_10_0a() -> Profile {
                 when_frame_prologue: None,
                 when_saves_before_frame: None,
                 when_in_place_scaled_lea: Some(true),
+                when_immediate_store_after_cleanup: None,
                 add: vec!["-4r".into()],
                 remove: vec!["-5r".into()],
+            },
+            // The per-function reorderer switch: see `Evidence::immediate_store_after_cleanup`.
+            // `-onatmil` is `-onatx` without `-or` (Watcom 10.0a rejects the letter `b`).
+            Rule {
+                when_frame_prologue: None,
+                when_saves_before_frame: None,
+                when_in_place_scaled_lea: None,
+                when_immediate_store_after_cleanup: Some(true),
+                add: vec!["-onatmil".into()],
+                remove: vec!["-onatx".into()],
             },
         ],
     }
@@ -1679,6 +1707,20 @@ pub fn detect(insns: &[NormInsn], sp: (u64, u32), fp: (u64, u32)) -> Evidence {
                     break;
                 }
             }
+        }
+    }
+    // Body evidence: a constant dword store to a global within two instructions after a
+    // stack cleanup — the form the reorderer never leaves (see `Evidence`).
+    let imm_dword_store = |x: &NormInsn| {
+        x.mnemonic == "MOV"
+            && x.sem.iter().any(|op| matches!((&op.out, op.ins.as_slice()), (Some(SemArg::Mem(_, _, 4)), [SemArg::Const(..)])))
+    };
+    for (i, insn) in insns.iter().enumerate() {
+        let cleanup = insn.text.starts_with("ADD ESP,")
+            && insn.sem.iter().any(|op| matches!(op.out, Some(SemArg::Reg(o, _)) if o == sp.0));
+        if cleanup && insns[i + 1..].iter().take(2).any(imm_dword_store) {
+            ev.immediate_store_after_cleanup = true;
+            break;
         }
     }
     ev
@@ -2205,6 +2247,30 @@ mod tests {
         assert_eq!(p[&0x1000], vec![0x8, 0xc, 0x0]);
         assert_eq!(p[&0x1100], vec![0xc, 0x8, 0x0]);
         assert!(!p.contains_key(&0x1200));
+    }
+
+    /// A constant dword store to a global right after a stack cleanup is the form the
+    /// reorderer never leaves, so it drops `-or` for that function; the byte form, the
+    /// register form and a store after a bare CALL are not evidence.
+    #[test]
+    fn an_immediate_store_after_a_cleanup_drops_the_reorderer() {
+        // add esp,8 ; mov dword ptr [0x88a80],1 ; ret
+        let ev = detect(&lift("83c408c705808a080001000000c3"), ESP, EBP);
+        assert!(ev.immediate_store_after_cleanup);
+        // add esp,8 ; call +0 ; mov dword ptr [0x88a80],1 ; ret — one instruction between
+        let ev_gap = detect(&lift("83c408e800000000c705808a080001000000c3"), ESP, EBP);
+        assert!(ev_gap.immediate_store_after_cleanup);
+        // add esp,8 ; mov byte ptr [0x88a80],1 ; ret — a byte store
+        let ev_byte = detect(&lift("83c408c605808a080001c3"), ESP, EBP);
+        assert!(!ev_byte.immediate_store_after_cleanup);
+        // call +0 ; mov dword ptr [0x88a80],1 ; ret — no cleanup ahead of the store
+        let ev_call = detect(&lift("e800000000c705808a080001000000c3"), ESP, EBP);
+        assert!(!ev_call.immediate_store_after_cleanup);
+        let p = watcom_10_0a();
+        let f = p.flags_for(&ev);
+        assert!(f.contains(&"-onatmil".to_string()) && !f.contains(&"-onatx".to_string()));
+        let f2 = p.flags_for(&ev_call);
+        assert!(f2.contains(&"-onatx".to_string()) && !f2.contains(&"-onatmil".to_string()));
     }
 
     /// An in-place scaled LEA in the body is proof of pre-Pentium tuning — `-5r` can never
