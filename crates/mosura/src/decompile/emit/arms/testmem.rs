@@ -68,11 +68,13 @@ pub(crate) fn recognize(pr: &mut PrintC<'_>, f: &Funcdata) {
     // a narrow GLOBAL read (a ram input, no LOAD op) masked into a zero-equality is the same
     // shape: the original's `TEST byte ptr [0x8196c],0x8` (WAR2 FUN_00037280) says the source
     // read the wider element and masked
-    let Some(ram) = f.spaces.by_name("ram") else { return };
+    if f.spaces.by_name("ram").is_none() {
+        return;
+    }
     for i in 0..f.num_varnodes() as u32 {
         let v = VarnodeId(i);
         let vn = f.vn(v);
-        if !vn.is_input() || vn.loc.space != ram || vn.size == 0 || vn.size >= f.size_of_int() {
+        if !global_read(f, v) || vn.size == 0 || vn.size >= f.size_of_int() {
             continue;
         }
         // a global's uses include heritage's INDIRECT/MULTIEQUAL markers — not reads
@@ -106,14 +108,23 @@ pub(crate) fn recognize(pr: &mut PrintC<'_>, f: &Funcdata) {
     }
 }
 
+/// A read of a GLOBAL as the printer names it: a ram-space varnode that is an input, or a
+/// version of the global heritage renamed through a marker (an INDIRECT after a call, a
+/// MULTIEQUAL at a join) — the same name, the same memory read (WAR2 FUN_000229b4's second
+/// `TEST byte ptr [g],1` follows a call, so its read is INDIRECT-defined, not an input).
+fn global_read(f: &Funcdata, v: VarnodeId) -> bool {
+    let vn = f.vn(v);
+    Some(vn.loc.space) == f.spaces.by_name("ram")
+        && (vn.is_input() || vn.def.is_some_and(|d| f.op(d).is_marker()))
+}
+
 /// The arm's answer at `ValueSite::VarEntry` for a witnessed GLOBAL: the int-wide access to the
 /// global's address, `*(int4 *)&uRam0008196c`.
 pub(crate) fn render_global(pr: &mut PrintC<'_>, v: VarnodeId) -> Option<(String, u8)> {
     if !pr.arms.testmem.witness || !pr.recovered.testmem.sites.contains(&v) {
         return None;
     }
-    let vn = pr.f.vn(v);
-    if !vn.is_input() || Some(vn.loc.space) != pr.f.spaces.by_name("ram") {
+    if !global_read(pr.f, v) {
         return None;
     }
     let name = pr.name_of(v);
