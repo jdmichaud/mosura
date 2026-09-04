@@ -29,12 +29,56 @@ pub fn recover(
     call_arg_orders: impl FnOnce(&EmitReport) -> HashMap<u64, Vec<usize>>,
 ) -> RecoveredChoices {
     let (_, report) = crate::decompile::printc::print_c_report(f, choices);
+    let call_arg_orders = call_arg_orders(&report);
+    let recovered = derive(&report, insns, call_arg_orders.clone());
+    // SECOND EVIDENCE ROUND (see print_c_recovered_report): decisions interact — a
+    // tier-2 materialization creates the statement-carrying clause cond-form nests —
+    // so re-assess candidacy on the rendering the first round produces and merge.
+    let (_, report2) =
+        crate::decompile::printc::print_c_recovered_report(f, rec_choices, &recovered);
+    let mut recovered = recovered;
+    recovered.nested_sites.extend(
+        crate::recompile::buildconfig::nested_conds_from_evidence(
+            &report2.cond_nest_candidates,
+            insns,
+        ),
+    );
+    // FIXPOINT CHECK (review F3, 2026-09-04): two rounds is a guess at convergence. In debug
+    // builds, or under `MOSURA_RECOVER_FIXPOINT=1`, render once more under the decisions and
+    // derive again: a decision the third render INTRODUCES — a site, key or flag the second
+    // round does not have — is named on stderr as a specimen instead of silently taking the
+    // second round's answer. Growth only: a decision whose candidate the render CONSUMES (a
+    // widened local no longer reads as a narrow load) vanishes from a re-derivation by design —
+    // the rounds accumulate, and 179 functions show exactly that shape (the first corpus run,
+    // 2026-09-04). Observation only: the returned decisions are the second round's either way.
+    if cfg!(debug_assertions) || std::env::var("MOSURA_RECOVER_FIXPOINT").as_deref() == Ok("1") {
+        let (_, report3) = crate::decompile::printc::print_c_recovered_report(f, rec_choices, &recovered);
+        let mut again = derive(&report3, insns, call_arg_orders);
+        again.nested_sites.extend(crate::recompile::buildconfig::nested_conds_from_evidence(&report3.cond_nest_candidates, insns));
+        let grown = new_decisions(&recovered, &again);
+        if !grown.is_empty() {
+            eprintln!("[recover] FIXPOINT VIOLATION {}: the third render introduces [{}]", f.name, grown.join(" "));
+        }
+    }
+    debug!(crate::debug::Topic::Recover, 
+            "runs={} orders={} snap={} testmem={}",
+            report.store_runs.len(),
+            recovered.store_orders.len(),
+            recovered.snapshot_sites.len(),
+            recovered.testmem_sites.len()
+        );
+    recovered
+}
+
+/// The witness derivation: every per-site decision judged against the original's
+/// instructions, from one report pass. Called on the report pass and, for the fixpoint check
+/// below, on a render under the decisions it produced.
+fn derive(report: &EmitReport, insns: &[NormInsn], call_arg_orders: HashMap<u64, Vec<usize>>) -> RecoveredChoices {
     let widen = crate::recompile::buildconfig::widened_sites_from_evidence(
         &report.local_width_candidates,
         &report.tier2_candidates,
         insns,
     );
-    let call_arg_orders = call_arg_orders(&report);
     // One witness, two fields: whether the return declaration narrows, and whether that narrow
     // declaration is signed (the sign-extended-constant idiom).
     let cmp_sign = crate::recompile::buildconfig::cmp_signs_from_evidence(&report.cmp_sign_candidates, insns);
@@ -42,7 +86,7 @@ pub fn recover(
         &report.return_width_candidates,
         insns,
     );
-    let recovered = crate::decompile::printc::RecoveredChoices {
+    crate::decompile::printc::RecoveredChoices {
         complement_sites: crate::recompile::buildconfig::complement_compares_from_evidence(
             &report.compare_sites,
             insns,
@@ -155,27 +199,121 @@ pub fn recover(
         // R6, commit 3b): nothing fills `ilv_orders` today — `printc::interleave_orders` is the
         // parked groundwork the model-inverse variant would call.
         ilv_orders: Default::default(),
-    };
-    // SECOND EVIDENCE ROUND (see print_c_recovered_report): decisions interact — a
-    // tier-2 materialization creates the statement-carrying clause cond-form nests —
-    // so re-assess candidacy on the rendering the first round produces and merge.
-    let (_, report2) =
-        crate::decompile::printc::print_c_recovered_report(f, rec_choices, &recovered);
-    let mut recovered = recovered;
-    recovered.nested_sites.extend(
-        crate::recompile::buildconfig::nested_conds_from_evidence(
-            &report2.cond_nest_candidates,
-            insns,
-        ),
-    );
-    debug!(crate::debug::Topic::Recover, 
-            "runs={} orders={} snap={} testmem={}",
-            report.store_runs.len(),
-            recovered.store_orders.len(),
-            recovered.snapshot_sites.len(),
-            recovered.testmem_sites.len()
-        );
-    recovered
+    }
+}
+
+/// The decisions `b` (a derivation from a render under `a`) has that `a` does not: a site,
+/// key or flag introduced by the further render — growth, the one direction that means the
+/// rounds have not converged. A decision that vanishes because its candidate was consumed is
+/// not counted (the rounds accumulate by design).
+fn new_decisions(a: &RecoveredChoices, b: &RecoveredChoices) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    if b.complement_sites.iter().any(|x| !a.complement_sites.contains(x)) {
+        out.push("complement_sites");
+    }
+    if b.cmp_order_sites.iter().any(|x| !a.cmp_order_sites.contains(x)) {
+        out.push("cmp_order_sites");
+    }
+    if b.narrow_zext_sites.iter().any(|x| !a.narrow_zext_sites.contains(x)) {
+        out.push("narrow_zext_sites");
+    }
+    if b.unsigned_cmp_sites.iter().any(|x| !a.unsigned_cmp_sites.contains(x)) {
+        out.push("unsigned_cmp_sites");
+    }
+    if b.return_split_sites.iter().any(|x| !a.return_split_sites.contains(x)) {
+        out.push("return_split_sites");
+    }
+    if b.const_phi_sites.iter().any(|x| !a.const_phi_sites.contains(x)) {
+        out.push("const_phi_sites");
+    }
+    if b.early_return_sites.iter().any(|x| !a.early_return_sites.contains(x)) {
+        out.push("early_return_sites");
+    }
+    if b.counted_loop_sites.iter().any(|x| !a.counted_loop_sites.contains(x)) {
+        out.push("counted_loop_sites");
+    }
+    if b.branch_return_sites.iter().any(|x| !a.branch_return_sites.contains(x)) {
+        out.push("branch_return_sites");
+    }
+    if b.store_forward_sites.iter().any(|x| !a.store_forward_sites.contains(x)) {
+        out.push("store_forward_sites");
+    }
+    if b.cmp_unsigned_sites.iter().any(|x| !a.cmp_unsigned_sites.contains(x)) {
+        out.push("cmp_unsigned_sites");
+    }
+    if b.cmp_unsigned_globals.iter().any(|x| !a.cmp_unsigned_globals.contains(x)) {
+        out.push("cmp_unsigned_globals");
+    }
+    if b.ptr_offset_sites.iter().any(|x| !a.ptr_offset_sites.contains(x)) {
+        out.push("ptr_offset_sites");
+    }
+    if b.load_hoist_sites.iter().any(|x| !a.load_hoist_sites.contains(x)) {
+        out.push("load_hoist_sites");
+    }
+    if b.nested_sites.iter().any(|x| !a.nested_sites.contains(x)) {
+        out.push("nested_sites");
+    }
+    if b.widen_local_reps.iter().any(|x| !a.widen_local_reps.contains(x)) {
+        out.push("widen_local_reps");
+    }
+    if b.tier2_sites.iter().any(|x| !a.tier2_sites.contains(x)) {
+        out.push("tier2_sites");
+    }
+    if b.testmem_sites.iter().any(|x| !a.testmem_sites.contains(x)) {
+        out.push("testmem_sites");
+    }
+    if b.arm_swap_sites.iter().any(|x| !a.arm_swap_sites.contains(x)) {
+        out.push("arm_swap_sites");
+    }
+    if b.array_index_sites.iter().any(|x| !a.array_index_sites.contains(x)) {
+        out.push("array_index_sites");
+    }
+    if b.join_narrow_sites.iter().any(|x| !a.join_narrow_sites.contains(x)) {
+        out.push("join_narrow_sites");
+    }
+    if b.string_op_sites.iter().any(|x| !a.string_op_sites.contains(x)) {
+        out.push("string_op_sites");
+    }
+    if b.sdiv_pow2_sites.iter().any(|x| !a.sdiv_pow2_sites.contains(x)) {
+        out.push("sdiv_pow2_sites");
+    }
+    if b.mask_sites.keys().any(|k| !a.mask_sites.contains_key(k)) {
+        out.push("mask_sites");
+    }
+    if b.snapshot_sites.keys().any(|k| !a.snapshot_sites.contains_key(k)) {
+        out.push("snapshot_sites");
+    }
+    if b.store_orders.keys().any(|k| !a.store_orders.contains_key(k)) {
+        out.push("store_orders");
+    }
+    if b.call_arg_orders.keys().any(|k| !a.call_arg_orders.contains_key(k)) {
+        out.push("call_arg_orders");
+    }
+    if b.sparse_cmp_sites.keys().any(|k| !a.sparse_cmp_sites.contains_key(k)) {
+        out.push("sparse_cmp_sites");
+    }
+    if b.movsd_runs.keys().any(|k| !a.movsd_runs.contains_key(k)) {
+        out.push("movsd_runs");
+    }
+    if b.ilv_orders.keys().any(|k| !a.ilv_orders.contains_key(k)) {
+        out.push("ilv_orders");
+    }
+    if b.return_zero_widened && !a.return_zero_widened {
+        out.push("return_zero_widened");
+    }
+    if b.narrow_return && !a.narrow_return {
+        out.push("narrow_return");
+    }
+    if b.narrow_return_signed && !a.narrow_return_signed {
+        out.push("narrow_return_signed");
+    }
+    if a.narrow_return_width != b.narrow_return_width && b.narrow_return {
+        out.push("narrow_return_width");
+    }
+    if b.frame_fill.is_some() && a.frame_fill != b.frame_fill {
+        out.push("frame_fill");
+    }
+    out
 }
 
 /// The hidden struct-return DECISION for `f` — the shape (`analysis::sret::sret_shape`) plus its
