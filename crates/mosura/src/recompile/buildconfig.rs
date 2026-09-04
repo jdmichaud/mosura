@@ -2622,3 +2622,20 @@ pub fn saved_for_callees(insns: &[NormInsn]) -> Vec<u64> {
         })
         .collect()
 }
+
+
+/// Decide the `for-rotate` sites (`emit/arms/for_rotate.rs`): an overflow loop whose first
+/// clause the port can hoist into a `for` header prints as the `for` loop where the ORIGINAL's
+/// branch at the clause's address jumps BACKWARD — the test at the loop's end, the rotated
+/// shape this compiler gives a `for` and never a `while`. Candidates are the clause's branch
+/// addresses; returns those to print as `for`.
+pub fn rotated_loops_from_evidence(cands: &[u64], insns: &[NormInsn]) -> std::collections::HashSet<u64> {
+    let mut out = std::collections::HashSet::new();
+    for &pc in cands {
+        let Some(x) = insns.iter().find(|x| x.addr == pc) else { continue };
+        if x.is_branch && !x.is_call && x.target.is_some_and(|t| t < pc) {
+            out.insert(pc);
+        }
+    }
+    out
+}

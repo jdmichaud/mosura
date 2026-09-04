@@ -108,6 +108,7 @@ pub(crate) struct State {
     pub(crate) struct_return: struct_return::State,
     pub(crate) testmem: testmem::State,
     pub(crate) counted_loop: counted_loop::State,
+    pub(crate) for_rotate: for_rotate::State,
 }
 
 impl State {
@@ -129,6 +130,7 @@ impl State {
             struct_return: struct_return::State::new(choices),
             testmem: testmem::State::new(choices),
             counted_loop: counted_loop::State::new(choices),
+            for_rotate: for_rotate::State::new(choices),
         }
     }
 }
@@ -137,6 +139,7 @@ pub mod cmp_order;
 pub mod cmp_sign;
 pub mod complement_cmp;
 pub mod ext_cast;
+pub mod for_rotate;
 pub mod inline_call;
 pub mod load_hoist;
 pub mod mask_cast;
@@ -273,6 +276,7 @@ pub const SURFACE_METHODS: &[&str] = &[
     "callee_name",
     "find_loop_variable",
     "test_iterate_form",
+    "for_parts",
     "structured_last_op",
     "render_assign",
 ];
@@ -290,7 +294,8 @@ mod tests {
     /// The arm files, as text, for the surface scan — every `pub mod` of this module must be here
     /// (`arms_touch_only_the_documented_surface` checks that against this file's own source, so a
     /// new arm file cannot slip past the scan).
-    const ARM_SOURCES: [(&str, &str); 27] = [
+    const ARM_SOURCES: [(&str, &str); 28] = [
+        ("for_rotate.rs", include_str!("for_rotate.rs")),
         ("inline_call.rs", include_str!("inline_call.rs")),
         ("port.rs", include_str!("port.rs")),
         ("registry.rs", include_str!("registry.rs")),

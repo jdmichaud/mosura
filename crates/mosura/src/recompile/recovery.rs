@@ -147,6 +147,12 @@ fn derive(report: &EmitReport, insns: &[NormInsn], call_arg_orders: HashMap<u64,
                 insns,
             ),
         },
+        for_rotate: crate::decompile::emit::arms::for_rotate::Sites {
+            sites: crate::recompile::buildconfig::rotated_loops_from_evidence(
+                &report.for_rotate.candidates,
+                insns,
+            ),
+        },
         frame_fill: crate::decompile::emit::arms::frame_fill::Sites {
             frame: crate::recompile::buildconfig::frame_from_evidence(insns),
         },

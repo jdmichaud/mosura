@@ -2440,7 +2440,7 @@ impl<'a> PrintC<'a> {
     /// (Ghidra moves a non-last iterate op there when moveable; mosura requires it in place). The
     /// initializer needs a two-in head (`findInitializer`'s `sizeIn() != 2` bail) with the other
     /// phi input defined in the pre-loop block.
-    fn for_parts(
+    pub(crate) fn for_parts(
         &self,
         s: &Structured,
         cond_idx: usize,
@@ -3148,6 +3148,11 @@ impl<'a> PrintC<'a> {
             // (structure.rs `rule_while_do`, blockaction.cc:1539). `BlockWhileDo::finalTransform`
             // (block.cc:3358) declines the for-loop rewrite here, so `for_loops` is not consulted.
             FlowKind::WhileDo if s.blocks[idx].has_overflow_syntax() => {
+                // for-rotate MARK (emit/arms/for_rotate.rs): a witnessed rotated loop prints
+                // as the `for` loop
+                if arms::for_rotate::try_emit_for(self, s, idx, indent, out) {
+                    return;
+                }
                 let bpad = "  ".repeat(indent + 1);
                 let _ = writeln!(out, "{pad}while( true ) {{");
                 self.emit_structured(s, comps[0], indent + 1, out);
@@ -5022,6 +5027,11 @@ fn print_c_inner(
     // inline-call: a comma clause's call result printed inside its compare where the original
     // materializes no boolean (emit/arms/inline_call.rs) — arm setup, after the structure
     arms::inline_call::recognize(&mut p, &s);
+    // for-rotate: the witnessed rotated overflow loops (emit/arms/for_rotate.rs) — arm setup,
+    // after the tier-2 widening has decided which header values print as statements
+    for &root in &s.roots {
+        arms::for_rotate::recognize(&mut p, &s, root);
+    }
     // local-width=storage, tier 2 (see the `tier2_widen` field doc): a narrow LOAD whose
     // value a comparison consumes against a positive-at-width constant materializes as an
     // explicit unsigned widened temp — the statement prints at the load op's own position,
