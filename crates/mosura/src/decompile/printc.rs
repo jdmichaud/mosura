@@ -165,6 +165,10 @@ pub struct EmitReport {
     /// on the bare epilogue (the tested return register already holds it — the early return),
     /// or on the load (the merged form).
     pub early_return_candidates: Vec<(u64, u64)>,
+    /// Every counted do-while (`counted-loop`): `(the loop's branch address, the loop
+    /// variable's register)`. The original either iterates the register right after the
+    /// body's last call, at the loop end (the `for` form), or hoists it above the call.
+    pub counted_loop_candidates: Vec<(u64, (u64, u32))>,
     /// Every lone `return <bool>;` statement (`return-split`, the branch form), by the address
     /// of the compare that computes the bool: the original either branches over a constant
     /// (`JZ ; MOV AL,1`) or materializes it (`SETNZ AL`).
@@ -304,6 +308,9 @@ pub struct RecoveredChoices {
     /// (`return-split`, `early_return_candidates` evidence, the same byte fact as
     /// `buildconfig::const_phi_returns_from_evidence`).
     pub early_return_sites: std::collections::HashSet<u64>,
+    /// Loop branch addresses whose counted do-while prints as a `for` loop (`counted-loop`,
+    /// `counted_loop_candidates` evidence, `buildconfig::counted_loops_from_evidence`).
+    pub counted_loop_sites: std::collections::HashSet<u64>,
     /// Compare addresses whose lone bool return the original branches over (`return-split`,
     /// `branch_return_candidates` evidence, `buildconfig::branch_returns_from_evidence`).
     pub branch_return_sites: std::collections::HashSet<u64>,
@@ -2559,7 +2566,7 @@ impl<'a> PrintC<'a> {
     }
 
     /// Render an assignment statement body (`lhs = rhs`, no terminator) for an op.
-    fn render_assign(&mut self, op: OpId) -> String {
+    pub(crate) fn render_assign(&mut self, op: OpId) -> String {
         if let Some(&(start, src)) = self.fused_store.get(&op) {
             // `struct-locals=coalesce`: the two half-stores print as one whole-value assignment.
             if let Some(sym) = self.spacebase_sym_at(start) {
@@ -2626,7 +2633,7 @@ impl<'a> PrintC<'a> {
     /// The walk is Ghidra's bounded 4-deep DFS over operands (`path[4]`, `count == 3` refuses to
     /// descend further), truncating at calls and markers, with no visited-set — the depth bound is
     /// what terminates it.
-    fn find_loop_variable(
+    pub(crate) fn find_loop_variable(
         &self,
         cond_var: VarnodeId,
         head: BlockId,
@@ -2682,7 +2689,7 @@ impl<'a> PrintC<'a> {
     /// Switch (or any other composite) inherits the null base. This typing is what makes Ghidra's
     /// `BlockWhileDo::finalTransform` (block.cc:3356) decline the for-loop when the loop body ends
     /// in a switch or an if.
-    fn structured_last_op(&self, s: &Structured, idx: usize) -> Option<OpId> {
+    pub(crate) fn structured_last_op(&self, s: &Structured, idx: usize) -> Option<OpId> {
         match &s.blocks[idx].kind {
             FlowKind::Basic(b) => self.f.block(*b).ops.last().copied(),
             FlowKind::List => self.structured_last_op(s, *s.blocks[idx].components.last()?),
@@ -2703,7 +2710,7 @@ impl<'a> PrintC<'a> {
     /// iterate statement is `piVar2 = (int *)(iVar1 + 0x60)` where `iVar1 = *piVar2` is explicit —
     /// the walk stops at `iVar1`, never reaches `piVar2`, and Ghidra prints a plain `while` with a
     /// comma-separated condition instead of a `for`.
-    fn test_iterate_form(&self, loop_var: VarnodeId, iterate: OpId) -> bool {
+    pub(crate) fn test_iterate_form(&self, loop_var: VarnodeId, iterate: OpId) -> bool {
         let high = self.high_of[loop_var.0 as usize];
         let mut path = vec![(iterate, 0usize)];
         while let Some((op, slot)) = path.pop() {
@@ -3506,6 +3513,11 @@ impl<'a> PrintC<'a> {
                 }
             }
             FlowKind::DoWhile => {
+                // counted-loop MARK (emit/arms/counted_loop.rs): a witnessed counted do-while
+                // prints as the `for` loop
+                if arms::counted_loop::try_emit_for(self, s, idx, indent, out) {
+                    return;
+                }
                 let _ = writeln!(out, "{pad}do {{");
                 self.emit_structured(s, comps[0], indent + 1, out);
                 let cond = self.render_condition(s, comps[0], negated);
@@ -5300,6 +5312,11 @@ fn print_c_inner(
     p.labels = s.labels.clone();
     for &root in &s.roots {
         p.detect_for_loops(&s, root);
+    }
+    // counted-loop: the witnessed counted do-whiles (emit/arms/counted_loop.rs) — arm setup,
+    // after the port's own for-loop detection
+    for &root in &s.roots {
+        arms::counted_loop::recognize(&mut p, &s, root);
     }
     // local-width=storage, tier 2 (see the `tier2_widen` field doc): a narrow LOAD whose
     // value a comparison consumes against a positive-at-width constant materializes as an

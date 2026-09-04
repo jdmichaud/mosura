@@ -773,6 +773,39 @@ pub fn store_forwards_from_evidence(
     out
 }
 
+/// Decide the `counted-loop` sites ([`crate::decompile::printc::EmitReport::counted_loop_candidates`]):
+/// at the loop's conditional jump, the original iterates the loop variable's register right
+/// before the loop's compare (`INC r` / `DEC r` / `ADD r,k` / `SUB r,k`, then an optional
+/// `CMP`), and a CALL sits right before the iterate — the shape the `for` form keeps and the
+/// do-while's trailing statement loses to the scheduler. Returns the branch addresses.
+pub fn counted_loops_from_evidence(candidates: &[(u64, (u64, u32))], insns: &[NormInsn]) -> std::collections::HashSet<u64> {
+    let mut out = std::collections::HashSet::new();
+    for &(pc, (reg, _)) in candidates {
+        let Some(i) = insns.iter().position(|x| x.addr == pc) else { continue };
+        if !(insns[i].text.starts_with('J') && !insns[i].text.starts_with("JMP")) {
+            continue;
+        }
+        let mut j = i.checked_sub(1);
+        if j.is_some_and(|j| insns[j].text.starts_with("CMP ")) {
+            j = j.and_then(|j| j.checked_sub(1));
+        }
+        let Some(j) = j else { continue };
+        let iterate = ["INC ", "DEC ", "ADD ", "SUB "].iter().any(|m| insns[j].text.starts_with(m))
+            && insns[j].text[4..]
+                .split(',')
+                .next()
+                .and_then(x86_reg_by_name)
+                .is_some_and(|(o, _)| o & !3 == reg & !3);
+        if !iterate {
+            continue;
+        }
+        if j.checked_sub(1).is_some_and(|c| insns[c].is_call) {
+            out.insert(pc);
+        }
+    }
+    out
+}
+
 /// Decide the branch-form `return-split` sites
 /// ([`crate::decompile::printc::EmitReport::branch_return_candidates`]): at the compare that
 /// computes a lone `return <bool>;`, the original branches (`TEST AL,AL ; JZ epilogue ; MOV AL,1`

@@ -276,3 +276,16 @@ fn early_return_prints_the_test_as_the_early_return() {
     assert!(c.contains("== 0) {\n    return 0;\n  }\n"), "the early return, its test flipped through the copy Ghidra's negate token descends:\n{c}");
     assert_eq!(c.matches("return 0;").count(), 2, "two returns of 0, the early one and the tail:\n{c}");
 }
+
+/// `counted-loop`: the reference prints the do-while with the increment as its last
+/// statement; the original's `CALL ; INC ; CMP ; JLE` says the source wrote the `for`.
+#[test]
+fn counted_do_while_prints_as_the_for_loop() {
+    let (f, insns) = decompiled("x86_watcom_counted_loop.xml");
+    let reference = reference_print(&f);
+    assert!(reference.contains("do {") && reference.contains("} while ("), "the reference is the do-while:\n{reference}");
+    let (c, recovered) = recovered_print(&f, &insns);
+    assert!(!recovered.counted_loop_sites.is_empty(), "the witness saw the iterate after the call");
+    assert!(c.contains("for (") && c.contains("= 1; ") && c.contains(" + 1) {"), "the for loop:\n{c}");
+    assert!(!c.contains("do {"), "no do-while remains:\n{c}");
+}

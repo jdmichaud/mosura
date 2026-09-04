@@ -71,6 +71,10 @@ pub fn recover(
             &report.early_return_candidates,
             insns,
         ),
+        counted_loop_sites: crate::recompile::buildconfig::counted_loops_from_evidence(
+            &report.counted_loop_candidates,
+            insns,
+        ),
         branch_return_sites: crate::recompile::buildconfig::branch_returns_from_evidence(
             &report.branch_return_candidates,
             insns,

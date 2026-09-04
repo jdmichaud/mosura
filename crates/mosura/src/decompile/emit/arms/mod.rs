@@ -107,6 +107,7 @@ pub(crate) struct State {
     pub(crate) snapshot: snapshot::State,
     pub(crate) struct_return: struct_return::State,
     pub(crate) testmem: testmem::State,
+    pub(crate) counted_loop: counted_loop::State,
 }
 
 impl State {
@@ -127,6 +128,7 @@ impl State {
             snapshot: snapshot::State::new(choices),
             struct_return: struct_return::State::new(choices),
             testmem: testmem::State::new(choices),
+            counted_loop: counted_loop::State::new(choices),
         }
     }
 }
@@ -154,6 +156,7 @@ pub mod join_narrow;
 pub mod sum_order;
 pub mod testmem;
 pub mod struct_return;
+pub mod counted_loop;
 
 /// The kinds of site the statement-level hook is called from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,6 +263,10 @@ pub const SURFACE_METHODS: &[&str] = &[
     "render_mem",
     "get_input_cast",
     "callee_name",
+    "find_loop_variable",
+    "test_iterate_form",
+    "structured_last_op",
+    "render_assign",
 ];
 /// The free helpers of `printc` an arm file may import.
 #[cfg_attr(not(test), allow(dead_code))] // the documented list; read by the surface test
@@ -275,7 +282,8 @@ mod tests {
     /// The arm files, as text, for the surface scan — every `pub mod` of this module must be here
     /// (`arms_touch_only_the_documented_surface` checks that against this file's own source, so a
     /// new arm file cannot slip past the scan).
-    const ARM_SOURCES: [(&str, &str); 23] = [
+    const ARM_SOURCES: [(&str, &str); 24] = [
+        ("counted_loop.rs", include_str!("counted_loop.rs")),
         ("ptr_offset.rs", include_str!("ptr_offset.rs")),
         ("load_hoist.rs", include_str!("load_hoist.rs")),
         ("store_forward.rs", include_str!("store_forward.rs")),
