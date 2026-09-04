@@ -2855,7 +2855,7 @@ fn main() {
                 {
                     let mut by_callee: std::collections::BTreeMap<u64, Vec<(u64, &Vec<bool>)>> =
                         Default::default();
-                    for (addr, callee, safe) in &report.call_order_candidates {
+                    for (addr, callee, safe) in &report.port.call_order_candidates {
                         by_callee.entry(*callee).or_default().push((*addr, safe));
                     }
                     for (callee, csites) in by_callee {

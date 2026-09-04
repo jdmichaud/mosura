@@ -24,11 +24,11 @@ fn repne_scasb_renders_strlen() {
     let (_, report) = print_c_report(&f, &choices);
     // The scan loop sits at the REPNE SCASB (0x600a); the report offers it as a candidate.
     assert!(
-        report.rep_movs_candidates.iter().any(|&(pc, _)| pc == 0x600a),
+        report.string_ops.candidates.iter().any(|&(pc, _)| pc == 0x600a),
         "the REPNE SCASB loop at 0x600a should be a string-ops candidate: {:?}",
-        report.rep_movs_candidates
+        report.string_ops.candidates
     );
-    let recovered = RecoveredChoices { string_op_sites: [0x600a].into_iter().collect(), ..Default::default() };
+    let recovered = RecoveredChoices { string_ops: mosura::decompile::emit::arms::string_ops::Sites { sites: [0x600a].into_iter().collect(), ..Default::default() }, ..Default::default() };
     let c = print_c_recovered(&f, &choices, &recovered);
     assert!(c.contains("return strlen(param_1);"), "expected `return strlen(param_1);`, got:\n{c}");
     assert!(!c.contains("0xffffffff") && !c.contains("do {"), "loop and -1 seed must be gone:\n{c}");

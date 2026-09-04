@@ -1,7 +1,7 @@
 //! `join-width=consumer` — a local whose value is the JOIN of narrow constants the ORIGINAL
 //! materialized into an 8-bit sub-register (`MOV DL,k`, not `MOV EDX,k`) declares at that narrow
 //! width, so the recompile reuses the sub-register; per witnessed site set
-//! (`recovered.join_narrow_sites`, from `buildconfig::join_narrow_sites_from_evidence`, over this
+//! (`recovered.join_narrow.sites`, from `buildconfig::join_narrow_sites_from_evidence`, over this
 //! arm's `join_narrow_candidates` report). A target-informed emit choice, NOT Ghidra: the
 //! reference decompiler declares the local at the value's width.
 //!
@@ -43,9 +43,9 @@ pub(crate) fn local_decl_type(pr: &mut PrintC<'_>, v: VarnodeId, ty: &Datatype) 
         // must stay wide). The recovered set is empty on the report pass (records only) and
         // populated on the final pass.
         for pc in &pcs {
-            pr.report.join_narrow_candidates.push(*pc);
+            pr.report.join_narrow.candidates.push(*pc);
         }
-        if pr.arms.join_narrow.consumer && pcs.iter().all(|pc| pr.recovered.join_narrow_sites.contains(pc)) {
+        if pr.arms.join_narrow.consumer && pcs.iter().all(|pc| pr.recovered.join_narrow.sites.contains(pc)) {
             return Some(match ty {
                 Datatype::Int(_) => Datatype::Int(w),
                 Datatype::Uint(_) => Datatype::Uint(w),
@@ -120,4 +120,20 @@ fn narrowed_join_width(pr: &PrintC<'_>, v: VarnodeId) -> Option<(u32, Vec<u64>)>
         }
     }
     target.map(|w| (w, pcs))
+}
+
+/// The join-narrow's candidates the report pass collects (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Report {
+    /// N1 (join-width): the original pcs that materialize a constant-join local's constants —
+    /// the witness (`buildconfig::join_narrow_sites_from_evidence`) keeps only those loaded into
+    /// an 8-bit sub-register (`MOV r8,imm8`), the sites where narrowing the declaration is right.
+    pub candidates: Vec<u64>,
+}
+
+/// The join-narrow's witnessed decisions the recovered pass renders (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Sites {
+    /// N1 constant-materialization pcs witnessed as 8-bit sub-register loads.
+    pub sites: std::collections::HashSet<u64>,
 }

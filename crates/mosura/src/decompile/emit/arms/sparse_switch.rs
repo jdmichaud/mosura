@@ -1,7 +1,7 @@
 //! `sparse-switch` — Watcom's balanced compare tree (JB/JBE pivots, JE leaves, range-pruned
 //! singletons) prints as the `switch` it was compiled from, with the byte WITNESS the IR cannot
 //! carry: the CMP immediates and jump kinds at every flag-consuming site (docs/sparse-switch-arm.md,
-//! W5; the witness is `recovered.sparse_cmp_sites`, from `buildconfig::sparse_cmps_from_evidence`).
+//! W5; the witness is `recovered.sparse_switch.sites`, from `buildconfig::sparse_cmps_from_evidence`).
 //! A target-informed emit choice, NOT Ghidra: the reference decompiler prints the if-chain, and
 //! Ghidra canonicalizes `x < 4` on the fall-through edge to `3 < x`, so the IR's constants cannot
 //! tell a pivot's JB side from a run's JBE bound — the bytes can.
@@ -277,11 +277,11 @@ fn try_emit_sparse_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
     // that case survives only as a witness entry right after a tree compare (within one
     // jump + one CMP of it) at a pc no tree compare claims
     let folded_eq = |v: i64| -> bool {
-        pr.recovered.sparse_cmp_sites.iter().any(|(&pc, &(imm, kind, reg))| {
+        pr.recovered.sparse_switch.sites.iter().any(|(&pc, &(imm, kind, reg))| {
             kind == CMP_EQ
                 && (imm as i64) == v
                 && !consts.iter().any(|&(cp, _, _)| cp == pc)
-                && consts.iter().any(|&(cp, _, _)| pc > cp && pc - cp <= 12 && pr.recovered.sparse_cmp_sites.get(&cp).is_some_and(|w| w.2 == reg))
+                && consts.iter().any(|&(cp, _, _)| pc > cp && pc - cp <= 12 && pr.recovered.sparse_switch.sites.get(&cp).is_some_and(|w| w.2 == reg))
         })
     };
     let cased_const = |v: i64| -> bool {
@@ -696,7 +696,7 @@ fn try_emit_narrow_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
                 return None;
             }
             let pc = pr.f.op(cb).seqnum.pc.offset;
-            let &(imm, kind, (_, rsize)) = pr.recovered.sparse_cmp_sites.get(&pc)?;
+            let &(imm, kind, (_, rsize)) = pr.recovered.sparse_switch.sites.get(&pc)?;
             if rsize != 2 {
                 return None;
             }
@@ -1002,7 +1002,7 @@ fn sparse_true_ranges(pr: &PrintC<'_>, cond: VarnodeId, scrut_high: SparseKey, l
     // site; else from the IR, reading Ghidra's canonical `c < x` (mirrored) as `!(x < c+1)`
     // (`CMP c+1; JB` on its fall-through edge) and `c <= x` as `!(x < c)`
     let mirrored = sparse_compare_mirrored(pr, cond);
-    let (kc, kind) = match pr.recovered.sparse_cmp_sites.get(&pc) {
+    let (kc, kind) = match pr.recovered.sparse_switch.sites.get(&pc) {
         Some(&(imm, wk, _)) => {
             let size = pr.f.vn(x).size;
             let signed = matches!(code, OpCode::IntSless | OpCode::IntSlessequal);
@@ -1017,7 +1017,7 @@ fn sparse_true_ranges(pr: &PrintC<'_>, cond: VarnodeId, scrut_high: SparseKey, l
             (_, _) => (k, CMP_LT),
         },
     };
-    debug!(crate::debug::Topic::SparseSwitch, "  compare @{pc:#x}: x {:?} {k} neg {neg} mirrored {mirrored} -> ({kc}, kind {kind}) witness {:?}", code, pr.recovered.sparse_cmp_sites.get(&pc));
+    debug!(crate::debug::Topic::SparseSwitch, "  compare @{pc:#x}: x {:?} {k} neg {neg} mirrored {mirrored} -> ({kc}, kind {kind}) witness {:?}", code, pr.recovered.sparse_switch.sites.get(&pc));
     consts.push((pc, kc, kind));
     if let Some(d) = pr.f.vn(cond).def {
         compares.push(d);
@@ -1526,4 +1526,16 @@ impl State {
             cond_override_pending: std::cell::RefCell::new(Vec::new()),
         }
     }
+}
+
+/// The sparse-switch's witnessed decisions the recovered pass renders (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Sites {
+    /// `sparse-switch`: the original's compare at each flag-consuming site — the CMP's immediate and
+    /// the jump's kind (`CMP_LT` for JB/JAE, `CMP_LE` for JBE/JA, `CMP_EQ` for JE/JNE), keyed by the
+    /// jump's pc and by the CMP's pc for its first jump (Ghidra attributes the flag compare to the
+    /// CMP, a derived `x <= k` / `!(x < k)` to the jump). Ghidra canonicalizes `x < 4` on the
+    /// fall-through edge to `3 < x` and `x <= 0xf` to `x < 0x10`, so the IR's constants cannot tell
+    /// a pivot's `JB` side from a run's `JBE` bound; the bytes can.
+    pub sites: std::collections::HashMap<u64, (u64, u8, (u64, u32))>,
 }

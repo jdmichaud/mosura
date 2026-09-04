@@ -40,12 +40,12 @@ fn witnessed_scaled_index_access_spells_as_a_subscript() {
 
     // The witness, run on the fixture's OWN bytes: the INC uses a *0x4 scaled operand.
     let (_, report) = print_c_report(&f, &choices);
-    assert!(!report.array_index_candidates.is_empty(), "the access is an N3 candidate");
+    assert!(!report.array_index.candidates.is_empty(), "the access is an N3 candidate");
     let insns = normalize(lang_id, &dt.chunks[0].bytes, entry, &NoReloc).unwrap();
-    let sites = array_index_sites_from_evidence(&report.array_index_candidates, &insns);
-    assert!(!sites.is_empty(), "the witness accepts the scaled-index operand:\n{:x?}", report.array_index_candidates);
+    let sites = array_index_sites_from_evidence(&report.array_index.candidates, &insns);
+    assert!(!sites.is_empty(), "the witness accepts the scaled-index operand:\n{:x?}", report.array_index.candidates);
 
-    let recovered = RecoveredChoices { array_index_sites: sites, ..Default::default() };
+    let recovered = RecoveredChoices { array_index: mosura::decompile::emit::arms::array_index::Sites { sites: sites, ..Default::default() }, ..Default::default() };
     let c = print_c_recovered(&f, &choices, &recovered);
     assert!(
         c.contains("0x162000)[param_1]") && !c.contains("* 4 + 0x162000"),

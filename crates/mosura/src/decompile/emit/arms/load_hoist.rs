@@ -7,7 +7,7 @@
 //! FUN_0002a75c and its two siblings). The other legal choice makes the VALUE explicit and the
 //! pointer implied — `uVar5 = auStack_28[iVar3]; iVar3 = iVar3 + 1; *(..) = uVar5;` — the load
 //! at its own position, the subscript folded into the access. Value-identical: the same load
-//! at the same point of the same trace. The witness (`recovered.load_hoist_sites`, from
+//! at the same point of the same trace. The witness (`recovered.load_hoist.sites`, from
 //! `buildconfig::load_hoists_from_evidence` over this arm's `load_hoist_candidates`): the
 //! original's instruction at the load's address reads the frame through a scaled index
 //! (`[EBP + EAX*0x2 + -0x20]`) and the pointer's own address holds no `LEA` — the element
@@ -94,8 +94,8 @@ pub(crate) fn recognize(pr: &mut PrintC<'_>, f: &Funcdata) {
                 continue;
             }
             let pc = o.seqnum.pc.offset;
-            pr.report.load_hoist_candidates.push((pc, po.seqnum.pc.offset));
-            if pr.recovered.load_hoist_sites.contains(&pc) {
+            pr.report.load_hoist.candidates.push((pc, po.seqnum.pc.offset));
+            if pr.recovered.load_hoist.sites.contains(&pc) {
                 swaps.push((cur, p));
             }
         }
@@ -104,4 +104,20 @@ pub(crate) fn recognize(pr: &mut PrintC<'_>, f: &Funcdata) {
         pr.force_explicit.insert(value);
         pr.force_implied.insert(pointer);
     }
+}
+
+/// The load-hoist's candidates the report pass collects (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Report {
+    /// Every load through an explicit pointer temp whose value is consumed after the pointer's
+    /// base or index is redefined (`load-hoist`), as `(load address, pointer's address)`.
+    pub candidates: Vec<(u64, u64)>,
+}
+
+/// The load-hoist's witnessed decisions the recovered pass renders (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Sites {
+    /// Load addresses whose original reads the element through a scaled index (`load-hoist`,
+    /// `load_hoist_candidates` evidence, `buildconfig::load_hoists_from_evidence`).
+    pub sites: std::collections::HashSet<u64>,
 }

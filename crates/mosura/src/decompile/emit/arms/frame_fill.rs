@@ -60,10 +60,10 @@ if choices.frame_fill == crate::decompile::emit::FrameFill::Aggregate {
     if crate::debug::on(crate::debug::Topic::FrameFill) {
         let declared: i64 = p.stack_syms.iter().map(|s| s.size as i64).sum();
         debug!(crate::debug::Topic::FrameFill, "{:#x}: witness={:?} alias_boundary={:?} stack_syms={} declared={} syms={:?}",
-            f.addr.offset, p.recovered.frame_fill, f.alias_boundary, p.stack_syms.len(), declared,
+            f.addr.offset, p.recovered.frame_fill.frame, f.alias_boundary, p.stack_syms.len(), declared,
             p.stack_syms.iter().map(|s| (s.start, s.size)).collect::<Vec<_>>());
     }
-    if let (Some((frame, pushes)), Some(ab)) = (p.recovered.frame_fill, f.alias_boundary) {
+    if let (Some((frame, pushes)), Some(ab)) = (p.recovered.frame_fill.frame, f.alias_boundary) {
         let top = -(4 * pushes as i64);
         let bottom = top - frame as i64;
         // the escaping local must lie INSIDE the frame: an alias boundary below it is the
@@ -237,4 +237,11 @@ impl State {
     pub(crate) fn new(_choices: &EmitChoices) -> Self {
         State::default()
     }
+}
+
+/// The frame-fill's witnessed decisions the recovered pass renders (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Sites {
+    /// `frame-fill`: the original prologue's `(SUB ESP frame, PUSH count)` — witnessed by the bytes.
+    pub frame: Option<(u32, u32)>,
 }

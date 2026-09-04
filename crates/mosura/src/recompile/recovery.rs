@@ -37,9 +37,9 @@ pub fn recover(
     let (_, report2) =
         crate::decompile::printc::print_c_recovered_report(f, rec_choices, &recovered);
     let mut recovered = recovered;
-    recovered.nested_sites.extend(
+    recovered.nested_conds.sites.extend(
         crate::recompile::buildconfig::nested_conds_from_evidence(
-            &report2.cond_nest_candidates,
+            &report2.nested_conds.candidates,
             insns,
         ),
     );
@@ -54,7 +54,7 @@ pub fn recover(
     if cfg!(debug_assertions) || std::env::var("MOSURA_RECOVER_FIXPOINT").as_deref() == Ok("1") {
         let (_, report3) = crate::decompile::printc::print_c_recovered_report(f, rec_choices, &recovered);
         let mut again = derive(&report3, insns, call_arg_orders);
-        again.nested_sites.extend(crate::recompile::buildconfig::nested_conds_from_evidence(&report3.cond_nest_candidates, insns));
+        again.nested_conds.sites.extend(crate::recompile::buildconfig::nested_conds_from_evidence(&report3.nested_conds.candidates, insns));
         let grown = new_decisions(&recovered, &again);
         if !grown.is_empty() {
             eprintln!("[recover] FIXPOINT VIOLATION {}: the third render introduces [{}]", f.name, grown.join(" "));
@@ -62,10 +62,10 @@ pub fn recover(
     }
     debug!(crate::debug::Topic::Recover, 
             "runs={} orders={} snap={} testmem={}",
-            report.store_runs.len(),
-            recovered.store_orders.len(),
-            recovered.snapshot_sites.len(),
-            recovered.testmem_sites.len()
+            report.port.store_runs.len(),
+            recovered.port.store_orders.len(),
+            recovered.snapshot.sites.len(),
+            recovered.testmem.sites.len()
         );
     recovered
 }
@@ -75,130 +75,166 @@ pub fn recover(
 /// below, on a render under the decisions it produced.
 fn derive(report: &EmitReport, insns: &[NormInsn], call_arg_orders: HashMap<u64, Vec<usize>>) -> RecoveredChoices {
     let widen = crate::recompile::buildconfig::widened_sites_from_evidence(
-        &report.local_width_candidates,
-        &report.tier2_candidates,
+        &report.port.local_width_candidates,
+        &report.port.tier2_candidates,
         insns,
     );
     // One witness, two fields: whether the return declaration narrows, and whether that narrow
     // declaration is signed (the sign-extended-constant idiom).
-    let cmp_sign = crate::recompile::buildconfig::cmp_signs_from_evidence(&report.cmp_sign_candidates, insns);
+    let cmp_sign = crate::recompile::buildconfig::cmp_signs_from_evidence(&report.cmp_sign.candidates, insns);
     let narrow_ret = crate::recompile::buildconfig::narrow_return_from_evidence(
-        &report.return_width_candidates,
+        &report.port.return_width_candidates,
         insns,
     );
     crate::decompile::printc::RecoveredChoices {
-        complement_sites: crate::recompile::buildconfig::complement_compares_from_evidence(
-            &report.compare_sites,
-            insns,
-        ),
-        cmp_order_sites: crate::recompile::buildconfig::cmp_orders_from_evidence(
-            &report.cmp_order_candidates,
-            insns,
-        ),
-        narrow_zext_sites: crate::recompile::buildconfig::narrow_zexts_from_evidence(
-            &report.narrow_zext_candidates,
-            insns,
-        ),
-        mask_sites: crate::recompile::buildconfig::masked_args_from_evidence(
-            &report.mask_candidates,
-            insns,
-        ),
-        return_split_sites: crate::recompile::buildconfig::split_returns_from_evidence(
-            &report.return_split_candidates,
-            insns,
-        ),
-        const_phi_sites: crate::recompile::buildconfig::const_phi_returns_from_evidence(
-            &report.const_phi_candidates,
-            insns,
-        ),
-        early_return_sites: crate::recompile::buildconfig::const_phi_returns_from_evidence(
-            &report.early_return_candidates,
-            insns,
-        ),
-        counted_loop_sites: crate::recompile::buildconfig::counted_loops_from_evidence(
-            &report.counted_loop_candidates,
-            insns,
-        ),
-        branch_return_sites: crate::recompile::buildconfig::branch_returns_from_evidence(
-            &report.branch_return_candidates,
-            insns,
-        ),
-        store_forward_sites: crate::recompile::buildconfig::store_forwards_from_evidence(
-            &report.store_forward_candidates,
-            insns,
-        ),
-        cmp_unsigned_sites: cmp_sign.0,
-        cmp_unsigned_globals: cmp_sign.1,
-        ptr_offset_sites: crate::recompile::buildconfig::ptr_offsets_from_evidence(
-            &report.ptr_offset_candidates,
-            insns,
-        ),
-        load_hoist_sites: crate::recompile::buildconfig::load_hoists_from_evidence(
-            &report.load_hoist_candidates,
-            insns,
-        ),
-        nested_sites: crate::recompile::buildconfig::nested_conds_from_evidence(
-            &report.cond_nest_candidates,
-            insns,
-        ),
-        narrow_return: narrow_ret.narrow,
-        narrow_return_signed: narrow_ret.signed,
-        narrow_return_width: narrow_ret.width,
-        return_zero_widened: narrow_ret.zero_widened,
-        widen_local_reps: widen.0,
-        tier2_sites: widen.1,
-        snapshot_sites: crate::recompile::buildconfig::entry_snapshots_from_evidence(
-            &report.snapshot_candidates,
-            insns,
-        ),
-        testmem_sites: crate::recompile::buildconfig::testmem_from_evidence(
-            &report.testmem_candidates,
-            insns,
-        ),
-        store_orders: {
-            let mut m = crate::recompile::buildconfig::store_orders_from_evidence(&report.store_runs, insns);
-            m.extend(crate::recompile::buildconfig::stack_store_orders_from_evidence(&report.stack_store_runs, insns));
-            m
+        port: crate::decompile::emit::arms::port::Sites {
+            narrow_return: narrow_ret.narrow,
+            narrow_return_signed: narrow_ret.signed,
+            narrow_return_width: narrow_ret.width,
+            widen_local_reps: widen.0,
+            tier2_sites: widen.1,
+            store_orders: {
+                let mut m = crate::recompile::buildconfig::store_orders_from_evidence(&report.port.store_runs, insns);
+                m.extend(crate::recompile::buildconfig::stack_store_orders_from_evidence(&report.port.stack_store_runs, insns));
+                m
+            },
+            call_arg_orders: call_arg_orders,
+            arm_swap_sites: crate::recompile::buildconfig::arm_swaps_from_evidence(
+                &report.port.arm_swap_candidates,
+                insns,
+            ),
+            ilv_orders: Default::default(),
         },
-        call_arg_orders,
-        arm_swap_sites: crate::recompile::buildconfig::arm_swaps_from_evidence(
-            &report.arm_swap_candidates,
-            insns,
-        ),
-        array_index_sites: crate::recompile::buildconfig::array_index_sites_from_evidence(
-            &report.array_index_candidates,
-            insns,
-        ),
-        join_narrow_sites: crate::recompile::buildconfig::join_narrow_sites_from_evidence(
-            &report.join_narrow_candidates,
-            insns,
-        ),
-        string_op_sites: crate::recompile::buildconfig::string_ops_from_evidence(
-            &report.rep_movs_candidates,
-            insns,
-        ),
-        sdiv_pow2_sites: crate::recompile::buildconfig::sdiv_pow2_from_evidence(
-            &report.sdiv_pow2_candidates,
-            insns,
-        ),
-        frame_fill: crate::recompile::buildconfig::frame_from_evidence(insns),
-        sparse_cmp_sites: crate::recompile::buildconfig::sparse_cmps_from_evidence(insns),
-        movsd_runs: crate::recompile::buildconfig::movsd_runs_from_evidence(insns),
-        unsigned_cmp_sites: crate::recompile::buildconfig::unsigned_cmps_from_evidence(
-            &report.allones_cmp_candidates,
-            insns,
-        ),
-        // statement interleave (allocator thread lever 3): OFF — measured at probe
-        // scale (2026-08-22) as a loser: re-sequencing a block's independent
-        // statements into the original's instruction order broke 3 of 5 EXACT
-        // functions (125bc, 2911c, 31c60) and moved the motivating 31c0c not at
-        // all. The original's order is the SCHEDULER's output, not the source's
-        // statement order, and the scheduler does not round-trip its own output
-        // (source-sequence tie-breaks). The census and the orders machinery stay
-        // for a model-inverse variant; the blind form's switch (`MOSURA_ILV=1`) is gone (review
-        // R6, commit 3b): nothing fills `ilv_orders` today — `printc::interleave_orders` is the
-        // parked groundwork the model-inverse variant would call.
-        ilv_orders: Default::default(),
+        array_index: crate::decompile::emit::arms::array_index::Sites {
+            sites: crate::recompile::buildconfig::array_index_sites_from_evidence(
+                &report.array_index.candidates,
+                insns,
+            ),
+        },
+        cmp_order: crate::decompile::emit::arms::cmp_order::Sites {
+            sites: crate::recompile::buildconfig::cmp_orders_from_evidence(
+                &report.cmp_order.candidates,
+                insns,
+            ),
+        },
+        cmp_sign: crate::decompile::emit::arms::cmp_sign::Sites {
+            sites: cmp_sign.0,
+            globals: cmp_sign.1,
+        },
+        complement_cmp: crate::decompile::emit::arms::complement_cmp::Sites {
+            sites: crate::recompile::buildconfig::complement_compares_from_evidence(
+                &report.complement_cmp.candidates,
+                insns,
+            ),
+        },
+        counted_loop: crate::decompile::emit::arms::counted_loop::Sites {
+            sites: crate::recompile::buildconfig::counted_loops_from_evidence(
+                &report.counted_loop.candidates,
+                insns,
+            ),
+        },
+        ext_cast: crate::decompile::emit::arms::ext_cast::Sites {
+            sites: crate::recompile::buildconfig::narrow_zexts_from_evidence(
+                &report.ext_cast.candidates,
+                insns,
+            ),
+        },
+        frame_fill: crate::decompile::emit::arms::frame_fill::Sites {
+            frame: crate::recompile::buildconfig::frame_from_evidence(insns),
+        },
+        join_narrow: crate::decompile::emit::arms::join_narrow::Sites {
+            sites: crate::recompile::buildconfig::join_narrow_sites_from_evidence(
+                &report.join_narrow.candidates,
+                insns,
+            ),
+        },
+        load_hoist: crate::decompile::emit::arms::load_hoist::Sites {
+            sites: crate::recompile::buildconfig::load_hoists_from_evidence(
+                &report.load_hoist.candidates,
+                insns,
+            ),
+        },
+        mask_cast: crate::decompile::emit::arms::mask_cast::Sites {
+            sites: crate::recompile::buildconfig::masked_args_from_evidence(
+                &report.mask_cast.candidates,
+                insns,
+            ),
+        },
+        nested_conds: crate::decompile::emit::arms::nested_conds::Sites {
+            sites: crate::recompile::buildconfig::nested_conds_from_evidence(
+                &report.nested_conds.candidates,
+                insns,
+            ),
+        },
+        ptr_offset: crate::decompile::emit::arms::ptr_offset::Sites {
+            sites: crate::recompile::buildconfig::ptr_offsets_from_evidence(
+                &report.ptr_offset.candidates,
+                insns,
+            ),
+        },
+        return_split: crate::decompile::emit::arms::return_split::Sites {
+            split: crate::recompile::buildconfig::split_returns_from_evidence(
+                &report.return_split.split,
+                insns,
+            ),
+            const_phi: crate::recompile::buildconfig::const_phi_returns_from_evidence(
+                &report.return_split.const_phi,
+                insns,
+            ),
+            early_return: crate::recompile::buildconfig::const_phi_returns_from_evidence(
+                &report.return_split.early_return,
+                insns,
+            ),
+            branch_return: crate::recompile::buildconfig::branch_returns_from_evidence(
+                &report.return_split.branch_return,
+                insns,
+            ),
+        },
+        return_widen: crate::decompile::emit::arms::return_widen::Sites {
+            zero_widened: narrow_ret.zero_widened,
+        },
+        sdiv_pow2: crate::decompile::emit::arms::sdiv_pow2::Sites {
+            sites: crate::recompile::buildconfig::sdiv_pow2_from_evidence(
+                &report.sdiv_pow2.candidates,
+                insns,
+            ),
+        },
+        snapshot: crate::decompile::emit::arms::snapshot::Sites {
+            sites: crate::recompile::buildconfig::entry_snapshots_from_evidence(
+                &report.snapshot.candidates,
+                insns,
+            ),
+        },
+        sparse_switch: crate::decompile::emit::arms::sparse_switch::Sites {
+            sites: crate::recompile::buildconfig::sparse_cmps_from_evidence(insns),
+        },
+        store_forward: crate::decompile::emit::arms::store_forward::Sites {
+            sites: crate::recompile::buildconfig::store_forwards_from_evidence(
+                &report.store_forward.candidates,
+                insns,
+            ),
+        },
+        string_ops: crate::decompile::emit::arms::string_ops::Sites {
+            sites: crate::recompile::buildconfig::string_ops_from_evidence(
+                &report.string_ops.candidates,
+                insns,
+            ),
+        },
+        struct_copy: crate::decompile::emit::arms::struct_copy::Sites {
+            runs: crate::recompile::buildconfig::movsd_runs_from_evidence(insns),
+        },
+        testmem: crate::decompile::emit::arms::testmem::Sites {
+            sites: crate::recompile::buildconfig::testmem_from_evidence(
+                &report.testmem.candidates,
+                insns,
+            ),
+        },
+        unsigned_cmp: crate::decompile::emit::arms::unsigned_cmp::Sites {
+            sites: crate::recompile::buildconfig::unsigned_cmps_from_evidence(
+                &report.unsigned_cmp.candidates,
+                insns,
+            ),
+        },
     }
 }
 
@@ -208,110 +244,110 @@ fn derive(report: &EmitReport, insns: &[NormInsn], call_arg_orders: HashMap<u64,
 /// not counted (the rounds accumulate by design).
 fn new_decisions(a: &RecoveredChoices, b: &RecoveredChoices) -> Vec<&'static str> {
     let mut out = Vec::new();
-    if b.complement_sites.iter().any(|x| !a.complement_sites.contains(x)) {
-        out.push("complement_sites");
+    if b.complement_cmp.sites.iter().any(|x| !a.complement_cmp.sites.contains(x)) {
+        out.push("complement_cmp.sites");
     }
-    if b.cmp_order_sites.iter().any(|x| !a.cmp_order_sites.contains(x)) {
-        out.push("cmp_order_sites");
+    if b.cmp_order.sites.iter().any(|x| !a.cmp_order.sites.contains(x)) {
+        out.push("cmp_order.sites");
     }
-    if b.narrow_zext_sites.iter().any(|x| !a.narrow_zext_sites.contains(x)) {
-        out.push("narrow_zext_sites");
+    if b.ext_cast.sites.iter().any(|x| !a.ext_cast.sites.contains(x)) {
+        out.push("ext_cast.sites");
     }
-    if b.unsigned_cmp_sites.iter().any(|x| !a.unsigned_cmp_sites.contains(x)) {
-        out.push("unsigned_cmp_sites");
+    if b.unsigned_cmp.sites.iter().any(|x| !a.unsigned_cmp.sites.contains(x)) {
+        out.push("unsigned_cmp.sites");
     }
-    if b.return_split_sites.iter().any(|x| !a.return_split_sites.contains(x)) {
-        out.push("return_split_sites");
+    if b.return_split.split.iter().any(|x| !a.return_split.split.contains(x)) {
+        out.push("return_split.split");
     }
-    if b.const_phi_sites.iter().any(|x| !a.const_phi_sites.contains(x)) {
-        out.push("const_phi_sites");
+    if b.return_split.const_phi.iter().any(|x| !a.return_split.const_phi.contains(x)) {
+        out.push("return_split.const_phi");
     }
-    if b.early_return_sites.iter().any(|x| !a.early_return_sites.contains(x)) {
-        out.push("early_return_sites");
+    if b.return_split.early_return.iter().any(|x| !a.return_split.early_return.contains(x)) {
+        out.push("return_split.early_return");
     }
-    if b.counted_loop_sites.iter().any(|x| !a.counted_loop_sites.contains(x)) {
-        out.push("counted_loop_sites");
+    if b.counted_loop.sites.iter().any(|x| !a.counted_loop.sites.contains(x)) {
+        out.push("counted_loop.sites");
     }
-    if b.branch_return_sites.iter().any(|x| !a.branch_return_sites.contains(x)) {
-        out.push("branch_return_sites");
+    if b.return_split.branch_return.iter().any(|x| !a.return_split.branch_return.contains(x)) {
+        out.push("return_split.branch_return");
     }
-    if b.store_forward_sites.iter().any(|x| !a.store_forward_sites.contains(x)) {
-        out.push("store_forward_sites");
+    if b.store_forward.sites.iter().any(|x| !a.store_forward.sites.contains(x)) {
+        out.push("store_forward.sites");
     }
-    if b.cmp_unsigned_sites.iter().any(|x| !a.cmp_unsigned_sites.contains(x)) {
-        out.push("cmp_unsigned_sites");
+    if b.cmp_sign.sites.iter().any(|x| !a.cmp_sign.sites.contains(x)) {
+        out.push("cmp_sign.sites");
     }
-    if b.cmp_unsigned_globals.iter().any(|x| !a.cmp_unsigned_globals.contains(x)) {
-        out.push("cmp_unsigned_globals");
+    if b.cmp_sign.globals.iter().any(|x| !a.cmp_sign.globals.contains(x)) {
+        out.push("cmp_sign.globals");
     }
-    if b.ptr_offset_sites.iter().any(|x| !a.ptr_offset_sites.contains(x)) {
-        out.push("ptr_offset_sites");
+    if b.ptr_offset.sites.iter().any(|x| !a.ptr_offset.sites.contains(x)) {
+        out.push("ptr_offset.sites");
     }
-    if b.load_hoist_sites.iter().any(|x| !a.load_hoist_sites.contains(x)) {
-        out.push("load_hoist_sites");
+    if b.load_hoist.sites.iter().any(|x| !a.load_hoist.sites.contains(x)) {
+        out.push("load_hoist.sites");
     }
-    if b.nested_sites.iter().any(|x| !a.nested_sites.contains(x)) {
-        out.push("nested_sites");
+    if b.nested_conds.sites.iter().any(|x| !a.nested_conds.sites.contains(x)) {
+        out.push("nested_conds.sites");
     }
-    if b.widen_local_reps.iter().any(|x| !a.widen_local_reps.contains(x)) {
-        out.push("widen_local_reps");
+    if b.port.widen_local_reps.iter().any(|x| !a.port.widen_local_reps.contains(x)) {
+        out.push("port.widen_local_reps");
     }
-    if b.tier2_sites.iter().any(|x| !a.tier2_sites.contains(x)) {
-        out.push("tier2_sites");
+    if b.port.tier2_sites.iter().any(|x| !a.port.tier2_sites.contains(x)) {
+        out.push("port.tier2_sites");
     }
-    if b.testmem_sites.iter().any(|x| !a.testmem_sites.contains(x)) {
-        out.push("testmem_sites");
+    if b.testmem.sites.iter().any(|x| !a.testmem.sites.contains(x)) {
+        out.push("testmem.sites");
     }
-    if b.arm_swap_sites.iter().any(|x| !a.arm_swap_sites.contains(x)) {
-        out.push("arm_swap_sites");
+    if b.port.arm_swap_sites.iter().any(|x| !a.port.arm_swap_sites.contains(x)) {
+        out.push("port.arm_swap_sites");
     }
-    if b.array_index_sites.iter().any(|x| !a.array_index_sites.contains(x)) {
-        out.push("array_index_sites");
+    if b.array_index.sites.iter().any(|x| !a.array_index.sites.contains(x)) {
+        out.push("array_index.sites");
     }
-    if b.join_narrow_sites.iter().any(|x| !a.join_narrow_sites.contains(x)) {
-        out.push("join_narrow_sites");
+    if b.join_narrow.sites.iter().any(|x| !a.join_narrow.sites.contains(x)) {
+        out.push("join_narrow.sites");
     }
-    if b.string_op_sites.iter().any(|x| !a.string_op_sites.contains(x)) {
-        out.push("string_op_sites");
+    if b.string_ops.sites.iter().any(|x| !a.string_ops.sites.contains(x)) {
+        out.push("string_ops.sites");
     }
-    if b.sdiv_pow2_sites.iter().any(|x| !a.sdiv_pow2_sites.contains(x)) {
-        out.push("sdiv_pow2_sites");
+    if b.sdiv_pow2.sites.iter().any(|x| !a.sdiv_pow2.sites.contains(x)) {
+        out.push("sdiv_pow2.sites");
     }
-    if b.mask_sites.keys().any(|k| !a.mask_sites.contains_key(k)) {
-        out.push("mask_sites");
+    if b.mask_cast.sites.keys().any(|k| !a.mask_cast.sites.contains_key(k)) {
+        out.push("mask_cast.sites");
     }
-    if b.snapshot_sites.keys().any(|k| !a.snapshot_sites.contains_key(k)) {
-        out.push("snapshot_sites");
+    if b.snapshot.sites.keys().any(|k| !a.snapshot.sites.contains_key(k)) {
+        out.push("snapshot.sites");
     }
-    if b.store_orders.keys().any(|k| !a.store_orders.contains_key(k)) {
-        out.push("store_orders");
+    if b.port.store_orders.keys().any(|k| !a.port.store_orders.contains_key(k)) {
+        out.push("port.store_orders");
     }
-    if b.call_arg_orders.keys().any(|k| !a.call_arg_orders.contains_key(k)) {
-        out.push("call_arg_orders");
+    if b.port.call_arg_orders.keys().any(|k| !a.port.call_arg_orders.contains_key(k)) {
+        out.push("port.call_arg_orders");
     }
-    if b.sparse_cmp_sites.keys().any(|k| !a.sparse_cmp_sites.contains_key(k)) {
-        out.push("sparse_cmp_sites");
+    if b.sparse_switch.sites.keys().any(|k| !a.sparse_switch.sites.contains_key(k)) {
+        out.push("sparse_switch.sites");
     }
-    if b.movsd_runs.keys().any(|k| !a.movsd_runs.contains_key(k)) {
-        out.push("movsd_runs");
+    if b.struct_copy.runs.keys().any(|k| !a.struct_copy.runs.contains_key(k)) {
+        out.push("struct_copy.runs");
     }
-    if b.ilv_orders.keys().any(|k| !a.ilv_orders.contains_key(k)) {
-        out.push("ilv_orders");
+    if b.port.ilv_orders.keys().any(|k| !a.port.ilv_orders.contains_key(k)) {
+        out.push("port.ilv_orders");
     }
-    if b.return_zero_widened && !a.return_zero_widened {
-        out.push("return_zero_widened");
+    if b.return_widen.zero_widened && !a.return_widen.zero_widened {
+        out.push("return_widen.zero_widened");
     }
-    if b.narrow_return && !a.narrow_return {
-        out.push("narrow_return");
+    if b.port.narrow_return && !a.port.narrow_return {
+        out.push("port.narrow_return");
     }
-    if b.narrow_return_signed && !a.narrow_return_signed {
-        out.push("narrow_return_signed");
+    if b.port.narrow_return_signed && !a.port.narrow_return_signed {
+        out.push("port.narrow_return_signed");
     }
-    if a.narrow_return_width != b.narrow_return_width && b.narrow_return {
-        out.push("narrow_return_width");
+    if a.port.narrow_return_width != b.port.narrow_return_width && b.port.narrow_return {
+        out.push("port.narrow_return_width");
     }
-    if b.frame_fill.is_some() && a.frame_fill != b.frame_fill {
-        out.push("frame_fill");
+    if b.frame_fill.frame.is_some() && a.frame_fill.frame != b.frame_fill.frame {
+        out.push("frame_fill.frame");
     }
     out
 }

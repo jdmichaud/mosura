@@ -1,7 +1,7 @@
 //! `compare-form=complement` — a strict/non-strict compare whose ORIGINAL the compiler spelled
 //! through the complemented condition prints complemented (the `!(a < b)` forms), so the
 //! recompile reproduces the original's jump sense; per function under the `compare-form` choice,
-//! or per site by witness (`recovered.complement_sites`, from
+//! or per site by witness (`recovered.complement_cmp.sites`, from
 //! `buildconfig::complement_compares_from_evidence` — one of the text-parsing witnesses, R3b). A
 //! target-informed emit choice, NOT Ghidra: the reference decompiler prints the direct compare.
 //!
@@ -21,7 +21,7 @@ use crate::decompile::printc::{render_const, PrintC};
 use crate::decompile::types::Datatype;
 use crate::decompile::varnode::VarnodeId;
 
-/// The arm's state: its configuration (the witness, `recovered.complement_sites`, is the port's).
+/// The arm's state: its configuration (the witness, `recovered.complement_cmp.sites`, is the port's).
 #[derive(Debug, Default)]
 pub(crate) struct State {
     /// `compare-form=complement` is on for the whole function.
@@ -39,10 +39,10 @@ impl State {
 pub(crate) fn render(pr: &mut PrintC<'_>, op: OpId, strict: bool, prec: u8) -> Option<(String, u8)> {
     let site = compare_site(pr, op, strict);
     if let Some(site) = site {
-        pr.report.compare_sites.push(site);
+        pr.report.complement_cmp.candidates.push(site);
     }
     let recovered_here =
-        site.is_some_and(|(pc, _, _)| pr.recovered.complement_sites.contains(&pc));
+        site.is_some_and(|(pc, _, _)| pr.recovered.complement_cmp.sites.contains(&pc));
     if pr.arms.complement_cmp.complement || recovered_here {
         if let Some(r) = complemented_cmp(pr, op, strict) {
             return Some((r, prec));
@@ -133,4 +133,23 @@ fn complemented_cmp(pr: &mut PrintC<'_>, op: crate::decompile::op::OpId, strict:
     let other = pr.cast_operand(op, vslot, prec, cslot == 0);
     let sym = if strict { "<=" } else { "<" };
     Some(if cslot == 1 { format!("{other} {sym} {lit}") } else { format!("{lit} {sym} {other}") })
+}
+
+/// The complement-cmp's candidates the report pass collects (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Report {
+    /// Every constant comparison the `compare-form` axis could complement, as
+    /// `(instruction address, constant as rendered, constant if complemented)`. A target rule
+    /// reads the ORIGINAL's own compare immediate at that address and knows which spelling the
+    /// source used — a direct readout, not a correlation. Recorded per SITE, which is finer
+    /// than the axis (per function) can act on; whether that finer grain is needed is the
+    /// measurement in byte-exact-status.md.
+    pub candidates: Vec<(u64, u64, u64)>,
+}
+
+/// The complement-cmp's witnessed decisions the recovered pass renders (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Sites {
+    /// Comparison sites to render complemented (`compare-form`).
+    pub sites: std::collections::HashSet<u64>,
 }

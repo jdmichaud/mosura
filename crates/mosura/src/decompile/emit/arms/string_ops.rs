@@ -443,7 +443,7 @@ if p.arms.string_ops.rep_skip.is_empty() {
 
 /// The recognizer, run once when the printer is built (arm setup): lifted REP loops → the
 /// witness map `rep_movs`, the skip set `rep_skip`, the `strlen_alias` table and the port's
-/// `suppressed` set, reported through `report.rep_movs_candidates`.
+/// `suppressed` set, reported through `report.string_ops.candidates`.
 pub(crate) fn recognize(p: &mut PrintC<'_>) {
     let f: &Funcdata = p.f;
 // string-ops=intrinsic (docs/rep-string-intrinsic-arm.md): lifted REP MOVS/STOS loops →
@@ -575,12 +575,12 @@ if p.arms.string_ops.intrinsic {
         if !single_dword_set_ok {
             continue;
         }
-        p.report.rep_movs_candidates.push((l1.pc, l1.elem));
+        p.report.string_ops.candidates.push((l1.pc, l1.elem));
         if let Some(l2) = l2 {
-            p.report.rep_movs_candidates.push((l2.pc, l2.elem));
+            p.report.string_ops.candidates.push((l2.pc, l2.elem));
         }
-        let witnessed = p.recovered.string_op_sites.contains(&l1.pc)
-            && l2.map_or(true, |l2| p.recovered.string_op_sites.contains(&l2.pc));
+        let witnessed = p.recovered.string_ops.sites.contains(&l1.pc)
+            && l2.map_or(true, |l2| p.recovered.string_ops.sites.contains(&l2.pc));
         if !witnessed {
             continue;
         }
@@ -683,8 +683,8 @@ if p.arms.string_ops.intrinsic {
         if !ptr_dead {
             continue;
         }
-        p.report.rep_movs_candidates.push((pc, elem));
-        if !p.recovered.string_op_sites.contains(&pc) {
+        p.report.string_ops.candidates.push((pc, elem));
+        if !p.recovered.string_ops.sites.contains(&pc) {
             continue;
         }
         let size = match strip_copies(f, count_entry) {
@@ -834,8 +834,8 @@ if p.arms.string_ops.intrinsic {
         if !ptr_dead {
             continue;
         }
-        p.report.rep_movs_candidates.push((pc, 1));
-        if !p.recovered.string_op_sites.contains(&pc) {
+        p.report.string_ops.candidates.push((pc, 1));
+        if !p.recovered.string_ops.sites.contains(&pc) {
             continue;
         }
         // one evaluation: a result read more than once is named and assigned at the loop
@@ -890,4 +890,20 @@ impl State {
     pub(crate) fn new(choices: &EmitChoices) -> Self {
         State { intrinsic: choices.string_ops == StringOps::Intrinsic, ..Default::default() }
     }
+}
+
+/// The string-ops's candidates the report pass collects (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Report {
+    /// `string-ops`: a lifted single-instruction copy/set loop — `(REP MOVS pc, element size)`.
+    /// The witness (`buildconfig::string_ops_from_evidence`) keeps only pcs whose ORIGINAL byte is
+    /// `REP MOVS`/`REP STOS`, so a hand-written loop of the same shape is never collapsed to a call.
+    pub candidates: Vec<(u64, u32)>,
+}
+
+/// The string-ops's witnessed decisions the recovered pass renders (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Sites {
+    /// `string-ops`: REP MOVS/STOS pcs to render as `memcpy`/`memset` — witnessed by the original byte.
+    pub sites: std::collections::HashSet<u64>,
 }

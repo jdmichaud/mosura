@@ -92,310 +92,11 @@ fn is_subpiece_cast(outtype: &Datatype, intype: &Datatype, offset: u64) -> bool 
     true
 }
 
-/// What an emission recorded about the CHOICES it faced — the input a target profile needs to
-/// decide those choices from the original bytes instead of by search.
-#[derive(Debug, Default, Clone)]
-pub struct EmitReport {
-    /// Every DECLARED local the `local-width` axis would re-declare, as `(HighVariable
-    /// representative, defining instruction address)`. The address is what a target rule
-    /// scores: it is where the ORIGINAL either widened the value (`XOR r32,r32` near a
-    /// narrow write into its low part, or a full-register write) or kept it narrow.
-    /// Filtered to candidates with an EXPLICIT member — an inline value never declares, so
-    /// widening it is inert and its presence only diluted the per-function calibration.
-    pub local_width_candidates: Vec<(u32, u64)>,
-    /// Every tier-2 materialization candidate of the same axis (narrow loads and byte/word
-    /// extracts the `Storage` value would force explicit), as `(value, op address)`. Scored
-    /// by the same def-site classifier; VarnodeIds are stable within one decompile, which is
-    /// the report → recovered-print lifetime.
-    pub tier2_candidates: Vec<(VarnodeId, u64)>,
-    /// Every EQUALITY against an ALL-ONES narrow constant — `x == -1` / `x != -1` where the
-    /// constant is 1 or 2 bytes wide — as `(instruction address, constant byte width)`. The
-    /// spelling is ambiguous in the decompiler (Ghidra types the operand signed and prints
-    /// `-1`) but not in the ORIGINAL bytes: a compare of a WIDER register against the
-    /// zero-extended immediate (`CMP EDX,0xff`, imm32) is the `unsigned == 0xff` source
-    /// form, while the sign-extended imm8 is the `-1` form. Under Watcom's UNSIGNED-default
-    /// plain `char`, the `-1` rendering is not merely a byte difference — the compare can
-    /// never be true — so the recovered arm's unsigned form is also the semantically
-    /// faithful one for the target.
-    pub allones_cmp_candidates: Vec<(u64, u32)>,
-    /// Every constant comparison the `compare-form` axis could complement, as
-    /// `(instruction address, constant as rendered, constant if complemented)`. A target rule
-    /// reads the ORIGINAL's own compare immediate at that address and knows which spelling the
-    /// source used — a direct readout, not a correlation. Recorded per SITE, which is finer
-    /// than the axis (per function) can act on; whether that finer grain is needed is the
-    /// measurement in byte-exact-status.md.
-    pub compare_sites: Vec<(u64, u64, u64)>,
-    /// Every ORDER comparison (`<` / `<=`) of two NON-constant operands, as `(instruction
-    /// address, left operand's register, right operand's register)` — a register is `(offset,
-    /// size)` in the register space, `None` for a memory, temporary or stack operand. Ghidra
-    /// canonicalizes `a > b` to `b < a` (and `>=` to `<=`), so the IR has forgotten which operand
-    /// the source wrote first; the original's own `CMP` at that address has not — this compiler
-    /// emits `CMP a,b` for `a < b` and `CMP b,a` for `b > a`. A target rule reads the CMP's operand
-    /// order and decides the `cmp-order` sites (`buildconfig::cmp_orders_from_evidence`).
-    pub cmp_order_candidates: Vec<(u64, Option<arms::cmp_order::CmpOperand>, Option<arms::cmp_order::CmpOperand>)>,
-    /// Every zero-extension NARROWER than int (`(uint2)byte`, the IR's 16-bit arithmetic) the
-    /// `ext-cast=promotion` arm would print bare, as `(instruction address, in size, out size)`.
-    /// The IR's 2-byte ZEXT does not say how the compiler widened: this one zero-extends into
-    /// the full register (`XOR EDX,EDX ; MOV DL,..`, and computes at 32 bits) unless the source
-    /// pinned the 16-bit width, when it zeroes only the high byte (`XOR AH,AH ; MOV AL,..`,
-    /// WAR2 FUN_00019344's `(ushort)byte * 2`). A target rule reads which idiom the original used
-    /// at the site and keeps the cast only for the 16-bit one (`narrow_zexts_from_evidence`);
-    /// printing it everywhere measured −3 EXACT / +1 (round e1, 2026-09-03).
-    pub narrow_zext_candidates: Vec<(u64, u32, u32)>,
-    /// Every register-resident, non-constant CALL argument, as `(call address, argument slot,
-    /// definition address, register (offset, size))` — the `mask-cast` candidates. Ghidra's
-    /// `RuleAndMask` removes a mask it proves redundant, so an argument the original masks to a
-    /// narrow width before the call (`ADD EAX,0xbc1 ; AND EAX,0xffff ; CALL`) has no mask left
-    /// in the IR; a target rule reads the original's `AND` on the argument's register between
-    /// its definition and the call (`buildconfig::masked_args_from_evidence`).
-    pub mask_candidates: Vec<(u64, u32, u64, (u64, u32))>,
-    /// Every tail pair the `return-split` axis could rewrite, keyed by the guarding `if`'s
-    /// CBRANCH instruction address. The target rule reads whether the ORIGINAL materialized
-    /// the tail boolean (a `SETcc` in the region after the branch) or stayed branch-only —
-    /// branch-only is what the split rendering compiles to.
-    pub return_split_candidates: Vec<u64>,
-    /// Every constant-phi tail the `return-split` arm could split (see its module doc), as
-    /// `(guarding branch address, the fall-through constant)`. The original either materializes
-    /// that constant on its own path after the branch (a `XOR AL,AL` / `MOV EAX,k` right before
-    /// an epilogue) — the per-path returns — or hoists it above the test (the merged form).
-    pub const_phi_candidates: Vec<(u64, u64)>,
-    /// Every early-return tail the `return-split` arm could rewrite (see its module doc): an
-    /// if without an else whose join is a lone `return <constant>`, as `(guarding branch
-    /// address, the constant)`. The original either lands the branch PAST the constant's load,
-    /// on the bare epilogue (the tested return register already holds it — the early return),
-    /// or on the load (the merged form).
-    pub early_return_candidates: Vec<(u64, u64)>,
-    /// Every counted do-while (`counted-loop`): `(the loop's branch address, the loop
-    /// variable's register)`. The original either iterates the register right after the
-    /// body's last call, at the loop end (the `for` form), or hoists it above the call.
-    pub counted_loop_candidates: Vec<(u64, (u64, u32))>,
-    /// Every lone `return <bool>;` statement (`return-split`, the branch form), by the address
-    /// of the compare that computes the bool: the original either branches over a constant
-    /// (`JZ ; MOV AL,1`) or materializes it (`SETNZ AL`).
-    pub branch_return_candidates: Vec<u64>,
-    /// Every call argument that is the value just stored to another global (`store-forward`),
-    /// as `(call address, slot, store address, the stored global's address)`.
-    pub store_forward_candidates: Vec<(u64, u32, u64, u64)>,
-    /// Every compare with a narrow SIGNED non-constant operand (`cmp-sign`), as `(compare
-    /// address, operand size)`: the original's extension idiom before the compare decides the
-    /// operand's promotion.
-    pub cmp_sign_candidates: Vec<(u64, u32, Option<u64>)>,
-    /// Every dereference at a constant offset from a pointer-typed base (`ptr-offset`), as
-    /// `(the sum's address, offset)`: the original folds the offset into the addressing mode
-    /// or materializes the sum.
-    pub ptr_offset_candidates: Vec<(u64, u64)>,
-    /// Every load through an explicit pointer temp whose value is consumed after the pointer's
-    /// base or index is redefined (`load-hoist`), as `(load address, pointer's address)`.
-    pub load_hoist_candidates: Vec<(u64, u64)>,
-    /// Runs of two or more CONSECUTIVE pure global-store statements, as
-    /// `(op, global address, size)` per store in OUR statement order — the persist-store
-    /// ordering candidates. Ghidra's rendering order for adjacent global stores is
-    /// oracle-verified faithful yet differs from the original's; the order decides both
-    /// Watcom's scheduling and its immediate-vs-register store selection (probe: reordering
-    /// two stores alone took `FUN_000165f4` MISMATCH → EXACT). A target rule reads the
-    /// original's own store sequence at those addresses and returns the emission order.
-    /// Pure = the stored value renders without reading memory (a constant, an input, or a
-    /// named local), and every address is a distinct constant global, so any order computes
-    /// the same state.
-    pub store_runs: Vec<Vec<(OpId, u64, u32)>>,
-    /// The same runs for STACK stores, as `(op, stack-space offset, size)` — a frame slot or an
-    /// element of the frame aggregate written from a constant, a parameter or a named local. The
-    /// pipeline's own placement of such a store is not the source's: a slot the callee reads
-    /// through an INDIRECT is snipped into a COPY placed right before the call (Ghidra's
-    /// `Merge::snipIndirect`, ported), so the parameter's store prints after the constant stores
-    /// the original wrote it before (WAR2 FUN_00012e40's `[8] = param_1` after `[6] = 0xe; [0] =
-    /// 9`). A target rule reads the original's own `MOV [EBP + off],..` sequence
-    /// (`buildconfig::stack_store_orders_from_evidence`) and returns the emission order.
-    pub stack_store_runs: Vec<Vec<(OpId, i64, u32)>>,
-    /// Every masked narrow load — a LOAD of less than int width whose (possibly
-    /// zext-linked) single value use is an `INT_AND` with a constant that fits the loaded
-    /// width, feeding an equality against zero — as `(load output, instruction address)`.
-    /// The original's instruction at that address is a self-announcing readout: a
-    /// memory-direct `TEST [mem],imm` means the SOURCE read the wider element and masked
-    /// (this compiler shrinks a wide masked test back to the byte — measured battery,
-    /// docs/watcom-codegen-fingerprint.md), so the deref renders at int width; a load+AND
-    /// means the source really read narrow.
-    pub testmem_candidates: Vec<(VarnodeId, u64)>,
-    /// Every input-flagged narrow RAM value consumed as a call argument, as
-    /// `(value, global address, size)` — the entry-snapshot candidates. The original either
-    /// snapshots the global into a register at entry (ONE narrow load from that absolute
-    /// address — `MOV AL,[0x8032c]` before the branch, probe-validated EXACT as
-    /// `uint1 uVarN = xRamX;` at body top) or references memory at each use. Rendering the
-    /// snapshot is value-identical by SSA construction: the uses read the INPUT version of
-    /// the global, which is definitionally its entry value.
-    pub snapshot_candidates: Vec<(VarnodeId, u64, u32)>,
-    /// Every RETURN whose value is narrower than the recovered return storage, as
-    /// `(RETURN instruction address, value size, recovered storage size)`. The target rule
-    /// reads the ORIGINAL's last write to the return register before that address: a narrow
-    /// write (`MOV AL,..`) with no widening means the original's contract really was narrow —
-    /// the reference decompiler's `return-width=value` — while a full-register write
-    /// (`AND EAX,0xff`, `MOVZX`, a call) means the widened declaration is right.
-    pub return_width_candidates: Vec<(u64, u32, u32)>,
-    /// Every statement-carrying short-circuit the `cond-form` axis could nest, as
-    /// `(key, clause branch addresses)` where `key` is the FIRST clause's CBRANCH address —
-    /// stable and recomputable at apply time. The clause addresses give the target rule the
-    /// span to scan: a `SETcc` inside it means the original materialized a clause boolean
-    /// (the collapsed comma form); none means branch-only (the nested form).
-    pub cond_nest_candidates: Vec<(u64, Vec<u64>)>,
-    /// Every direct call with arguments, as `(call instruction address, callee address,
-    /// per-argument reorder-safety)` — the argument-order candidates. C argument order is
-    /// invisible in the bytes when it matches the convention's storage order, but the
-    /// compiler MATERIALIZES register arguments in reverse declared order, so the original's
-    /// setup sequence at its call sites is a readout of the parameter order its source
-    /// declared (`buildconfig::param_orders_from_evidence`). An argument is reorder-safe
-    /// when it is a CONSTANT: its materialization is one immediate move at the call.
-    /// Identifier arguments measured UNSAFE — permuting register-held variables re-orders
-    /// their shuffle and ripples the allocation through the whole function (three
-    /// SAME_SHAPE siblings fell to MISMATCH as pure regalloc cascades).
-    pub call_order_candidates: Vec<(u64, u64, Vec<bool>)>,
-    /// Two-arm constant joins (`if/else` whose arms each assign one CONSTANT to the same
-    /// variable): `(branch pc, then constant, else constant)`. The original's own layout —
-    /// which constant it materializes first past the conditional jump — decides the printed
-    /// arm order (wc2src D3b; the `.SAV`/`.NET` ternary of `sfile_make_name`).
-    pub arm_swap_candidates: Vec<(u64, u64, u64)>,
-    /// N3 (array-index): scaled-index accesses through a constant/global base — `(deref pc,
-    /// element size)` per access. The witness (`buildconfig::array_index_sites_from_evidence`)
-    /// keeps only pcs where the ORIGINAL uses a scaled-index operand `[reg*sz + base]`.
-    pub array_index_candidates: Vec<(u64, u32)>,
-    /// N1 (join-width): the original pcs that materialize a constant-join local's constants —
-    /// the witness (`buildconfig::join_narrow_sites_from_evidence`) keeps only those loaded into
-    /// an 8-bit sub-register (`MOV r8,imm8`), the sites where narrowing the declaration is right.
-    pub join_narrow_candidates: Vec<u64>,
-    /// `string-ops`: a lifted single-instruction copy/set loop — `(REP MOVS pc, element size)`.
-    /// The witness (`buildconfig::string_ops_from_evidence`) keeps only pcs whose ORIGINAL byte is
-    /// `REP MOVS`/`REP STOS`, so a hand-written loop of the same shape is never collapsed to a call.
-    pub rep_movs_candidates: Vec<(u64, u32)>,
-    /// `sdiv-pow2`: an arithmetic right shift by a constant `n` at `(pc, n)` — the exact SBB
-    /// division chain, or a bare shift (the chain folds away for a non-negative dividend). The
-    /// witness (`buildconfig::sdiv_pow2_from_evidence`) keeps only pcs whose ORIGINAL bytes are
-    /// `SBB` + `SAR n`, so a plain shift in the source is never rewritten.
-    pub sdiv_pow2_candidates: Vec<(u64, u32)>,
-}
+/// The arms' report candidates (see `emit::arms::registry`): the port holds it opaquely.
+pub type EmitReport = arms::registry::Report;
 
-/// Per-site rendering decisions RECOVERED from the original's bytes by a target profile —
-/// the field path, where no compiler exists to arbitrate searched arms. Each set is keyed by
-/// instruction addresses out of [`EmitReport`]'s candidate lists; membership means "render
-/// this site the non-reference way". An empty set everywhere reproduces the reference print.
-#[derive(Debug, Default, Clone)]
-pub struct RecoveredChoices {
-    /// Comparison sites to render complemented (`compare-form`).
-    pub complement_sites: std::collections::HashSet<u64>,
-    /// Order-comparison sites to render MIRRORED — operands swapped, operator reflected (`b > a`
-    /// for the port's `a < b`): the original's `CMP` names the port's right operand first
-    /// (`cmp_order_candidates` evidence, `buildconfig::cmp_orders_from_evidence`).
-    pub cmp_order_sites: std::collections::HashSet<u64>,
-    /// The witnessed narrow return WIDTH in bytes (`AL` = 1, `AX` = 2; 0 = not witnessed, the
-    /// value's own width applies) — meaningful only with `narrow_return`.
-    pub narrow_return_width: u32,
-    /// Sub-int zero-extension sites (`narrow_zext_candidates`) whose original widens with the
-    /// 16-bit idiom (`XOR xH,xH`): the `ext-cast=promotion` arm keeps the `(uint2)` cast there.
-    pub narrow_zext_sites: std::collections::HashSet<u64>,
-    /// `mask-cast`: call arguments to print as `(uintN)(expr)` — `(call address, slot)` to the
-    /// witnessed mask width (`mask_candidates` evidence, `buildconfig::masked_args_from_evidence`).
-    pub mask_sites: std::collections::HashMap<(u64, u32), u32>,
-    /// Sites from [`EmitReport::allones_cmp_candidates`] whose ORIGINAL compare immediate is
-    /// the zero-extended (unsigned) spelling — render `(uintN)x == 0xffN` instead of the
-    /// signed `x == -1` (see the candidate's doc; decided by
-    /// [`crate::recompile::buildconfig::unsigned_cmps_from_evidence`]).
-    pub unsigned_cmp_sites: std::collections::HashSet<u64>,
-    /// Guarding-if branch addresses whose tail boolean return splits per path
-    /// (`return-split`).
-    pub return_split_sites: std::collections::HashSet<u64>,
-    /// Guarding-if branch addresses whose constant-phi tail splits per path (`return-split`,
-    /// `const_phi_candidates` evidence, `buildconfig::const_phi_returns_from_evidence`).
-    pub const_phi_sites: std::collections::HashSet<u64>,
-    /// Guarding-if branch addresses whose constant join prints as the early return
-    /// (`return-split`, `early_return_candidates` evidence, the same byte fact as
-    /// `buildconfig::const_phi_returns_from_evidence`).
-    pub early_return_sites: std::collections::HashSet<u64>,
-    /// Loop branch addresses whose counted do-while prints as a `for` loop (`counted-loop`,
-    /// `counted_loop_candidates` evidence, `buildconfig::counted_loops_from_evidence`).
-    pub counted_loop_sites: std::collections::HashSet<u64>,
-    /// Compare addresses whose lone bool return the original branches over (`return-split`,
-    /// `branch_return_candidates` evidence, `buildconfig::branch_returns_from_evidence`).
-    pub branch_return_sites: std::collections::HashSet<u64>,
-    /// `(call address, slot)` pairs whose argument the original reloads from the stored global
-    /// (`store-forward`, `store_forward_candidates` evidence).
-    pub store_forward_sites: std::collections::HashSet<(u64, u32)>,
-    /// Compare addresses whose narrow signed operands the original zero-extended (`cmp-sign`,
-    /// `cmp_sign_candidates` evidence, `buildconfig::cmp_signs_from_evidence`).
-    pub cmp_unsigned_sites: std::collections::HashSet<u64>,
-    /// The globals those witnessed sites compare (`cmp-sign`): every compare of such a global
-    /// in the function casts, so the recompile keeps one load.
-    pub cmp_unsigned_globals: std::collections::HashSet<u64>,
-    /// Sum addresses whose offset the original folds into the addressing mode (`ptr-offset`,
-    /// `ptr_offset_candidates` evidence, `buildconfig::ptr_offsets_from_evidence`).
-    pub ptr_offset_sites: std::collections::HashSet<u64>,
-    /// Load addresses whose original reads the element through a scaled index (`load-hoist`,
-    /// `load_hoist_candidates` evidence, `buildconfig::load_hoists_from_evidence`).
-    pub load_hoist_sites: std::collections::HashSet<u64>,
-    /// The `return-width` witness saw the widening carve-out (`XOR EAX,EAX` completing a narrow
-    /// write): the widened return zero-extends its narrow value (`return-widen`).
-    pub return_zero_widened: bool,
-    /// Short-circuit keys (first-clause branch address) to render as nested ifs
-    /// (`cond-form`).
-    pub nested_sites: std::collections::HashSet<u64>,
-    /// The function's return declaration stays at the VALUE's width (the reference
-    /// decompiler's rendering) instead of the recovered storage width — per function, since
-    /// one declaration covers every RETURN (`return-width`).
-    pub narrow_return: bool,
-    /// That narrow return declaration is SIGNED — witnessed by the sign-extended-constant idiom
-    /// (`MOV EAX,0xffff8000` returning a 2-byte value). Only meaningful with `narrow_return`; a
-    /// return narrowed on narrow-write evidence alone leaves this false and keeps the inferred
-    /// type's own signedness, so no pre-existing firing changes spelling.
-    pub narrow_return_signed: bool,
-    /// HighVariable representatives whose declaration widens to int width (`local-width`,
-    /// per declared local instead of the arm's whole-function blanket).
-    pub widen_local_reps: std::collections::HashSet<u32>,
-    /// Values whose tier-2 materialization applies (`local-width` tier 2, per site).
-    pub tier2_sites: std::collections::HashSet<VarnodeId>,
-    /// Input-flagged narrow RAM values rendered as an entry snapshot — a declared temp
-    /// initialized from the global at body top, uses reading the temp. The value is the
-    /// DECLARED width: the value's own size (bare narrow load in the original) or int width
-    /// (the original pre-zeroes the container — the widening idiom on a global).
-    pub snapshot_sites: std::collections::HashMap<VarnodeId, u32>,
-    /// Masked narrow loads whose deref renders at INT width (the original's memory-direct
-    /// `TEST` says the source read the wider element).
-    pub testmem_sites: std::collections::HashSet<VarnodeId>,
-    /// Per store-run emission orders, keyed by the run's FIRST op in block order: the ops
-    /// re-emitted in the original's store order (`store_runs` evidence).
-    pub store_orders: std::collections::HashMap<OpId, Vec<OpId>>,
-    /// Per call site, the argument order to RENDER, keyed by the call instruction's address:
-    /// `perm[j]` is the reference rendering's argument index that prints at position `j`.
-    /// Value-identical only together with a matching `#pragma aux ... parm [..]` in the same
-    /// TU (the caller emits both from one per-callee decision — `call_order_candidates`).
-    pub call_arg_orders: std::collections::HashMap<u64, Vec<usize>>,
-    /// Two-arm constant joins to print with the arms SWAPPED (condition negated): the
-    /// original materializes the else-arm's constant first (`arm_swap_candidates` evidence,
-    /// `buildconfig::arm_swaps_from_evidence`).
-    pub arm_swap_sites: std::collections::HashSet<u64>,
-    /// N3 access pcs to spell as subscripts — witnessed by the original's scaled-index operand.
-    pub array_index_sites: std::collections::HashSet<u64>,
-    /// N1 constant-materialization pcs witnessed as 8-bit sub-register loads.
-    pub join_narrow_sites: std::collections::HashSet<u64>,
-    /// `string-ops`: REP MOVS/STOS pcs to render as `memcpy`/`memset` — witnessed by the original byte.
-    pub string_op_sites: std::collections::HashSet<u64>,
-    /// `sdiv-pow2`: shift pcs to render as `x / 2^n` — witnessed by the original `SBB` + `SAR`.
-    pub sdiv_pow2_sites: std::collections::HashSet<u64>,
-    /// `frame-fill`: the original prologue's `(SUB ESP frame, PUSH count)` — witnessed by the bytes.
-    pub frame_fill: Option<(u32, u32)>,
-    /// `sparse-switch`: the original's compare at each flag-consuming site — the CMP's immediate and
-    /// the jump's kind (`CMP_LT` for JB/JAE, `CMP_LE` for JBE/JA, `CMP_EQ` for JE/JNE), keyed by the
-    /// jump's pc and by the CMP's pc for its first jump (Ghidra attributes the flag compare to the
-    /// CMP, a derived `x <= k` / `!(x < k)` to the jump). Ghidra canonicalizes `x < 4` on the
-    /// fall-through edge to `3 < x` and `x <= 0xf` to `x < 0x10`, so the IR's constants cannot tell
-    /// a pivot's `JB` side from a run's `JBE` bound; the bytes can.
-    pub sparse_cmp_sites: std::collections::HashMap<u64, (u64, u8, (u64, u32))>,
-    /// `struct-copy`: runs of plain `MOVSD` in the original — start pc → run length k.
-    pub movsd_runs: std::collections::HashMap<u64, u32>,
-    /// Statement-interleave orders (allocator thread lever 3): per basic block whose
-    /// independent adjacent statements the original computed in the reverse order, keyed
-    /// by the block's first re-emitted statement op, the block's assign/gstore/store
-    /// statements in the ORIGINAL's order (`interleave_orders`). Statements of other kinds
-    /// (calls, control) keep their positions; the re-emitted ops are skipped when the block
-    /// walk reaches them, as `store_orders` does.
-    pub ilv_orders: std::collections::HashMap<OpId, Vec<OpId>>,
-}
+/// The arms' witnessed decisions (see `emit::arms::registry`): the port holds it opaquely.
+pub type RecoveredChoices = arms::registry::Recovered;
 
 /// Follow `COPY`/`CAST` chains to the source varnode (`ActionSetCasts` inserts a `CAST` between a
 /// typed pointer phi and the LOAD/STORE that reads it; a rep-string loop's shape is the same).
@@ -653,7 +354,7 @@ impl PrintC<'_> {
     /// site, or for a tier-2 widened value (`tier2_widen`). The caller declares it that way.
     fn apply_widen_local_reps(&self, id: u32, v: VarnodeId) -> bool {
         self.widen_narrow_locals
-            || self.recovered.widen_local_reps.contains(&id)
+            || self.recovered.port.widen_local_reps.contains(&id)
             || self.tier2_widen.contains_key(&v)
     }
 
@@ -675,14 +376,14 @@ impl PrintC<'_> {
                     let safe: Vec<bool> =
                         (1..o.num_inputs()).map(|i| self.f.vn(a(i)).is_constant()).collect();
                     if !safe.is_empty() {
-                        self.report.call_order_candidates.push((
+                        self.report.port.call_order_candidates.push((
                             o.seqnum.pc.offset,
                             self.f.vn(t).loc.offset,
                             safe,
                         ));
                     }
                 }
-                if let Some(perm) = self.recovered.call_arg_orders.get(&o.seqnum.pc.offset) {
+                if let Some(perm) = self.recovered.port.call_arg_orders.get(&o.seqnum.pc.offset) {
                     if perm.len() == args.len() {
                         args = perm.iter().map(|&j| args[j].clone()).collect();
                     }
@@ -694,11 +395,11 @@ impl PrintC<'_> {
     /// arms of the if at `pc` (assigning `k1`/`k2`) swap when the original placed the other arm
     /// first — unless the address arm (`arm-order=address`) already decided this site.
     fn apply_arm_swap(&mut self, pc: u64, k1: u64, k2: u64, swapped: bool, comps: &mut Vec<usize>, negated: &mut bool) {
-        self.report.arm_swap_candidates.push((pc, k1, k2));
+        self.report.port.arm_swap_candidates.push((pc, k1, k2));
         // D3b's per-site recovered decision applies only when the address
         // arm has not already decided this site (the two witnesses agree
         // where both exist; applying both would undo the swap).
-        if !swapped && !self.arm_order_address && self.recovered.arm_swap_sites.contains(&pc) {
+        if !swapped && !self.arm_order_address && self.recovered.port.arm_swap_sites.contains(&pc) {
             comps.swap(1, 2);
             *negated = !*negated;
         }
@@ -711,7 +412,7 @@ impl PrintC<'_> {
     /// the ORIGINAL's order; the ops re-emitted here are skipped by the walk (`reordered`).
     /// Returns whether the mark applied (the caller `continue`s).
     fn apply_ilv_orders(&mut self, op: OpId, pad: &str, separator: &mut bool, reordered: &mut std::collections::HashSet<OpId>, out: &mut String) -> bool {
-        let Some(order) = self.recovered.ilv_orders.get(&op).cloned() else { return false };
+        let Some(order) = self.recovered.port.ilv_orders.get(&op).cloned() else { return false };
                 // interleave re-emission: each op goes through the same printability
                 // tests as the walk below (a non-explicit output is an inline value and
                 // emits nothing; suppressed/nonprinting ops likewise), rendered as the
@@ -753,7 +454,7 @@ impl PrintC<'_> {
     /// that heads a recovered run, the run's stores re-emit in the ORIGINAL's order; the ops
     /// re-emitted here are skipped by the walk (`reordered`). Returns whether the mark applied.
     fn apply_store_orders(&mut self, op: OpId, pad: &str, separator: &mut bool, reordered: &mut std::collections::HashSet<OpId>, out: &mut String) -> bool {
-        let Some(order) = self.recovered.store_orders.get(&op).cloned() else { return false };
+        let Some(order) = self.recovered.port.store_orders.get(&op).cloned() else { return false };
                 for ro in order {
                     reordered.insert(ro);
                     let stmtxt = self.render_assign(ro);
@@ -788,15 +489,15 @@ impl PrintC<'_> {
     }
 
     fn apply_narrow_return(&self, f: &Funcdata, vn: &super::varnode::Varnode, choices: &EmitChoices) -> u32 {
-        if self.recovered.narrow_return {
+        if self.recovered.port.narrow_return {
             // the value's own width where the IR already narrowed it (Ghidra's subvariable
             // analysis, the reference); the witnessed width — the register the original's return
             // sites write: `AL` = 1, `AX` = 2 — only where the IR still carries the full register
             // (measured: overriding an IR `uint2` with the bytes' `AL` cost FUN_00031880, round e3)
-            if vn.size < f.size_of_int() || self.recovered.narrow_return_width == 0 {
+            if vn.size < f.size_of_int() || self.recovered.port.narrow_return_width == 0 {
                 vn.size
             } else {
-                self.recovered.narrow_return_width.min(vn.size)
+                self.recovered.port.narrow_return_width.min(vn.size)
             }
         } else {
             return_width(f, vn, choices)
@@ -830,10 +531,10 @@ impl PrintC<'_> {
     /// (`return CONCAT31((int3)(uVar1 >> 8), byte)` under a `uint1` declaration recompiled the
     /// concatenation, WAR2 FUN_000130ec 0.735 -> 0.326 in round e3); anything else is unchanged.
     fn narrow_return_low(&self, v: VarnodeId) -> VarnodeId {
-        if !self.recovered.narrow_return {
+        if !self.recovered.port.narrow_return {
             return v;
         }
-        let w = self.recovered.narrow_return_width;
+        let w = self.recovered.port.narrow_return_width;
         let vn = self.f.vn(v);
         if w == 0 || w >= vn.size || vn.size >= self.f.size_of_int() && w >= self.f.size_of_int() {
             return v;
@@ -852,8 +553,8 @@ impl PrintC<'_> {
     /// narrow value `out` (a narrow load, or an extract of `kind`'s width) becomes an explicit
     /// local widened per `kind` — under the `local-width=storage` axis or at a witnessed site.
     fn apply_tier2_sites(&mut self, out: VarnodeId, pc: u64, kind: Tier2Widen) {
-        self.report.tier2_candidates.push((out, pc));
-        if self.widen_narrow_locals || self.recovered.tier2_sites.contains(&out) {
+        self.report.port.tier2_candidates.push((out, pc));
+        if self.widen_narrow_locals || self.recovered.port.tier2_sites.contains(&out) {
             self.force_explicit.insert(out);
             self.tier2_widen.insert(out, kind);
         }
@@ -5200,7 +4901,7 @@ fn print_c_inner(
         for id in f.op_ids() {
             let o = f.op(id);
             if !o.is_dead() && o.code() == OpCode::Return {
-                p.report.return_width_candidates.push((
+                p.report.port.return_width_candidates.push((
                     o.seqnum.pc.offset,
                     vn.size,
                     recovered_w,
@@ -5212,7 +4913,7 @@ fn print_c_inner(
         // under a byte declaration keeps `xVar` a byte (the original's `MOV AL,8`), where a
         // full-width local materializes `MOV EDX,8` and truncates at the return (WAR2
         // FUN_00014114, round e4: SAME_SHAPE -> MISMATCH). Only a scalar, only narrower.
-        if p.recovered.narrow_return && w < vn.size && !vn.is_constant() {
+        if p.recovered.port.narrow_return && w < vn.size && !vn.is_constant() {
             p.narrow_ret_high = Some((p.high_of[v.0 as usize], w));
         }
         let base = p.type_of(v);
@@ -5221,8 +4922,8 @@ fn print_c_inner(
         // register the way the original does, where `xunknown2` (unsigned short) zero-extends it.
         // Only scalar integer-ish recovered types are respelled — a pointer or float return is not
         // a signedness question and keeps the storage answer.
-        if p.recovered.narrow_return
-            && p.recovered.narrow_return_signed
+        if p.recovered.port.narrow_return
+            && p.recovered.port.narrow_return_signed
             && matches!(
                 base,
                 Datatype::Unknown(_) | Datatype::Uint(_) | Datatype::Int(_) | Datatype::Bool | Datatype::Char
@@ -5405,7 +5106,7 @@ fn print_c_inner(
                 .filter_map(|&m| f.vn(m).def.map(|d| f.op(d).seqnum.pc.offset))
                 .min();
             if let Some(pc) = pc {
-                p.report.local_width_candidates.push((rep, pc));
+                p.report.port.local_width_candidates.push((rep, pc));
             }
         }
     }
@@ -5433,7 +5134,7 @@ fn print_c_inner(
                     addrs.sort_unstable();
                     addrs.dedup();
                     if addrs.len() == srun.len() {
-                        rep.stack_store_runs.push(srun.clone());
+                        rep.port.stack_store_runs.push(srun.clone());
                     }
                 }
                 srun.clear();
@@ -5444,7 +5145,7 @@ fn print_c_inner(
                     addrs.sort_unstable();
                     addrs.dedup();
                     if addrs.len() == run.len() {
-                        rep.store_runs.push(run.clone());
+                        rep.port.store_runs.push(run.clone());
                     }
                 }
                 run.clear();

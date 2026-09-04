@@ -157,6 +157,8 @@ pub mod sum_order;
 pub mod testmem;
 pub mod struct_return;
 pub mod counted_loop;
+pub mod port;
+pub mod registry;
 
 /// The kinds of site the statement-level hook is called from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -282,7 +284,9 @@ mod tests {
     /// The arm files, as text, for the surface scan — every `pub mod` of this module must be here
     /// (`arms_touch_only_the_documented_surface` checks that against this file's own source, so a
     /// new arm file cannot slip past the scan).
-    const ARM_SOURCES: [(&str, &str); 24] = [
+    const ARM_SOURCES: [(&str, &str); 26] = [
+        ("port.rs", include_str!("port.rs")),
+        ("registry.rs", include_str!("registry.rs")),
         ("counted_loop.rs", include_str!("counted_loop.rs")),
         ("ptr_offset.rs", include_str!("ptr_offset.rs")),
         ("load_hoist.rs", include_str!("load_hoist.rs")),

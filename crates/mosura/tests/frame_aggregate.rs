@@ -25,7 +25,7 @@ fn under_sized_frame_declares_one_aggregate_with_field_offsets() {
     let (reference, _) = print_c_report(&f, &choices);
     assert!(reference.contains("xunknown1 axStack_d8 [6];"), "reference keeps the symbols:\n{reference}");
     // witnessed: PUSH ESI; PUSH EBP; SUB ESP,0xd0 → frame 0xd0 below 2 pushes
-    let recovered = RecoveredChoices { frame_fill: Some((0xd0, 2)), ..Default::default() };
+    let recovered = RecoveredChoices { frame_fill: mosura::decompile::emit::arms::frame_fill::Sites { frame: Some((0xd0, 2)), ..Default::default() }, ..Default::default() };
     let c = print_c_recovered(&f, &choices, &recovered);
     assert!(c.contains("xunknown1 axStack_d8 [208];"), "one aggregate sized to the frame:\n{c}");
     assert!(!c.contains("xStack_d0;") && !c.contains("xStack_cc;"), "no sibling scalar declarations:\n{c}");
@@ -55,7 +55,7 @@ fn swallowed_symbol_elements_render_as_fields() {
     let mut choices = EmitChoices::default();
     choices.set("frame-fill", "aggregate").unwrap();
     // PUSH EBX/ECX/EDX/EBP; SUB ESP,0xcc → frame 0xcc under 4 pushes (the aggregate at -0xdc)
-    let recovered = RecoveredChoices { frame_fill: Some((0xcc, 4)), ..Default::default() };
+    let recovered = RecoveredChoices { frame_fill: mosura::decompile::emit::arms::frame_fill::Sites { frame: Some((0xcc, 4)), ..Default::default() }, ..Default::default() };
     let c = print_c_recovered(&f, &choices, &recovered);
     assert!(c.contains("xunknown1 axStack_dc [204];"), "one aggregate sized to the frame:\n{c}");
     // seam 4: the constant-index element read is the field at its slot, not the vanished array

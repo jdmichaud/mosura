@@ -5,7 +5,7 @@
 //! sign-extends in C — this compiler's `MOV EAX,[g-2] ; SAR EAX,0x10` where the original
 //! zero-extended (WAR2 FUN_000243bc, FUN_00029b50: `return iRam00090160;` under a `short`
 //! declaration). The `XOR` IS the extension the original performed: the value prints
-//! `(uintN)` cast (`recovered.return_zero_widened`, from the same witness). Value-faithful to
+//! `(uintN)` cast (`recovered.return_widen.zero_widened`, from the same witness). Value-faithful to
 //! the original's bytes, and to the IR's narrow value; only the C promotion changes.
 //! A target-informed emit choice, NOT Ghidra.
 //!
@@ -17,7 +17,7 @@ use crate::decompile::varnode::VarnodeId;
 /// The arm's answer at `ValueSite::ReturnValue`: `v` the returned value (after the narrowed
 /// return's low-part selection).
 pub(crate) fn render(pr: &mut PrintC<'_>, v: VarnodeId) -> Option<(String, u8)> {
-    if !pr.recovered.return_zero_widened {
+    if !pr.recovered.return_widen.zero_widened {
         return None;
     }
     let vn = pr.f.vn(v);
@@ -31,4 +31,12 @@ pub(crate) fn render(pr: &mut PrintC<'_>, v: VarnodeId) -> Option<(String, u8)> 
     }
     let inner = pr.operand(v, 14, false);
     Some((format!("({}){inner}", Datatype::Uint(vn.size).name()), 14))
+}
+
+/// The return-widen's witnessed decisions the recovered pass renders (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Sites {
+    /// The `return-width` witness saw the widening carve-out (`XOR EAX,EAX` completing a narrow
+    /// write): the widened return zero-extends its narrow value (`return-widen`).
+    pub zero_widened: bool,
 }

@@ -26,8 +26,8 @@ fn compare_tree_renders_as_the_sparse_switch() {
     choices.set("sparse-switch", "switch").unwrap();
     // the compare witness from the specimen's own bytes (the survey builds it the same way)
     let insns = mosura::recompile::insn::normalize(lang_id, dt.chunks[0].bytes.as_slice(), entry, &mosura::recompile::insn::NoReloc).unwrap_or_default();
-    let recovered = RecoveredChoices { sparse_cmp_sites: mosura::recompile::buildconfig::sparse_cmps_from_evidence(&insns), ..Default::default() };
-    assert!(!recovered.sparse_cmp_sites.is_empty(), "the witness saw the tree's compares");
+    let recovered = RecoveredChoices { sparse_switch: mosura::decompile::emit::arms::sparse_switch::Sites { sites: mosura::recompile::buildconfig::sparse_cmps_from_evidence(&insns), ..Default::default() }, ..Default::default() };
+    assert!(!recovered.sparse_switch.sites.is_empty(), "the witness saw the tree's compares");
     let c = print_c_recovered(&f, &choices, &recovered);
     assert!(c.contains("switch (*((uint1 *)(param_1 + 6))) {"), "the scrutinee load is inlined:\n{c}");
     let mut cases: Vec<u64> = c

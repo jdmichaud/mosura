@@ -4,7 +4,7 @@
 //! compiler's `MOV EAX,[p+0x1a] ; SAR EAX,0x10` — where the original zero-extended
 //! (`MOV AX,[p+0x1c] ; AND EAX,0xffff`, WAR2 FUN_00059784). Ghidra's `RuleZextEliminate`
 //! removed the IR's ZEXT (`ZEXT(x) == 1` is `x == 1:2`), so the port has nothing to print; the
-//! original's own extension idiom before the compare is the witness (`recovered.cmp_unsigned_sites`
+//! original's own extension idiom before the compare is the witness (`recovered.cmp_sign.sites`
 //! from `buildconfig::cmp_signs_from_evidence` over this arm's `cmp_sign_candidates`): an
 //! `AND r,0xffff|0xff` or `XOR r,r ; MOV r16/r8` says zero-extend, a `SAR r,0x10` / `CWDE` /
 //! `MOVSX` says sign. A witnessed site prints its narrow signed MEMORY operands `(uintN)` cast
@@ -32,12 +32,12 @@ pub(crate) fn render(pr: &mut PrintC<'_>, op: OpId, sym: &str, prec: u8) -> Opti
     let size = pr.f.vn(v).size;
     let global = global_address(pr, v);
     crate::debug!(crate::debug::Topic::Recover, "cmp-sign candidate @{pc:x} size {size} global {global:x?}");
-    pr.report.cmp_sign_candidates.push((pc, size, global));
+    pr.report.cmp_sign.candidates.push((pc, size, global));
     // a witnessed site, or another witnessed compare of the SAME global in this function: the
     // original loads a global once and compares it twice (FUN_00029b50's `== 0x3c` then
     // `== 0x32`, the second on the register), and a cast on one read alone splits the load
-    let witnessed = pr.recovered.cmp_unsigned_sites.contains(&pc)
-        || global.is_some_and(|g| pr.recovered.cmp_unsigned_globals.contains(&g));
+    let witnessed = pr.recovered.cmp_sign.sites.contains(&pc)
+        || global.is_some_and(|g| pr.recovered.cmp_sign.globals.contains(&g));
     if !witnessed {
         return None;
     }
@@ -79,4 +79,24 @@ fn narrow_signed(pr: &PrintC<'_>, v: VarnodeId) -> bool {
     let global = Some(vn.loc.space) == ram;
     let inline_load = !pr.is_explicit(v) && vn.def.is_some_and(|d| pr.f.op(d).code() == OpCode::Load);
     global || inline_load
+}
+
+/// The cmp-sign's candidates the report pass collects (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Report {
+    /// Every compare with a narrow SIGNED non-constant operand (`cmp-sign`), as `(compare
+    /// address, operand size)`: the original's extension idiom before the compare decides the
+    /// operand's promotion.
+    pub candidates: Vec<(u64, u32, Option<u64>)>,
+}
+
+/// The cmp-sign's witnessed decisions the recovered pass renders (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Sites {
+    /// Compare addresses whose narrow signed operands the original zero-extended (`cmp-sign`,
+    /// `cmp_sign_candidates` evidence, `buildconfig::cmp_signs_from_evidence`).
+    pub sites: std::collections::HashSet<u64>,
+    /// The globals those witnessed sites compare (`cmp-sign`): every compare of such a global
+    /// in the function casts, so the recompile keeps one load.
+    pub globals: std::collections::HashSet<u64>,
 }

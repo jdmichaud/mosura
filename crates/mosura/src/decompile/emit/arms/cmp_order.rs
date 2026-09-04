@@ -4,7 +4,7 @@
 //! INT_LESS-family op per branch, operands in the order the rule chose), so the IR no longer
 //! carries which operand the source wrote first — but this compiler emits the `CMP` in SOURCE
 //! order (`CMP a,b` for `a < b`, `CMP b,a` for `b > a`), so the original bytes still do. The
-//! witness is `recovered.cmp_order_sites`, from `buildconfig::cmp_orders_from_evidence`
+//! witness is `recovered.cmp_order.sites`, from `buildconfig::cmp_orders_from_evidence`
 //! (measured on WAR2 FUN_0002530c: the original `CMP EDX,EAX ; SETGE` where the port's
 //! `x <= y` compiled to `CMP EAX,EDX ; SETLE`; EXACT once mirrored). Constant operands are never
 //! candidates: x86 always encodes the constant second, so their order carries no information —
@@ -36,8 +36,8 @@ pub(crate) fn render(pr: &mut PrintC<'_>, op: OpId, strict: bool, prec: u8) -> O
         return None;
     }
     let (ra, rb) = (operand_of(pr, a), operand_of(pr, b));
-    pr.report.cmp_order_candidates.push((pc, ra, rb));
-    if !pr.recovered.cmp_order_sites.contains(&pc) {
+    pr.report.cmp_order.candidates.push((pc, ra, rb));
+    if !pr.recovered.cmp_order.sites.contains(&pc) {
         return None;
     }
     let sym = if strict { ">" } else { ">=" };
@@ -84,4 +84,26 @@ fn operand_of(pr: &PrintC<'_>, v: VarnodeId) -> Option<CmpOperand> {
     } else {
         None
     }
+}
+
+/// The cmp-order's candidates the report pass collects (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Report {
+    /// Every ORDER comparison (`<` / `<=`) of two NON-constant operands, as `(instruction
+    /// address, left operand's register, right operand's register)` — a register is `(offset,
+    /// size)` in the register space, `None` for a memory, temporary or stack operand. Ghidra
+    /// canonicalizes `a > b` to `b < a` (and `>=` to `<=`), so the IR has forgotten which operand
+    /// the source wrote first; the original's own `CMP` at that address has not — this compiler
+    /// emits `CMP a,b` for `a < b` and `CMP b,a` for `b > a`. A target rule reads the CMP's operand
+    /// order and decides the `cmp-order` sites (`buildconfig::cmp_orders_from_evidence`).
+    pub candidates: Vec<(u64, Option<super::cmp_order::CmpOperand>, Option<super::cmp_order::CmpOperand>)>,
+}
+
+/// The cmp-order's witnessed decisions the recovered pass renders (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Sites {
+    /// Order-comparison sites to render MIRRORED — operands swapped, operator reflected (`b > a`
+    /// for the port's `a < b`): the original's `CMP` names the port's right operand first
+    /// (`cmp_order_candidates` evidence, `buildconfig::cmp_orders_from_evidence`).
+    pub sites: std::collections::HashSet<u64>,
 }

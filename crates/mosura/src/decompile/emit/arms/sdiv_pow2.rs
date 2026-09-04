@@ -1,6 +1,6 @@
 //! `sdiv-pow2` — Watcom's SBB template for a signed division by 2^n (`SAR` after `SBB`) prints as
 //! `x / 2^n`, the dividend through the signed cast rule the arithmetic shift already carries
-//! (docs/sdiv-pow2-arm.md, W3; the witness is `recovered.sdiv_pow2_sites`, from
+//! (docs/sdiv-pow2-arm.md, W3; the witness is `recovered.sdiv_pow2.sites`, from
 //! `buildconfig::sdiv_pow2_from_evidence`). A target-informed emit choice, NOT Ghidra: the
 //! reference decompiler prints the chain.
 //!
@@ -10,7 +10,7 @@
 //!
 //! The arm answers ONE seam, `ValueSite::OpRoot`, SECOND after string-ops' strlen fold — the order
 //! `render_op_inner` had inline; the `sdiv-pow2=div` choice gate lives here (an unwitnessed or
-//! ungated site still reports its candidate to the survey through `report.sdiv_pow2_candidates`).
+//! ungated site still reports its candidate to the survey through `report.sdiv_pow2.candidates`).
 use crate::decompile::funcdata::Funcdata;
 use crate::decompile::op::OpId;
 use crate::decompile::opcode::OpCode;
@@ -100,8 +100,8 @@ fn sdiv_pow2_shape(f: &Funcdata, op: OpId) -> Option<(VarnodeId, u32, bool)> {
 pub(crate) fn render(pr: &mut PrintC<'_>, op: OpId) -> Option<(String, u8)> {
     let (x, n, exact) = sdiv_pow2_shape(pr.f, op)?;
     let pc = pr.f.op(op).seqnum.pc.offset;
-    pr.report.sdiv_pow2_candidates.push((pc, n));
-    if !pr.arms.sdiv_pow2.div || !pr.recovered.sdiv_pow2_sites.contains(&pc) {
+    pr.report.sdiv_pow2.candidates.push((pc, n));
+    if !pr.arms.sdiv_pow2.div || !pr.recovered.sdiv_pow2.sites.contains(&pc) {
         return None;
     }
     let size = pr.f.vn(x).size;
@@ -114,7 +114,7 @@ pub(crate) fn render(pr: &mut PrintC<'_>, op: OpId) -> Option<(String, u8)> {
     Some((format!("{l} / {}", render_const_typed(1u64 << n, size, true)), 13))
 }
 
-/// The arm's state: its configuration (the witness, `recovered.sdiv_pow2_sites`, is the port's).
+/// The arm's state: its configuration (the witness, `recovered.sdiv_pow2.sites`, is the port's).
 #[derive(Debug, Default)]
 pub(crate) struct State {
     /// `sdiv-pow2=div` is on for this function.
@@ -125,4 +125,21 @@ impl State {
     pub(crate) fn new(choices: &crate::decompile::emit::EmitChoices) -> Self {
         State { div: choices.sdiv_pow2 == crate::decompile::emit::SdivPow2::Div }
     }
+}
+
+/// The sdiv-pow2's candidates the report pass collects (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Report {
+    /// `sdiv-pow2`: an arithmetic right shift by a constant `n` at `(pc, n)` — the exact SBB
+    /// division chain, or a bare shift (the chain folds away for a non-negative dividend). The
+    /// witness (`buildconfig::sdiv_pow2_from_evidence`) keeps only pcs whose ORIGINAL bytes are
+    /// `SBB` + `SAR n`, so a plain shift in the source is never rewritten.
+    pub candidates: Vec<(u64, u32)>,
+}
+
+/// The sdiv-pow2's witnessed decisions the recovered pass renders (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Sites {
+    /// `sdiv-pow2`: shift pcs to render as `x / 2^n` — witnessed by the original `SBB` + `SAR`.
+    pub sites: std::collections::HashSet<u64>,
 }

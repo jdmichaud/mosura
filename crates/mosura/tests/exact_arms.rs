@@ -46,7 +46,7 @@ fn narrow_switch_prints_the_one_case_switches() {
     let reference = reference_print(&f);
     assert!(!reference.contains("switch ("), "the reference rendering is the if:\n{reference}");
     let (c, recovered) = recovered_print(&f, &insns);
-    assert!(!recovered.sparse_cmp_sites.is_empty(), "the witness saw the compares");
+    assert!(!recovered.sparse_switch.sites.is_empty(), "the witness saw the compares");
     assert!(c.contains("switch (*param_2) {") && c.contains("case 9:"), "the outer one-case switch:\n{c}");
     assert!(c.contains("switch (param_2[1]) {") && c.contains("case 0:"), "the inner one-case switch:\n{c}");
 }
@@ -61,8 +61,8 @@ fn cmp_order_mirrors_the_compare_the_cmp_wrote() {
     let (c, recovered) = recovered_print(&f, &insns);
     let texts: Vec<&str> = insns.iter().map(|i| i.text.as_str()).collect();
     let (choices, _) = measured_arms();
-    let cands = print_c_report(&f, &choices).1.cmp_order_candidates;
-    assert!(!recovered.cmp_order_sites.is_empty(), "the witness read the CMP: candidates {cands:?} insns {texts:?}\n{c}");
+    let cands = print_c_report(&f, &choices).1.cmp_order.candidates;
+    assert!(!recovered.cmp_order.sites.is_empty(), "the witness read the CMP: candidates {cands:?} insns {texts:?}\n{c}");
     assert!(c.contains(" >= "), "the mirrored compare:\n{c}");
 }
 
@@ -75,7 +75,7 @@ fn byte_return_declares_the_witnessed_width() {
     let sig = |c: &str| c.lines().find(|l| l.contains(" func(")).map(str::to_string).unwrap_or_default();
     assert!(!sig(&reference).starts_with("xunknown1 ") && !sig(&reference).starts_with("uint1 "), "the reference declares the IR's width:\n{reference}");
     let (c, recovered) = recovered_print(&f, &insns);
-    assert!(recovered.narrow_return && recovered.narrow_return_width == 1, "the witness: {recovered:?}");
+    assert!(recovered.port.narrow_return && recovered.port.narrow_return_width == 1, "the witness: {recovered:?}");
     assert!(sig(&c).starts_with("xunknown1 ") || sig(&c).starts_with("uint1 "), "the byte declaration:\n{c}");
 }
 
@@ -86,10 +86,10 @@ fn stack_store_order_follows_the_original() {
     let (f, insns) = decompiled("x86_watcom_stack_order.xml");
     let (c, recovered) = recovered_print(&f, &insns);
     let (choices, _) = measured_arms();
-    let runs = print_c_report(&f, &choices).1.stack_store_runs;
+    let runs = print_c_report(&f, &choices).1.port.stack_store_runs;
     let texts: Vec<&str> = insns.iter().map(|i| i.text.as_str()).collect();
     let pos = |s: &str| c.find(s).unwrap_or_else(|| panic!("{s} in:\n{c}"));
-    assert!(pos("= param_1;") < pos("= 0xe;") && pos("= 0xe;") < pos("= 9;"), "the original's store order: runs {runs:?} orders {:?} insns {texts:?}\n{c}", recovered.store_orders);
+    assert!(pos("= param_1;") < pos("= 0xe;") && pos("= 0xe;") < pos("= 9;"), "the original's store order: runs {runs:?} orders {:?} insns {texts:?}\n{c}", recovered.port.store_orders);
 }
 
 /// The narrow zero-extension keeps its `(uint2)` cast under `ext-cast=promotion` where the
@@ -98,7 +98,7 @@ fn stack_store_order_follows_the_original() {
 fn narrow_zext_cast_follows_the_witness() {
     let (f, insns) = decompiled("x86_watcom_narrow_zext.xml");
     let (c, recovered) = recovered_print(&f, &insns);
-    assert!(!recovered.narrow_zext_sites.is_empty(), "the witness saw the high-byte zero");
+    assert!(!recovered.ext_cast.sites.is_empty(), "the witness saw the high-byte zero");
     assert!(c.contains("(uint2)"), "the cast stands:\n{c}");
     let (_, rec_choices) = measured_arms();
     let bare = print_c_recovered(&f, &rec_choices, &RecoveredChoices::default());
@@ -113,7 +113,7 @@ fn masked_call_argument_prints_the_witnessed_cast() {
     let reference = reference_print(&f);
     assert!(!reference.contains("(uint2)("), "the reference passes the sum bare:\n{reference}");
     let (c, recovered) = recovered_print(&f, &insns);
-    assert!(!recovered.mask_sites.is_empty(), "the witness read the AND: {:?}\n{c}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
+    assert!(!recovered.mask_cast.sites.is_empty(), "the witness read the AND: {:?}\n{c}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
     assert!(c.contains("(uint2)("), "the masked argument:\n{c}");
 }
 
@@ -126,7 +126,7 @@ fn const_phi_tail_returns_per_path() {
     let reference = reference_print(&f);
     assert!(reference.contains(" = 0;") && reference.contains(" = 1;"), "the reference merges the returns:\n{reference}");
     let (c, recovered) = recovered_print(&f, &insns);
-    assert!(!recovered.const_phi_sites.is_empty(), "the witness read the exit: {:?}\n{c}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
+    assert!(!recovered.return_split.const_phi.is_empty(), "the witness read the exit: {:?}\n{c}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
     assert!(c.contains("return 1;") && c.contains("return 0;") && !c.contains(" = 0;"), "per-path returns, no merged variable:\n{c}");
 }
 
@@ -136,7 +136,7 @@ fn const_phi_tail_returns_per_path() {
 fn widened_return_of_a_signed_short_zero_extends() {
     let (f, insns) = decompiled("x86_watcom_return_zx.xml");
     let (c, recovered) = recovered_print(&f, &insns);
-    assert!(recovered.return_zero_widened || c.contains("(uint2)"), "the widening is witnessed or the IR keeps the ZEXT: {:?}\n{c}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
+    assert!(recovered.return_widen.zero_widened || c.contains("(uint2)"), "the widening is witnessed or the IR keeps the ZEXT: {:?}\n{c}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
     assert!(c.contains("return (uint2)"), "the returned short is re-signed:\n{c}");
 }
 
@@ -146,7 +146,7 @@ fn widened_return_of_a_signed_short_zero_extends() {
 fn compare_operand_the_original_zero_extends_prints_the_cast() {
     let (f, insns) = decompiled("x86_watcom_cmp_sign.xml");
     let (c, recovered) = recovered_print(&f, &insns);
-    assert!(!recovered.cmp_unsigned_sites.is_empty(), "the witness read the AND: {:?}\n{c}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
+    assert!(!recovered.cmp_sign.sites.is_empty(), "the witness read the AND: {:?}\n{c}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
     assert!(c.contains("(uint2)"), "the compared short is re-signed:\n{c}");
 }
 
@@ -157,7 +157,7 @@ fn pointer_offset_deref_prints_byte_pointer_arithmetic() {
     let (f, insns) = decompiled("x86_watcom_ptr_offset.xml");
     let reference = reference_print(&f);
     let (c, recovered) = recovered_print(&f, &insns);
-    assert!(!recovered.ptr_offset_sites.is_empty(), "the witness read the displacement: {:?}\n{c}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
+    assert!(!recovered.ptr_offset.sites.is_empty(), "the witness read the displacement: {:?}\n{c}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
     assert!(c.contains("(char *)"), "the recovered rendering folds:\n{c}\nreference:\n{reference}");
 }
 
@@ -189,7 +189,7 @@ fn global_compare_mirrors_to_the_cmp_memory_operand() {
     let (f, insns) = decompiled("x86_watcom_cmp_mem.xml");
     let reference = reference_print(&f);
     let (c, recovered) = recovered_print(&f, &insns);
-    assert!(!recovered.cmp_order_sites.is_empty(), "the witness read the memory operand: {:?}\n{reference}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
+    assert!(!recovered.cmp_order.sites.is_empty(), "the witness read the memory operand: {:?}\n{reference}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
     assert!(c.contains(">="), "mirrored:\n{c}\nreference:\n{reference}");
 }
 
@@ -200,7 +200,7 @@ fn load_through_a_pointer_temp_hoists_to_a_value() {
     let (f, insns) = decompiled("x86_watcom_load_hoist.xml");
     let reference = reference_print(&f);
     let (c, recovered) = recovered_print(&f, &insns);
-    assert!(!recovered.load_hoist_sites.is_empty(), "the witness read the scaled frame index: {:?}\n{reference}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
+    assert!(!recovered.load_hoist.sites.is_empty(), "the witness read the scaled frame index: {:?}\n{reference}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
     assert!(!c.contains("Stack_28 + ") && !c.contains("Stack_24 + ") && c.contains("[iVar"), "the value is loaded at its position, no pointer temp:\n{c}\nreference:\n{reference}");
 }
 
@@ -211,7 +211,7 @@ fn lone_bool_return_prints_its_branch_form() {
     let (f, insns) = decompiled("x86_watcom_branch_ret.xml");
     let reference = reference_print(&f);
     let (c, recovered) = recovered_print(&f, &insns);
-    assert!(!recovered.branch_return_sites.is_empty() || !recovered.const_phi_sites.is_empty(), "the witness read the branch: {:?}\n{reference}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
+    assert!(!recovered.return_split.branch_return.is_empty() || !recovered.return_split.const_phi.is_empty(), "the witness read the branch: {:?}\n{reference}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
     assert!(c.contains("return 1;") && c.contains("return 0;") && !c.contains("return iVar1 != 0;"), "split:\n{c}\nreference:\n{reference}");
 }
 
@@ -222,7 +222,7 @@ fn stored_global_is_named_at_the_call_the_original_reloads() {
     let (f, insns) = decompiled("x86_watcom_store_fwd.xml");
     let reference = reference_print(&f);
     let (c, recovered) = recovered_print(&f, &insns);
-    assert!(!recovered.store_forward_sites.is_empty(), "the witness read the reload: {:?}\n{reference}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
+    assert!(!recovered.store_forward.sites.is_empty(), "the witness read the reload: {:?}\n{reference}", insns.iter().map(|i| i.text.as_str()).collect::<Vec<_>>());
     let store = c.lines().find(|l| l.contains(" = ") && l.trim().starts_with("uRam") || l.contains(" = ") && l.trim().starts_with("xRam")).expect("the store statement");
     let stored = store.trim().split(" = ").next().unwrap().trim();
     assert!(c.contains(&format!("({stored})")), "the call names the stored global `{stored}`:\n{c}\nreference:\n{reference}");
@@ -275,7 +275,7 @@ fn early_return_prints_the_test_as_the_early_return() {
     let reference = reference_print(&f);
     assert!(reference.contains("!= 0) {") && !reference.contains("== 0) {\n    return 0;"), "the reference is the merged form:\n{reference}");
     let (c, recovered) = recovered_print(&f, &insns);
-    assert!(!recovered.early_return_sites.is_empty(), "the witness saw the jump past the load");
+    assert!(!recovered.return_split.early_return.is_empty(), "the witness saw the jump past the load");
     assert!(c.contains("== 0) {\n    return 0;\n  }\n"), "the early return, its test flipped through the copy Ghidra's negate token descends:\n{c}");
     assert_eq!(c.matches("return 0;").count(), 2, "two returns of 0, the early one and the tail:\n{c}");
 }
@@ -288,7 +288,7 @@ fn counted_do_while_prints_as_the_for_loop() {
     let reference = reference_print(&f);
     assert!(reference.contains("do {") && reference.contains("} while ("), "the reference is the do-while:\n{reference}");
     let (c, recovered) = recovered_print(&f, &insns);
-    assert!(!recovered.counted_loop_sites.is_empty(), "the witness saw the iterate after the call");
+    assert!(!recovered.counted_loop.sites.is_empty(), "the witness saw the iterate after the call");
     assert!(c.contains("for (") && c.contains("= 1; ") && c.contains(" + 1) {"), "the for loop:\n{c}");
     assert!(!c.contains("do {"), "no do-while remains:\n{c}");
 }

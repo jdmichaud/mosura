@@ -17,7 +17,7 @@
 //! - a zero-extension BELOW int width (`(uint2)byte`, the IR's 16-bit arithmetic) prints bare —
 //!   this compiler widens into the full register and computes at 32 bits — unless the original's
 //!   own widening at the site is the 16-bit idiom (`XOR AH,AH`), when the port's cast stands:
-//!   the witness is `recovered.narrow_zext_sites` (`buildconfig::narrow_zexts_from_evidence`
+//!   the witness is `recovered.ext_cast.sites` (`buildconfig::narrow_zexts_from_evidence`
 //!   over this arm's `narrow_zext_candidates` report); the cast everywhere measured −3/+1 EXACT;
 //! - a sign-extension prints `(intN)` over its operand re-signed at the operand's own width
 //!   (`(int4)(int2)x`) unless the operand's C type is already that signed type: an unsigned,
@@ -70,8 +70,8 @@ pub(crate) fn render(pr: &mut PrintC<'_>, op: OpId, signed: bool) -> Option<(Str
             return Some((format!("({}){operand}", Datatype::Uint(insize).name()), 14));
         }
         let pc = o.seqnum.pc.offset;
-        pr.report.narrow_zext_candidates.push((pc, insize, outsize));
-        if !pr.recovered.narrow_zext_sites.contains(&pc) {
+        pr.report.ext_cast.candidates.push((pc, insize, outsize));
+        if !pr.recovered.ext_cast.sites.contains(&pc) {
             return Some(pr.render_var(in0));
         }
         return None; // witnessed: the port's own `(uint2)x` cast
@@ -115,4 +115,26 @@ fn narrow_typed_operand(pr: &PrintC<'_>, v: VarnodeId) -> bool {
         OpCode::Copy => pr.f.op(d).input(0).is_none_or(|x| narrow_typed_operand(pr, x)),
         _ => true,
     }
+}
+
+/// The ext-cast's candidates the report pass collects (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Report {
+    /// Every zero-extension NARROWER than int (`(uint2)byte`, the IR's 16-bit arithmetic) the
+    /// `ext-cast=promotion` arm would print bare, as `(instruction address, in size, out size)`.
+    /// The IR's 2-byte ZEXT does not say how the compiler widened: this one zero-extends into
+    /// the full register (`XOR EDX,EDX ; MOV DL,..`, and computes at 32 bits) unless the source
+    /// pinned the 16-bit width, when it zeroes only the high byte (`XOR AH,AH ; MOV AL,..`,
+    /// WAR2 FUN_00019344's `(ushort)byte * 2`). A target rule reads which idiom the original used
+    /// at the site and keeps the cast only for the 16-bit one (`narrow_zexts_from_evidence`);
+    /// printing it everywhere measured −3 EXACT / +1 (round e1, 2026-09-03).
+    pub candidates: Vec<(u64, u32, u32)>,
+}
+
+/// The ext-cast's witnessed decisions the recovered pass renders (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Sites {
+    /// Sub-int zero-extension sites (`narrow_zext_candidates`) whose original widens with the
+    /// 16-bit idiom (`XOR xH,xH`): the `ext-cast=promotion` arm keeps the `(uint2)` cast there.
+    pub sites: std::collections::HashSet<u64>,
 }

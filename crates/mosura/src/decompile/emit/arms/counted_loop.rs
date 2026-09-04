@@ -8,7 +8,7 @@
 //! Value-identical: the `for` form tests the loop variable before the first iteration, so the
 //! arm fires only when that test is TRUE on the constant initializer.
 //!
-//! Witness: `recovered.counted_loop_sites`, from `buildconfig::counted_loops_from_evidence`
+//! Witness: `recovered.counted_loop.sites`, from `buildconfig::counted_loops_from_evidence`
 //! over this arm's `counted_loop_candidates` (the loop's branch address and the loop
 //! variable's register) — the original iterates the register right before the loop's compare,
 //! and a CALL sits right before the iterate. A target-informed emit choice, NOT Ghidra.
@@ -51,8 +51,8 @@ impl State {
 pub(crate) fn recognize(pr: &mut PrintC<'_>, s: &Structured, idx: usize) {
     if matches!(s.blocks[idx].kind, FlowKind::DoWhile) && !s.blocks[idx].has_overflow_syntax() {
         if let Some((parts, branch_pc, reg)) = do_while_parts(pr, s, idx) {
-            pr.report.counted_loop_candidates.push((branch_pc, reg));
-            if pr.recovered.counted_loop_sites.contains(&branch_pc) {
+            pr.report.counted_loop.candidates.push((branch_pc, reg));
+            if pr.recovered.counted_loop.sites.contains(&branch_pc) {
                 pr.arms.counted_loop.loops.insert(idx, parts);
                 pr.suppressed.insert(parts.iterate);
                 if let Some(d) = pr.f.vn(parts.init).def {
@@ -236,4 +236,21 @@ pub(crate) fn try_emit_for(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inde
     pr.emit_structured(s, body, indent + 1, out);
     let _ = writeln!(out, "{pad}}}");
     true
+}
+
+/// The counted-loop's candidates the report pass collects (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Report {
+    /// Every counted do-while (`counted-loop`): `(the loop's branch address, the loop
+    /// variable's register)`. The original either iterates the register right after the
+    /// body's last call, at the loop end (the `for` form), or hoists it above the call.
+    pub candidates: Vec<(u64, (u64, u32))>,
+}
+
+/// The counted-loop's witnessed decisions the recovered pass renders (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Sites {
+    /// Loop branch addresses whose counted do-while prints as a `for` loop (`counted-loop`,
+    /// `counted_loop_candidates` evidence, `buildconfig::counted_loops_from_evidence`).
+    pub sites: std::collections::HashSet<u64>,
 }

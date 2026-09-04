@@ -23,12 +23,12 @@ fn sbb_template_renders_signed_division() {
     let (reference, report) = print_c_report(&f, &choices);
     // the shift sits at the SAR EAX,5 (0x600e); the report offers it with n = 5
     assert!(
-        report.sdiv_pow2_candidates.iter().any(|&(pc, n)| pc == 0x600e && n == 5),
+        report.sdiv_pow2.candidates.iter().any(|&(pc, n)| pc == 0x600e && n == 5),
         "expected the shift at 0x600e (n=5) as a candidate: {:?}",
-        report.sdiv_pow2_candidates
+        report.sdiv_pow2.candidates
     );
     assert!(reference.contains(">> 5"), "unwitnessed: the reference shift stays:\n{reference}");
-    let recovered = RecoveredChoices { sdiv_pow2_sites: [0x600e].into_iter().collect(), ..Default::default() };
+    let recovered = RecoveredChoices { sdiv_pow2: mosura::decompile::emit::arms::sdiv_pow2::Sites { sites: [0x600e].into_iter().collect(), ..Default::default() }, ..Default::default() };
     let c = print_c_recovered(&f, &choices, &recovered);
     assert!(c.contains("/ 0x20"), "expected `x / 0x20`, got:\n{c}");
     assert!(!c.contains(">> 0x1f"), "the sign-shift chain must be gone:\n{c}");

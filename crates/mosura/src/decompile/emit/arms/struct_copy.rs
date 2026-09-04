@@ -59,7 +59,7 @@ pub(crate) fn recognize(p: &PrintC<'_>) {
 
 pub(crate) fn debug_dump_setup(p: &PrintC<'_>) {
 if p.arms.struct_copy.assign {
-    debug!(crate::debug::Topic::StructCopy, "{:#x} witness runs {:?}", p.f.addr.offset, p.recovered.movsd_runs);
+    debug!(crate::debug::Topic::StructCopy, "{:#x} witness runs {:?}", p.f.addr.offset, p.recovered.struct_copy.runs);
 }
 }
 
@@ -72,8 +72,8 @@ fn debug_dump_block(p: &PrintC<'_>, block_ops: &[OpId], op: OpId) {
         return;
     }
     let Some(b) = p.f.op(op).parent else { return };
-    if p.arms.struct_copy.assign && crate::debug::on(crate::debug::Topic::StructCopy) && !p.recovered.movsd_runs.is_empty() {
-        for (&rp, &rk) in &p.recovered.movsd_runs {
+    if p.arms.struct_copy.assign && crate::debug::on(crate::debug::Topic::StructCopy) && !p.recovered.struct_copy.runs.is_empty() {
+        for (&rp, &rk) in &p.recovered.struct_copy.runs {
             let here: Vec<String> = block_ops.iter().filter(|&&o| { let pc = p.f.op(o).seqnum.pc.offset; pc >= rp && pc < rp + rk as u64 }).map(|&o| { let x = p.f.op(o); format!("{:#x}:{:?}{}", x.seqnum.pc.offset, x.code(), if x.is_dead() { "(dead)" } else { "" }) }).collect();
             if !here.is_empty() { debug!(crate::debug::Topic::StructCopy, "{:#x} blk{} run @{rp:#x} k {rk}: ops {:?}", p.f.addr.offset, b.0, here); }
     }
@@ -89,7 +89,7 @@ fn debug_dump_block(p: &PrintC<'_>, block_ops: &[OpId], op: OpId) {
 /// run at `pc` (the other ops of that pc are its load and the folded pointer steps). The arm's
 /// answer at `Site::BlockOp`; its debug print lives here, with the arm.
 pub(crate) fn movsd_run_at(p: &mut PrintC<'_>, block_ops: &[OpId], op: OpId, pc: u64) -> Option<(String, Vec<OpId>)> {
-    let k = *p.recovered.movsd_runs.get(&pc)?;
+    let k = *p.recovered.struct_copy.runs.get(&pc)?;
     let fused = movsd_run_stmt(p, block_ops, pc, k);
     debug!(crate::debug::Topic::StructCopy, 
             "{:#x} run @{pc:#x} k {k} at op {:?} {:?}: {}",
@@ -186,7 +186,7 @@ fn movsd_global_run(p: &mut PrintC<'_>, block_ops: &[OpId], first: OpId, reorder
         }
     }
     let k = members.len();
-    if k < 2 || !p.recovered.movsd_runs.values().any(|&rk| rk as usize == k) {
+    if k < 2 || !p.recovered.struct_copy.runs.values().any(|&rk| rk as usize == k) {
         return None;
     }
     let n = 4 * k;
@@ -261,7 +261,7 @@ fn movsd_copy_shape(p: &mut PrintC<'_>, op: OpId, pc: u64) -> Option<(String, St
     Some((dst, src))
 }
 
-/// The arm's state: its configuration (the witness, `recovered.movsd_runs`, is the port's).
+/// The arm's state: its configuration (the witness, `recovered.struct_copy.runs`, is the port's).
 #[derive(Debug, Default)]
 pub(crate) struct State {
     /// `struct-copy=assign` is on for this function.
@@ -272,4 +272,11 @@ impl State {
     pub(crate) fn new(choices: &crate::decompile::emit::EmitChoices) -> Self {
         State { assign: choices.struct_copy == crate::decompile::emit::StructCopy::Assign }
     }
+}
+
+/// The struct-copy's witnessed decisions the recovered pass renders (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Sites {
+    /// `struct-copy`: runs of plain `MOVSD` in the original — start pc → run length k.
+    pub runs: std::collections::HashMap<u64, u32>,
 }

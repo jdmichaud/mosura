@@ -1,7 +1,7 @@
 //! `array-index=spelled` — a scaled-index pointer temp `piVar = (T *)(idx*sizeof(T) + base)`
 //! (base a constant/global) whose only uses are derefs is inlined, each deref rendering
 //! `((T *)base)[idx]`, so Watcom addresses the access with a scaled-index operand; per witnessed
-//! access set (`recovered.array_index_sites`, from `buildconfig::array_index_sites_from_evidence`,
+//! access set (`recovered.array_index.sites`, from `buildconfig::array_index_sites_from_evidence`,
 //! over this arm's `array_index_candidates` report — the original either uses `[reg*sz + base]`
 //! or keeps the address in a register, a codegen lottery the witness settles per site). A
 //! target-informed emit choice, NOT Ghidra: the reference decompiler prints the temp and `*piVar`.
@@ -106,9 +106,9 @@ pub(crate) fn recognize(pr: &mut PrintC<'_>, f: &Funcdata, choices: &EmitChoices
             // access pc as a candidate; inline only when EVERY deref is witnessed (the recovered
             // set is empty on the report pass, so this records there and applies on the final one).
             for &pc in &pcs {
-                pr.report.array_index_candidates.push((pc, elem));
+                pr.report.array_index.candidates.push((pc, elem));
             }
-            if !pcs.iter().all(|pc| pr.recovered.array_index_sites.contains(pc)) {
+            if !pcs.iter().all(|pc| pr.recovered.array_index.sites.contains(pc)) {
                 continue;
             }
             pr.arms.array_index.temps.insert(out, (base, idx, (*pointee).clone()));
@@ -125,4 +125,20 @@ pub(crate) fn render(pr: &mut PrintC<'_>, addr: VarnodeId) -> Option<(String, u8
         return Some((format!("(({} *){bs})[{i}]", pointee.name()), 16));
     }
     None
+}
+
+/// The array-index's candidates the report pass collects (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Report {
+    /// N3 (array-index): scaled-index accesses through a constant/global base — `(deref pc,
+    /// element size)` per access. The witness (`buildconfig::array_index_sites_from_evidence`)
+    /// keeps only pcs where the ORIGINAL uses a scaled-index operand `[reg*sz + base]`.
+    pub candidates: Vec<(u64, u32)>,
+}
+
+/// The array-index's witnessed decisions the recovered pass renders (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Sites {
+    /// N3 access pcs to spell as subscripts — witnessed by the original's scaled-index operand.
+    pub sites: std::collections::HashSet<u64>,
 }

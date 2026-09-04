@@ -2,7 +2,7 @@
 //! clauses prints as nested ifs split before each such clause, so the clause's statements run
 //! exactly when every earlier clause held (the axis doc in emit.rs carries the measured probe and
 //! the faithfulness trap; landed faithfully at sb58, docs/byte-exact-families.md; recovered per site
-//! at sb65, docs/byte-exact-status.md — `recovered.nested_sites` from
+//! at sb65, docs/byte-exact-status.md — `recovered.nested_conds.sites` from
 //! `buildconfig::nested_conds_from_evidence`). A target-informed emit choice, NOT Ghidra: the
 //! reference decompiler prints the short-circuit with the guarded statements inside the condition.
 //! This arm has no `docs/*-arm.md`; the two status documents above are its record.
@@ -110,9 +110,9 @@ fn try_emit_if_nested(pr: &mut PrintC<'_>, s: &Structured, idx: usize, indent: u
         .collect();
     let key = clause_pcs.first().copied();
     if let Some(k) = key {
-        pr.report.cond_nest_candidates.push((k, clause_pcs.clone()));
+        pr.report.nested_conds.candidates.push((k, clause_pcs.clone()));
     }
-    if !(pr.arms.nested_conds.nested || key.is_some_and(|k| pr.recovered.nested_sites.contains(&k))) {
+    if !(pr.arms.nested_conds.nested || key.is_some_and(|k| pr.recovered.nested_conds.sites.contains(&k))) {
         return false;
     }
     let mut buf = String::new();
@@ -164,7 +164,7 @@ fn try_emit_if_nested(pr: &mut PrintC<'_>, s: &Structured, idx: usize, indent: u
     true
 }
 
-/// The arm's state: its configuration (the witness, `recovered.nested_sites`, is the port's).
+/// The arm's state: its configuration (the witness, `recovered.nested_conds.sites`, is the port's).
 #[derive(Debug, Default)]
 pub(crate) struct State {
     /// `cond-form=nested` is on for the whole function.
@@ -175,4 +175,23 @@ impl State {
     pub(crate) fn new(choices: &crate::decompile::emit::EmitChoices) -> Self {
         State { nested: choices.cond_form == crate::decompile::emit::CondForm::Nested }
     }
+}
+
+/// The nested-conds's candidates the report pass collects (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Report {
+    /// Every statement-carrying short-circuit the `cond-form` axis could nest, as
+    /// `(key, clause branch addresses)` where `key` is the FIRST clause's CBRANCH address —
+    /// stable and recomputable at apply time. The clause addresses give the target rule the
+    /// span to scan: a `SETcc` inside it means the original materialized a clause boolean
+    /// (the collapsed comma form); none means branch-only (the nested form).
+    pub candidates: Vec<(u64, Vec<u64>)>,
+}
+
+/// The nested-conds's witnessed decisions the recovered pass renders (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Sites {
+    /// Short-circuit keys (first-clause branch address) to render as nested ifs
+    /// (`cond-form`).
+    pub sites: std::collections::HashSet<u64>,
 }

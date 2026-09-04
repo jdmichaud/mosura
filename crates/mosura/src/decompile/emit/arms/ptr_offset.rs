@@ -5,7 +5,7 @@
 //! materializes it (`LEA EAX,[EDX + 0x1a]` then `CMP word ptr [EAX],0`, WAR2 FUN_0003ca54;
 //! `ADD EAX,0x1f` in FUN_0001c918) where it folds pointer arithmetic into the addressing mode
 //! (`CMP word ptr [EDX + 0x1a],0`) — 118 emitted TUs carry the form, 87 of them with an extra
-//! `LEA` (round e12). The witness (`recovered.ptr_offset_sites`, from
+//! `LEA` (round e12). The witness (`recovered.ptr_offset.sites`, from
 //! `buildconfig::ptr_offsets_from_evidence` over this arm's `ptr_offset_candidates`): the
 //! original's instruction at the sum's address carries the offset as a displacement
 //! (`[.. + 0x1a]`) and is not an `LEA`. A target-informed emit choice, NOT Ghidra.
@@ -58,10 +58,27 @@ pub(crate) fn render(pr: &mut PrintC<'_>, addr: VarnodeId, vty: &Datatype) -> Op
     }
     let pc = o.seqnum.pc.offset;
     crate::debug!(crate::debug::Topic::Recover, "ptr-offset candidate @{pc:x} + 0x{k:x}");
-    pr.report.ptr_offset_candidates.push((pc, k));
-    if !pr.recovered.ptr_offset_sites.contains(&pc) {
+    pr.report.ptr_offset.candidates.push((pc, k));
+    if !pr.recovered.ptr_offset.sites.contains(&pc) {
         return None;
     }
     let b = pr.operand(base, 14, false);
     Some((format!("*({} *)((char *){b} + 0x{k:x})", vty.name()), 15))
+}
+
+/// The ptr-offset's candidates the report pass collects (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Report {
+    /// Every dereference at a constant offset from a pointer-typed base (`ptr-offset`), as
+    /// `(the sum's address, offset)`: the original folds the offset into the addressing mode
+    /// or materializes the sum.
+    pub candidates: Vec<(u64, u64)>,
+}
+
+/// The ptr-offset's witnessed decisions the recovered pass renders (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Sites {
+    /// Sum addresses whose offset the original folds into the addressing mode (`ptr-offset`,
+    /// `ptr_offset_candidates` evidence, `buildconfig::ptr_offsets_from_evidence`).
+    pub sites: std::collections::HashSet<u64>,
 }

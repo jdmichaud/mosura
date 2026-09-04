@@ -1,7 +1,7 @@
 //! `unsigned-cmp` — an equality against an all-ones narrow constant whose ORIGINAL compare
 //! immediate is the zero-extended spelling prints as `(uintN)x == 0xffN` instead of the signed
 //! `x == -1`: the source compared an unsigned narrow value (the `allones_cmp_candidates` doc on
-//! `EmitReport`; witness `recovered.unsigned_cmp_sites`, from
+//! `EmitReport`; witness `recovered.unsigned_cmp.sites`, from
 //! `buildconfig::unsigned_cmps_from_evidence` — one of the text-parsing witnesses, R3b). A
 //! target-informed emit choice, NOT Ghidra: the reference decompiler prints the signed `-1`.
 //!
@@ -39,8 +39,8 @@ pub(crate) fn render(pr: &mut PrintC<'_>, op: OpId, sym: &'static str, prec: u8)
         (pr.f.vn(cvn).constant_value() & mask == mask).then_some((cslot, size, mask))
     });
     if let Some((cslot, size, mask)) = site {
-        pr.report.allones_cmp_candidates.push((pc, size));
-        if pr.recovered.unsigned_cmp_sites.contains(&pc) {
+        pr.report.unsigned_cmp.candidates.push((pc, size));
+        if pr.recovered.unsigned_cmp.sites.contains(&pc) {
             let other = pr.cast_operand(op, 1 - cslot, 13, false);
             return Some((
                 format!("({}){other} {sym} 0x{mask:x}", Datatype::Uint(size).name()),
@@ -49,4 +49,29 @@ pub(crate) fn render(pr: &mut PrintC<'_>, op: OpId, sym: &'static str, prec: u8)
         }
     }
     None
+}
+
+/// The unsigned-cmp's candidates the report pass collects (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Report {
+    /// Every EQUALITY against an ALL-ONES narrow constant — `x == -1` / `x != -1` where the
+    /// constant is 1 or 2 bytes wide — as `(instruction address, constant byte width)`. The
+    /// spelling is ambiguous in the decompiler (Ghidra types the operand signed and prints
+    /// `-1`) but not in the ORIGINAL bytes: a compare of a WIDER register against the
+    /// zero-extended immediate (`CMP EDX,0xff`, imm32) is the `unsigned == 0xff` source
+    /// form, while the sign-extended imm8 is the `-1` form. Under Watcom's UNSIGNED-default
+    /// plain `char`, the `-1` rendering is not merely a byte difference — the compare can
+    /// never be true — so the recovered arm's unsigned form is also the semantically
+    /// faithful one for the target.
+    pub candidates: Vec<(u64, u32)>,
+}
+
+/// The unsigned-cmp's witnessed decisions the recovered pass renders (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Sites {
+    /// Sites from [`EmitReport::allones_cmp_candidates`] whose ORIGINAL compare immediate is
+    /// the zero-extended (unsigned) spelling — render `(uintN)x == 0xffN` instead of the
+    /// signed `x == -1` (see the candidate's doc; decided by
+    /// [`crate::recompile::buildconfig::unsigned_cmps_from_evidence`]).
+    pub sites: std::collections::HashSet<u64>,
 }

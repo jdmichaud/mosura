@@ -3,7 +3,7 @@
 //! later use (`xRam00080004 = xRam0008f046; f(xRam0008f046);`): the same value, but this
 //! compiler then keeps the source global's load for the argument where the original reloaded
 //! the stored one (`MOV [0x80004],AX .. MOV AX,[0x80004]`, WAR2 FUN_00014214 and FUN_00014240:
-//! the source wrote `g = h; f(g);`). The witness (`recovered.store_forward_sites`, from
+//! the source wrote `g = h; f(g);`). The witness (`recovered.store_forward.sites`, from
 //! `buildconfig::store_forwards_from_evidence` over this arm's `store_forward_candidates`):
 //! between the store and the call, the original loads the stored global. Value-identical: no
 //! write to the global and no call intervenes between the store and the use. A
@@ -57,10 +57,26 @@ pub(crate) fn render(pr: &mut PrintC<'_>, op: OpId, slot: usize) -> Option<(Stri
     }
     let (copy, out, g) = stored?;
     let (store_pc, call_pc) = (pr.f.op(copy).seqnum.pc.offset, o.seqnum.pc.offset);
-    crate::debug!(crate::debug::Topic::Recover, "store-forward: candidate call @{call_pc:x} slot {slot} store @{store_pc:x} g {g:x} witnessed {}", pr.recovered.store_forward_sites.contains(&(call_pc, slot as u32)));
-    pr.report.store_forward_candidates.push((call_pc, slot as u32, store_pc, g));
-    if !pr.recovered.store_forward_sites.contains(&(call_pc, slot as u32)) {
+    crate::debug!(crate::debug::Topic::Recover, "store-forward: candidate call @{call_pc:x} slot {slot} store @{store_pc:x} g {g:x} witnessed {}", pr.recovered.store_forward.sites.contains(&(call_pc, slot as u32)));
+    pr.report.store_forward.candidates.push((call_pc, slot as u32, store_pc, g));
+    if !pr.recovered.store_forward.sites.contains(&(call_pc, slot as u32)) {
         return None;
     }
     Some(pr.render_var(out))
+}
+
+/// The store-forward's candidates the report pass collects (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Report {
+    /// Every call argument that is the value just stored to another global (`store-forward`),
+    /// as `(call address, slot, store address, the stored global's address)`.
+    pub candidates: Vec<(u64, u32, u64, u64)>,
+}
+
+/// The store-forward's witnessed decisions the recovered pass renders (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Sites {
+    /// `(call address, slot)` pairs whose argument the original reloads from the stored global
+    /// (`store-forward`, `store_forward_candidates` evidence).
+    pub sites: std::collections::HashSet<(u64, u32)>,
 }

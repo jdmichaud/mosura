@@ -25,18 +25,18 @@ fn rep_movsd_renders_memcpy_when_witnessed() {
     // Report pass: the rep-movsd loop is recorded as a candidate.
     let (_, report) = print_c_report(&f, &choices);
     assert!(
-        !report.rep_movs_candidates.is_empty(),
+        !report.string_ops.candidates.is_empty(),
         "the REP MOVSD loop should be a string-ops candidate"
     );
 
     // Witness: the original bytes at the candidate pc are `REP MOVS`.
     let insns = normalize("x86:LE:32:default", &dt.chunks[0].bytes, entry, &NoReloc).unwrap_or_default();
     let sites =
-        mosura::recompile::buildconfig::string_ops_from_evidence(&report.rep_movs_candidates, &insns);
+        mosura::recompile::buildconfig::string_ops_from_evidence(&report.string_ops.candidates, &insns);
     assert!(!sites.is_empty(), "the candidate is witnessed as REP MOVS (F3 A5)");
 
     // Apply pass: the loop collapses to a memcpy call sized in bytes (n * 4 for movsd).
-    let recovered = RecoveredChoices { string_op_sites: sites, ..Default::default() };
+    let recovered = RecoveredChoices { string_ops: mosura::decompile::emit::arms::string_ops::Sites { sites: sites, ..Default::default() }, ..Default::default() };
     let c = print_c_recovered(&f, &choices, &recovered);
     assert!(c.contains("memcpy("), "renders a memcpy call:\n{c}");
     assert!(c.contains("* 4"), "sized in bytes (dwords * 4):\n{c}");
@@ -61,11 +61,11 @@ fn rep_movs_pair_renders_one_memcpy() {
     let mut choices = EmitChoices::default();
     choices.set("string-ops", "intrinsic").unwrap();
     let (_, report) = print_c_report(&f, &choices);
-    assert_eq!(report.rep_movs_candidates.len(), 2, "both loops of the pair are candidates: {:?}", report.rep_movs_candidates);
+    assert_eq!(report.string_ops.candidates.len(), 2, "both loops of the pair are candidates: {:?}", report.string_ops.candidates);
     let insns = normalize("x86:LE:32:default", &dt.chunks[0].bytes, entry, &NoReloc).unwrap_or_default();
-    let sites = mosura::recompile::buildconfig::string_ops_from_evidence(&report.rep_movs_candidates, &insns);
+    let sites = mosura::recompile::buildconfig::string_ops_from_evidence(&report.string_ops.candidates, &insns);
     assert_eq!(sites.len(), 2, "F2-prefixed MOVSD/MOVSB are both witnessed");
-    let recovered = RecoveredChoices { string_op_sites: sites, ..Default::default() };
+    let recovered = RecoveredChoices { string_ops: mosura::decompile::emit::arms::string_ops::Sites { sites: sites, ..Default::default() }, ..Default::default() };
     let c = print_c_recovered(&f, &choices, &recovered);
     eprintln!("=== PAIR C ===\n{c}");
     assert_eq!(c.matches("memcpy(").count(), 1, "the pair collapses to ONE memcpy:\n{c}");
@@ -85,11 +85,11 @@ fn repe_cmpsb_renders_memcmp_result() {
     let mut choices = EmitChoices::default();
     choices.set("string-ops", "intrinsic").unwrap();
     let (_, report) = print_c_report(&f, &choices);
-    assert_eq!(report.rep_movs_candidates.len(), 1, "the REPE CMPSB loop is a candidate: {:?}", report.rep_movs_candidates);
+    assert_eq!(report.string_ops.candidates.len(), 1, "the REPE CMPSB loop is a candidate: {:?}", report.string_ops.candidates);
     let insns = normalize("x86:LE:32:default", &dt.chunks[0].bytes, entry, &NoReloc).unwrap_or_default();
-    let sites = mosura::recompile::buildconfig::string_ops_from_evidence(&report.rep_movs_candidates, &insns);
+    let sites = mosura::recompile::buildconfig::string_ops_from_evidence(&report.string_ops.candidates, &insns);
     assert_eq!(sites.len(), 1, "F3 A6 is witnessed");
-    let recovered = RecoveredChoices { string_op_sites: sites, ..Default::default() };
+    let recovered = RecoveredChoices { string_ops: mosura::decompile::emit::arms::string_ops::Sites { sites: sites, ..Default::default() }, ..Default::default() };
     let c = print_c_recovered(&f, &choices, &recovered);
     eprintln!("=== MEMCMP C ===\n{c}");
     assert!(c.contains("= memcmp(param_1, param_2, param_3);"), "renders the result assignment:\n{c}");
@@ -111,10 +111,10 @@ fn stack_array_dst_from_typed_param_pair() {
     let mut choices = EmitChoices::default();
     choices.set("string-ops", "intrinsic").unwrap();
     let (c0, report) = print_c_report(&f, &choices);
-    eprintln!("=== DEFAULT/REPORT C ===\n{c0}\ncandidates: {:?}", report.rep_movs_candidates);
+    eprintln!("=== DEFAULT/REPORT C ===\n{c0}\ncandidates: {:?}", report.string_ops.candidates);
     let insns = normalize("x86:LE:32:default", &dt.chunks[0].bytes, entry, &NoReloc).unwrap_or_default();
-    let sites = mosura::recompile::buildconfig::string_ops_from_evidence(&report.rep_movs_candidates, &insns);
-    let recovered = RecoveredChoices { string_op_sites: sites, ..Default::default() };
+    let sites = mosura::recompile::buildconfig::string_ops_from_evidence(&report.string_ops.candidates, &insns);
+    let recovered = RecoveredChoices { string_ops: mosura::decompile::emit::arms::string_ops::Sites { sites: sites, ..Default::default() }, ..Default::default() };
     let c = print_c_recovered(&f, &choices, &recovered);
     eprintln!("=== INTRINSIC C ===\n{c}");
     assert!(c.contains("memcpy("), "stack-array dst pair renders memcpy:\n{c}");
@@ -137,8 +137,8 @@ fn war2_32c00_pair_survives_expandload() {
     choices.set("string-ops", "intrinsic").unwrap();
     let (_, report) = print_c_report(&f, &choices);
     let insns = normalize("x86:LE:32:default", &dt.chunks[0].bytes, entry, &NoReloc).unwrap_or_default();
-    let sites = mosura::recompile::buildconfig::string_ops_from_evidence(&report.rep_movs_candidates, &insns);
-    let recovered = RecoveredChoices { string_op_sites: sites, ..Default::default() };
+    let sites = mosura::recompile::buildconfig::string_ops_from_evidence(&report.string_ops.candidates, &insns);
+    let recovered = RecoveredChoices { string_ops: mosura::decompile::emit::arms::string_ops::Sites { sites: sites, ..Default::default() }, ..Default::default() };
     let c = print_c_recovered(&f, &choices, &recovered);
     eprintln!("=== 32c00 C ===\n{c}");
     assert!(c.contains("memcpy(axStack_40, param_1, 0x30)"), "the pair collapses to one memcpy:\n{c}");
@@ -162,11 +162,11 @@ fn repe_cmpsb_typed_pointers_still_render_memcmp() {
     let mut choices = EmitChoices::default();
     choices.set("string-ops", "intrinsic").unwrap();
     let (_, report) = print_c_report(&f, &choices);
-    assert_eq!(report.rep_movs_candidates.len(), 1, "the REPE CMPSB loop is a candidate: {:?}", report.rep_movs_candidates);
+    assert_eq!(report.string_ops.candidates.len(), 1, "the REPE CMPSB loop is a candidate: {:?}", report.string_ops.candidates);
     let insns = normalize("x86:LE:32:default", &dt.chunks[0].bytes, entry, &NoReloc).unwrap_or_default();
-    let sites = mosura::recompile::buildconfig::string_ops_from_evidence(&report.rep_movs_candidates, &insns);
+    let sites = mosura::recompile::buildconfig::string_ops_from_evidence(&report.string_ops.candidates, &insns);
     assert_eq!(sites.len(), 1, "F3 A6 is witnessed");
-    let recovered = RecoveredChoices { string_op_sites: sites, ..Default::default() };
+    let recovered = RecoveredChoices { string_ops: mosura::decompile::emit::arms::string_ops::Sites { sites: sites, ..Default::default() }, ..Default::default() };
     let c = print_c_recovered(&f, &choices, &recovered);
     eprintln!("=== MEMCMP C ===\n{c}");
     assert!(c.contains("= memcmp(param_1, param_2, param_3);"), "renders the result assignment:\n{c}");

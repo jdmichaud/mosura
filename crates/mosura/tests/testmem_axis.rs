@@ -53,7 +53,7 @@ fn masked_narrow_load(f: &Funcdata) -> VarnodeId {
 
 fn witnessed(f: &Funcdata) -> RecoveredChoices {
     let mut r = RecoveredChoices::default();
-    r.testmem_sites.insert(masked_narrow_load(f));
+    r.testmem.sites.insert(masked_narrow_load(f));
     r
 }
 

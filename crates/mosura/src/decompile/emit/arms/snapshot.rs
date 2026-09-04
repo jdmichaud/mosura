@@ -1,7 +1,7 @@
 //! Entry snapshots — an input-flagged narrow RAM value consumed as a call argument renders as a
 //! declared temp initialized from the global at body top, every use reading the temp; the
 //! original either snapshots the global into a register at entry (one narrow load) or re-reads it
-//! at each use, and the witness (`recovered.snapshot_sites`, from
+//! at each use, and the witness (`recovered.snapshot.sites`, from
 //! `buildconfig::entry_snapshots_from_evidence` over this arm's `snapshot_candidates` report)
 //! settles it per value, with the temp's width. Value-identical by SSA construction: the uses
 //! read the INPUT version of the value. A target-informed emit choice, NOT Ghidra: the reference
@@ -119,8 +119,8 @@ pub(crate) fn recognize(pr: &mut PrintC<'_>, f: &Funcdata) {
             if !all_reads {
                 continue;
             }
-            pr.report.snapshot_candidates.push((v, vn.loc.offset, vn.size));
-            if let Some(&w) = pr.recovered.snapshot_sites.get(&v) {
+            pr.report.snapshot.candidates.push((v, vn.loc.offset, vn.size));
+            if let Some(&w) = pr.recovered.snapshot.sites.get(&v) {
                 let gexpr = pr.render_var(v).0;
                 pr.var_counter += 1;
                 let n = format!("uVar{}", pr.var_counter);
@@ -141,4 +141,27 @@ pub(crate) fn render(pr: &mut PrintC<'_>, v: VarnodeId) -> Option<(String, u8)> 
 /// The declarations with initializers the port prints after the plain locals.
 pub(crate) fn init_decls<'p>(pr: &'p PrintC<'_>) -> &'p [(String, Datatype, String)] {
     &pr.arms.snapshot.decls
+}
+
+/// The snapshot's candidates the report pass collects (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Report {
+    /// Every input-flagged narrow RAM value consumed as a call argument, as
+    /// `(value, global address, size)` — the entry-snapshot candidates. The original either
+    /// snapshots the global into a register at entry (ONE narrow load from that absolute
+    /// address — `MOV AL,[0x8032c]` before the branch, probe-validated EXACT as
+    /// `uint1 uVarN = xRamX;` at body top) or references memory at each use. Rendering the
+    /// snapshot is value-identical by SSA construction: the uses read the INPUT version of
+    /// the global, which is definitionally its entry value.
+    pub candidates: Vec<(VarnodeId, u64, u32)>,
+}
+
+/// The snapshot's witnessed decisions the recovered pass renders (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Sites {
+    /// Input-flagged narrow RAM values rendered as an entry snapshot — a declared temp
+    /// initialized from the global at body top, uses reading the temp. The value is the
+    /// DECLARED width: the value's own size (bare narrow load in the original) or int width
+    /// (the original pre-zeroes the container — the widening idiom on a global).
+    pub sites: std::collections::HashMap<VarnodeId, u32>,
 }

@@ -2,7 +2,7 @@
 //! int width (`TEST dword [..], imm`) prints its deref at int width: the mask keeps the value
 //! identical and this compiler shrinks the wide masked test back to the original's byte TEST. A
 //! target-informed emit choice, NOT Ghidra: the reference decompiler prints the load at the
-//! varnode's size. Witness: `recovered.testmem_sites`, from `buildconfig::testmem_from_evidence`
+//! varnode's size. Witness: `recovered.testmem.sites`, from `buildconfig::testmem_from_evidence`
 //! (one of the text-parsing witnesses, R3b) over this arm's candidate report.
 //!
 //! Moved verbatim out of printc.rs (review R2b, commit 3): the candidate census that sat in
@@ -63,7 +63,7 @@ pub(crate) fn recognize(pr: &mut PrintC<'_>, f: &Funcdata) {
         if !cmp0 {
             continue;
         }
-        pr.report.testmem_candidates.push((out, o.seqnum.pc.offset));
+        pr.report.testmem.candidates.push((out, o.seqnum.pc.offset));
     }
     // a narrow GLOBAL read (a ram input, no LOAD op) masked into a zero-equality is the same
     // shape: the original's `TEST byte ptr [0x8196c],0x8` (WAR2 FUN_00037280) says the source
@@ -100,8 +100,8 @@ pub(crate) fn recognize(pr: &mut PrintC<'_>, f: &Funcdata) {
             })
         });
         if const_fits && cmp0 {
-            crate::debug!(crate::debug::Topic::Recover, "testmem: global candidate {:x} @{:x} witnessed {}", vn.loc.offset, ao.seqnum.pc.offset, pr.recovered.testmem_sites.contains(&v));
-            pr.report.testmem_candidates.push((v, ao.seqnum.pc.offset));
+            crate::debug!(crate::debug::Topic::Recover, "testmem: global candidate {:x} @{:x} witnessed {}", vn.loc.offset, ao.seqnum.pc.offset, pr.recovered.testmem.sites.contains(&v));
+            pr.report.testmem.candidates.push((v, ao.seqnum.pc.offset));
         }
     }
 }
@@ -109,7 +109,7 @@ pub(crate) fn recognize(pr: &mut PrintC<'_>, f: &Funcdata) {
 /// The arm's answer at `ValueSite::VarEntry` for a witnessed GLOBAL: the int-wide access to the
 /// global's address, `*(int4 *)&uRam0008196c`.
 pub(crate) fn render_global(pr: &mut PrintC<'_>, v: VarnodeId) -> Option<(String, u8)> {
-    if !pr.arms.testmem.witness || !pr.recovered.testmem_sites.contains(&v) {
+    if !pr.arms.testmem.witness || !pr.recovered.testmem.sites.contains(&v) {
         return None;
     }
     let vn = pr.f.vn(v);
@@ -132,7 +132,7 @@ pub(crate) fn render(pr: &mut PrintC<'_>, out: VarnodeId, addr: VarnodeId) -> Op
     // `*(uint4 *)puVar1` -- an axis is the census, a regex over rendered text is a proxy). The
     // reference path is unaffected either way: `print_c` carries no recovered evidence, so the
     // witness set is empty and this returns `None` before the axis is even consulted.
-    if pr.arms.testmem.witness && pr.recovered.testmem_sites.contains(&out) {
+    if pr.arms.testmem.witness && pr.recovered.testmem.sites.contains(&out) {
         let w = pr.f.size_of_int();
         let vty = Datatype::Uint(w);
         return Some(pr.render_mem(addr, w, &vty));
@@ -152,4 +152,26 @@ impl State {
     pub(crate) fn new(choices: &crate::decompile::emit::EmitChoices) -> Self {
         State { witness: choices.testmem == crate::decompile::emit::TestMem::Witness }
     }
+}
+
+/// The testmem's candidates the report pass collects (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Report {
+    /// Every masked narrow load — a LOAD of less than int width whose (possibly
+    /// zext-linked) single value use is an `INT_AND` with a constant that fits the loaded
+    /// width, feeding an equality against zero — as `(load output, instruction address)`.
+    /// The original's instruction at that address is a self-announcing readout: a
+    /// memory-direct `TEST [mem],imm` means the SOURCE read the wider element and masked
+    /// (this compiler shrinks a wide masked test back to the byte — measured battery,
+    /// docs/watcom-codegen-fingerprint.md), so the deref renders at int width; a load+AND
+    /// means the source really read narrow.
+    pub candidates: Vec<(VarnodeId, u64)>,
+}
+
+/// The testmem's witnessed decisions the recovered pass renders (review F1: the arm owns its evidence vocabulary; the printer holds the registry opaquely).
+#[derive(Debug, Default, Clone)]
+pub struct Sites {
+    /// Masked narrow loads whose deref renders at INT width (the original's memory-direct
+    /// `TEST` says the source read the wider element).
+    pub sites: std::collections::HashSet<VarnodeId>,
 }

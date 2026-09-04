@@ -22,8 +22,8 @@ fn render(fixture: &str) -> (String, String) {
     let mut choices = EmitChoices::default();
     choices.set("struct-copy", "assign").unwrap();
     let insns = mosura::recompile::insn::normalize(lang_id, dt.chunks[0].bytes.as_slice(), entry, &mosura::recompile::insn::NoReloc).unwrap_or_default();
-    let recovered = RecoveredChoices { movsd_runs: mosura::recompile::buildconfig::movsd_runs_from_evidence(&insns), ..Default::default() };
-    assert!(!recovered.movsd_runs.is_empty(), "the witness saw the MOVSD run(s)");
+    let recovered = RecoveredChoices { struct_copy: mosura::decompile::emit::arms::struct_copy::Sites { runs: mosura::recompile::buildconfig::movsd_runs_from_evidence(&insns), ..Default::default() }, ..Default::default() };
+    assert!(!recovered.struct_copy.runs.is_empty(), "the witness saw the MOVSD run(s)");
     (reference, print_c_recovered(&f, &choices, &recovered))
 }
 
