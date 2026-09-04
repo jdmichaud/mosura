@@ -17,15 +17,10 @@ These come from the project owner and outrank convenience.
 1. **Exactness with the BINARY is the goal, not agreement with Ghidra's output.** Ghidra
    faithfulness is the *method*; the original binary's bytes are the target. The corpus is a
    diagnostic, never the objective.
-2. **Exactly ONE agent at a time.** Never launch one while another exists — even if it looks
-   idle. Stop the existing one first, and verify it stopped. (Messaging a stopped agent can
-   revive it.)
 3. **Don't stop. If you want to stop, don't.** Work continues until the task is done or the
    owner redirects.
 4. **Don't block on questions — take the first option you would have proposed and keep going.**
    Report status, not choices.
-5. **Retiring inventions is the primary track.** Non-Ghidra code is what has been holding the
-   binary work back; it comes before new feature work. Finish an in-flight task before pivoting.
 6. **An issue found on a survey binary becomes an MVE first — then you solve the MVE.**
    When decompiling a real binary surfaces a defect, do not fix it against that binary. Write a
    minimal self-compiled program in `oracle/ground-truth/src/` that surfaces the same defect,
