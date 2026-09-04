@@ -270,6 +270,9 @@ impl Grown for super::return_split::Sites {
         if self.const_phi.iter().any(|x| !prev.const_phi.contains(x)) {
             out.push("const_phi");
         }
+        if self.value_phi.iter().any(|x| !prev.value_phi.contains(x)) {
+            out.push("value_phi");
+        }
         if self.early_return.iter().any(|x| !prev.early_return.contains(x)) {
             out.push("early_return");
         }

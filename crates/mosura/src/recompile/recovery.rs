@@ -213,6 +213,10 @@ fn derive(report: &EmitReport, insns: &[NormInsn], call_arg_orders: HashMap<u64,
                 &report.return_split.const_phi,
                 insns,
             ),
+            value_phi: crate::recompile::buildconfig::value_phi_returns_from_evidence(
+                &report.return_split.value_phi,
+                insns,
+            ),
             early_return: crate::recompile::buildconfig::const_phi_returns_from_evidence(
                 &report.return_split.early_return,
                 insns,

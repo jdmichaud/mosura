@@ -2753,3 +2753,17 @@ pub fn zero_cmps_from_evidence(cands: &[u64], insns: &[NormInsn]) -> std::collec
     }
     out
 }
+
+
+
+/// Decide the `value-phi` split sites (`emit/arms/return_split.rs`): a `x = k; if (c) x = expr;
+/// return x` whose original returns the constant default early prints as `if (!c) return k;
+/// return expr` where the ORIGINAL's branch at the guarding address lands on a bare epilogue —
+/// the same byte fact as the constant-phi shape: a `TEST`/`CMP` then `JZ`/`JNZ` whose taken edge
+/// reaches a `RET` past at most a register load of the constant. Reuses the constant-phi witness.
+pub fn value_phi_returns_from_evidence(cands: &[u64], insns: &[NormInsn]) -> std::collections::HashSet<u64> {
+    // the constant-phi witness keyed by (branch_pc, 0) — the value-phi's constant is irrelevant to
+    // the byte fact (the branch-lands-on-epilogue test), so pass a zero placeholder
+    let pairs: Vec<(u64, u64)> = cands.iter().map(|&pc| (pc, 0)).collect();
+    const_phi_returns_from_evidence(&pairs, insns)
+}

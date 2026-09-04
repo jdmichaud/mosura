@@ -135,6 +135,35 @@ fn try_emit(pr: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<Ans
                 return Some(Answer::Emitted);
             }
         }
+        // the value-phi shape: `x = k; if (c) x = expr; return x` — the original returns the
+        // constant early on the negated condition and the value on the other path (see
+        // `value_phi_split`)
+        if let Some(split) = value_phi_split(pr, s, c, tail) {
+            pr.report.return_split.value_phi.push(split.branch_pc);
+            if pr.recovered.return_split.value_phi.contains(&split.branch_pc) {
+                if let Some(copy_tail) = split.copy_tail {
+                    pr.suppressed.insert(copy_tail);
+                }
+                pr.suppressed.insert(split.copy_body);
+                let fb = &s.blocks[c];
+                let (cond_node, body) = (fb.components[0], fb.components[1]);
+                let negated = fb.negated;
+                let k = render_const(split.k_tail, split.size);
+                let pad = "  ".repeat(indent);
+                // the condition block's own statements (the guarded call), then the early
+                // return of the constant on the path that leaves x at its default
+                pr.emit_structured(s, cond_node, indent, out);
+                let cond = pr.render_condition(s, cond_node, !negated);
+                let _ = writeln!(out, "{pad}if ({cond}) {{");
+                let _ = writeln!(out, "{pad}  return {k};");
+                let _ = writeln!(out, "{pad}}}");
+                // the body's own statements, then the value it assigned as the fall-through return
+                pr.emit_structured(s, body, indent, out);
+                let vexpr = pr.render_var(split.value).0;
+                let _ = writeln!(out, "{pad}return {vexpr};");
+                return Some(Answer::Emitted);
+            }
+        }
         // the constant-phi shape (see the module doc)
         if let Some(split) = const_phi_split(pr, s, c, tail) {
             pr.report.return_split.const_phi.push((split.branch_pc, split.k_tail));
@@ -223,7 +252,6 @@ struct ConstPhiSplit {
 }
 
 fn const_phi_split(pr: &PrintC<'_>, s: &Structured, c: usize, tail: usize) -> Option<ConstPhiSplit> {
-    use crate::debug::Topic;
     if !matches!(s.blocks[c].kind, FlowKind::If) || s.blocks[c].components.len() != 2 {
         return None;
     }
@@ -231,7 +259,7 @@ fn const_phi_split(pr: &PrintC<'_>, s: &Structured, c: usize, tail: usize) -> Op
     // is a List when earlier statements fold into it — FUN_0002c4e4's `if (..) return 0;`)
     let cond_bid = exit_basic(s, s.blocks[c].components[0])?;
     let Some(body_exit) = exit_basic(s, s.blocks[c].components[1]) else {
-        crate::debug!(Topic::Recover, "const-phi: no body exit");
+        crate::debug!(crate::debug::Topic::Recover, "const-phi: no body exit");
         return None;
     };
     // the branch: the condition block's live CBRANCH (`plain_if_branch_pc` for a Basic
@@ -264,7 +292,7 @@ fn const_phi_split(pr: &PrintC<'_>, s: &Structured, c: usize, tail: usize) -> Op
             OpCode::Branch | OpCode::Cbranch | OpCode::Branchind => return None,
             _ => {
                 if o.output.is_some_and(|v| pr.is_explicit(v)) {
-                    crate::debug!(Topic::Recover, "const-phi @{branch_pc:x}: tail statement {:?}", o.code());
+                    crate::debug!(crate::debug::Topic::Recover, "const-phi @{branch_pc:x}: tail statement {:?}", o.code());
                     return None;
                 }
             }
@@ -272,12 +300,12 @@ fn const_phi_split(pr: &PrintC<'_>, s: &Structured, c: usize, tail: usize) -> Op
     }
     let v = thru_copy(pr, pr.f.op(ret?).input(1)?);
     let Some(phi) = pr.f.vn(v).def else {
-        crate::debug!(Topic::Recover, "const-phi @{branch_pc:x}: returned value has no def");
+        crate::debug!(crate::debug::Topic::Recover, "const-phi @{branch_pc:x}: returned value has no def");
         return None;
     };
     let po = pr.f.op(phi);
     if po.code() != OpCode::Multiequal || po.num_inputs() != 2 {
-        crate::debug!(Topic::Recover, "const-phi @{branch_pc:x}: returned value def {:?} x{}", po.code(), po.num_inputs());
+        crate::debug!(crate::debug::Topic::Recover, "const-phi @{branch_pc:x}: returned value def {:?} x{}", po.code(), po.num_inputs());
         return None;
     }
     // the value the branch tests against zero (`x != 0` / `x == 0`): a phi input that IS that
@@ -317,12 +345,12 @@ fn const_phi_split(pr: &PrintC<'_>, s: &Structured, c: usize, tail: usize) -> Op
         let Some(copy) = pr.f.vn(input).def else { return None };
         let co = pr.f.op(copy);
         if co.code() != OpCode::Copy {
-            crate::debug!(Topic::Recover, "const-phi @{branch_pc:x}: input {i} def {:?}", co.code());
+            crate::debug!(crate::debug::Topic::Recover, "const-phi @{branch_pc:x}: input {i} def {:?}", co.code());
             return None;
         }
         let k = co.input(0)?;
         if !pr.f.vn(k).is_constant() {
-            crate::debug!(Topic::Recover, "const-phi @{branch_pc:x}: input {i} copies a non-constant");
+            crate::debug!(crate::debug::Topic::Recover, "const-phi @{branch_pc:x}: input {i} copies a non-constant");
             return None;
         }
         let Some(parent) = co.parent else { return None };
@@ -332,7 +360,7 @@ fn const_phi_split(pr: &PrintC<'_>, s: &Structured, c: usize, tail: usize) -> Op
             body_side = Some((copy, pr.f.vn(k).constant_value()));
         } else {
             crate::debug!(
-                Topic::Recover,
+                crate::debug::Topic::Recover,
                 "const-phi @{branch_pc:x}: input {i} in block {:?} (cond {:?}, body exit {:?})",
                 parent,
                 cond_bid,
@@ -347,6 +375,106 @@ fn const_phi_split(pr: &PrintC<'_>, s: &Structured, c: usize, tail: usize) -> Op
         return None;
     }
     Some(ConstPhiSplit { branch_pc, copy_tail, copy_body, k_tail, k_body, size: pr.f.vn(v).size })
+}
+
+/// The value-phi tail: the if `c`'s body assigns a single VALUE to the phi variable and the
+/// other path leaves it at a CONSTANT `k_tail`; the tail returns the phi. `value` is the
+/// varnode the body assigned, `copy_body`/`copy_tail` the COPYs to suppress. The original
+/// returns the constant early on the negated condition and the value on the body's path.
+struct ValuePhiSplit {
+    branch_pc: u64,
+    copy_tail: Option<crate::decompile::op::OpId>,
+    copy_body: crate::decompile::op::OpId,
+    value: VarnodeId,
+    k_tail: u64,
+    size: u32,
+}
+
+fn value_phi_split(pr: &PrintC<'_>, s: &Structured, c: usize, tail: usize) -> Option<ValuePhiSplit> {
+    if !matches!(s.blocks[c].kind, FlowKind::If) || s.blocks[c].components.len() != 2 {
+        return None;
+    }
+    if s.node_gotos.get(&c).is_some() || s.node_gotos.get(&tail).is_some() {
+        return None;
+    }
+    let cond_bid = exit_basic(s, s.blocks[c].components[0])?;
+    let body_exit = exit_basic(s, s.blocks[c].components[1])?;
+    let branch_pc = pr
+        .f
+        .block(cond_bid)
+        .ops
+        .iter()
+        .rev()
+        .copied()
+        .find(|&op| !pr.f.op(op).is_dead() && pr.f.op(op).code() == OpCode::Cbranch)
+        .map(|op| pr.f.op(op).seqnum.pc.offset)?;
+    let FlowKind::Basic(tail_bid) = s.blocks[tail].kind else { return None };
+    if s.gotos.contains_key(&tail_bid) || s.gotos.contains_key(&cond_bid) {
+        return None;
+    }
+    // the tail: a basic block whose only printable statement is `return v`, v a MULTIEQUAL of two
+    let mut ret = None;
+    for &op in &pr.f.block(tail_bid).ops {
+        let o = pr.f.op(op);
+        if o.is_dead() || o.is_marker() || o.is_return_copy() {
+            continue;
+        }
+        match o.code() {
+            OpCode::Return => {
+                if ret.is_some() {
+                    return None;
+                }
+                ret = Some(op);
+            }
+            OpCode::Store | OpCode::Call | OpCode::Callind | OpCode::Callother => return None,
+            OpCode::Branch | OpCode::Cbranch | OpCode::Branchind => return None,
+            _ => {
+                if o.output.is_some_and(|v| pr.is_explicit(v)) {
+                    return None;
+                }
+            }
+        }
+    }
+    let v = thru_copy(pr, pr.f.op(ret?).input(1)?);
+    let phi = pr.f.vn(v).def?;
+    let po = pr.f.op(phi);
+    if po.code() != OpCode::Multiequal || po.num_inputs() != 2 {
+        return None;
+    }
+    // one input a constant COPY (the default), the other a value COPY defined in the body's exit
+    let mut const_side: Option<(Option<crate::decompile::op::OpId>, u64)> = None;
+    let mut value_side: Option<(crate::decompile::op::OpId, VarnodeId)> = None;
+    for i in 0..2 {
+        let input = po.input(i)?;
+        let Some(copy) = pr.f.vn(input).def else { return None };
+        let co = pr.f.op(copy);
+        if co.code() != OpCode::Copy {
+            return None;
+        }
+        let src = co.input(0)?;
+        let parent = co.parent;
+        // the constant default may be a COPY-of-constant (conditional-const leaves it): resolve
+        // through copies for the test, but a value keeps its own varnode so it renders as itself
+        let csrc = thru_copy(pr, src);
+        if pr.f.vn(csrc).is_constant() {
+            if const_side.is_some() { return None; }
+            const_side = Some((Some(copy), pr.f.vn(csrc).constant_value()));
+        } else if parent == Some(body_exit) {
+            if value_side.is_some() { return None; }
+            // the value renders as its own expression (a global, a call result, a load)
+            value_side = Some((copy, src));
+        } else {
+            return None;
+        }
+    }
+    let (copy_tail, k_tail) = const_side?;
+    let (copy_body, value) = value_side?;
+    // the constant's copy must be on the CONDITION path (the default before/around the if), not
+    // the body — else the two paths are not the `x = k; if (c) x = expr` shape
+    if pr.f.op(copy_tail?).parent == Some(body_exit) {
+        return None;
+    }
+    Some(ValuePhiSplit { branch_pc, copy_tail, copy_body, value, k_tail, size: pr.f.vn(v).size })
 }
 
 /// The boolean behind a basic block whose ONLY printable statement is `return (zext of)
@@ -535,6 +663,9 @@ pub struct Report {
     /// that constant on its own path after the branch (a `XOR AL,AL` / `MOV EAX,k` right before
     /// an epilogue) — the per-path returns — or hoists it above the test (the merged form).
     pub const_phi: Vec<(u64, u64)>,
+    /// Every value-phi tail (`value_phi_split`): the guarding branch address. The original
+    /// returns the constant default early and the body's value on the other path.
+    pub value_phi: Vec<u64>,
     /// Every early-return tail the `return-split` arm could rewrite (see its module doc): an
     /// if without an else whose join is a lone `return <constant>`, as `(guarding branch
     /// address, the constant)`. The original either lands the branch PAST the constant's load,
@@ -556,6 +687,9 @@ pub struct Sites {
     /// Guarding-if branch addresses whose constant-phi tail splits per path (`return-split`,
     /// `const_phi_candidates` evidence, `buildconfig::const_phi_returns_from_evidence`).
     pub const_phi: std::collections::HashSet<u64>,
+    /// Value-phi tails to split (`value_phi_split`): the branch addresses whose constant
+    /// default returns early (the same byte witness as the constant-phi shape).
+    pub value_phi: std::collections::HashSet<u64>,
     /// Guarding-if branch addresses whose constant join prints as the early return
     /// (`return-split`, `early_return_candidates` evidence, the same byte fact as
     /// `buildconfig::const_phi_returns_from_evidence`).
