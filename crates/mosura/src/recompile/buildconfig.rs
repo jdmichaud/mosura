@@ -2576,3 +2576,49 @@ pub fn inline_calls_from_evidence(cands: &[(u64, u64)], insns: &[NormInsn]) -> s
     }
     out
 }
+
+
+/// The general registers a function saves FOR ITS CALLEES: pushed among the leading saves and
+/// popped before its returns ([`preserved_registers`]) yet never read or written by any body
+/// instruction — the function itself has no use for the register, so the only reason to preserve
+/// it is a callee DECLARED to clobber it (the declaration the original was compiled against, not
+/// the callee's body: WAR2 FUN_0004f850 saves EBX around one call to a callee whose recovered
+/// clobber set is `[eax ecx edx]`, and is byte-exact only with `ebx` in the caller's `modify`
+/// clause). Register-space offsets (EAX 0, ECX 4, EDX 8, EBX 12, ESI 24, EDI 28); empty when the
+/// function calls nothing.
+pub fn saved_for_callees(insns: &[NormInsn]) -> Vec<u64> {
+    if !insns.iter().any(|x| x.is_call) {
+        return Vec::new();
+    }
+    let preserved = preserved_registers(insns);
+    if preserved.is_empty() {
+        return Vec::new();
+    }
+    // the body: everything but the leading saves, the epilogue pop runs and the returns
+    let lead = insns.iter().take_while(|x| x.text.starts_with("PUSH E") || x.text == "MOV EBP,ESP").count();
+    let mut body = vec![true; insns.len()];
+    for b in body.iter_mut().take(lead) {
+        *b = false;
+    }
+    for i in 0..insns.len() {
+        let t = &insns[i].text;
+        if !(t == "RET" || t.starts_with("RET ") || t == "RETF") {
+            continue;
+        }
+        body[i] = false;
+        let mut j = i;
+        while j > 0 && insns[j - 1].text.starts_with("POP E") {
+            j -= 1;
+            body[j] = false;
+        }
+    }
+    preserved
+        .into_iter()
+        .filter(|&r| {
+            !insns
+                .iter()
+                .zip(&body)
+                .any(|(x, &in_body)| in_body && x.regs.iter().any(|&(o, _)| o & !3 == r))
+        })
+        .collect()
+}

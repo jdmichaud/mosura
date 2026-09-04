@@ -3260,6 +3260,23 @@ fn main() {
                     e.1.get_or_insert_with(Default::default).extend(m.iter().copied());
                 }
             }
+            // CALLER-SIDE CLOBBER WITNESS (`buildconfig::saved_for_callees`): a register this
+            // function saves in its prologue and restores before its returns without ever
+            // touching it was preserved for a callee DECLARED to clobber it — the declaration
+            // the original compiled against, which the callee's own recovered clobber set
+            // cannot show. Every callee of this TU with a clobber clause takes the register
+            // (a caller's saves cannot say which callee); a TU with no clause at all gives
+            // it to every callee. WAR2 FUN_0004f850: EXACT with `ebx` in its callee's clause.
+            let saved = mosura::recompile::buildconfig::saved_for_callees(&insns);
+            let any_modify = merged.values().any(|(_, m)| m.is_some());
+            let mut merged = merged;
+            if !saved.is_empty() {
+                for (_, modify) in merged.values_mut() {
+                    if modify.is_some() || !any_modify {
+                        modify.get_or_insert_with(Default::default).extend(saved.iter().copied());
+                    }
+                }
+            }
             for (va, (cleans, modify)) in merged {
                 let e = callee_aux.entry(va).or_default();
                 if cleans {
