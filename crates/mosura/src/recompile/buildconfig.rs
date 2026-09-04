@@ -2719,3 +2719,20 @@ pub fn table_bases_from_evidence(cands: &[(u64, u64)], insns: &[NormInsn]) -> st
     }
     out
 }
+
+
+/// Decide the `zero-cmp` sites (`emit/arms/zero_cmp.rs`): an unsigned zero-equality prints as
+/// the order compare where the ORIGINAL's branch at the compare's address is an unsigned order
+/// branch (`JBE` / `JA`, the flags of `x <= 0` / `0 < x`) rather than `JZ` / `JNZ`. Candidates
+/// are compare addresses (the IR's address is the branch's); returns those to re-spell.
+pub fn zero_cmps_from_evidence(cands: &[u64], insns: &[NormInsn]) -> std::collections::HashSet<u64> {
+    let mut out = std::collections::HashSet::new();
+    for &pc in cands {
+        let Some(i) = insns.iter().position(|x| x.addr == pc) else { continue };
+        let hi = (i + 2).min(insns.len() - 1);
+        if insns[i..=hi].iter().any(|x| x.text.starts_with("JBE ") || x.text.starts_with("JA ")) {
+            out.insert(pc);
+        }
+    }
+    out
+}

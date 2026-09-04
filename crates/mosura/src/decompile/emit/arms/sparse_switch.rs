@@ -37,8 +37,126 @@ pub const ARM: Arm = Arm {
 
 fn try_emit(pr: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<Answer> {
     let Site::IfEntry { s, idx, indent } = site else { return None };
-    (pr.arms.sparse_switch.switch && (try_emit_sparse_switch(pr, s, idx, indent, out) || try_emit_narrow_switch(pr, s, idx, indent, out)))
+    (pr.arms.sparse_switch.switch
+        && (try_emit_sparse_switch(pr, s, idx, indent, out)
+            || try_emit_narrow_switch(pr, s, idx, indent, out)
+            || try_emit_zero_case_switch(pr, s, idx, indent, out)))
         .then_some(Answer::Emitted)
+}
+
+/// The narrow switch's ZERO case: Ghidra structures a two-case switch `{0, k}` on a 16-bit
+/// selector as `if (x != 0) { switch (x) { case k: A } } else { B }` — the compare tree tests 0
+/// first (`TEST AX,AX ; JBE case0`, the unsigned order flags of a switch tree's lowest value)
+/// and `k` next. Printed as one switch, `case 0: B; break; case k: A; break;`, this compiler
+/// rebuilds the original tree (WAR2 FUN_000487cc EXACT, FUN_0004b86c, FUN_00015d20). Witness:
+/// the zero test's branch is `JBE`/`JA` (`recovered.zero_cmp.sites`, the zero-cmp arm's
+/// evidence at the same compare) and the nonzero arm is a plain if the narrow switch prints on
+/// the same scrutinee (its own witnessed 16-bit compare). Value-identical: the same tests on
+/// the same value, each body under exactly its case.
+fn try_emit_zero_case_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, indent: usize, out: &mut String) -> bool {
+    if !matches!(s.blocks[idx].kind, FlowKind::IfElse) || s.blocks[idx].components.len() != 3 {
+        return false;
+    }
+    let (cond_node, tc, fc) = (s.blocks[idx].components[0], s.blocks[idx].components[1], s.blocks[idx].components[2]);
+    let FlowKind::Basic(cbid) = s.blocks[cond_node].kind else { return false };
+    if s.gotos.contains_key(&cbid) || s.node_gotos.contains_key(&cond_node) || s.node_gotos.contains_key(&idx) {
+        return false;
+    }
+    let Some(cb) = pr.f.block(cbid).ops.iter().rev().copied().find(|&op| !pr.f.op(op).is_dead() && pr.f.op(op).code() == OpCode::Cbranch) else { return false };
+    let Some(cond) = pr.f.op(cb).input(1) else { return false };
+    let Some((x, code, k, cneg)) = sparse_compare(pr, cond) else { return false };
+    if k != 0 || !matches!(code, OpCode::IntEqual | OpCode::IntNotequal) || pr.f.vn(x).size != 2 {
+        return false;
+    }
+    // the zero test's own compare op (through the one BOOL_NEGATE `sparse_compare` peels): its
+    // address keys the zero-cmp witness
+    let mut cv = cond;
+    if pr.f.vn(cv).def.is_some_and(|d| pr.f.op(d).code() == OpCode::BoolNegate) {
+        let Some(inner) = pr.f.vn(cv).def.and_then(|d| pr.f.op(d).input(0)) else { return false };
+        cv = inner;
+    }
+    let Some(cmp) = pr.f.vn(cv).def else { return false };
+    if !pr.recovered.zero_cmp.sites.contains(&pr.f.op(cmp).seqnum.pc.offset) {
+        return false;
+    }
+    // which arm the nonzero path takes: the printed condition is `x != 0` when the compare,
+    // its negation and the structure's negation agree on `!=`
+    let printed_nonzero = (code == OpCode::IntNotequal) ^ cneg ^ s.blocks[idx].negated;
+    let (sw_node, zero_node) = if printed_nonzero { (tc, fc) } else { (fc, tc) };
+    // the nonzero arm: a plain if whose single clause is a witnessed 16-bit equality of the
+    // SAME scrutinee — the narrow switch's own shape, checked before it prints
+    if !matches!(s.blocks[sw_node].kind, FlowKind::If) || s.blocks[sw_node].components.len() != 2 {
+        return false;
+    }
+    let inner_cond = s.blocks[sw_node].components[0];
+    let FlowKind::Basic(ibid) = s.blocks[inner_cond].kind else { return false };
+    let Some(icb) = pr.f.block(ibid).ops.iter().rev().copied().find(|&op| !pr.f.op(op).is_dead() && pr.f.op(op).code() == OpCode::Cbranch) else { return false };
+    let Some(icond) = pr.f.op(icb).input(1) else { return false };
+    let Some((x2, code2, _, _)) = sparse_compare(pr, icond) else { return false };
+    if !matches!(code2, OpCode::IntEqual | OpCode::IntNotequal)
+        || sparse_key(pr, x2) != sparse_key(pr, x)
+        || !pr.recovered.sparse_switch.sites.contains_key(&pr.f.op(icb).seqnum.pc.offset)
+    {
+        return false;
+    }
+    // a `break;` inside either arm would bind to the switch instead of the loop it exits
+    let mut stack = vec![zero_node, sw_node];
+    while let Some(n) = stack.pop() {
+        if s.node_gotos.get(&n).is_some_and(|rs| rs.iter().any(|r| r.is_break)) {
+            return false;
+        }
+        if let FlowKind::Basic(b) = s.blocks[n].kind {
+            if s.gotos.get(&b).is_some_and(|rs| rs.iter().any(|r| r.is_break)) {
+                return false;
+            }
+        }
+        stack.extend(s.blocks[n].components.iter().copied());
+    }
+    let pad = "  ".repeat(indent);
+    let sv = pr.operand(x2, 0, false);
+    let header = format!("{pad}switch ({sv}) {{");
+    let mut buf = String::new();
+    if !try_emit_narrow_switch(pr, s, sw_node, indent, &mut buf) {
+        return false;
+    }
+    let lines: Vec<&str> = buf.lines().collect();
+    if lines.len() < 3 || lines[0] != header || lines[lines.len() - 1] != format!("{pad}}}") {
+        // not the one-switch shape this arm splices into — keep what the narrow switch printed
+        // under the port's own if/else
+        crate::debug!(crate::debug::Topic::SparseSwitch, "{:#x} zero-case switch at node {idx}: unexpected inner shape", pr.f.addr.offset);
+        let cond_s = pr.render_condition(s, cond_node, s.blocks[idx].negated);
+        pr.emit_structured(s, cond_node, indent, out);
+        let _ = writeln!(out, "{pad}if ({cond_s}) {{");
+        let (first, second) = if printed_nonzero { (&buf, None) } else { (&String::new(), Some(&buf)) };
+        if let Some(b) = second {
+            pr.emit_structured(s, tc, indent + 1, out);
+            let _ = writeln!(out, "{pad}}}");
+            let _ = writeln!(out, "{pad}else {{");
+            for l in b.lines() {
+                let _ = writeln!(out, "  {l}");
+            }
+        } else {
+            for l in first.lines() {
+                let _ = writeln!(out, "  {l}");
+            }
+            let _ = writeln!(out, "{pad}}}");
+            let _ = writeln!(out, "{pad}else {{");
+            pr.emit_structured(s, fc, indent + 1, out);
+        }
+        let _ = writeln!(out, "{pad}}}");
+        return true;
+    }
+    debug!(crate::debug::Topic::SparseSwitch, "{:#x} zero-case switch at node {idx}", pr.f.addr.offset);
+    pr.emit_structured(s, cond_node, indent, out);
+    let _ = writeln!(out, "{header}");
+    let _ = writeln!(out, "{pad}case 0:");
+    pr.emit_structured(s, zero_node, indent + 1, out);
+    let _ = writeln!(out, "{pad}  break;");
+    for l in &lines[1..lines.len() - 1] {
+        let _ = writeln!(out, "{l}");
+    }
+    let _ = writeln!(out, "{pad}}}");
+    true
 }
 
 /// A set of closed integer ranges — the values a path through the compare tree admits.

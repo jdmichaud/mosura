@@ -37,7 +37,7 @@ switch_labels	0x151ac	==	3	w5c/8e8e956
 switch_labels	0x151e8	==	3	w5c/8e8e956
 switch_labels	0x49a20	==	4	e2/narrow-switch
 switch_labels	0x4822c	==	4	w5c/8e8e956
-switch_labels	0x3ea40	==	5	e2/narrow-switch
+switch_labels	0x3ea40	==	6	f6/zero-case-switch
 switch_labels	0x4ccc4	==	6	w5c/8e8e956
 switch_labels	0x29dcc	==	8	w5c/8e8e956
 switch_labels	0x173b4	==	1	e2/narrow-switch

@@ -31,6 +31,7 @@ pub struct Report {
     pub table_base: super::table_base::Report,
     pub testmem: super::testmem::Report,
     pub unsigned_cmp: super::unsigned_cmp::Report,
+    pub zero_cmp: super::zero_cmp::Report,
 }
 
 /// Every arm's witnessed decisions, one sub-struct per arm (review F1, 2026-09-04): the printer holds this
@@ -66,6 +67,7 @@ pub struct Recovered {
     pub table_base: super::table_base::Sites,
     pub testmem: super::testmem::Sites,
     pub unsigned_cmp: super::unsigned_cmp::Sites,
+    pub zero_cmp: super::zero_cmp::Sites,
 }
 
 /// What "off" means for one arm's witnessed decisions: the arm owns the answer (review F2,
@@ -107,10 +109,11 @@ impl Off for super::struct_copy::Sites {}
 impl Off for super::table_base::Sites {}
 impl Off for super::testmem::Sites {}
 impl Off for super::unsigned_cmp::Sites {}
+impl Off for super::zero_cmp::Sites {}
 
 impl Recovered {
     /// The switchable arm names (the registry's fields; `-` and `_` both accepted).
-    pub const ARMS: [&'static str; 28] = ["port", "array_index", "cmp_order", "cmp_sign", "complement_cmp", "counted_loop", "ext_cast", "for_rotate", "frame_fill", "inline_call", "join_narrow", "load_hoist", "mask_cast", "narrow_cmp", "nested_conds", "ptr_offset", "return_split", "return_widen", "sdiv_pow2", "signed_load", "snapshot", "sparse_switch", "store_forward", "string_ops", "struct_copy", "table_base", "testmem", "unsigned_cmp"];
+    pub const ARMS: [&'static str; 29] = ["port", "array_index", "cmp_order", "cmp_sign", "complement_cmp", "counted_loop", "ext_cast", "for_rotate", "frame_fill", "inline_call", "join_narrow", "load_hoist", "mask_cast", "narrow_cmp", "nested_conds", "ptr_offset", "return_split", "return_widen", "sdiv_pow2", "signed_load", "snapshot", "sparse_switch", "store_forward", "string_ops", "struct_copy", "table_base", "testmem", "unsigned_cmp", "zero_cmp"];
 
     /// Switch one arm's witnessed decisions off — the port then prints that arm's sites as it
     /// prints everything else — or `Err` with the unknown name. A tree emitted with an arm off
@@ -145,6 +148,7 @@ impl Recovered {
             "table_base" => self.table_base.off(),
             "testmem" => self.testmem.off(),
             "unsigned_cmp" => self.unsigned_cmp.off(),
+            "zero_cmp" => self.zero_cmp.off(),
             other => return Err(format!("unknown arm `{other}` (switchable: {})", Self::ARMS.join(", "))),
         }
         Ok(())
@@ -234,6 +238,15 @@ impl Grown for super::mask_cast::Sites {
     fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
         let mut out = Vec::new();
         if self.sites.keys().any(|k| !prev.sites.contains_key(k)) {
+            out.push("sites");
+        }
+        out
+    }
+}
+impl Grown for super::zero_cmp::Sites {
+    fn grown_over(&self, prev: &Self) -> Vec<&'static str> {
+        let mut out = Vec::new();
+        if self.sites.iter().any(|x| !prev.sites.contains(x)) {
             out.push("sites");
         }
         out
@@ -453,7 +466,7 @@ impl Grown for super::struct_copy::Sites {
 impl Recovered {
     /// The decisions of `self` that `prev` lacks, as `arm.field` names.
     pub fn grown_over(&self, prev: &Recovered) -> Vec<String> {
-        let Recovered { port, complement_cmp, cmp_order, ext_cast, mask_cast, unsigned_cmp, return_split, counted_loop, store_forward, cmp_sign, ptr_offset, load_hoist, inline_call, for_rotate, return_widen, narrow_cmp, signed_load, nested_conds, snapshot, table_base, testmem, array_index, join_narrow, string_ops, sdiv_pow2, frame_fill, sparse_switch, struct_copy } = self;
+        let Recovered { port, complement_cmp, cmp_order, ext_cast, mask_cast, unsigned_cmp, return_split, counted_loop, store_forward, cmp_sign, ptr_offset, load_hoist, inline_call, for_rotate, return_widen, narrow_cmp, signed_load, nested_conds, snapshot, table_base, testmem, array_index, join_narrow, string_ops, sdiv_pow2, frame_fill, sparse_switch, struct_copy, zero_cmp } = self;
         let mut out = Vec::new();
         for f in port.grown_over(&prev.port) {
             out.push(format!("port.{f}"));
@@ -472,6 +485,9 @@ impl Recovered {
         }
         for f in unsigned_cmp.grown_over(&prev.unsigned_cmp) {
             out.push(format!("unsigned_cmp.{f}"));
+        }
+        for f in zero_cmp.grown_over(&prev.zero_cmp) {
+            out.push(format!("zero_cmp.{f}"));
         }
         for f in return_split.grown_over(&prev.return_split) {
             out.push(format!("return_split.{f}"));
@@ -555,9 +571,9 @@ mod tests {
     /// to give, enforced by the compiler instead of a hand list.
     #[test]
     fn every_registry_arm_is_in_arms() {
-        let Recovered { port, complement_cmp, cmp_order, ext_cast, mask_cast, unsigned_cmp, return_split, counted_loop, store_forward, cmp_sign, ptr_offset, load_hoist, inline_call, for_rotate, return_widen, narrow_cmp, signed_load, nested_conds, snapshot, table_base, testmem, array_index, join_narrow, string_ops, sdiv_pow2, frame_fill, sparse_switch, struct_copy } = Recovered::default();
-        let names = ["port", "complement_cmp", "cmp_order", "ext_cast", "mask_cast", "unsigned_cmp", "return_split", "counted_loop", "store_forward", "cmp_sign", "ptr_offset", "load_hoist", "inline_call", "for_rotate", "return_widen", "narrow_cmp", "signed_load", "nested_conds", "snapshot", "table_base", "testmem", "array_index", "join_narrow", "string_ops", "sdiv_pow2", "frame_fill", "sparse_switch", "struct_copy"];
-        let _ = (&port, &complement_cmp, &cmp_order, &ext_cast, &mask_cast, &unsigned_cmp, &return_split, &counted_loop, &store_forward, &cmp_sign, &ptr_offset, &load_hoist, &inline_call, &for_rotate, &return_widen, &narrow_cmp, &signed_load, &nested_conds, &snapshot, &table_base, &testmem, &array_index, &join_narrow, &string_ops, &sdiv_pow2, &frame_fill, &sparse_switch, &struct_copy);
+        let Recovered { port, complement_cmp, cmp_order, ext_cast, mask_cast, unsigned_cmp, return_split, counted_loop, store_forward, cmp_sign, ptr_offset, load_hoist, inline_call, for_rotate, return_widen, narrow_cmp, signed_load, nested_conds, snapshot, table_base, testmem, array_index, join_narrow, string_ops, sdiv_pow2, frame_fill, sparse_switch, struct_copy, zero_cmp } = Recovered::default();
+        let names = ["port", "complement_cmp", "cmp_order", "ext_cast", "mask_cast", "unsigned_cmp", "return_split", "counted_loop", "store_forward", "cmp_sign", "ptr_offset", "load_hoist", "inline_call", "for_rotate", "return_widen", "narrow_cmp", "signed_load", "nested_conds", "snapshot", "table_base", "testmem", "array_index", "join_narrow", "string_ops", "sdiv_pow2", "frame_fill", "sparse_switch", "struct_copy", "zero_cmp"];
+        let _ = (&port, &complement_cmp, &cmp_order, &ext_cast, &mask_cast, &unsigned_cmp, &return_split, &counted_loop, &store_forward, &cmp_sign, &ptr_offset, &load_hoist, &inline_call, &for_rotate, &return_widen, &narrow_cmp, &signed_load, &nested_conds, &snapshot, &table_base, &testmem, &array_index, &join_narrow, &string_ops, &sdiv_pow2, &frame_fill, &sparse_switch, &struct_copy, &zero_cmp);
         assert_eq!(names.len(), Recovered::ARMS.len());
         for n in names {
             assert!(Recovered::ARMS.contains(&n), "{n} is a registry arm but not switchable");

@@ -156,6 +156,7 @@ pub mod store_forward;
 pub mod string_ops;
 pub mod struct_copy;
 pub mod unsigned_cmp;
+pub mod zero_cmp;
 pub mod snapshot;
 pub mod return_split;
 pub mod join_narrow;
@@ -297,7 +298,8 @@ mod tests {
     /// The arm files, as text, for the surface scan — every `pub mod` of this module must be here
     /// (`arms_touch_only_the_documented_surface` checks that against this file's own source, so a
     /// new arm file cannot slip past the scan).
-    const ARM_SOURCES: [(&str, &str); 31] = [
+    const ARM_SOURCES: [(&str, &str); 32] = [
+        ("zero_cmp.rs", include_str!("zero_cmp.rs")),
         ("table_base.rs", include_str!("table_base.rs")),
         ("narrow_cmp.rs", include_str!("narrow_cmp.rs")),
         ("signed_load.rs", include_str!("signed_load.rs")),
@@ -508,8 +510,8 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
     // the order they are asked, first answer wins):
     //   OpRoot:      string-ops, sdiv-pow2, struct-return (a witnessed CALL)
     //   Compare:     complement-cmp (the immediate flavour), then cmp-order (the operand swap), then cmp-sign, then narrow-cmp
-    //   Equality:    unsigned-cmp, then cmp-sign (a narrow signed operand the original zero-extends), then narrow-cmp
-    //   NegatedEquality: cmp-sign only
+    //   Equality:    unsigned-cmp, then cmp-sign (a narrow signed operand the original zero-extends), then narrow-cmp, then zero-cmp
+    //   NegatedEquality: cmp-sign, then zero-cmp (the flipped token names the order compare)
     //   ReturnValue: return-widen (the sign of a widened narrow return)
     //   Extension:   ext-cast (the promotion rendering of INT_ZEXT / INT_SEXT)
     //   CallArg:     mask-cast (a call argument the original masks before the call), then store-forward
@@ -528,8 +530,9 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
         ValueSite::Var { v } => struct_return::render_value(p, &ValueSite::Var { v }).or_else(|| string_ops::render_var_value(p, v)),
         ValueSite::Equality { op, sym, prec } => unsigned_cmp::render(p, op, sym, prec)
             .or_else(|| cmp_sign::render(p, op, sym, prec))
-            .or_else(|| narrow_cmp::render(p, op, sym, prec)),
-        ValueSite::NegatedEquality { op, sym, prec } => cmp_sign::render(p, op, sym, prec),
+            .or_else(|| narrow_cmp::render(p, op, sym, prec))
+            .or_else(|| zero_cmp::render(p, op, sym, prec)),
+        ValueSite::NegatedEquality { op, sym, prec } => cmp_sign::render(p, op, sym, prec).or_else(|| zero_cmp::render(p, op, sym, prec)),
         ValueSite::Compare { op, strict, prec } => complement_cmp::render(p, op, strict, prec)
             .or_else(|| cmp_order::render(p, op, strict, prec))
             .or_else(|| cmp_sign::render(p, op, if strict { "<" } else { "<=" }, prec))

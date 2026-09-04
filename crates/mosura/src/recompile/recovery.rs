@@ -273,6 +273,12 @@ fn derive(report: &EmitReport, insns: &[NormInsn], call_arg_orders: HashMap<u64,
                 insns,
             ),
         },
+        zero_cmp: crate::decompile::emit::arms::zero_cmp::Sites {
+            sites: crate::recompile::buildconfig::zero_cmps_from_evidence(
+                &report.zero_cmp.candidates,
+                insns,
+            ),
+        },
     }
 }
 
