@@ -1,13 +1,14 @@
 //! Language registry: resolve a Ghidra language id (e.g. `x86:LE:64:default`) to
 //! its compiled `.sla` tables + default decode context, by reading the processor
-//! `.ldefs`/`.pspec` files from the pinned Ghidra tree. This is what lets the
+//! `.ldefs`/`.pspec` files through the resource provider ([`crate::resources`]: the embedded
+//! copies of the pinned Ghidra tree, or an override directory). The paths this module hands
+//! out are RELATIVE resource names (`ghidra/Processors/<P>/data/languages/<file>`,
+//! `specs/<file>`); an absolute path is read from disk as-is. This is what lets the
 //! top-level [`crate::sleigh::disassemble`] work from a bare language id.
 
 use crate::decompile::transform::{LanedRegister, LanedRegisterSet};
-use crate::paths;
 use crate::sleigh::engine::Spec;
 use std::collections::HashMap;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -34,23 +35,21 @@ pub fn resolve(lang_id: &str) -> Option<(PathBuf, PathBuf)> {
 /// The filesystem walk behind [`resolve`] — Ghidra's one-time `.ldefs` read.
 fn resolve_language_paths(lang_id: &str) -> Option<(PathBuf, PathBuf)> {
     let id4: String = lang_id.split(':').take(4).collect::<Vec<_>>().join(":");
-    let procs = paths::processors_dir();
-    for proc in fs::read_dir(&procs).ok()?.flatten() {
-        let langs = proc.path().join("data/languages");
-        let Ok(rd) = fs::read_dir(&langs) else { continue };
-        for entry in rd.flatten() {
-            let p = entry.path();
-            if p.extension().and_then(|s| s.to_str()) != Some("ldefs") {
-                continue;
-            }
-            let Ok(text) = fs::read_to_string(&p) else { continue };
-            let Ok(doc) = roxmltree::Document::parse(&text) else { continue };
-            for l in doc.descendants().filter(|n| n.tag_name().name() == "language") {
-                if l.attribute("id") == Some(id4.as_str()) {
-                    let sla = l.attribute("slafile")?;
-                    let pspec = l.attribute("processorspec")?;
-                    return Some((langs.join(sla), langs.join(pspec)));
-                }
+    // The `.ldefs` of every processor, through the resource provider (embedded, or an override
+    // directory, or the workspace's vendored tree): the names are RELATIVE resource names.
+    let res = crate::resources::get();
+    for name in res.list("ghidra/Processors/") {
+        if !name.ends_with(".ldefs") {
+            continue;
+        }
+        let Some(text) = res.read_string(&name) else { continue };
+        let Ok(doc) = roxmltree::Document::parse(&text) else { continue };
+        let langs = name.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+        for l in doc.descendants().filter(|n| n.tag_name().name() == "language") {
+            if l.attribute("id") == Some(id4.as_str()) {
+                let sla = l.attribute("slafile")?;
+                let pspec = l.attribute("processorspec")?;
+                return Some((PathBuf::from(format!("{langs}/{sla}")), PathBuf::from(format!("{langs}/{pspec}"))));
             }
         }
     }
@@ -130,33 +129,29 @@ fn resolve_cspec_path(lang_id: &str, compiler_spec_id: &str) -> Option<PathBuf> 
             _ => None,
         };
         if let Some(file) = file {
-            let p = paths::specs_dir().join(file);
-            if p.exists() {
-                return Some(p);
+            let name = format!("specs/{file}");
+            if crate::resources::get().exists(&name) {
+                return Some(PathBuf::from(name));
             }
         }
     }
 
     let id4: String = lang_id.split(':').take(4).collect::<Vec<_>>().join(":");
-    let procs = paths::processors_dir();
-    for proc in fs::read_dir(&procs).ok()?.flatten() {
-        let langs = proc.path().join("data/languages");
-        let Ok(rd) = fs::read_dir(&langs) else { continue };
-        for entry in rd.flatten() {
-            let p = entry.path();
-            if p.extension().and_then(|s| s.to_str()) != Some("ldefs") {
+    let res = crate::resources::get();
+    for name in res.list("ghidra/Processors/") {
+        if !name.ends_with(".ldefs") {
+            continue;
+        }
+        let Some(text) = res.read_string(&name) else { continue };
+        let Ok(doc) = roxmltree::Document::parse(&text) else { continue };
+        let langs = name.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
+        for l in doc.descendants().filter(|n| n.tag_name().name() == "language") {
+            if l.attribute("id") != Some(id4.as_str()) {
                 continue;
             }
-            let Ok(text) = fs::read_to_string(&p) else { continue };
-            let Ok(doc) = roxmltree::Document::parse(&text) else { continue };
-            for l in doc.descendants().filter(|n| n.tag_name().name() == "language") {
-                if l.attribute("id") != Some(id4.as_str()) {
-                    continue;
-                }
-                for c in l.children().filter(|n| n.tag_name().name() == "compiler") {
-                    if c.attribute("id") == Some(compiler_spec_id) {
-                        return Some(langs.join(c.attribute("spec")?));
-                    }
+            for c in l.children().filter(|n| n.tag_name().name() == "compiler") {
+                if c.attribute("id") == Some(compiler_spec_id) {
+                    return Some(PathBuf::from(format!("{langs}/{}", c.attribute("spec")?)));
                 }
             }
         }
@@ -176,7 +171,7 @@ fn resolve_cspec_path(lang_id: &str, compiler_spec_id: &str) -> Option<PathBuf> 
 /// transient read failure silently decode x86 with `addrsize=0`/`opsize=0`, i.e. in 16-bit real
 /// mode (`segment(...)` renders) — see [`load_cached`].
 pub fn pspec_context_sets(pspec: &Path) -> Option<Vec<(String, u64)>> {
-    let text = fs::read_to_string(pspec).ok()?;
+    let text = crate::resources::get().read_string(pspec.to_str()?)?;
     let doc = roxmltree::Document::parse(&text).ok()?;
     let sets = doc
         .descendants()
@@ -196,7 +191,7 @@ pub fn pspec_context_sets(pspec: &Path) -> Option<Vec<(String, u64)>> {
 /// entry block by the `ActionConstbase` port (`decompile::pipeline`). Empty `Vec` (not `None`) means
 /// "the spec declares no tracked register", legitimate on an arch that tracks none.
 pub fn pspec_tracked_sets(pspec: &Path) -> Option<Vec<(String, u64)>> {
-    let text = fs::read_to_string(pspec).ok()?;
+    let text = crate::resources::get().read_string(pspec.to_str()?)?;
     let doc = roxmltree::Document::parse(&text).ok()?;
     let sets = doc
         .descendants()
@@ -232,7 +227,7 @@ pub(crate) fn resolve_tracked(spec: &Spec, pairs: &[(String, u64)]) -> Vec<(u64,
 /// [`pspec_context_sets`]: an unreadable spec must fail the language load, not silently produce
 /// a lane-free architecture (which would silently disable lane division for the whole run).
 pub fn pspec_laned_size_masks(pspec: &Path, spec: &Spec) -> Option<Vec<(i32, u32)>> {
-    let text = fs::read_to_string(pspec).ok()?;
+    let text = crate::resources::get().read_string(pspec.to_str()?)?;
     let doc = roxmltree::Document::parse(&text).ok()?;
     let mut by_size: std::collections::BTreeMap<i32, u32> = std::collections::BTreeMap::new();
     // Only `<register>` elements inside `<register_data>` carry lane sizes (decodeRegisterData).
@@ -266,22 +261,22 @@ pub fn pspec_laned_registers(pspec: &Path, spec: &Spec) -> Option<LanedRegisterS
 /// This is what lets [`crate::speccache::get`], which is keyed only by the `.sla` path, attach the
 /// architecture's laned registers.
 pub fn default_pspec_for_sla(sla: &Path) -> Option<PathBuf> {
-    let langs = sla.parent()?;
+    let langs = sla.parent()?.to_str()?;
     let sla_name = sla.file_name()?.to_str()?;
+    let res = crate::resources::get();
     let mut fallback: Option<PathBuf> = None;
-    for entry in fs::read_dir(langs).ok()?.flatten() {
-        let p = entry.path();
-        if p.extension().and_then(|s| s.to_str()) != Some("ldefs") {
+    for name in res.list(&format!("{langs}/")) {
+        if !name.ends_with(".ldefs") {
             continue;
         }
-        let Ok(text) = fs::read_to_string(&p) else { continue };
+        let Some(text) = res.read_string(&name) else { continue };
         let Ok(doc) = roxmltree::Document::parse(&text) else { continue };
         for l in doc.descendants().filter(|n| n.tag_name().name() == "language") {
             if l.attribute("slafile") != Some(sla_name) {
                 continue;
             }
             let Some(pspec) = l.attribute("processorspec") else { continue };
-            let path = langs.join(pspec);
+            let path = PathBuf::from(format!("{langs}/{pspec}"));
             if l.attribute("id").is_some_and(|id| id.ends_with(":default")) {
                 return Some(path);
             }
@@ -306,7 +301,7 @@ pub fn default_pspec_for_sla(sla: &Path) -> Option<PathBuf> {
 /// outside this module.
 fn load(lang_id: &str) -> Option<(Spec, Vec<u32>)> {
     let (sla, pspec) = resolve(lang_id)?;
-    let mut spec = Spec::from_sla(&fs::read(&sla).ok()?).ok()?;
+    let mut spec = Spec::from_sla(&crate::resources::get().read(sla.to_str()?)?).ok()?;
     // The real-disassembly path attaches the laned (vector) registers, mirroring the cache
     // loader — see the reactivation note in `speccache::get`.
     spec.laned = pspec_laned_size_masks(&pspec, &spec)?;
@@ -367,7 +362,7 @@ mod tests {
         let Some((sla, pspec)) = resolve("x86:LE:32") else { return }; // tree absent → skip
         let pairs = pspec_tracked_sets(&pspec).expect("readable pspec");
         assert_eq!(pairs, vec![("DF".to_string(), 0)], "x86 tracks DF=0");
-        let Ok(bytes) = fs::read(&sla) else { return };
+        let Some(bytes) = crate::resources::get().read(sla.to_str().unwrap()) else { return };
         let Ok(spec) = Spec::from_sla(&bytes) else { return };
         let resolved = resolve_tracked(&spec, &pairs);
         let df_off = spec.register_offset("DF").expect("DF register");
@@ -381,7 +376,7 @@ mod tests {
     #[test]
     fn x86_64_laned_registers_from_pspec() {
         let Some((sla, pspec)) = resolve("x86:LE:64") else { return }; // tree absent → skip
-        let Ok(bytes) = fs::read(&sla) else { return };
+        let Some(bytes) = crate::resources::get().read(sla.to_str().unwrap()) else { return };
         let Ok(spec) = Spec::from_sla(&bytes) else { return };
         let set = pspec_laned_registers(&pspec, &spec).expect("readable pspec");
         assert!(!set.is_empty(), "x86-64 has laned registers");
@@ -432,7 +427,7 @@ mod tests {
         let pspec = default_pspec_for_sla(&sla).expect("a pspec for x86-64.sla");
         assert_eq!(pspec.file_name().and_then(|s| s.to_str()), Some("x86-64.pspec"));
         // And it resolves to the same laned set the forward path (resolve) produces.
-        let Ok(bytes) = fs::read(&sla) else { return };
+        let Some(bytes) = crate::resources::get().read(sla.to_str().unwrap()) else { return };
         let Ok(spec) = Spec::from_sla(&bytes) else { return };
         assert_eq!(
             pspec_laned_size_masks(&pspec, &spec),

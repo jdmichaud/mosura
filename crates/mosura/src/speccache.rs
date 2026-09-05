@@ -41,8 +41,8 @@ pub fn get(path: &Path) -> Option<&'static Spec> {
     // `SleighLanguage.initialize()` propagates the spec-file I/O error instead of coming up
     // with unset architecture metadata. A `.sla` with no matching `.ldefs` entry (no pspec to
     // resolve) legitimately keeps the empty laned set.
-    let spec = std::fs::read(path)
-        .ok()
+    let spec = crate::resources::get()
+        .read(path.to_str().unwrap_or(""))
         .and_then(|bytes| Spec::from_sla(&bytes).ok())
         .and_then(|mut s| {
             if let Some(pspec) = crate::lang::default_pspec_for_sla(path) {

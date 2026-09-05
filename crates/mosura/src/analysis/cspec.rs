@@ -112,7 +112,7 @@ fn decode_default_input_paramlist(
     spaces: &SpaceManager,
 ) -> Option<ParamList> {
     let path = crate::lang::resolve_cspec(language_id, compiler_spec_id)?;
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = crate::resources::get().read_string(path.to_str()?)?;
     let doc = roxmltree::Document::parse(&text).ok()?;
     // <compiler_spec> … <default_proto> <prototype> <input> … </input> …
     let proto = default_prototype(&doc)?;
@@ -140,7 +140,7 @@ pub fn named_input_paramlist(
     static CACHE: OnceLock<CspecCache<Option<ParamList>>> = OnceLock::new();
     cspec_cached(&CACHE, language_id, compiler_spec_id, || {
         let path = crate::lang::resolve_cspec(language_id, compiler_spec_id)?;
-        let text = std::fs::read_to_string(path).ok()?;
+        let text = crate::resources::get().read_string(path.to_str()?)?;
         let doc = roxmltree::Document::parse(&text).ok()?;
         let proto = doc.descendants().find(|n| {
             n.tag_name().name() == "prototype"
@@ -177,7 +177,7 @@ fn decode_default_output_paramlist(
     spaces: &SpaceManager,
 ) -> Option<ParamList> {
     let path = crate::lang::resolve_cspec(language_id, compiler_spec_id)?;
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = crate::resources::get().read_string(path.to_str()?)?;
     let doc = roxmltree::Document::parse(&text).ok()?;
     let proto = default_prototype(&doc)?;
     let output = proto.children().find(|n| n.tag_name().name() == "output")?;
@@ -227,7 +227,7 @@ fn decode_default_stack_pointer(
     spaces: &SpaceManager,
 ) -> Option<(SpaceId, u64, u32)> {
     let path = crate::lang::resolve_cspec(language_id, compiler_spec_id)?;
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = crate::resources::get().read_string(path.to_str()?)?;
     let doc = roxmltree::Document::parse(&text).ok()?;
     let sp = doc
         .descendants()
@@ -282,7 +282,7 @@ pub fn funcptr_align(language_id: &str, compiler_spec_id: &str) -> i32 {
 
 fn decode_funcptr_align(language_id: &str, compiler_spec_id: &str) -> i32 {
     let Some(path) = crate::lang::resolve_cspec(language_id, compiler_spec_id) else { return 0 };
-    let Ok(text) = std::fs::read_to_string(path) else { return 0 };
+    let Some(text) = crate::resources::get().read_string(path.to_str().unwrap_or("")) else { return 0 };
     let Ok(doc) = roxmltree::Document::parse(&text) else { return 0 };
     let Some(mut align) = doc
         .descendants()
@@ -306,7 +306,7 @@ fn decode_funcptr_align(language_id: &str, compiler_spec_id: &str) -> i32 {
 
 fn decode_aggressive_ext_trim(language_id: &str, compiler_spec_id: &str) -> bool {
     let Some(path) = crate::lang::resolve_cspec(language_id, compiler_spec_id) else { return false };
-    let Ok(text) = std::fs::read_to_string(path) else { return false };
+    let Some(text) = crate::resources::get().read_string(path.to_str().unwrap_or("")) else { return false };
     let Ok(doc) = roxmltree::Document::parse(&text) else { return false };
     doc.descendants()
         .find(|n| n.is_element() && n.tag_name().name() == "aggressivetrim")
@@ -349,7 +349,7 @@ pub fn called_proto_model(
     static CACHE: OnceLock<CspecCache<Option<ProtoModel>>> = OnceLock::new();
     cspec_cached(&CACHE, language_id, compiler_spec_id, || {
         let path = crate::lang::resolve_cspec(language_id, compiler_spec_id)?;
-        let text = std::fs::read_to_string(path).ok()?;
+        let text = crate::resources::get().read_string(path.to_str()?)?;
         let doc = roxmltree::Document::parse(&text).ok()?;
         let default = decode_prototype_node(spec, compiler_spec_id, spaces, &doc, default_prototype(&doc)?)?;
         let Some(eval) = doc
@@ -373,7 +373,7 @@ fn decode_default_proto_model(
     spaces: &SpaceManager,
 ) -> Option<ProtoModel> {
     let path = crate::lang::resolve_cspec(language_id, compiler_spec_id)?;
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = crate::resources::get().read_string(path.to_str()?)?;
     let doc = roxmltree::Document::parse(&text).ok()?;
     let default = decode_prototype_node(spec, compiler_spec_id, spaces, &doc, default_prototype(&doc)?)?;
     // Ghidra `Architecture::decodeProtoEval` (architecture.cc:769): `<eval_current_prototype name>`

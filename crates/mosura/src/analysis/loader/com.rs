@@ -70,7 +70,7 @@ pub fn load_com(data: &[u8]) -> Result<Program, LoadError> {
 /// point when `entry="true"`. Parsed from the resolved `.pspec` so it tracks the spec.
 fn apply_default_symbols(ram: SpaceId, program: &mut Program) {
     let Some((_, pspec_path)) = crate::lang::resolve(LANGUAGE_ID) else { return };
-    let Ok(text) = std::fs::read_to_string(&pspec_path) else { return };
+    let Some(text) = crate::resources::get().read_string(pspec_path.to_str().unwrap_or("")) else { return };
     let Ok(doc) = roxmltree::Document::parse(&text) else { return };
     for sym in doc
         .descendants()

@@ -160,6 +160,23 @@ impl Resources {
     /// Every name under `prefix`, from every source, sorted and deduplicated — the walk a
     /// directory listing used to be (the `.ldefs` discovery, the pattern files, the FID databases).
     pub fn list(&self, prefix: &str) -> Vec<String> {
+        if Path::new(prefix).is_absolute() {
+            // a real directory (dev convenience, like an absolute `read`): its files, recursively
+            let mut names = BTreeSet::new();
+            let mut stack = vec![PathBuf::from(prefix.trim_end_matches('/'))];
+            while let Some(d) = stack.pop() {
+                let Ok(rd) = std::fs::read_dir(&d) else { continue };
+                for e in rd.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        stack.push(p);
+                    } else {
+                        names.insert(p.to_string_lossy().into_owned());
+                    }
+                }
+            }
+            return names.into_iter().collect();
+        }
         let mut names: BTreeSet<String> = self.index.keys().filter(|n| n.starts_with(prefix)).map(|n| n.to_string()).collect();
         for m in &self.mounts {
             // the mount contributes names `<m.prefix>/<rel>`; only those under `prefix`
