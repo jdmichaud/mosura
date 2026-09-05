@@ -5,5 +5,11 @@ edition.workspace = true
 license.workspace = true
 publish = false
 
+[features]
+# `cargo xtask header` regenerates include/mosura.h from mosura-capi (design E11): cbindgen is an
+# xtask-only, opt-in dependency — never a build dependency of the shipped crates.
+header = ["dep:cbindgen"]
+
 [dependencies]
 mosura-core = { path = "../mosura-core" }
+cbindgen = { version = "0.27", optional = true, default-features = false }

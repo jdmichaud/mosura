@@ -6,6 +6,8 @@
 
 # Rust
 /target/
+# `cargo xtask dist` output: libmosura.{so,a}, mosura.h, the mosura binary
+/dist/
 **/*.rs.bk
 Cargo.lock.bak
 

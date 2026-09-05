@@ -29,7 +29,7 @@ else
 fi
 
 echo "== 1. build the gate binaries (normal PATH) =="
-cargo test --release -p mosura-core --no-run --message-format=json 2>/dev/null \
+cargo test --release --workspace --no-run --message-format=json 2>/dev/null \
   | python3 -c '
 import sys, json
 for line in sys.stdin:

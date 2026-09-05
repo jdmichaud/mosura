@@ -318,6 +318,70 @@ fn data_list() {
     }
 }
 
+/// `cargo metadata`'s `target_directory` — where `cargo build` put the artifacts (honours the
+/// user's cargo config and CARGO_TARGET_DIR without xtask reading the environment itself).
+fn target_directory(ws: &Path) -> PathBuf {
+    let out = Command::new("cargo").args(["metadata", "--format-version", "1", "--no-deps"]).current_dir(ws).output().unwrap_or_else(|e| die(format!("cargo metadata: {e}")));
+    if !out.status.success() {
+        die(format!("cargo metadata failed: {}", String::from_utf8_lossy(&out.stderr)));
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    let key = "\"target_directory\":\"";
+    let Some(i) = text.find(key) else { die("cargo metadata: no target_directory") };
+    let rest = &text[i + key.len()..];
+    let Some(j) = rest.find('"') else { die("cargo metadata: unterminated target_directory") };
+    PathBuf::from(rest[..j].replace("\\/", "/").replace("\\\\", "\\"))
+}
+
+/// `header` — regenerate `include/mosura.h` from `crates/mosura-capi` with cbindgen
+/// (`crates/mosura-capi/cbindgen.toml`). The header is COMMITTED and reviewed like source (design
+/// decision E11); cbindgen is an xtask-only, opt-in dependency: `cargo xtask header` needs
+/// `cargo run -p xtask --features header -- header` (or `cargo xtask` aliased with the feature).
+#[cfg(feature = "header")]
+fn header() {
+    let ws = workspace_root();
+    let crate_dir = ws.join("crates/mosura-capi");
+    let config = cbindgen::Config::from_file(crate_dir.join("cbindgen.toml")).unwrap_or_else(|e| die(format!("cbindgen.toml: {e}")));
+    let bindings = cbindgen::Builder::new().with_crate(&crate_dir).with_config(config).generate().unwrap_or_else(|e| die(format!("cbindgen: {e}")));
+    let out = ws.join("include/mosura.h");
+    std::fs::create_dir_all(out.parent().unwrap()).unwrap_or_else(|e| die(format!("include/: {e}")));
+    if !bindings.write_to_file(&out) {
+        println!("header: {} unchanged", out.display());
+    } else {
+        println!("header: wrote {}", out.display());
+    }
+}
+
+#[cfg(not(feature = "header"))]
+fn header() {
+    die("`header` needs cbindgen: run `cargo run -p xtask --features header -- header` (an opt-in dev dependency, never a build dependency of the shipped crates)");
+}
+
+/// `dist` — the shipped artifacts under `dist/`: `libmosura.so`, `libmosura.a` (the capi
+/// cdylib/staticlib renamed — a package cannot depend on a crate with its own lib name, so the
+/// rlib is `mosura_capi` and the product name is given here, design decision E12), `mosura.h`
+/// (the committed header) and the `mosura` binary. Builds release first.
+fn dist() {
+    let ws = workspace_root();
+    let status = Command::new("cargo").args(["build", "--release", "-p", "mosura-capi", "-p", "mosura-cli"]).current_dir(&ws).status().unwrap_or_else(|e| die(format!("cargo build: {e}")));
+    if !status.success() {
+        die("cargo build --release failed");
+    }
+    let target = target_directory(&ws).join("release");
+    let dist = ws.join("dist");
+    std::fs::create_dir_all(&dist).unwrap_or_else(|e| die(format!("dist/: {e}")));
+    let copies = [
+        (target.join("libmosura_capi.so"), dist.join("libmosura.so")),
+        (target.join("libmosura_capi.a"), dist.join("libmosura.a")),
+        (ws.join("include/mosura.h"), dist.join("mosura.h")),
+        (target.join("mosura"), dist.join("mosura")),
+    ];
+    for (from, to) in &copies {
+        std::fs::copy(from, to).unwrap_or_else(|e| die(format!("copy {} -> {}: {e}", from.display(), to.display())));
+        println!("dist: {}", to.display());
+    }
+}
+
 fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("baseline") => baseline(),
@@ -326,8 +390,13 @@ fn main() {
         Some("devcfg") => devcfg_cmd(),
         Some("data-export") => data_export(),
         Some("data-list") => data_list(),
+        Some("header") => header(),
+        Some("dist") => dist(),
         other => {
-            eprintln!("usage: cargo xtask <baseline|fid-build|omf-uber|devcfg|data-export|data-list>");
+            eprintln!("usage: cargo xtask <baseline|fid-build|omf-uber|devcfg|data-export|data-list|header|dist>");
+            eprintln!();
+            eprintln!("  header                               regenerate include/mosura.h from crates/mosura-capi (needs --features header)");
+            eprintln!("  dist                                 build release and stage dist/{{libmosura.so,libmosura.a,mosura.h,mosura}}");
             eprintln!();
             eprintln!("  devcfg [<section.key> [<default>]]   print a dev-config.toml value (or every key)");
             eprintln!("  data-export <dir> [--overwrite] [--what all|specs|fid]");
