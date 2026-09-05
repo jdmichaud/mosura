@@ -85,3 +85,24 @@ fn check(s: &mut Session, o: &Options, _p: &mut dyn Progress) -> Result<Table> {
     b.row().str(name).bool(out.ok()).bool(out.adjudicated).str(out.log.trim());
     Ok(b.finish(false))
 }
+
+/// Compile units through the named toolchain (the typed `mosura_toolchain_compile`): the `flags`
+/// column is space-separated. Answers `compile_outputs` (key, ok, adjudicated, object, log).
+pub fn compile_table(s: &Session, name: &str, units: &Table) -> Result<Table> {
+    let tc = s.toolchains.get(name).ok_or_else(|| Error::NotFound(format!("toolchain `{name}` is not open")))?;
+    let mut list = Vec::with_capacity(units.rows() as usize);
+    let (kc, sc, fc) = (units.col("key").ok_or_else(|| Error::InvalidArg("units: no `key` column".into()))?, units.col("source").ok_or_else(|| Error::InvalidArg("units: no `source` column".into()))?, units.col("flags"));
+    for r in 0..units.rows() {
+        let flags = match fc {
+            Some(c) => units.str(r, c)?.split_whitespace().map(str::to_string).collect(),
+            None => Vec::new(),
+        };
+        list.push(CompileUnit { key: units.str(r, kc)?.to_string(), source: units.str(r, sc)?.to_string(), flags });
+    }
+    let outs = tc.driver.compile_batch(&list);
+    let mut b = TableBuilder::new(&crate::ops::schemas::COMPILE_OUTPUTS);
+    for o in &outs {
+        b.row().str(&o.key).bool(o.ok()).bool(o.adjudicated).bytes(o.object.as_deref().unwrap_or(&[])).str(&o.log);
+    }
+    Ok(b.finish(false))
+}

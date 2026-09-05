@@ -140,3 +140,35 @@ fn a_watcom_program_emits_through_the_binding_and_call_reaches_every_op() {
     let e = s2.call("program.analyze", None, Some(&mut |_: &str, _: u64, _: u64| false)).unwrap_err();
     assert_eq!(e.status, Status::MOSURA_ERR_CANCELLED);
 }
+
+#[test]
+fn the_recompile_side_through_the_binding() {
+    let ctx = Ctx::new(CtxConfig::default()).unwrap();
+    assert_eq!(ctx.toolchain_specs().unwrap().rows(), 3);
+    let dir = mosura_core_paths::corpus_dir().ancestors().nth(2).unwrap().join("target/binding-test-sessions/recompile");
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut s = Session::open(&ctx, Some(&dir), None).unwrap();
+    let tc = s.toolchain_open("cc", Some(&ctx.options().unwrap().with("toolchain.spec", "gcc-native").unwrap().with("toolchain.install", "cc").unwrap())).unwrap();
+    assert_eq!(s.rounds().unwrap().rows(), 0);
+    s.add_input(&corpus("watcom_hello.exe"), "watcom_hello.exe").unwrap();
+    let mut p = s.program_open(None, None).unwrap();
+    p.analyze(None, None).unwrap();
+    let entry = p.table("functions").unwrap().u64(0, 1).unwrap();
+    let f = p.decompile(entry, None).unwrap();
+    let bc = f.buildconfig(None).unwrap();
+    assert!((0..bc.rows()).any(|r| bc.str(r, 0).unwrap() == "flag" && bc.str(r, 1).unwrap() == "-5r"));
+    let v = f.verify(b"junk", None).unwrap();
+    assert_eq!(v.str(0, 3).unwrap(), "OBJ_ERROR");
+    // recompile needs the real compiler: with `cc` standing in for gcc -m32 the unit compiles or
+    // fails, but the call itself must answer a verdict row either way — skipped here (the
+    // compiler-free gate); the equivalence gate runs the Watcom path
+    let _ = tc;
+    let a = dir.join("a.tsv");
+    std::fs::write(&a, "idx\tva\tname\tverdict\tbytes\tprimary\tsim\tequal\torig_n\tcand_n\tclasses\tSIM=structural\n00001\t00010063\tF1\tEXACT\tIdentical\t\t1.000\t29\t29\t29\t\n").unwrap();
+    s.call("round.import", Some(&ctx.options().unwrap().with("round", "ra").unwrap().with("verdicts", a.to_str().unwrap()).unwrap()), None).unwrap();
+    assert_eq!(s.rounds().unwrap().rows(), 1);
+    assert_eq!(s.round_table("ra", Some("verdicts")).unwrap().str(0, 3).unwrap(), "EXACT");
+    assert!(s.round_gates("ra", None, None).unwrap().rows() >= 2);
+    assert_eq!(s.round_compare("ra", "nope").unwrap_err().status, Status::MOSURA_ERR_NOT_FOUND);
+    let _ = std::fs::remove_dir_all(&dir);
+}

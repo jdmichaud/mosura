@@ -20,6 +20,7 @@ pub mod program;
 pub mod session;
 pub mod status;
 pub mod table;
+pub mod toolchain;
 
 use std::ffi::{c_char, CString};
 use std::sync::OnceLock;
@@ -36,6 +37,7 @@ pub use program::*;
 pub use session::*;
 pub use status::*;
 pub use table::*;
+pub use toolchain::*;
 
 /// The API version this library implements; a client checks the major first.
 pub const MOSURA_API_VERSION_MAJOR: u32 = 0;

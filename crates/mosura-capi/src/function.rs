@@ -33,6 +33,13 @@ unsafe fn function_of<'a>(p: *const mosura_function) -> Result<&'a FunctionCell>
     handle::as_ref::<FunctionCell>(p as *const c_void, Kind::Function)
 }
 
+/// The parameters of an operation on the function behind `f` (for the §11 entry points): the
+/// session cell to run on, and the options `op` accepts plus `extra`, program and entry.
+pub(crate) unsafe fn function_params_of(f: *mut mosura_function, op: &str, extra: Option<&Options>) -> Result<(SessionCell, Options)> {
+    let cell = function_of(f)?;
+    Ok((cell.shared.clone(), function_params(cell, op, extra)?))
+}
+
 /// The parameters of an operation on this function: its options that `op` accepts, `extra`, then
 /// program and entry.
 fn function_params(cell: &FunctionCell, op: &str, extra: Option<&Options>) -> Result<Options> {

@@ -39,9 +39,11 @@ pub static DIVERGENCES: Schema = Schema { name: "divergences", version: 1, colum
 pub static DIFF: Schema = Schema { name: "diff", version: 1, columns: &[C::new("mark", T::Str), C::hex("addr", T::U64), C::new("orig", T::Str), C::new("cand", T::Str), C::new("class", T::Str)] };
 pub static GATES: Schema = Schema { name: "gates", version: 1, columns: &[C::new("gate", T::Str), C::new("outcome", T::Str), C::new("detail", T::Str)] };
 pub static COMPARE: Schema = Schema { name: "compare", version: 1, columns: &[C::new("kind", T::Str), C::hex("va", T::U64), C::new("name", T::Str), C::new("a", T::Str), C::new("b", T::Str), C::new("detail", T::Str)] };
+pub static COMPILE_UNITS: Schema = Schema { name: "compile_units", version: 1, columns: &[C::new("key", T::Str), C::new("source", T::Str), C::new("flags", T::Str)] };
+pub static COMPILE_OUTPUTS: Schema = Schema { name: "compile_outputs", version: 1, columns: &[C::new("key", T::Str), C::new("ok", T::Bool), C::new("adjudicated", T::Bool), C::new("object", T::Bytes), C::new("log", T::Str)] };
 pub static ROUNDS: Schema = Schema { name: "rounds", version: 1, columns: &[C::new("name", T::Str), C::new("program", T::Str), C::new("toolchain", T::Str), C::new("build", T::Str), C::new("created", T::Str), C::new("rows", T::U64), C::new("exact", T::U64), C::new("wgss", T::F64)] };
 
-pub static ALL: &[&Schema] = &[&OPS, &SCHEMA, &IDENTIFY, &PROGRAM_SUMMARY, &TABLES, &BYTES, &INSTRUCTIONS, &PCODE, &PROTOTYPE, &JUMPTABLES, &CALLS, &GLOBAL_WIDTHS, &EMIT_REPORT, &OPTION_REGISTRY, &FILES, &DATA, &LANGUAGES, &REGISTERS, &EMIT_AXES, &EMIT_ARMS, &TOOLCHAIN_SPECS, &TOOLCHAINS, &CHECK, &EMISSION, &BUILDCONFIG, &VERDICTS, &DIVERGENCES, &DIFF, &GATES, &COMPARE, &ROUNDS];
+pub static ALL: &[&Schema] = &[&OPS, &SCHEMA, &IDENTIFY, &PROGRAM_SUMMARY, &TABLES, &BYTES, &INSTRUCTIONS, &PCODE, &PROTOTYPE, &JUMPTABLES, &CALLS, &GLOBAL_WIDTHS, &EMIT_REPORT, &OPTION_REGISTRY, &FILES, &DATA, &LANGUAGES, &REGISTERS, &EMIT_AXES, &EMIT_ARMS, &TOOLCHAIN_SPECS, &TOOLCHAINS, &CHECK, &EMISSION, &BUILDCONFIG, &VERDICTS, &DIVERGENCES, &DIFF, &GATES, &COMPARE, &ROUNDS, &COMPILE_UNITS, &COMPILE_OUTPUTS];
 
 pub fn by_name(name: &str) -> Option<&'static Schema> {
     ALL.iter().copied().find(|s| s.name == name)

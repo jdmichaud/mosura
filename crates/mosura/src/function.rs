@@ -7,6 +7,7 @@ use crate::handle::{empty_bytes, take_string, Raw};
 use crate::options::Options;
 use crate::program::Program;
 use crate::table::{Format, Table};
+use crate::toolchain::Toolchain;
 use mosura_capi::{mosura_function, mosura_table};
 
 pub struct Function {
@@ -51,6 +52,27 @@ impl Function {
         let n = CString::new(name).unwrap_or_default();
         let mut out: *mut mosura_table = std::ptr::null_mut();
         check(unsafe { mosura_capi::mosura_function_table(self.raw.ptr(), n.as_ptr(), &mut out) })?;
+        Ok(Table::from_raw(out))
+    }
+
+    /// The build flags recovered from the original's prologue (rows fact/flag).
+    pub fn buildconfig(&self, opts: Option<&Options>) -> Result<Table> {
+        let mut out: *mut mosura_table = std::ptr::null_mut();
+        check(unsafe { mosura_capi::mosura_function_buildconfig(self.raw.ptr(), opt_ptr(opts), &mut out) })?;
+        Ok(Table::from_raw(out))
+    }
+
+    /// Verify a compiled object against the original (one `verdicts` row; opts: format, window).
+    pub fn verify(&self, object: &[u8], opts: Option<&Options>) -> Result<Table> {
+        let mut out: *mut mosura_table = std::ptr::null_mut();
+        check(unsafe { mosura_capi::mosura_function_verify(self.raw.ptr(), crate::handle::view_of(object), opt_ptr(opts), &mut out) })?;
+        Ok(Table::from_raw(out))
+    }
+
+    /// Emit → compile through `tc` → verify (one `verdicts` row; opts: format=table:divergences|table:diff).
+    pub fn recompile(&self, tc: &Toolchain, opts: Option<&Options>) -> Result<Table> {
+        let mut out: *mut mosura_table = std::ptr::null_mut();
+        check(unsafe { mosura_capi::mosura_function_recompile(self.raw.ptr(), tc.ptr(), opt_ptr(opts), &mut out) })?;
         Ok(Table::from_raw(out))
     }
 

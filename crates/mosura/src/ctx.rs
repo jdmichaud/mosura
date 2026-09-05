@@ -163,6 +163,13 @@ impl Ctx {
         Ok(Table::from_raw(out))
     }
 
+    /// The compiler specs the library knows (name, host, doc).
+    pub fn toolchain_specs(&self) -> Result<Table> {
+        let mut out: *mut mosura_table = std::ptr::null_mut();
+        check(unsafe { mosura_capi::mosura_toolchain_specs(self.ptr(), &mut out) })?;
+        Ok(Table::from_raw(out))
+    }
+
     /// The emit arms (the names `emit.arms-off` accepts).
     pub fn emit_arms(&self) -> Result<Table> {
         let mut out: *mut mosura_table = std::ptr::null_mut();

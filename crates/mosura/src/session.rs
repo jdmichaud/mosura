@@ -8,6 +8,7 @@ use crate::error::{check, Result};
 use crate::handle::{empty_bytes, take_string, view_of, Raw};
 use crate::options::Options;
 use crate::program::Program;
+use crate::toolchain::Toolchain;
 use crate::table::Table;
 use mosura_capi::{mosura_progress_fn, mosura_session, mosura_table};
 
@@ -93,6 +94,55 @@ impl Session {
     /// Load an input (None = the only one) into a program (no analysis yet).
     pub fn program_open(&mut self, input: Option<&str>, load_opts: Option<&Options>) -> Result<Program> {
         Program::open(self, input, load_opts)
+    }
+
+    /// Open a toolchain under `name` (opts: toolchain.spec, toolchain.install, compile.cache).
+    pub fn toolchain_open(&mut self, name: &str, opts: Option<&Options>) -> Result<Toolchain> {
+        Toolchain::open(self, name, opts)
+    }
+
+    /// Every in-scope function of `program` through `toolchain`, stored as round `name`; the
+    /// round's manifest comes back.
+    pub fn round_run(&mut self, name: &str, program: &Program, toolchain: &Toolchain, opts: Option<&Options>, progress: Option<ProgressFn<'_>>) -> Result<Table> {
+        let n = CString::new(name).unwrap_or_default();
+        let mut p = progress;
+        let (f, user) = progress_args(p.as_mut());
+        let mut out: *mut mosura_table = std::ptr::null_mut();
+        check(unsafe { mosura_capi::mosura_round_run(self.ptr(), n.as_ptr(), program.ptr(), toolchain.ptr(), opts.map(|o| o.ptr() as *const _).unwrap_or(std::ptr::null()), f, user, &mut out) })?;
+        Ok(Table::from_raw(out))
+    }
+
+    /// The session's rounds.
+    pub fn rounds(&self) -> Result<Table> {
+        let mut out: *mut mosura_table = std::ptr::null_mut();
+        check(unsafe { mosura_capi::mosura_rounds(self.ptr(), &mut out) })?;
+        Ok(Table::from_raw(out))
+    }
+
+    /// Two rounds compared by address.
+    pub fn round_compare(&self, a: &str, b: &str) -> Result<Table> {
+        let (a, b) = (CString::new(a).unwrap_or_default(), CString::new(b).unwrap_or_default());
+        let mut out: *mut mosura_table = std::ptr::null_mut();
+        check(unsafe { mosura_capi::mosura_round_compare(self.ptr(), a.as_ptr(), b.as_ptr(), &mut out) })?;
+        Ok(Table::from_raw(out))
+    }
+
+    /// The verdict gates of a round against `baseline` (opts may carry gates.baseline, round.expect).
+    pub fn round_gates(&self, round: &str, baseline: Option<&str>, opts: Option<&Options>) -> Result<Table> {
+        let r = CString::new(round).unwrap_or_default();
+        let b = baseline.map(|b| CString::new(b).unwrap_or_default());
+        let mut out: *mut mosura_table = std::ptr::null_mut();
+        check(unsafe { mosura_capi::mosura_round_gates(self.ptr(), r.as_ptr(), b.as_ref().map(|b| b.as_ptr()).unwrap_or(std::ptr::null()), opts.map(|o| o.ptr() as *const _).unwrap_or(std::ptr::null()), &mut out) })?;
+        Ok(Table::from_raw(out))
+    }
+
+    /// A round's table: manifest (None), verdicts, divergences, gates.
+    pub fn round_table(&self, round: &str, table: Option<&str>) -> Result<Table> {
+        let r = CString::new(round).unwrap_or_default();
+        let t = table.map(|t| CString::new(t).unwrap_or_default());
+        let mut out: *mut mosura_table = std::ptr::null_mut();
+        check(unsafe { mosura_capi::mosura_round_table(self.ptr(), r.as_ptr(), t.as_ref().map(|t| t.as_ptr()).unwrap_or(std::ptr::null()), &mut out) })?;
+        Ok(Table::from_raw(out))
     }
 }
 

@@ -144,6 +144,11 @@ typedef struct mosura_session mosura_session;
 typedef struct mosura_table mosura_table;
 
 /**
+ * A compiler mosura can drive, open in a session (opaque).
+ */
+typedef struct mosura_toolchain mosura_toolchain;
+
+/**
  * Diagnostic sink. `topic` is the debug topic (`sparse-switch`, `analysis`, …) or "" for
  * untopiced messages; `msg` is NUL-terminated and `msg_len` its byte length. Replaces every
  * stderr print in the library.
@@ -670,6 +675,106 @@ mosura_status mosura_table_open(mosura_ctx *ctx,
                                 mosura_view image,
                                 int _borrow,
                                 mosura_table **out);
+
+/**
+ * The compiler specs known to the library: name, host (dos|native), doc.
+ */
+mosura_status mosura_toolchain_specs(mosura_ctx *ctx, mosura_table **out);
+
+/**
+ * Open a toolchain in this session under `name`. `opts`: toolchain.spec (one of the specs),
+ * toolchain.install (this machine's location), compile.cache (default <session>/compile). The
+ * driver runs nothing here; a session without a directory refuses (UNSUPPORTED).
+ */
+mosura_status mosura_toolchain_open(mosura_session *s,
+                                    const char *name,
+                                    const mosura_options *opts,
+                                    mosura_toolchain **out);
+
+/**
+ * Compile a batch: `units` is a table with columns key, source, flags (space-separated).
+ * outputs: key, ok, adjudicated, object (bytes), log.
+ */
+mosura_status mosura_toolchain_compile(mosura_toolchain *tc,
+                                       const mosura_table *units,
+                                       mosura_table **outputs);
+
+/**
+ * The explicit liveness probe: one tiny unit through the compiler (name, ok, adjudicated, log).
+ */
+mosura_status mosura_toolchain_check(mosura_toolchain *tc, mosura_table **out);
+
+/**
+ * The build flags of a function recovered from the original's own bytes (rows fact/flag).
+ */
+mosura_status mosura_function_buildconfig(mosura_function *f,
+                                          const mosura_options *opts,
+                                          mosura_table **out);
+
+/**
+ * Verify a compiled object against the original: one `verdicts` row (`opts` may set
+ * verify.table-window; format=table:divergences for the aligned differences). The object bytes
+ * are added to the session as an input.
+ */
+mosura_status mosura_function_verify(mosura_function *f,
+                                     mosura_view object,
+                                     const mosura_options *opts,
+                                     mosura_table **out);
+
+/**
+ * One function end to end through `tc`: emit → compile → verify (one verdict row;
+ * format=table:divergences | table:diff).
+ */
+mosura_status mosura_function_recompile(mosura_function *f,
+                                        mosura_toolchain *tc,
+                                        const mosura_options *opts,
+                                        mosura_table **out);
+
+/**
+ * A round: every in-scope function of `p` through the recompile pipeline with `tc`, stored under
+ * rounds/<name>. `opts`: round.scope, round.scope-file, round.baseline, round.expect,
+ * round.exclude-foreign, gates.baseline, label, verify.table-window, the decompile/emit keys.
+ * `summary` = the round's manifest.
+ */
+mosura_status mosura_round_run(mosura_session *s,
+                               const char *name,
+                               mosura_program *p,
+                               mosura_toolchain *tc,
+                               const mosura_options *opts,
+                               mosura_progress_fn progress,
+                               void *progress_user,
+                               mosura_table **summary);
+
+/**
+ * rounds: name, program, toolchain, build, created, rows, exact, wgss.
+ */
+mosura_status mosura_rounds(mosura_session *s, mosura_table **out);
+
+/**
+ * Compare two rounds by address: census, flips, movers, the weighted delta, membership drift.
+ */
+mosura_status mosura_round_compare(mosura_session *s,
+                                   const char *a,
+                                   const char *b,
+                                   mosura_table **out);
+
+/**
+ * The verdict gates of a stored round against `baseline` (NULL = none): gate, outcome, detail.
+ * `opts` (NULL = none) may carry gates.baseline and round.expect.
+ */
+mosura_status mosura_round_gates(mosura_session *s,
+                                 const char *round,
+                                 const char *baseline,
+                                 const mosura_options *opts,
+                                 mosura_table **out);
+
+/**
+ * A stored round's table: manifest (NULL or ""), verdicts, divergences, gates.
+ */
+mosura_status mosura_round_table(mosura_session *s,
+                                 const char *round,
+                                 const char *table,
+                                 mosura_table **out);
 
 #ifdef __cplusplus
 }  // extern "C"

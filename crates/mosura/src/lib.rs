@@ -15,6 +15,7 @@ pub mod options;
 pub mod program;
 pub mod session;
 pub mod table;
+pub mod toolchain;
 
 pub use ctx::{Ctx, CtxConfig, Level};
 pub use error::{Error, Result, Status};
@@ -24,6 +25,7 @@ pub use options::Options;
 pub use program::Program;
 pub use session::Session;
 pub use table::{ColType, Format, Table};
+pub use toolchain::Toolchain;
 
 /// The runtime ABI version, `(major << 16) | minor`.
 pub fn abi_version() -> u32 {
