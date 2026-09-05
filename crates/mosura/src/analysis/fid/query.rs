@@ -235,6 +235,44 @@ impl FidQueryService {
         merged
     }
 
+    /// The databases the resource provider ([`crate::resources`]) holds under `fid/` — mosura's
+    /// own `.mfid.gz` (embedded), Ghidra's vendored `.fidb` when compiled in (`fid-ghidra`) or
+    /// present in an override directory or the workspace mount — filtered to the ones that match
+    /// this program. This is what the analyzer uses; the directory forms above are for tests and
+    /// dev tools that point at an explicit directory.
+    ///
+    /// Cached per `(language, compiler spec)` for the life of the process, like the directory
+    /// form: the provider is set by the front-end before the first analysis and not changed after.
+    pub fn load_matching_resources(language_id: &str, compiler_spec_id: &str) -> FidQueryService {
+        use std::sync::{Mutex, OnceLock};
+        type Cache = Mutex<HashMap<(String, String), FidQueryService>>;
+        static CACHE: OnceLock<Cache> = OnceLock::new();
+        let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+        let key = (language_id.to_string(), compiler_spec_id.to_string());
+        if let Ok(c) = cache.lock() {
+            if let Some(hit) = c.get(&key) {
+                return hit.clone();
+            }
+        }
+        let res = crate::resources::get();
+        let mut service = FidQueryService::new();
+        for name in res.list("fid/") {
+            if !(name.ends_with(".fidb") || name.ends_with(".mfid") || name.ends_with(".mfid.gz")) {
+                continue;
+            }
+            let Some(data) = res.read(&name) else { continue };
+            match decode_database(&name, &data) {
+                Ok(db) if db.matches_program(language_id, compiler_spec_id) => service.attach(db),
+                Ok(_) => {}
+                Err(e) => warn!("fid: skipping {name}: {e}"),
+            }
+        }
+        if let Ok(mut c) = cache.lock() {
+            c.insert(key, service.clone());
+        }
+        service
+    }
+
     fn load_matching_uncached(
         dir: &std::path::Path,
         language_id: &str,
@@ -254,25 +292,29 @@ impl FidQueryService {
 
         for path in paths {
             let Ok(data) = std::fs::read(&path) else { continue };
-            let name = path.file_name().unwrap_or_default().to_string_lossy();
-            let name = name.trim_end_matches(".gz").trim_end_matches(".mfid").trim_end_matches(".fidb");
-            let loaded = if data.first() == Some(&0xac) {
-                // Ghidra's packed `.fidb` (a Java ObjectStream header).
-                FidDatabase::open_packed(name, &data).map_err(|e| e.0)
-            } else {
-                super::store::decompress(&data)
-                    .and_then(|text| {
-                        super::store::FidStore::from_text(&text).map_err(|e| e.0)
-                    })
-                    .map(|store| store.into_database(name))
-            };
-            match loaded {
+            match decode_database(&path.to_string_lossy(), &data) {
                 Ok(db) if db.matches_program(language_id, compiler_spec_id) => service.attach(db),
                 Ok(_) => {}
                 Err(e) => warn!("fid: skipping {}: {e}", path.display()),
             }
         }
         service
+    }
+}
+
+/// Decode one database file from its bytes: Ghidra's packed `.fidb` (a Java ObjectStream
+/// header, first byte `0xac`) or mosura's `.mfid`/`.mfid.gz` text store. The database is named
+/// by the file's stem (`x86watcom` for `x86watcom.mfid.gz`), whatever directory or resource
+/// name it came from.
+fn decode_database(file: &str, data: &[u8]) -> Result<FidDatabase, String> {
+    let stem = file.rsplit('/').next().unwrap_or(file);
+    let name = stem.trim_end_matches(".gz").trim_end_matches(".mfid").trim_end_matches(".fidb");
+    if data.first() == Some(&0xac) {
+        FidDatabase::open_packed(name, data).map_err(|e| e.0)
+    } else {
+        super::store::decompress(data)
+            .and_then(|text| super::store::FidStore::from_text(&text).map_err(|e| e.0))
+            .map(|store| store.into_database(name))
     }
 }
 

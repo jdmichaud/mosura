@@ -15,7 +15,7 @@
 //! the Ghidra-parity MZ-stub path, which sees only the 16-bit stub — a few hundred functions of
 //! loader, none of the 32-bit program — so FID quite correctly identifies nothing there.
 //!
-//! With no `db-dir`, every directory [`fid_db_dirs`](mosura::paths::fid_db_dirs) knows about is
+//! With no `db-dir`, every database the resource provider holds under `fid/` is
 //! searched. Passing one narrows the search to a single database set, which is how to attribute a
 //! name to the column it came from.
 fn main() {
@@ -34,10 +34,7 @@ fn main() {
     }
     let bin =
         std::path::PathBuf::from(args.next().expect("usage: fidnames [--le] <binary> [db-dir]"));
-    let dirs: Vec<std::path::PathBuf> = match args.next() {
-        Some(d) => vec![std::path::PathBuf::from(d)],
-        None => mosura::paths::fid_db_dirs(),
-    };
+    let db_dir: Option<std::path::PathBuf> = args.next().map(std::path::PathBuf::from);
 
     let program = if native {
         mosura::analysis::analyze_native_file(&bin)
@@ -48,11 +45,17 @@ fn main() {
     }
     .expect("analyze the binary");
 
-    let service = mosura::analysis::fid::query::FidQueryService::load_matching_all(
-        &dirs,
-        &program.language_id,
-        &program.compiler_spec_id,
-    );
+    let service = match &db_dir {
+        Some(dir) => mosura::analysis::fid::query::FidQueryService::load_matching(
+            dir,
+            &program.language_id,
+            &program.compiler_spec_id,
+        ),
+        None => mosura::analysis::fid::query::FidQueryService::load_matching_resources(
+            &program.language_id,
+            &program.compiler_spec_id,
+        ),
+    };
     eprintln!(
         "{} {} — {} functions, {} signature records",
         program.language_id,

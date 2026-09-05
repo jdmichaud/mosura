@@ -124,9 +124,8 @@ fn main() {
     println!("   symbols          {}", program.symbol_table.symbols().count());
 
     // ---- FID: what is available, and what it identified
-    let dirs = mosura::paths::fid_db_dirs();
-    let service = mosura::analysis::fid::query::FidQueryService::load_matching_all(
-        &dirs,
+    // the same databases the analyzer sees: the resource provider's `fid/`
+    let service = mosura::analysis::fid::query::FidQueryService::load_matching_resources(
         &program.language_id,
         &program.compiler_spec_id,
     );

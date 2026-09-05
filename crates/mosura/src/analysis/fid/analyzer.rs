@@ -278,12 +278,12 @@ pub struct FidAnalyzer {
 }
 
 impl FidAnalyzer {
-    /// Build the analyzer with the databases matching this program, taken from
-    /// [`crate::paths::fid_db_dirs`] — BOTH the vendored Ghidra databases and mosura's own.
+    /// Build the analyzer with the databases matching this program, taken from the resource
+    /// provider's `fid/` ([`FidQueryService::load_matching_resources`]) — mosura's own databases
+    /// and, when compiled in or mounted, Ghidra's vendored ones.
     pub fn for_program(program: &Program) -> FidAnalyzer {
         FidAnalyzer {
-            service: FidQueryService::load_matching_all(
-                &crate::paths::fid_db_dirs(),
+            service: FidQueryService::load_matching_resources(
                 &program.language_id,
                 &program.compiler_spec_id,
             ),
