@@ -33,7 +33,15 @@ pub static TOOLCHAINS: Schema = Schema { name: "toolchains", version: 1, columns
 pub static CHECK: Schema = Schema { name: "check", version: 1, columns: &[C::new("name", T::Str), C::new("ok", T::Bool), C::new("adjudicated", T::Bool), C::new("log", T::Str)] };
 pub static EMISSION: Schema = Schema { name: "emission", version: 1, columns: &[C::new("idx", T::U32), C::hex("va", T::U64), C::new("name", T::Str), C::new("status", T::Str), C::new("kind", T::Str), C::new("orig_len", T::U64), C::new("tu", T::Str), C::new("row", T::Str)] };
 
-pub static ALL: &[&Schema] = &[&OPS, &SCHEMA, &IDENTIFY, &PROGRAM_SUMMARY, &TABLES, &BYTES, &INSTRUCTIONS, &PCODE, &PROTOTYPE, &JUMPTABLES, &CALLS, &GLOBAL_WIDTHS, &EMIT_REPORT, &OPTION_REGISTRY, &FILES, &DATA, &LANGUAGES, &REGISTERS, &EMIT_AXES, &EMIT_ARMS, &TOOLCHAIN_SPECS, &TOOLCHAINS, &CHECK, &EMISSION];
+pub static BUILDCONFIG: Schema = Schema { name: "buildconfig", version: 1, columns: &[C::new("kind", T::Str), C::new("name", T::Str), C::new("detail", T::Str)] };
+pub static VERDICTS: Schema = Schema { name: "verdicts", version: 1, columns: &[C::new("idx", T::Str), C::hex("va", T::U64), C::new("name", T::Str), C::new("verdict", T::Str), C::new("bytes", T::Str), C::new("primary", T::Str), C::new("sim", T::F64), C::new("equal", T::U64), C::new("orig_n", T::U64), C::new("cand_n", T::U64), C::new("classes", T::Str)] };
+pub static DIVERGENCES: Schema = Schema { name: "divergences", version: 1, columns: &[C::new("idx", T::Str), C::hex("fn_va", T::U64), C::new("class", T::Str), C::hex("addr", T::U64), C::new("oi", T::I64), C::new("ci", T::I64), C::new("orig_n", T::U64), C::new("cand_n", T::U64), C::new("orig_mn", T::Str), C::new("cand_mn", T::Str), C::new("orig_regs", T::Str), C::new("cand_regs", T::Str), C::new("orig_text", T::Str), C::new("cand_text", T::Str)] };
+pub static DIFF: Schema = Schema { name: "diff", version: 1, columns: &[C::new("mark", T::Str), C::hex("addr", T::U64), C::new("orig", T::Str), C::new("cand", T::Str), C::new("class", T::Str)] };
+pub static GATES: Schema = Schema { name: "gates", version: 1, columns: &[C::new("gate", T::Str), C::new("outcome", T::Str), C::new("detail", T::Str)] };
+pub static COMPARE: Schema = Schema { name: "compare", version: 1, columns: &[C::new("kind", T::Str), C::hex("va", T::U64), C::new("name", T::Str), C::new("a", T::Str), C::new("b", T::Str), C::new("detail", T::Str)] };
+pub static ROUNDS: Schema = Schema { name: "rounds", version: 1, columns: &[C::new("name", T::Str), C::new("program", T::Str), C::new("toolchain", T::Str), C::new("build", T::Str), C::new("created", T::Str), C::new("rows", T::U64), C::new("exact", T::U64), C::new("wgss", T::F64)] };
+
+pub static ALL: &[&Schema] = &[&OPS, &SCHEMA, &IDENTIFY, &PROGRAM_SUMMARY, &TABLES, &BYTES, &INSTRUCTIONS, &PCODE, &PROTOTYPE, &JUMPTABLES, &CALLS, &GLOBAL_WIDTHS, &EMIT_REPORT, &OPTION_REGISTRY, &FILES, &DATA, &LANGUAGES, &REGISTERS, &EMIT_AXES, &EMIT_ARMS, &TOOLCHAIN_SPECS, &TOOLCHAINS, &CHECK, &EMISSION, &BUILDCONFIG, &VERDICTS, &DIVERGENCES, &DIFF, &GATES, &COMPARE, &ROUNDS];
 
 pub fn by_name(name: &str) -> Option<&'static Schema> {
     ALL.iter().copied().find(|s| s.name == name)

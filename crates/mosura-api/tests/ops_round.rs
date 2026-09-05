@@ -139,3 +139,123 @@ fn program_emit_equals_the_live_emission_after_the_post_pass() {
     assert_eq!(s.set_keys(SetKind::Program).unwrap().len(), before + 4);
     assert_eq!(app.rows(), em.rows());
 }
+
+// ── the round store: import, compare, export, gates, list, show; buildconfig ──
+
+const LEGACY_A: &str = "idx\tva\tname\tverdict\tbytes\tprimary\tsim\tequal\torig_n\tcand_n\tclasses\tSIM=structural
+00000\t00010010\tFUN_00010010\tMISMATCH\tDifferent\textra\t0.043\t2\t25\t46\tregalloc=2,extra=21
+00001\t00010063\tFUN_00010063\tEXACT\tIdentical\t\t1.000\t29\t29\t29\t
+00002\t000100a0\tFUN_000100a0\tSAME_SHAPE\tDifferent\tregalloc\t0.800\t8\t10\t10\tregalloc=2
+00003\t000100f0\tFUN_000100f0\tCOMPILE_FAIL\t\t\t\t0\t12\t0\t
+";
+const LEGACY_B: &str = "idx\tva\tname\tverdict\tbytes\tprimary\tsim\tequal\torig_n\tcand_n\tclasses\tSIM=structural
+00000\t00010010\tFUN_00010010\tMISMATCH\tDifferent\textra\t0.043\t2\t25\t46\tregalloc=2,extra=21
+00001\t00010063\tFUN_00010063\tEXACT\tIdentical\t\t1.000\t29\t29\t29\t
+00002\t000100a0\tFUN_000100a0\tEXACT\tIdentical\t\t1.000\t10\t10\t10\t
+00004\t00010200\tFUN_00010200\tMISMATCH\tDifferent\tselection\t0.500\t5\t10\t10\tselection=5
+";
+const LEGACY_DIV: &str = "idx\tfn_va\tclass\taddr\toi\tci\torig_n\tcand_n\torig_mn\tcand_mn\torig_regs\tcand_regs\torig_text\tcand_text
+00000\t00010010\textra\t00010010\t-1\t0\t25\t46\t\tPUSH\t\t20:4,16:4\t\tPUSH EBP
+00002\t000100a0\tregalloc\t000100a4\t2\t2\t10\t10\tMOV\tMOV\t0:4\t8:4\tMOV EAX,0x1\tMOV EDX,0x1
+";
+const GATES_FILE: &str = "# gate\tkey\trule\tvalue\tset_at
+gate\tkey\trule\tvalue\tset_at
+guard_frame\t00010063\tEXACT\t\ttest
+guard_frame\t000100a0\tEXACT\t\ttest
+";
+
+fn write(dir: &std::path::Path, name: &str, text: &str) -> String {
+    let p = dir.join(name);
+    std::fs::write(&p, text).unwrap();
+    p.to_string_lossy().into_owned()
+}
+
+#[test]
+fn rounds_import_compare_export_gates_list_show() {
+    let c = ctx();
+    let dir = scratch("rounds");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut s = Session::open(Some(&dir)).unwrap();
+    let a = write(&dir, "a-rec.tsv", LEGACY_A);
+    let b = write(&dir, "b-rec.tsv", LEGACY_B);
+    let d = write(&dir, "a-div.tsv", LEGACY_DIV);
+    let m = write(&dir, "manifest.tsv", "# corpus_emit emit @ deadbee\n# arms: return-width=recovered,shift-mask=hardware; off: cmp_sign\nidx\tva\n");
+    let g = write(&dir, "corpus-gates.tsv", GATES_FILE);
+    let ma = dispatch(&c, &mut s, "round.import", &opts(&[("round", "a"), ("verdicts", &a), ("divergences", &d), ("manifest", &m), ("label", "the baseline")]), &mut NoProgress).unwrap();
+    let value = |t: &mosura_api::Table, kind: &str, name: &str| -> String { (0..t.rows()).find(|&r| t.str(r, 0).unwrap() == kind && (name.is_empty() || t.str(r, 1).unwrap() == name)).map(|r| t.str(r, 2).unwrap().to_string()).unwrap_or_default() };
+    assert_eq!(value(&ma, "arms", ""), "return-width=recovered,shift-mask=hardware; off: cmp_sign");
+    assert_eq!(value(&ma, "census", "EXACT"), "1");
+    assert_eq!(value(&ma, "rows", ""), "4");
+    assert_eq!(value(&ma, "sim", ""), "structural");
+    // WGSS = Σ orig_n·sim / Σ orig_n = (25·0.043 + 29·1 + 10·0.8 + 12·0) / 76
+    let want = (25.0 * 0.043 + 29.0 + 8.0) / 76.0;
+    assert_eq!(value(&ma, "wgss", "structural"), format!("{want:.4}"));
+    dispatch(&c, &mut s, "round.import", &opts(&[("round", "b"), ("verdicts", &b)]), &mut NoProgress).unwrap();
+    assert!(matches!(dispatch(&c, &mut s, "round.import", &opts(&[("round", "b"), ("verdicts", &b)]), &mut NoProgress), Err(Error::InvalidArg(_))), "a round is never overwritten");
+    // list + show
+    let list = dispatch(&c, &mut s, "round.list", &Options::new(), &mut NoProgress).unwrap();
+    assert_eq!(list.rows(), 2);
+    assert_eq!((list.str(0, 0).unwrap(), list.u64(0, 5).unwrap(), list.u64(0, 6).unwrap()), ("a", 4, 1));
+    let verdicts = dispatch(&c, &mut s, "round.show", &opts(&[("round", "a"), ("table", "verdicts")]), &mut NoProgress).unwrap();
+    assert_eq!(verdicts.rows(), 4);
+    assert_eq!(verdicts.str(3, 3).unwrap(), "COMPILE_FAIL");
+    let divs = dispatch(&c, &mut s, "round.show", &opts(&[("round", "a"), ("table", "divergences")]), &mut NoProgress).unwrap();
+    assert_eq!(divs.rows(), 2);
+    assert_eq!(divs.i64(0, 4).unwrap(), -1);
+    assert!(matches!(dispatch(&c, &mut s, "round.show", &opts(&[("round", "nope")]), &mut NoProgress), Err(Error::NotFound(_))));
+    // compare a → b: one flip (000100a0 SAME_SHAPE → EXACT), one mover, membership drift both ways
+    let cmp = dispatch(&c, &mut s, "round.compare", &opts(&[("a", "a"), ("b", "b")]), &mut NoProgress).unwrap();
+    let rows: Vec<(String, String, String, String, String)> = (0..cmp.rows()).map(|r| (cmp.str(r, 0).unwrap().into(), cmp.str(r, 2).unwrap().into(), cmp.str(r, 3).unwrap().into(), cmp.str(r, 4).unwrap().into(), cmp.str(r, 5).unwrap().into())).collect();
+    let flips: Vec<_> = rows.iter().filter(|r| r.0 == "flip").collect();
+    assert_eq!(flips.len(), 1, "{rows:?}");
+    assert_eq!((flips[0].1.as_str(), flips[0].2.as_str(), flips[0].3.as_str()), ("FUN_000100a0", "SAME_SHAPE", "EXACT"));
+    assert_eq!(rows.iter().filter(|r| r.0 == "move").count(), 1);
+    assert!(rows.iter().any(|r| r.0 == "summary" && r.1 == "flips" && r.2 == "1"));
+    assert!(rows.iter().any(|r| r.0 == "summary" && r.1 == "membership" && r.2 == "1 only in a" && r.3 == "1 only in b"), "{rows:?}");
+    // the weighted delta: the mover gained 0.2 × 10 insns over the 64 instructions of the rows
+    // both rounds hold (the script's rule: weights over the common rows only)
+    let wd = rows.iter().find(|r| r.0 == "summary" && r.1 == "wgss-delta").unwrap();
+    assert_eq!(wd.2, format!("{:+.5}", 2.0 / 64.0));
+    // gates: guard sets vs the file, regressions vs the baseline round
+    let gates = dispatch(&c, &mut s, "round.gates", &opts(&[("round", "a"), ("gates.baseline", &g)]), &mut NoProgress).unwrap();
+    let g7 = (0..gates.rows()).find(|&r| gates.str(r, 0).unwrap().starts_with("7 ")).unwrap();
+    assert_eq!(gates.str(g7, 1).unwrap(), "FAIL", "000100a0 is SAME_SHAPE in a, the guard wants EXACT: {}", gates.str(g7, 2).unwrap());
+    let gates_b = dispatch(&c, &mut s, "round.gates", &opts(&[("round", "b"), ("gates.baseline", &g), ("round.baseline", "a")]), &mut NoProgress).unwrap();
+    for r in 0..gates_b.rows() {
+        assert_eq!(gates_b.str(r, 1).unwrap(), "OK", "{}: {}", gates_b.str(r, 0).unwrap(), gates_b.str(r, 2).unwrap());
+    }
+    let gates_rev = dispatch(&c, &mut s, "round.gates", &opts(&[("round", "a"), ("round.baseline", "b")]), &mut NoProgress).unwrap();
+    let g8 = (0..gates_rev.rows()).find(|&r| gates_rev.str(r, 0).unwrap().starts_with("8 ")).unwrap();
+    assert_eq!(gates_rev.str(g8, 1).unwrap(), "FAIL", "an EXACT lost from b to a");
+    // the smoke-drift gate
+    let expect = write(&dir, "smoke.expected.tsv", "# idx\tva\tname\texpected\n00001\t00010063\tFUN_00010063\tEXACT\n00002\t000100a0\tFUN_000100a0\tEXACT\n");
+    let smoke = dispatch(&c, &mut s, "round.gates", &opts(&[("round", "a"), ("round.expect", &expect)]), &mut NoProgress).unwrap();
+    let g9 = (0..smoke.rows()).find(|&r| smoke.str(r, 0).unwrap().starts_with("9 ")).unwrap();
+    assert!(smoke.str(g9, 1).unwrap() == "FAIL" && smoke.str(g9, 2).unwrap().contains("expected EXACT got SAME_SHAPE"), "{}", smoke.str(g9, 2).unwrap());
+    // export round-trips the legacy files byte for byte
+    let out = dir.join("a-export.tsv");
+    let dout = dir.join("a-export-div.tsv");
+    dispatch(&c, &mut s, "round.export", &opts(&[("round", "a"), ("out", out.to_str().unwrap()), ("divergences", dout.to_str().unwrap())]), &mut NoProgress).unwrap();
+    assert_eq!(std::fs::read_to_string(&out).unwrap(), LEGACY_A);
+    assert_eq!(std::fs::read_to_string(&dout).unwrap(), LEGACY_DIV);
+    assert!(matches!(dispatch(&c, &mut s, "round.export", &opts(&[("round", "a")]), &mut NoProgress), Err(Error::InvalidArg(_))));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn buildconfig_reads_the_originals_prologue() {
+    let c = ctx();
+    let mut s = Session::open(None).unwrap();
+    s.add_input(&std::fs::read(corpus("watcom_hello.exe")).unwrap(), "watcom_hello.exe", None).unwrap();
+    dispatch(&c, &mut s, "program.analyze", &Options::new(), &mut NoProgress).unwrap();
+    let fns = dispatch(&c, &mut s, "program.tables", &opts(&[("table", "functions")]), &mut NoProgress).unwrap();
+    let entry = fns.u64(0, 1).unwrap();
+    let t = dispatch(&c, &mut s, "function.buildconfig", &opts(&[("entry", &format!("{entry:#x}"))]), &mut NoProgress).unwrap();
+    let kinds: Vec<(String, String)> = (0..t.rows()).map(|r| (t.str(r, 0).unwrap().into(), t.str(r, 1).unwrap().into())).collect();
+    assert!(kinds.iter().any(|(k, n)| k == "flag" && n == "-5r"), "{kinds:?}");
+    assert!(kinds.iter().any(|(k, n)| k == "profile" && n == "watcom-10.0a"));
+    // a toolchain is needed for recompile; verify needs an object input
+    assert!(matches!(dispatch(&c, &mut s, "function.recompile", &opts(&[("entry", &format!("{entry:#x}"))]), &mut NoProgress), Err(Error::NotFound(_))));
+    assert!(matches!(dispatch(&c, &mut s, "function.verify", &opts(&[("entry", &format!("{entry:#x}"))]), &mut NoProgress), Err(Error::InvalidArg(_))));
+    assert!(matches!(dispatch(&c, &mut s, "round.run", &opts(&[("round", "r1")]), &mut NoProgress), Err(Error::NotFound(_))), "no toolchain open");
+}

@@ -9,6 +9,7 @@ pub mod function;
 pub mod identify;
 pub mod language;
 pub mod program;
+pub mod round;
 pub mod schemas;
 pub mod session;
 pub mod sleigh;
@@ -77,8 +78,11 @@ impl Op {
 
 /// Every operation, sorted by name (a test pins order and uniqueness).
 pub static REGISTRY: &[&Op] = &[
+    &round::BUILDCONFIG_OP,
     &function::DECOMPILE,
     &emit::EMIT,
+    &round::RECOMPILE,
+    &round::VERIFY,
     &identify::IDENTIFY,
     &program::ANALYZE,
     &program::DISASSEMBLE,
@@ -87,6 +91,13 @@ pub static REGISTRY: &[&Op] = &[
     &emit::PASSES,
     &program::READ,
     &program::TABLES,
+    &round::COMPARE_OP,
+    &round::EXPORT,
+    &round::GATES_OP,
+    &round::IMPORT,
+    &round::LIST,
+    &round::RUN,
+    &round::SHOW,
     &session::CONFIG,
     &session::CONFIG_SET,
     &sleigh::DISASSEMBLE,
@@ -167,6 +178,19 @@ fn validate_params(op: &Op, params: &Options) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Run an operation from inside another (the caller already runs under the boundary): the
+/// parameters are projected onto what the op accepts, so a composite op passes its own set along.
+pub fn dispatch_inner(s: &mut Session, op: &str, params: &Options) -> Result<Table> {
+    let spec = lookup(op).ok_or_else(|| Error::NotFound(format!("operation `{op}`")))?;
+    let mut o = Options::new();
+    for (k, v) in params.explicit() {
+        if accepts(spec, k) {
+            o.set(k, v)?;
+        }
+    }
+    (spec.run)(s, &o, &mut NoProgress)
 }
 
 /// Run one operation: NotFound for an unknown name, InvalidArg for a key the op does not take, a
