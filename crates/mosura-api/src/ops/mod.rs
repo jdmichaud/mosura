@@ -10,6 +10,7 @@ pub mod identify;
 pub mod language;
 pub mod program;
 pub mod schemas;
+pub mod session;
 pub mod sleigh;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -84,6 +85,8 @@ pub static REGISTRY: &[&Op] = &[
     &emit::PASSES,
     &program::READ,
     &program::TABLES,
+    &session::CONFIG,
+    &session::CONFIG_SET,
     &sleigh::DISASSEMBLE,
     &sleigh::LIFT,
 ];

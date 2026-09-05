@@ -16,6 +16,9 @@
 //!   mosura knob.
 //! - `tests/recompile_toolchain.rs` reads `PATH`: locating an installed tool (`dosemu`) through
 //!   `PATH` is the platform's lookup mechanism, not configuration of mosura.
+//! - `crates/mosura-cli/src/config.rs` reads `HOME`: the CLI's machine config lives at
+//!   `<home>/.config/mosura/config.toml`; the home directory is the platform's, not a mosura knob
+//!   (the design's `MOSURA_CONFIG` variable was dropped: `--config <file>` relocates the file).
 //!
 //! Compile-time `env!("CARGO_MANIFEST_DIR")` (the workspace root for the dev tier) and
 //! `std::env::args()` (the command line) are not environment reads and are not matched.
@@ -60,7 +63,7 @@ fn env_reads(src: &str) -> Vec<(usize, String)> {
 }
 
 /// The allowlist: `(file, the one variable it may read)`.
-const ALLOWED: &[(&str, &str)] = &[("crates/mosura-core/src/devcfg.rs", "\"HOME\""), ("crates/mosura-core/tests/recompile_toolchain.rs", "\"PATH\"")];
+const ALLOWED: &[(&str, &str)] = &[("crates/mosura-core/src/devcfg.rs", "\"HOME\""), ("crates/mosura-core/tests/recompile_toolchain.rs", "\"PATH\""), ("crates/mosura-cli/src/config.rs", "\"HOME\"")];
 
 fn rs_files(root: &Path, dirs: &[&str]) -> Vec<PathBuf> {
     let mut files = Vec::new();

@@ -1,0 +1,15 @@
+[package]
+name = "mosura-cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "mosura — the command line: porcelain over the mosura binding (the C ABI), plus `mosura call <op>` for every operation"
+
+[[bin]]
+name = "mosura"
+path = "src/main.rs"
+
+[dependencies]
+mosura = { path = "../mosura" }
+clap = { version = "4.5", features = ["derive"] }

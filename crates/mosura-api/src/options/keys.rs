@@ -53,6 +53,8 @@ pub fn hand_written() -> Vec<OptionSpec> {
         spec!("base", OptType::Hex, "", Affects::Input, "the address of the first byte (the sleigh.* operations)"),
         spec!("ctx", OptType::Str, "", Affects::Input, "context register settings, `name=value;…` (the sleigh.* operations)"),
         spec!("format", OptType::Str, "", Affects::Input, "what to return: c, raw, or table:<name> (function.decompile)"),
+        spec!("key", OptType::Str, "", Affects::Input, "a session config key (session.config.set)"),
+        spec!("value", OptType::Str, "", Affects::Input, "a session config value; empty removes the key (session.config.set)"),
         // diagnostics
         spec!(DEBUG_WATCH_CALL, OptType::Hex, "", Affects::Diagnostic, "trace the arity changes of every CALL to this target address"),
         spec!(DEBUG_MERGE_WATCH, OptType::Hex, "", Affects::Diagnostic, "trace the unions that touch this merge-group id"),
