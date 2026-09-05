@@ -52,7 +52,7 @@
 #
 #   GHIDRA_POSTSCRIPT=DumpBlocks.java scripts/ghidra-decompile-war2.sh 77dcb
 #
-# Its mosura counterpart is `MOSURA_DEBUG=structure`, which prints the same fields, so the two diff
+# Its mosura counterpart is `--debug structure`, which prints the same fields, so the two diff
 # line-for-line. Before these two scripts existed there was NO WAY to compare partitions at all — a
 # granularity divergence could only be seen as its third-order symptom (extra gotos, an uncollapsed
 # graph), which is precisely how it got misdiagnosed three different ways. Both are permanent parts of

@@ -12,7 +12,7 @@
 #   ghidra : oracle/capture_typeprop  -> ActionInferTypes::propagationDebug (coreaction.cc:4980),
 #            whose main call site is inside propagateTypeEdge at the typeOrder comparison
 #            (coreaction.cc:5105) — i.e. every ACCEPTED type decision, with the op+slot it came from
-#   mosura : MOSURA_DEBUG=types      -> infertypes.rs propagation_debug() (debug topic `types`), the same tuple
+#   mosura : --debug types          -> infertypes.rs propagation_debug() (debug topic `types`), the same tuple
 #
 # Neither needs a special build: types.h:88-91 auto-defines TYPEPROP_DEBUG from CPUI_DEBUG, exactly
 # like OPACTION_DEBUG, so the hook is already in the libdecomp_dbg.a the oracle links. Only the
@@ -61,7 +61,7 @@ grev="$(cd "$GHIDRA_SRC" && git rev-parse --short HEAD 2>/dev/null || echo PINNE
 "$TOOL" "$GHIDRA_SRC" "$FIXTURE" --typeprop 2>/dev/null > "$OUT/ghidra.typeprop"
 # The debug facility prints the propagation trace under the `types` topic as `[types] <line>`;
 # typeprop-diff.py reads the pre-R6 spelling `TYPEPROP <line>`, so the prefix is rewritten here.
-( cd "$MOSURA_DIR" && MOSURA_DEBUG=types cargo run -q --release --example trace -- "$STEM" 2>&1 >/dev/null \
+( cd "$MOSURA_DIR" && cargo run -q --release --example trace -- "$STEM" --debug types 2>&1 >/dev/null \
     | sed -n 's/^\[types\] /TYPEPROP /p' > "$OUT/mosura.typeprop" ) || true
 # POSITIVE CONTROL (2026-09-05): this script set a variable the code stopped reading when the debug
 # topics landed (`MOSURA_TYPEPROP` -> topic `types`), and silently diffed an EMPTY mosura side for

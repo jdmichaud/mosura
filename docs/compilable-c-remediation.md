@@ -559,7 +559,7 @@ GHIDRA_POSTSCRIPT=DumpDecompDebug.java GHIDRA_POSTSCRIPT_ARGS=<outdir> \
 block; the non-debug path never encodes options, which is why `DecompileFunctions.java` gets
 away without it.)
 
-**Measurement note — scope the trace before comparing.** `MOSURA_TRACE=1` on `dumpwar2`
+**Measurement note — scope the trace before comparing.** `--debug opaction` on `dumpwar2`
 captures every decompile in `analyze_le_file` (4,718 distinct instruction addresses), not just
 the requested function; the target's own decompile is only the final contiguous block of the
 trace. A first-draft comparison missed this and reported the whole-analysis count (462,152)

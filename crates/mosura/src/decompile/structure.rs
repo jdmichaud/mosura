@@ -3176,7 +3176,7 @@ pub fn reached_basic_blocks(s: &Structured) -> HashSet<usize> {
     reached
 }
 
-/// `MOSURA_DEBUG=structure` — dump the basic-block partition handed to the structurer: per block its
+/// `--debug structure` — dump the basic-block partition handed to the structurer: per block its
 /// address span, live op count, in/out edges, and terminating opcode. The counterpart of
 /// `oracle/ghidra_scripts/DumpBlocks.java`, which prints the same fields from Ghidra's
 /// `HighFunction::getBasicBlocks`, so the two partitions diff line-for-line. Answers "do we cut

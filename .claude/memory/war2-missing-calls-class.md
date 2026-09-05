@@ -61,9 +61,9 @@ Both corpus byte-identical, suite 565/0, clippy 0. **The user's "build the axe" 
 
 **`print_raw`'s two traps fixed with GHIDRA'S OWN RENDERERS (not an invented format):** destroyed ops (whose inputs/output `op_destroy` clears) were printing as bare opcodes indistinguishable from a live STORE/BRANCH — now routed through `op_str` = Ghidra `PcodeOp::printDebug` so a **corpse prints `**`** (pinned by a new test so the trap can't return); and no SSA version meant two LOADs both printed `u0x17200:4` — now Ghidra `Varnode::printRaw`: `(i)` input, `(<seqnum>)` naming the **defining op**, `(free)`. `ir_parity` reads only the address prefix, so unaffected.
 
-**`OPACTION_DEBUG` ported — and the crux is the RULE/ACTION split:** mosura already had the *rule* half (`MOSURA_TRACE`), and **a rule trace can only ever see the op the rule was applied to, never an action destroying some OTHER op.** That blind spot is exactly what every backtrace probe this campaign was working around. Implementation: `debug_mod_check` at the nine mutation primitives mosura has (Ghidra has twelve), `debug_mod_print` at each action boundary via `ActionGroup::apply`, bracketed as Ghidra's `Action::perform` does; selection follows `turnOnDebug(name)` — `MOSURA_OPACTION=1` for all, or a single action name. Off, it costs one bool per mutation.
+**`OPACTION_DEBUG` ported — and the crux is the RULE/ACTION split:** mosura already had the *rule* half (`MOSURA_TRACE`), and **a rule trace can only ever see the op the rule was applied to, never an action destroying some OTHER op.** That blind spot is exactly what every backtrace probe this campaign was working around. Implementation: `debug_mod_check` at the nine mutation primitives mosura has (Ghidra has twelve), `debug_mod_print` at each action boundary via `ActionGroup::apply`, bracketed as Ghidra's `Action::perform` does; selection follows `turnOnDebug(name)` — `--debug opaction` for all, or a single action name. Off, it costs one bool per mutation.
 
-**⭐ ACCEPTANCE MET — `FUN_0001bd30`, BASELINE, NO PATCHES, via `MOSURA_OPACTION=1` + a `before ≠ ** → after = **` filter:**
+**⭐ ACCEPTANCE MET — `FUN_0001bd30`, BASELINE, NO PATCHES, via `--debug opaction` + a `before ≠ ** → after = **` filter:**
 ```
 determinedbranch KILLED 0x1bd6d:188  was: CALL r0x1bc90:4(free)
 determinedbranch KILLED 0x1bd85:224  was: CALL r0x1ba38:4(free)

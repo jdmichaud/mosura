@@ -1,11 +1,12 @@
 //! Throwaway grounding tool (Task #2): dump mosura's rule-application trace for a datatest
 //! fixture, in the same `DEBUG <n>: <rule>` format Ghidra's `capture_trace --trace` emits, so the
-//! two can be diffed. Usage: `MOSURA_TRACE=1 cargo run -q --example trace -- <fixture-stem>`.
+//! two can be diffed. Usage: `cargo run -q --example trace -- <fixture-stem> --debug opaction`
+//! (`--debug opaction=<action>` for one action, `;trace-func=<name>` to scope a function).
 use mosura::decompile::{build, pipeline};
 use mosura::datatest;
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let args = mosura::debug::from_args(std::env::args().collect()).unwrap_or_else(|e| panic!("--debug: {e}"));
     let stem = args.get(1).expect("fixture stem");
     let path = mosura::paths::datatests_dir().join(format!("{stem}.xml"));
     let dt = datatest::parse_file(&path).unwrap();
@@ -19,5 +20,5 @@ fn main() {
     let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();
     let entry = dt.chunks[0].offset;
     let mut f = build::raw_funcdata_flow_image_arch(spec, "func", &image, entry, ctx, &dt.arch);
-    pipeline::decompile(&mut f); // emits the trace to stdout when MOSURA_TRACE is set
+    pipeline::decompile(&mut f); // emits the trace when `--debug opaction` is set
 }

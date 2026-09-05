@@ -2206,11 +2206,10 @@ impl Funcdata {
 
     /// Replace `op`'s entire input list (Ghidra's `opSetAllInput`), fixing descendants.
     pub fn op_set_all_input(&mut self, op: OpId, inputs: &[VarnodeId]) {
-        // INSTRUMENT (`MOSURA_WATCH_CALL`): see `op_remove_input`.
-        if let Ok(w) = std::env::var("MOSURA_WATCH_CALL") {
+        // INSTRUMENT (`--debug watch-call=<hex va>`): see `op_remove_input`.
+        if let Some(w) = crate::debug::watch_call() {
             if matches!(self.op(op).code(), super::opcode::OpCode::Call)
-                && u64::from_str_radix(w.trim_start_matches("0x"), 16).ok()
-                    == self.op(op).input(0).map(|t| self.vn(t).loc.offset)
+                && Some(w) == self.op(op).input(0).map(|t| self.vn(t).loc.offset)
                 && inputs.len() != self.op(op).num_inputs()
             {
                 debug!(crate::debug::Topic::Pipeline,
@@ -2238,12 +2237,11 @@ impl Funcdata {
 
     /// Remove input `slot` from `op` (Ghidra's `opRemoveInput`), fixing descendant lists.
     pub fn op_remove_input(&mut self, op: OpId, slot: usize) {
-        // INSTRUMENT (`MOSURA_WATCH_CALL=<hex-target-va>`): name the caller that changes a CALL's
+        // INSTRUMENT (`--debug watch-call=<hex target va>`): name the caller that changes a CALL's
         // arity — the probe for silently vanishing arguments.
-        if let Ok(w) = std::env::var("MOSURA_WATCH_CALL") {
+        if let Some(w) = crate::debug::watch_call() {
             if matches!(self.op(op).code(), super::opcode::OpCode::Call)
-                && u64::from_str_radix(w.trim_start_matches("0x"), 16).ok()
-                    == self.op(op).input(0).map(|t| self.vn(t).loc.offset)
+                && Some(w) == self.op(op).input(0).map(|t| self.vn(t).loc.offset)
             {
                 debug!(crate::debug::Topic::Pipeline,
                     "watchcall remove_input op@{:#x} slot={slot} now {} inputs\n{}",
@@ -2592,23 +2590,15 @@ impl Funcdata {
     }
 
     /// Render a single op as one line (`0x<addr>:<uniq>: out = OPCODE inputs`), the per-op form
-    /// of [`print_raw`](Self::print_raw). Used by the rule-application trace (`MOSURA_TRACE`) to
+    /// of [`print_raw`](Self::print_raw). Used by the rule-application trace (`--debug opaction`) to
     /// capture an op's before/after state; a dead op renders as `**` (Ghidra's `printDebug`).
-    /// Ghidra's `OPACTION_DEBUG` selector (`Action::turnOnDebug`, action.hh:98). `MOSURA_OPACTION`
-    /// unset ⇒ the whole facility is off and every hook below early-outs on a single bool.
-    /// `MOSURA_OPACTION=1` (or empty) traces every action; any other value names the one action to
-    /// trace, matched against [`Action::name`](super::action::Action::name).
-    fn opaction_filter() -> Option<&'static str> {
-        static F: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-        F.get_or_init(|| {
-            // `MOSURA_TRACE=1` is the older spelling and selects everything — there is only one
-            // facility now, so it is an alias for `MOSURA_OPACTION=1` rather than a second switch
-            // covering rules only. scripts/trace-diff.sh sets both.
-            std::env::var("MOSURA_OPACTION")
-                .ok()
-                .or_else(|| std::env::var("MOSURA_TRACE").ok().map(|_| "1".to_string()))
-        })
-        .as_deref()
+    /// Ghidra's `OPACTION_DEBUG` selector (`Action::turnOnDebug`, action.hh:98), configured by the
+    /// caller (`crate::debug::Config::opaction`): `None` ⇒ the whole facility is off and every hook
+    /// below early-outs on a single bool; `--debug opaction` (the empty string) traces every action;
+    /// `--debug opaction=<name>` traces the one action named, matched against
+    /// [`Action::name`](super::action::Action::name).
+    fn opaction_filter() -> Option<String> {
+        crate::debug::opaction()
     }
 
     /// Ghidra `Funcdata::debugActivate` (funcdata.hh:596) — begin recording op mutations, if this
@@ -2620,18 +2610,17 @@ impl Funcdata {
             self.opactdbg_active = false;
             return;
         }
-        // `MOSURA_TRACE_FUNC=<name>`: additionally scope the facility to ONE function — the
+        // `--debug trace-func=<name>`: additionally scope the facility to ONE function — the
         // whole-program survey decompiles thousands of funcdatas per run, and an unscoped
         // trace of that flood is unusable (and was why the trace could previously only be
         // read through the single-function fixture harness, whose builder lacks the survey's
         // stack pre-model and under-fires the machinery being traced).
-        static FUNC: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-        let func_sel = FUNC.get_or_init(|| std::env::var("MOSURA_TRACE_FUNC").ok()).as_deref();
-        if func_sel.is_some_and(|n| n != self.name) {
+        let func_sel = crate::debug::trace_func();
+        if func_sel.as_deref().is_some_and(|n| n != self.name) {
             self.opactdbg_active = false;
             return;
         }
-        self.opactdbg_active = match Self::opaction_filter() {
+        self.opactdbg_active = match Self::opaction_filter().as_deref() {
             None => false,
             Some("") | Some("1") => true,
             Some(sel) => sel == actionname,

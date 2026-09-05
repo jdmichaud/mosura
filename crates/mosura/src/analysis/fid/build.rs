@@ -229,7 +229,7 @@ fn expand_input(file: &Path) -> Vec<crate::analysis::program::Program> {
     match crate::analysis::analyze_file(file) {
         Ok(p) => vec![p],
         Err(e) => {
-            eprintln!("  skip {}: {e:?}", file.display());
+            warn!("fid build: skip {}: {e:?}", file.display());
             Vec::new()
         }
     }
@@ -277,7 +277,7 @@ pub fn build_from_files(
     // One summarised line per skipped language, not one per module: a mixed-width runtime skips
     // hundreds, and 252 identical lines buried the fact that nothing was ingested.
     for (lang, n) in &skipped {
-        eprintln!("  skipped {n} module(s): language {lang} != {language}");
+        warn!("fid build: skipped {n} module(s): language {lang} != {language}");
     }
 
     match ingest {

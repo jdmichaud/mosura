@@ -621,8 +621,8 @@ fn only_op_use(
     marked.insert(invn);
     let mut res = true;
     let mut i = 0;
-    let trace = std::env::var("MOSURA_AOU_PC").ok().and_then(|v| u64::from_str_radix(v.trim_start_matches("0x"), 16).ok())
-        .is_some_and(|pc| f.op(opmatch).seqnum.pc.offset == pc);
+    // `--debug aou-pc=<hex pc>`: trace this walk for the op at that pc (under the `args` topic).
+    let trace = crate::debug::aou_pc().is_some_and(|pc| f.op(opmatch).seqnum.pc.offset == pc);
     'outer: while i < varlist.len() {
         let (vn, base_flags) = varlist[i];
         i += 1;

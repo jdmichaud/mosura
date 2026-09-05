@@ -19,9 +19,10 @@
 //!
 //! Registering is the whole job: [`Switch::ALL`] gives the name to `--arms-off`, [`Knobs::on`]
 //! answers at the site, and [`Knobs::stamp_parts`] puts it in the stamp — so a registered knob
-//! cannot be silently unstamped, and `tests::every_emit_knob_is_registered` fails on a raw
-//! `env::var("MOSURA_..")` / `env::var_os("MOSURA_..")` read outside the facility files that is not
-//! a known diagnostic.
+//! cannot be silently unstamped, and `tests::every_emit_knob_is_registered` fails on ANY raw
+//! `env::var("MOSURA_..")` / `env::var_os("MOSURA_..")` read in the library or the examples (the
+//! diagnostics are a caller-configured [`crate::debug::Config`] since WP3; only `paths.rs` still
+//! reads the environment, until the developer config and the resource provider — WP4/WP5).
 //!
 //! THE KNOBS ARE A VALUE, NOT A PROCESS STATE (2026-09-05, the environment-variable removal): a
 //! front-end builds one [`Knobs`] from its flags (`--arms-off`, `--cspec`, `--disable-analyzers`),
@@ -206,37 +207,6 @@ pub fn raw_env_reads(src: &str) -> Vec<(usize, String)> {
     out
 }
 
-/// What a raw read is, for the guard: a known diagnostic (a print, a trace, a watch — nothing
-/// that reaches the emitted text), or not — and a knob is never read from the environment at all,
-/// so anything that is not a diagnostic is a defect.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReadClass {
-    Diagnostic,
-    Unregistered,
-}
-
-/// The diagnostics the guard tolerates as raw reads (each is a print/trace/watch, never a tree).
-pub const DIAGNOSTIC_READS: &[&str] = &[
-    "MOSURA_DEBUG",
-    "MOSURA_TRACE",
-    "MOSURA_TRACE_FUNC",
-    "MOSURA_WATCH_CALL",
-    "MOSURA_MERGE_WATCH",
-    "MOSURA_OPACTION",
-    "MOSURA_GT_RAW",
-    "MOSURA_AOU_PC",
-    "MOSURA_RECOVER_FIXPOINT",
-    "MOSURA_PROBE_FULL",
-    "MOSURA_CONS_PROBE",
-];
-
-pub fn classify_read(name: &str) -> ReadClass {
-    if DIAGNOSTIC_READS.contains(&name) {
-        ReadClass::Diagnostic
-    } else {
-        ReadClass::Unregistered
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -262,9 +232,9 @@ mod tests {
     /// The guard's eyesight, pinned (review item, 2026-09-05): a read spelled `env::var_os` is a
     /// read. Before this test the scanner matched `env::var("MOSURA_` only, and
     /// `MOSURA_CALLEE_EFFECTS` — which changes the emitted tree — sat unregistered and unstamped
-    /// behind a `var_os`. Both spellings, several per line, and the classification of each class.
+    /// behind a `var_os`. Both spellings, several per line.
     #[test]
-    fn the_scanner_sees_both_spellings_and_classifies() {
+    fn the_scanner_sees_both_spellings() {
         let src = "let a = std::env::var(\"MOSURA_FOO\");\n\
                    let b = std::env::var_os(\"MOSURA_BAR\").is_some();\n\
                    let c = 1;\n\
@@ -280,12 +250,6 @@ mod tests {
             ],
             "the var_os read on line 2 is the one the old guard missed"
         );
-        assert_eq!(classify_read("MOSURA_DEBUG"), ReadClass::Diagnostic);
-        // The former switch variables are not a class any more: a knob is never read from the
-        // environment, so a read of one is exactly as unregistered as a made-up name.
-        assert_eq!(classify_read("MOSURA_CALLEE_EFFECTS"), ReadClass::Unregistered);
-        assert_eq!(classify_read("MOSURA_RETSPLIT"), ReadClass::Unregistered);
-        assert_eq!(classify_read("MOSURA_NO_SUCH_KNOB"), ReadClass::Unregistered);
     }
 
     /// The value semantics the knobs exist for: independent instances, `Default` = all on, the
@@ -309,6 +273,12 @@ mod tests {
         );
     }
 
+    /// A knob that changes a tree must be in the table, or the manifest's `arms:` line lies about
+    /// how the tree was built; a diagnostic is a `debug::Config` field the caller sets. So NO
+    /// `MOSURA_*` environment read may exist in the library or the examples: this guard scans them
+    /// and fails on any, naming file:line. (`paths.rs` is exempt until WP4/WP5 move the tree
+    /// locations to the developer config and the resource provider; this file is exempt because its
+    /// scanner test carries the pattern as test data.)
     #[test]
     fn every_emit_knob_is_registered() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -327,22 +297,16 @@ mod tests {
         }
         let mut unregistered: Vec<String> = Vec::new();
         for p in files {
-            // The FACILITY files still owning environment reads: `debug` the diagnostic topics
-            // (until the caller configures them — WP3), `paths` the tree locations (until the
-            // resource provider and the developer config — WP4/WP5). This file reads nothing.
-            if p.file_name().is_some_and(|n| n == "switches.rs" || n == "debug.rs" || n == "paths.rs") {
+            if p.file_name().is_some_and(|n| n == "switches.rs" || n == "paths.rs") {
                 continue;
             }
             let Ok(src) = std::fs::read_to_string(&p) else { continue };
             for (line, full) in raw_env_reads(&src) {
-                match classify_read(&full) {
-                    ReadClass::Diagnostic => {}
-                    ReadClass::Unregistered => unregistered.push(format!(
-                        "{}:{} reads {full} from the environment — a knob is a `Knobs` value, a print a debug topic",
-                        p.display(),
-                        line
-                    )),
-                }
+                unregistered.push(format!(
+                    "{}:{} reads {full} from the environment — a knob is a `Knobs` value, a diagnostic a `debug::Config` field",
+                    p.display(),
+                    line
+                ));
             }
         }
         assert!(unregistered.is_empty(), "unregistered emit knobs:\n  {}", unregistered.join("\n  "));

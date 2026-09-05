@@ -11,7 +11,7 @@ use super::op::OpId;
 use super::opcode::OpCode;
 
 /// Bookkeeping for the ONE trace facility (the mosura side of the Ghidra `OPACTION_DEBUG` diff,
-/// Task #2). Off by default and completely inert unless `MOSURA_TRACE` or `MOSURA_OPACTION` is set,
+/// Task #2). Off by default and completely inert unless `--debug opaction` is set,
 /// so normal decompilation (and the corpus) is byte-identical. The emitting is
 /// [`Funcdata::debug_mod_check`](super::Funcdata::debug_mod_check) /
 /// [`debug_mod_print`](super::Funcdata::debug_mod_print) — Ghidra's own — driven from two places
@@ -76,14 +76,14 @@ pub fn trace_suppressed() -> bool {
     trace::is_suppressed()
 }
 
-/// Run `f` (an alias-probe rule-pool pass on a cloned function) with the `MOSURA_TRACE` output
+/// Run `f` (an alias-probe rule-pool pass on a cloned function) with the op-action trace output
 /// suppressed, so the probe's rule firings do not double the real pipeline's trace.
 pub fn with_suppressed_trace<R>(f: impl FnOnce() -> R) -> R {
     trace::suppressed(f)
 }
 
 /// Wall-clock accounting for the pipeline (perf work). Off by default and completely inert
-/// unless the `perf` debug topic is on (`MOSURA_DEBUG=perf`, [`crate::debug`]); when on,
+/// unless the `perf` debug topic is on (`--debug perf`, [`crate::debug`]); when on,
 /// [`ActionGroup::apply`] accumulates time per child action and [`ActionPool::apply`] per rule,
 /// and [`perf::dump`] prints the totals to stderr as a table (plain rows under the one gate, a
 /// `debug!` header above them). Never touches decompiler output.
@@ -125,7 +125,7 @@ pub mod perf {
             rows.sort_by(|x, y| y.1 .0.cmp(&x.1 .0));
             debug!(crate::debug::Topic::Perf, "pipeline timing: {} rows (ms, calls, kind, name)", rows.len());
             for ((kind, name), (dur, calls)) in rows {
-                eprintln!("{:>10.3}ms  {:>8} calls  {kind:6} {name}", dur.as_secs_f64() * 1e3, calls);
+                debug!(crate::debug::Topic::Perf, "{:>10.3}ms  {:>8} calls  {kind:6} {name}", dur.as_secs_f64() * 1e3, calls);
             }
         });
     }
@@ -189,7 +189,7 @@ impl Action for ActionGroup {
                 // Ghidra `Action::perform` (action.cc:316-322) brackets every action's `apply` with
                 // `debugActivate()` / `debugModPrint(getName())`, so the OPACTION_DEBUG facility
                 // attributes each op mutation to the action that made it. Both calls early-out on a
-                // single bool unless `MOSURA_OPACTION` selects this action.
+                // single bool unless `--debug opaction` selects this action.
                 data.debug_activate(a.name());
                 if timing {
                     let t0 = std::time::Instant::now();

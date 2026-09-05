@@ -208,7 +208,7 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
     match outcome {
         Ok(f) => Some(f),
         Err(_) => {
-            eprintln!(
+            warn!(
                 "decompile_function: pipeline failed for FUN_{:08x} — skipping (no switch/proto)",
                 entry.offset
             );

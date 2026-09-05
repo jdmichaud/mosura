@@ -1,14 +1,14 @@
 //! Throwaway grounding tool (Task #2, sibling of `trace.rs`): dump mosura's decompiled output for
 //! a datatest fixture — the final C by default, or the raw post-decompile IR with `--raw` (for
 //! diffing mosura's op-graph against Ghidra's `oracle/capture --c` / IR).
-//! Usage: `cargo run -q --example dumpc -- <fixture-stem> [--raw|--pre]` (`--pre` = the lifted
+//! Usage: `cargo run -q --example dumpc -- <fixture-stem> [--raw|--pre] [--debug <spec>]` (`--pre` = the lifted
 //! p-code BEFORE any action, i.e. exactly what heritage sees).
 use mosura::decompile::{build, pipeline};
 use mosura::decompile::printc::print_c;
 use mosura::{datatest, paths};
 
 fn main() {
-    let args: Vec<String> = std::env::args().collect();
+    let args = mosura::debug::from_args(std::env::args().collect()).unwrap_or_else(|e| panic!("--debug: {e}"));
     let stem = args.get(1).expect("fixture stem");
     // A bare stem resolves in the datatests dir; a path (contains '/' or ends .xml) is used
     // as-is, so ad-hoc fixtures (e.g. scratchpad extracts of corpus functions) dump too.

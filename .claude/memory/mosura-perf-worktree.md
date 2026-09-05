@@ -17,6 +17,6 @@ the new baseline for spotting future perf regressions.
 
 **How to apply:** perf history + next candidates (ActionPool per-round re-sort, heritage
 alias probe, mold/lld install) live in `docs/perf-log.md`; usage of the instrumentation
-(`MOSURA_PERF=1`, `examples/perf_corpus`, `build/oracle-cache/`, `speccache`) is in the
+(`--debug perf`, `examples/perf_corpus`, `build/oracle-cache/`, `speccache`) is in the
 README. The dev profile is now `debug = "line-tables-only"` + `opt-level = 1` — set
 `debug = 2` locally for a debugger session.

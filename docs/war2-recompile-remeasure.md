@@ -198,12 +198,12 @@ does any commit that changes what it tests: the gt oracle, the emit plan or an a
 | --- | --- |
 | the `proto-pass` switch (on by default; `--arms-off proto-pass` disables) | whole-program callee prototype recovery before the emit |
 | `MOSURA_ARG_DEBUG=1` | per-call argument trials, with the full CALL input list |
-| `MOSURA_OPACTION=<action>` | rule/action trace; `<action>` or `1` for all |
+| `--debug opaction[=<action>]` | rule/action trace; bare for every action, `=<action>` for one |
 | `MOSURA_RAW_IR=1` | post-pipeline IR alongside the C (with `--only`) |
 | `MOSURA_EFFECTS_DEBUG=1` | what prototype was propagated to each call |
 
 To find which action changed an op, `awk` for the nearest preceding `DEBUG n: <action>` header above
-the changed op in the `MOSURA_OPACTION` trace.
+the changed op in the op-action trace (`--debug opaction`).
 
 ## Gotchas that have cost real time
 

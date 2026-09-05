@@ -269,7 +269,7 @@ impl FidQueryService {
             match loaded {
                 Ok(db) if db.matches_program(language_id, compiler_spec_id) => service.attach(db),
                 Ok(_) => {}
-                Err(e) => eprintln!("fid: skipping {}: {e}", path.display()),
+                Err(e) => warn!("fid: skipping {}: {e}", path.display()),
             }
         }
         service

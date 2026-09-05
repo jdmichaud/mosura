@@ -3,20 +3,20 @@
 # trace-diff.sh — one-command rule-application trace diff for a fixture (Task #2).
 #
 # Runs Ghidra's canonical OPACTION_DEBUG trace (oracle/capture_trace) and mosura's own trace
-# (MOSURA_TRACE=1 + MOSURA_OPACTION=1, examples/trace.rs) over the same datatest fixture, then diffs
+# (`--debug opaction`, examples/trace.rs) over the same datatest fixture, then diffs
 # the two rule-firing sequences with scripts/trace-diff.py — surfacing which rules Ghidra fires that
 # mosura doesn't (and where the two diverge). Both traces are off by default in normal builds; this
 # is a diagnostic.
 #
 # BOTH SIDES MUST COVER BOTH LEVELS. Ghidra's OPACTION_DEBUG prints a block for every ACTION as well
 # as every rule (`heritage`, `deadcode`, `activeparam`, …) because `debugModPrint` is called from
-# `Action::perform` and `ActionPool::processOp` alike. mosura's MOSURA_TRACE alone covers only rules,
-# so an action-vs-rule ordering difference — the exact shape of task #9, where Ghidra's
+# `Action::perform` and `ActionPool::processOp` alike. An earlier rules-only trace on the mosura side
+# made an action-vs-rule ordering difference — the exact shape of task #9, where Ghidra's
 # ActionActiveParam commits a call's argument list BEFORE the rule pool garbage-collects the op that
-# the commit would have let a rule narrow — was invisible, and twelve ACTION names showed up in the
-# "rules Ghidra fires but mosura never does" list as pure instrumentation artifacts. MOSURA_OPACTION=1
-# is therefore set here unconditionally, not offered as a flag: a diff of two different surfaces is
-# worse than no diff, because it reads as a finding.
+# the commit would have let a rule narrow — invisible, and twelve ACTION names showed up in the
+# "rules Ghidra fires but mosura never does" list as pure instrumentation artifacts. `--debug opaction`
+# (every action AND every rule) is therefore passed here unconditionally, not offered as a knob: a
+# diff of two different surfaces is worse than no diff, because it reads as a finding.
 #
 # BOTH SIDES ARE KEYED ON THE MECHANISM, NOT THE NAME. The port renames some rules and actions, so a
 # string-keyed diff put naming artifacts in its headline column next to real findings — `collect_terms`
@@ -27,7 +27,9 @@
 # naming pair, one merged action, and seven rules mosura HAS and simply does not fire here.
 #
 # Usage:   scripts/trace-diff.sh <fixture-stem>          # e.g. piecestruct, orcompare, nan
-# Env:     GHIDRA_SRC   pinned Ghidra checkout (default: <workspace>/ghidra)
+# Env:     GHIDRA_SRC   a Ghidra root for capture_trace — the pinned checkout or a distribution
+#                       (default: <workspace>/ghidra)
+#          DATATESTS    the datatests directory (default: the vendored third_party/ghidra/datatests)
 #          KEEP=1       keep the raw .trace files (printed paths) instead of a temp dir
 #
 set -euo pipefail
@@ -37,7 +39,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOSURA_DIR="$(dirname "$SCRIPT_DIR")"
 WORKSPACE="$(dirname "$MOSURA_DIR")"
 GHIDRA_SRC="${GHIDRA_SRC:-$WORKSPACE/ghidra}"
-FIXTURE="$GHIDRA_SRC/Ghidra/Features/Decompiler/src/decompile/datatests/$STEM.xml"
+FIXTURE="${DATATESTS:-$MOSURA_DIR/third_party/ghidra/datatests}/$STEM.xml"
 CAPTURE_TRACE="$MOSURA_DIR/oracle/capture_trace"
 
 [ -x "$CAPTURE_TRACE" ] || { echo "missing $CAPTURE_TRACE — run scripts/setup-oracle.sh" >&2; exit 1; }
@@ -66,7 +68,7 @@ ghidra_stamp() {
 ghidra_stamp > "$OUT/ghidra.trace"
 "$CAPTURE_TRACE" "$GHIDRA_SRC" "$FIXTURE" --trace >> "$OUT/ghidra.trace" 2>/dev/null
 mosura_stamp > "$OUT/mosura.trace"
-( cd "$MOSURA_DIR" && MOSURA_TRACE=1 MOSURA_OPACTION=1 cargo run -q --example trace -- "$STEM" >> "$OUT/mosura.trace" 2>/dev/null )
+( cd "$MOSURA_DIR" && cargo run -q --example trace -- "$STEM" --debug opaction >> "$OUT/mosura.trace" 2>/dev/null )
 
 python3 "$SCRIPT_DIR/trace-diff.py" "$OUT/ghidra.trace" "$OUT/mosura.trace" \
   --ghidra-cpp "$GHIDRA_SRC/Ghidra/Features/Decompiler/src/decompile/cpp" \

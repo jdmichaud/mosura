@@ -62,7 +62,7 @@ cause — ~45 deficit functions did not match the crude pattern and may have oth
 
 Work queue: `scratchpad/deficits.txt` (92 VAs, worst first).
 
-Found by query, no ad-hoc probe: `MOSURA_OPACTION=1` (action-level, [[print-raw-has-no-dead-filter]])
-then `MOSURA_TRACE=1` (rule-level). Reference = [[war2-per-function-ghidra-oracle]].
+Found by query, no ad-hoc probe: `--debug opaction` (action-level, [[print-raw-has-no-dead-filter]])
+then `--debug opaction` (rule-level). Reference = [[war2-per-function-ghidra-oracle]].
 
 Related: [[absolute-vs-differential-wrongcode]], [[war2-stackptr-wrong-code]], [[bounded-levers-exhausted]].

@@ -1,14 +1,15 @@
 //! Perf harness: run the faithful pipeline over the x86-64 datatests (no oracle spawns) and
-//! report per-fixture wall time, worst first, plus phase totals. With `MOSURA_DEBUG=perf` also
+//! report per-fixture wall time, worst first, plus phase totals. With `--debug perf` also
 //! dumps the per-action / per-rule time accounting accumulated by `action::perf`.
-//! Usage: `MOSURA_DEBUG=perf cargo run -q --example perf_corpus [fixture-stem]`.
+//! Usage: `cargo run -q --example perf_corpus [fixture-stem] [--debug perf]`.
 use mosura::decompile::{action, build, pipeline, printc};
 use mosura::sleigh::engine::Spec;
 use mosura::{datatest, paths};
 use std::time::Instant;
 
 fn main() {
-    let only: Option<String> = std::env::args().nth(1);
+    let argv = mosura::debug::from_args(std::env::args().collect()).unwrap_or_else(|e| panic!("--debug: {e}"));
+    let only: Option<String> = argv.get(1).cloned();
     let sla = paths::language_dir("x86").join("x86-64.sla");
     let t0 = Instant::now();
     let spec = Spec::from_sla(&std::fs::read(&sla).unwrap()).unwrap();

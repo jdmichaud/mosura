@@ -16,7 +16,7 @@
 //! the answer form (`return r` → `return Some(r)`).
 //!
 //! Review R6 settled the experiment leftovers this arm carried: the `[sumord]` census print is the
-//! `sum-order` topic of `crate::debug` (`MOSURA_DEBUG=sum-order`, commit 2); the context knob
+//! `sum-order` topic of `crate::debug` (`--debug sum-order`, commit 2); the context knob
 //! `MOSURA_SUMORD_CTX=all` (the non-pointer A/B, measured on zc26 and lost) is gone with its branch
 //! (commit 3a) — pointer-context chains only, the landed behaviour.
 use crate::decompile::emit::{EmitChoices, SumOrder};

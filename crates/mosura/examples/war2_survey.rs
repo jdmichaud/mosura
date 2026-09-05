@@ -1129,7 +1129,10 @@ fn own_contract(
 }
 
 fn main() {
-    let mut args = std::env::args().skip(1);
+    // `--debug <spec>` configures the diagnostics of this process (`mosura::debug`, grammar in its
+    // module doc); nothing is read from the environment.
+    let argv = mosura::debug::from_args(std::env::args().skip(1).collect()).unwrap_or_else(|e| panic!("--debug: {e}"));
+    let mut args = argv.into_iter();
     let first = args.next().expect("usage: war2_survey [--prelude-only] <war2.exe> <out_dir>");
     // `--prelude-only <out_dir>` rewrites <out>/prelude.h from PRELUDE and exits. It exists so a
     // prelude change never has to be hand-applied to the generated file (see PRELUDE's warning):
@@ -1147,6 +1150,8 @@ fn main() {
     let out = std::path::PathBuf::from(args.next().expect("usage: war2_survey <war2.exe> <out_dir>"));
     let rest: Vec<String> = args.collect();
     let force = rest.iter().any(|a| a == "--force");
+    // `--cons-probe`: the Order-Y constant-witness probe prints its reaching-write census (below).
+    let cons_probe = rest.iter().any(|a| a == "--cons-probe");
     // `--only <va>[,<va>...]` emits JUST those functions and prints each TU to stdout instead of
     // running the whole 3023-function survey. A single function's C is what an MVE-first loop needs
     // to see after a decompiler change, and re-emitting the corpus to read one signature is the
@@ -1377,7 +1382,7 @@ fn main() {
         // included (harmless, and a probed function calling another probed one is covered
         // regardless of scan order).
         let probe_scope: Option<std::collections::HashSet<u64>> = if only.is_empty()
-            || std::env::var("MOSURA_PROBE_FULL").as_deref() == Ok("1")
+            || rest.iter().any(|a| a == "--probe-full")
         {
             None
         } else {
@@ -2397,12 +2402,12 @@ fn main() {
                             }
                             true
                         };
-                        // ==== ORDER Y PROBE (unlanded, MOSURA_CONS_PROBE=1) ====
+                        // ==== ORDER Y PROBE (unlanded, `--cons-probe`) ====
                         // The HELD message names four conditions at once. This splits them, and
                         // for the constant-witness half re-runs the search with the intervening-
                         // CALL stop REMOVED — reporting the reaching write, how many calls it had
                         // to cross, and each crossed callee, so the design reads bytes not guesses.
-                        if std::env::var("MOSURA_CONS_PROBE").as_deref() == Ok("1") {
+                        if cons_probe {
                             match f3.as_ref() {
                                 None => eprintln!("[cons-probe] {name}: f3=NONE callees [{}]", list.join(" ")),
                                 Some(fx) => {

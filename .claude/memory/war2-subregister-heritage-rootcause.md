@@ -8,7 +8,7 @@ metadata:
   modified: 2026-07-29T10:20:46.000Z
 ---
 
-**🎯 ROOT CAUSE FOUND (2026-07-28, agent war2-guard) — entirely BY QUERY, no new probe.** The facility built the turn before ([[war2-missing-calls-class]]) paid for itself: two queries (`MOSURA_OPACTION=1` then `MOSURA_TRACE=1`) walked from a deleted call to a sub-register heritage defect.
+**🎯 ROOT CAUSE FOUND (2026-07-28, agent war2-guard) — entirely BY QUERY, no new probe.** The facility built the turn before ([[war2-missing-calls-class]]) paid for itself: two queries (`--debug opaction` then `--debug opaction`) walked from a deleted call to a sub-register heritage defect.
 
 **THE DEFECT — a 4-byte read binds to a stale def, ignoring an intervening 1-byte write to the same register:**
 ```

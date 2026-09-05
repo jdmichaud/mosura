@@ -45,20 +45,20 @@ pub fn recover(
         ),
     );
     // FIXPOINT CHECK (review F3, 2026-09-04): two rounds is a guess at convergence. In debug
-    // builds, or under `MOSURA_RECOVER_FIXPOINT=1`, render once more under the decisions and
+    // builds, or under `--debug fixpoint`, render once more under the decisions and
     // derive again: a decision the third render INTRODUCES — a site, key or flag the second
     // round does not have — is named on stderr as a specimen instead of silently taking the
     // second round's answer. Growth only: a decision whose candidate the render CONSUMES (a
     // widened local no longer reads as a narrow load) vanishes from a re-derivation by design —
     // the rounds accumulate, and 179 functions show exactly that shape (the first corpus run,
     // 2026-09-04). Observation only: the returned decisions are the second round's either way.
-    if cfg!(debug_assertions) || std::env::var("MOSURA_RECOVER_FIXPOINT").as_deref() == Ok("1") {
+    if cfg!(debug_assertions) || crate::debug::recover_fixpoint() {
         let (_, report3) = crate::decompile::printc::print_c_recovered_report(f, rec_choices, &recovered);
         let mut again = derive(&report3, insns, call_arg_orders);
         again.nested_conds.sites.extend(crate::recompile::buildconfig::nested_conds_from_evidence(&report3.nested_conds.candidates, insns));
         let grown = again.grown_over(&recovered);
         if !grown.is_empty() {
-            eprintln!("[recover] FIXPOINT VIOLATION {}: the third render introduces [{}]", f.name, grown.join(" "));
+            warn!("[recover] FIXPOINT VIOLATION {}: the third render introduces [{}]", f.name, grown.join(" "));
         }
     }
     debug!(crate::debug::Topic::Recover, 

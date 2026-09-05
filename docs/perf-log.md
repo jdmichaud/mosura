@@ -52,7 +52,7 @@ corpus (8.0s → 0.46s).
 
 ## Tools added (all inert unless enabled)
 
-- `MOSURA_PERF=1` — per-action / per-rule / per-print-substep wall-clock accounting
+- `--debug perf` — per-action / per-rule / per-print-substep wall-clock accounting
   (`decompile::action::perf`), dumped by `examples/perf_corpus`.
 - `cargo run -q --example perf_corpus [stem]` — per-fixture build/decompile/print timing
   over the x86-64 datatests, worst first; no oracle spawns.

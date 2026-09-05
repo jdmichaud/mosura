@@ -1390,7 +1390,7 @@ instrument now prints the whole input list, which makes the difference impossibl
 Slot 1 — the slot the trial names, and the correct one — already holds the constant when
 `build_input_from_trials` reads it. The slot bookkeeping is fine.
 
-**What actually happens, from the rule trace** (`MOSURA_OPACTION=1`, `FUN_00013c50`). Heritage
+**What actually happens, from the rule trace** (`--debug opaction`, `FUN_00013c50`). Heritage
 binds the argument correctly:
 
 ```

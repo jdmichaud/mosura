@@ -1764,8 +1764,8 @@ pub fn resolve_model(f: &mut Funcdata) -> bool {
             // lists it first: a register trial it cannot place costs 20, never 500); should a spec
             // list no default, the function takes the list's first constituent — the spec's own
             // "default case" — and says so, never the union placeholder.
-            eprintln!(
-                "mosura: {}: no constituent of the merged model `{}` fits its {} input trials; taking `{}`",
+            warn!(
+                "{}: no constituent of the merged model `{}` fits its {} input trials; taking `{}`",
                 f.name,
                 f.proto_model.name,
                 active.trial.len(),

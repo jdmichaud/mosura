@@ -87,14 +87,10 @@ impl HighVariables {
     }
 
     fn union(&mut self, a: u32, b: u32) {
-        if let Ok(watch) = std::env::var("MOSURA_MERGE_WATCH") {
-            MERGE_PHASE.with(|ph| {
-                let _ = ph; // used in the print below
-            });
-            if let Ok(w) = u32::from_str_radix(watch.trim_start_matches("0x"), 16) {
-                if self.find(a) == self.find(w) || self.find(b) == self.find(w) || a == w || b == w {
-                    MERGE_PHASE.with(|ph| debug!(crate::debug::Topic::Merge, "union {a} <- {b} (watch {w}) phase {}", ph.get()));
-                }
+        // `--debug merge-watch=<hex id>`: trace the unions touching one merge group.
+        if let Some(w) = crate::debug::merge_watch() {
+            if self.find(a) == self.find(w) || self.find(b) == self.find(w) || a == w || b == w {
+                MERGE_PHASE.with(|ph| debug!(crate::debug::Topic::Merge, "union {a} <- {b} (watch {w}) phase {}", ph.get()));
             }
         }
         let (ra, rb) = (self.find(a), self.find(b));
@@ -1329,7 +1325,7 @@ impl VariablePieces {
 /// function has always operated on, so the change here is purely partition-vs-union. Widening the
 /// population is a separate step; it can only add pieces, which can only *forbid* merges.
 thread_local! {
-    /// MOSURA_MERGE_WATCH diagnostic: which merge phase is running (set by the drivers).
+    /// `--debug merge-watch` diagnostic: which merge phase is running (set by the drivers).
     static MERGE_PHASE: std::cell::Cell<&'static str> = const { std::cell::Cell::new("?") };
 }
 
@@ -1350,7 +1346,7 @@ fn merge_addrtied(f: &Funcdata, h: &mut HighVariables) -> VariablePieces {
         if vn.is_free() || !vn.is_addrtied() {
             continue;
         }
-        if std::env::var_os("MOSURA_MERGE_WATCH").is_some()
+        if crate::debug::merge_watch().is_some()
             && f.spaces.get(vn.loc.space).kind == crate::decompile::space::SpaceKind::Processor
             && f.spaces.get(vn.loc.space).delay == 0
         {

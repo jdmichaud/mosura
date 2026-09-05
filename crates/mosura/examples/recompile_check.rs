@@ -29,7 +29,8 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 fn main() {
-    let a: Vec<String> = std::env::args().skip(1).collect();
+    // `--debug <spec>` configures the diagnostics (`mosura::debug`); it is taken out of the list first.
+    let a = mosura::debug::from_args(std::env::args().skip(1).collect()).unwrap_or_else(|e| panic!("--debug: {e}"));
     if a.len() < 5 {
         eprintln!(
             "usage: recompile_check <binary> <manifest> <src-dir> <flags-file> <watcom-dir> \

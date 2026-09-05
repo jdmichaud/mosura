@@ -9,7 +9,7 @@ Both traces are emitted in Ghidra's OPACTION_DEBUG `debugModPrint` format:
 
 produced by:
     oracle/capture_trace <ghidra_src> <fixture.xml> --trace        # Ghidra (canonical)
-    MOSURA_TRACE=1 cargo run -q --example trace -- <fixture-stem>   # mosura
+    cargo run -q --example trace -- <fixture-stem> --debug opaction # mosura
 
 Ghidra's raw op rendering uses operator glyphs (`&`, `<`, `SBORROW8`) while mosura uses CPUI opcode
 names, so we key each firing on (mechanism, instruction-address) — enough to answer "which rule

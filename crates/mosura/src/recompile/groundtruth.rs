@@ -674,7 +674,7 @@ pub fn analyze_program(src: &Path, workdir: &Path, target: Target) -> Result<Ana
         t.decompile += t0.elapsed();
         let (f, globals, addr_of) = match f {
             Some(f) => {
-                if std::env::var("MOSURA_GT_RAW").is_ok_and(|v| v == s.name) {
+                if crate::debug::gt_raw(&s.name) {
                     eprint!("{}", f.print_raw());
                 }
                 let mut globals = BTreeMap::new();

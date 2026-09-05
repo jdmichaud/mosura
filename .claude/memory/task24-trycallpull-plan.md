@@ -78,6 +78,6 @@ trailer. Reported grounding to lead; awaiting go-to-build.
 
 ## GOTCHAS
 - `git diff` external difftool (icdiff) missing → use `--no-ext-diff`.
-- dumpc `cargo run -q --example dumpc -- <stem>`; IR `dump -- <stem> --ir`; trace `MOSURA_TRACE=1 ... --example
+- dumpc `cargo run -q --example dumpc -- <stem>`; IR `dump -- <stem> --ir`; trace `--debug opaction ... --example
   trace -- <stem>`; oracle `oracle/capture <ghidra> <fixture.xml> --c/--ir -`; `scripts/trace-diff.sh <stem>`
   (KEEP=1 keeps raw traces).

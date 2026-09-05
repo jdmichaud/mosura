@@ -118,7 +118,7 @@ impl Action for ActionHeritage {
                     super::directwrite::ActionDirectWrite::new(false).apply(&mut probe);
                     super::recover::resolve_return(&mut probe);
                     super::recover::resolve_call_args(&mut probe);
-                    // Suppress the MOSURA_TRACE trace here: this rule pool runs on a throwaway
+                    // Suppress the op-action trace here: this rule pool runs on a throwaway
                     // clone for alias analysis, so its firings would double the real trace.
                     super::action::with_suppressed_trace(|| default_rule_pool().apply(&mut probe));
                     super::deadcode::ActionDeadCode.apply(&mut probe);
@@ -1201,7 +1201,7 @@ impl Action for ActionStartTypes {
 pub fn ptrarith_pool() -> ActionPool {
     // Label distinct from RulePtrArith's own `ptrarith`: the OPACTION_DEBUG trace prints actions and
     // rules in one format, so a pool sharing a rule's name makes a firing unattributable (and
-    // `MOSURA_OPACTION=<name>` ambiguous). scripts/trace-names.py audits for that collision.
+    // `--debug opaction=<name>` ambiguous). scripts/trace-names.py audits for that collision.
     ActionPool::new("ptrarithpool")
         .with(RuleConstFold)
         .with(RulePropagateCopy)

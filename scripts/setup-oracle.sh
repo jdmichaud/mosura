@@ -119,7 +119,7 @@ build_capture() {
 build_capture_trace() {
   # The rule-application trace tool (Task #2 "killer feature"): emits Ghidra's OPACTION_DEBUG
   # "DEBUG <n>: <RuleName>" before/after trace for a fixture, to diff against mosura's own trace
-  # (MOSURA_TRACE=1) via scripts/trace-diff.py.
+  # (--debug opaction) via scripts/trace-diff.py.
   #
   # No separate library: types.h does `#ifdef CPUI_DEBUG #define OPACTION_DEBUG`, so the trace
   # machinery is ALREADY in the same libdecomp_dbg.a that oracle/capture links. This is a distinct
@@ -146,7 +146,7 @@ build_capture_merge() {
 
 build_capture_typeprop() {
   # The TYPE-PROPAGATION trace tool (task #11): emits Ghidra's TYPEPROP_DEBUG
-  # "<varnode> : <type> from <op> slot=<n>" log, to diff against mosura's own (MOSURA_DEBUG=types)
+  # "<varnode> : <type> from <op> slot=<n>" log, to diff against mosura's own (--debug types)
   # via scripts/typeprop-diff.sh.
   #
   # WHY IT IS SEPARATE FROM capture_trace: that tool drives OPACTION_DEBUG, which is a p-code-OP

@@ -2446,7 +2446,7 @@ impl<'a> PrintC<'a> {
         cond_idx: usize,
         body_idx: usize,
     ) -> Option<(Option<VarnodeId>, OpId, VarnodeId)> {
-        // INSTRUMENT (`MOSURA_DEBUG=for-loop`, Order Z(2)): every gate below names itself when it
+        // INSTRUMENT (`--debug for-loop`, Order Z(2)): every gate below names itself when it
         // declines. The decline sites ARE the gates — there is deliberately no second function
         // that re-walks the chain to report on it, because a diagnostic that re-derives what it
         // reports is two implementations of one rule and they drift. Print-only: `&self`, stderr,
@@ -4532,7 +4532,7 @@ pub fn interleave_census(f: &Funcdata, insns: &[crate::recompile::insn::NormInsn
 /// the block's first statement op (in block order); absent when nothing moves.
 /// PARKED groundwork (review R6, commit 3b): the blind form's switch (`MOSURA_ILV=1`) is gone — the
 /// allocator thread's lever 3 was measured 2026-08-22 as a loser — and the model-inverse variant would
-/// be its next caller. It stays exercised by the survey's interleave census (`MOSURA_DEBUG=recover`,
+/// be its next caller. It stays exercised by the survey's interleave census (`--debug recover`,
 /// war2_survey.rs), which reports the orders this would apply next to the census; not dead code.
 pub fn interleave_orders(f: &Funcdata, insns: &[crate::recompile::insn::NormInsn]) -> std::collections::HashMap<OpId, Vec<OpId>> {
     let mut out = std::collections::HashMap::new();
@@ -4866,7 +4866,7 @@ fn print_c_inner(
     arms::array_index::recognize(&mut p, f, choices);
     // string-ops=intrinsic: the arm's recognizer (emit/arms/string_ops.rs) — arm setup
     arms::string_ops::recognize(&mut p);
-    // struct-copy: the arm's own setup — its diagnostic dump under `MOSURA_DEBUG=struct-copy` (R6)
+    // struct-copy: the arm's own setup — its diagnostic dump under `--debug struct-copy` (R6)
     arms::struct_copy::recognize(&p);
     // frame-fill=aggregate: the arm's gate (emit/arms/frame_fill.rs) — arm setup
     arms::frame_fill::recognize(&mut p, f, choices);

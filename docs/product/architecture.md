@@ -49,7 +49,7 @@ document decides the shape; the numbered phases at the end are the order to buil
 
 45 example programs (9,604 lines) are the entire user interface today. About 35 distinct
 environment variables are read across the crate (plus `CARGO_MANIFEST_DIR` at compile time);
-`debug.rs` has already collapsed 80 of them into one `MOSURA_DEBUG=topic,…` switch, and
+`debug.rs` has already collapsed 80 of them into one `--debug topic,…` switch, and
 `overrides.rs` shows the thread-local pattern that replaced two more.
 
 ### 1.2 What is already right, and is kept
@@ -192,7 +192,7 @@ pub struct OptionSpec { key: &'static str, ty: OptType, default: &'static str, d
   `emit.return-width=storage` (the existing `EmitChoices` axes become `emit.*`), `debug.topics=…`,
   `toolchain.watcom-10.0a-dos.install=<dir>`.
 - `Options::set(key, value)` validates against the registry and rejects unknown keys loudly (the
-  `MOSURA_DEBUG` unknown-topic rule, generalized).
+  debug facility's unknown-topic rule, generalized).
 - `affects` records whether a key changes results (`Result`), only diagnostics (`Diagnostic`), or
   only locations of external tools (`Environment`). Only `Result` keys enter cache keys; a
   diagnostic switch never invalidates a cache, and a tool path never changes a digest (the
@@ -204,9 +204,9 @@ pub struct OptionSpec { key: &'static str, ty: OptType, default: &'static str, d
   the defaults for this work), and *flags*. The library itself reads none of these; it receives an
   `Options`. A wasm host builds the same struct from its own configuration.
 
-The per-thread override cell in `overrides.rs` and the per-process `MOSURA_DEBUG` static both
-become fields of the `Options` the operation receives; nothing global remains except the spec
-cache, which is a cache.
+The knobs are already a value (`switches::Knobs`, WP2) and the diagnostics a caller-set
+configuration (`debug::Config`, WP3); both become fields of the `Options` the operation receives;
+nothing global remains except the spec cache, which is a cache.
 
 ### 4.3 Tables and schemas
 

@@ -2415,7 +2415,7 @@ impl Rule for RuleDumptyHump {
 /// And it may only fire when EVERY reader of the comparison is a BOOL_NEGATE: flipping a producer
 /// that something else also reads would change what that reader sees. Measured before this port:
 /// 2,435 of our 11,122 firing sites -- 21.9 % -- are ones Ghidra refuses on exactly that test, and
-/// every one of them is a multi-reader comparison (Order Z(4b), `MOSURA_DEBUG=boolnegate`).
+/// every one of them is a multi-reader comparison (Order Z(4b), `--debug boolnegate`).
 ///
 /// `get_booleanflip` (opcodes.cc) also maps BOOL_NEGATE itself to COPY, so `!(!x)` collapses; the
 /// pre-port opcode table had no such entry and declined on double negation.
@@ -2455,7 +2455,7 @@ impl Rule for RuleBoolNegate {
             OpCode::FloatLessequal => (OpCode::FloatLess, true),
             _ => return 0,
         };
-        // INSTRUMENT (`MOSURA_DEBUG=boolnegate`, Order Z(4b)): report what Ghidra would decide
+        // INSTRUMENT (`--debug boolnegate`, Order Z(4b)): report what Ghidra would decide
         // here. Ghidra's `RuleBoolNegate` rewrites the COMPARISON in place, so it may only fire
         // when EVERY reader of the comparison is a BOOL_NEGATE — otherwise flipping the producer
         // would change what the other readers see. We rewrite the negate instead and have no such
@@ -11614,7 +11614,7 @@ mod tests {
     /// The guard that makes flipping a producer safe: if anything OTHER than a negate reads the
     /// comparison, that reader would see the flip, so Ghidra refuses. Measured before the port:
     /// 2,435 of our 11,122 firing sites are refusals on exactly this test, every one of them a
-    /// multi-reader comparison (`MOSURA_DEBUG=boolnegate`).
+    /// multi-reader comparison (`--debug boolnegate`).
     #[test]
     fn boolnegate_refuses_a_comparison_with_a_non_negate_reader() {
         let (mut f, ram) = fd();

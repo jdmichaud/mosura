@@ -40,7 +40,7 @@ GHIDRA_POSTSCRIPT=DumpBlocks.java scripts/ghidra-decompile-war2.sh 77dcb   # Ghi
 ```
 
 `DumpBlocks.java` prints Ghidra's own `HighFunction::getBasicBlocks` — the `BlockBasic` list
-`CollapseStructure` runs on — and `MOSURA_DEBUG=structure` prints the same fields, so the two partitions
+`CollapseStructure` runs on — and `--debug structure` prints the same fields, so the two partitions
 diff line-for-line. Full ledger of the recipe's limits in `scripts/ghidra-decompile-war2.sh`'s
 header. **Note the bias direction, because it is what made this survive:** the pruning makes
 *Ghidra's* output look better structured, so it reads as our bug.
@@ -242,7 +242,7 @@ invalidated, the hypothesis comes back:
   **different function**. The conclusion survived; the evidence did not.
 
 **Corollary — a per-specimen instrument must filter by function, or the operator must.** A bare
-`MOSURA_DEBUG=structure` dump interleaves *every* function `analyze_le_file`
+`--debug structure` dump interleaves *every* function `analyze_le_file`
 decompiles, callees included. Segment by the header before reading a line.
 
 ### Measure a rule where the rule runs
