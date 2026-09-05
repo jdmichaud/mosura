@@ -756,9 +756,22 @@ MOSURA_ERR_UNSUPPORTED in this version; §11 (toolchains, verify, rounds) arrive
 `lift`, `identify`, `bytesat` are retired and pinned as CLI goldens. The C and Python smokes run
 the CLI's scenario across the real `.so` (opt-in, phase closure).
 
-**Phase 3 — recompile through the CLI.** Toolchains, the compile cache in the store, `verify`,
-`round run/compare`, `gates`. Retire `recompile_check`, the survey driver, and the round scripts.
-From here the corpus rounds are CLI runs — the "more systemic approach" JD asked for.
+**Phase 3 — recompile through the CLI.** LANDED 2026-09-06 (`plan-wp7-2026-09-05.md` §3 P3).
+Core (additive): `recompile::Outcome` (one verdict vocabulary), `toolchain::spec::{ALL, by_name}`,
+`Profile::{lang, sp, fp, stack_regs}`, `manifest::arms_stamp`, `toolchain::Locked` (one compile
+batch per install directory). api: toolchains in the session (`toolchain.specs/open/list/check`),
+`program.emit` (the whole emission after the caller-side post-pass, as a program set — the survey's
+`recovered/` tree; standalone scope by default), `function.buildconfig/verify/recompile`,
+`round.run/compare/gates/list/show/export/import` over `rounds/<name>/`; the C ABI §11 and the
+binding; the CLI's `toolchain`, `recompile`, `verify`, `round`, `gates` commands and `emit --all`
+through the emission. The EQUIVALENCE GATE (E4) passed on the subject: `emit --all` = the baseline
+tree byte for byte (0 of 3,023), one round = the baseline verdict table row for row (2,803 units all
+served from the compile cache, census and WGSS identical, 0 flips, 0 movers, gates 1–8 OK, the
+arms stamp equal), a repeat identical. The survey driver, `recompile_check`, `corpus_gates` and the
+three round scripts are deleted; `docs/corpus-round-runbook.md` is the CLI's. Two defects the gate
+caught: the emit state re-running the prototype pass with prototypes in place (131 arities), and a
+full-precision comparison of 3-decimal legacy sims. Known gap kept: the contract cache is warmed by
+re-running pass 1 at emit time rather than frozen (a `contracts` table is the later fix).
 
 **Phase 4 — dev tier.** The `mosura-dev-ops` crate behind the `dev-tools` feature: the
 censuses, oracle sweep, ground-truth and MVE tools as `dev` operations; delete the spent ones.
