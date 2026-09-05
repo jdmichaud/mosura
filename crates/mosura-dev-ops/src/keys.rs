@@ -13,6 +13,11 @@ pub const DEV_M32: &str = "dev.m32";
 pub const DEV_ARMS: &str = "dev.arms";
 pub const DEV_FIXTURE: &str = "dev.fixture";
 pub const DEV_PROGRAMS: &str = "dev.programs";
+pub const DEV_TRUTH: &str = "dev.truth";
+pub const DEV_SHIFT: &str = "dev.shift";
+pub const DEV_LIST_FAILURES: &str = "dev.list-failures";
+pub const DEV_CONFIRM: &str = "dev.confirm";
+pub const DEV_MEMO_CUT: &str = "dev.memo-cut";
 
 const SINCE: &str = "0.1";
 
@@ -34,5 +39,10 @@ pub fn all() -> Vec<OptionSpec> {
         spec!(DEV_ARMS, OptType::Bool, "false", "dev.groundtruth.recompile: emit under the survey's measured arm set (canonical arms + per-function recovery) instead of the plain plan"),
         spec!(DEV_FIXTURE, OptType::Str, "", "dev.groundtruth.recompile: also write every function's original bytes as a datatest fixture into this directory"),
         spec!(DEV_PROGRAMS, OptType::List(&[]), "", "dev.groundtruth.recompile: the ground-truth programs to run, by file stem (all when empty)"),
+        spec!(DEV_TRUTH, OptType::Str, "", "dev.census.terminator-rate: the truth source — a corpus .truth file (`func <hex> …` lines) or a tracker CSV (first column 0x…); REQUIRED, it is the control arm"),
+        spec!(DEV_SHIFT, OptType::U64, "8", "dev.census.terminator-rate: the corroboration window in bytes at or after an entry (a tracker anchors save-first functions mid-prologue)"),
+        spec!(DEV_LIST_FAILURES, OptType::Bool, "false", "dev.census.terminator-rate: one row per non-terminating entry with its body extent and last instruction"),
+        spec!(DEV_CONFIRM, OptType::Str, "", "dev.foreign.report: the confirmation file (`foreign <pattern> <label>` / `reject <pattern> <label>` lines naming anchor STRINGS); empty = FID/loader only, default-safe"),
+        spec!(DEV_MEMO_CUT, OptType::Hex, "", "dev.foreign.report: a hand-drawn address cut, reported as an UNEARNED denominator row (never an engine constant)"),
     ]
 }

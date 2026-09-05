@@ -31,6 +31,7 @@ pub const ROUND_BASELINE: &str = "round.baseline";
 pub const ROUND_EXPECT: &str = "round.expect";
 pub const ROUND_EXCLUDE_FOREIGN: &str = "round.exclude-foreign";
 pub const GATES_BASELINE: &str = "gates.baseline";
+pub const FID_DB: &str = "fid.db";
 
 pub const LOADERS: &[&str] = &["default", "native", "le", "x32", "com", "raw", "xml"];
 pub const ROUND_SCOPES: &[&str] = &["user", "all", "list"];
@@ -85,6 +86,7 @@ pub fn hand_written() -> Vec<OptionSpec> {
         spec!(ROUND_EXPECT, OptType::Str, "", Affects::Input, "a TSV `idx va name expected_verdict`: the smoke-drift gate (every listed function must keep its verdict)"),
         spec!(ROUND_EXCLUDE_FOREIGN, OptType::Str, "", Affects::Input, "a foreign-scope confirmation file: its foreign functions leave the denominator (a DIFFERENT series; stamped)"),
         spec!(GATES_BASELINE, OptType::Str, "", Affects::Environment, "the corpus-gates.tsv of the subject profile (text gates 4-6, verdict gate 7)"),
+        spec!(FID_DB, OptType::Str, "", Affects::Input, "one FID database directory to search instead of every database the resource provider holds (fid.identify)"),
         spec!("key", OptType::Str, "", Affects::Input, "a session config key (session.config.set)"),
         spec!("value", OptType::Str, "", Affects::Input, "a session config value; empty removes the key (session.config.set)"),
         // diagnostics

@@ -11,12 +11,15 @@
 //! `mosura dev` exits 1 when any row is false.
 
 pub mod bench;
+pub mod census;
+pub mod foreign;
 pub mod groundtruth;
 pub mod keys;
 pub mod mve;
 pub mod omf;
 pub mod oracle;
 pub mod schemas;
+pub mod watsched;
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -25,7 +28,20 @@ use mosura_api::ops::{Extension, Op};
 use mosura_api::{Error, Options, Result, Session};
 
 /// Every dev operation, sorted by name (the test pins order, uniqueness and validity).
-pub static OPS: &[&Op] = &[&bench::BENCH, &groundtruth::RECOMPILE, &mve::FIXTURES, &omf::DUMP, &oracle::SWEEP];
+pub static OPS: &[&Op] = &[
+    &bench::BENCH,
+    &census::OVER_DECODE_OP,
+    &watsched::SPLIT_STORE_OP,
+    &census::TERMINATOR_RATE_OP,
+    &watsched::WATSCHED,
+    &foreign::FACTS,
+    &foreign::PROPOSE,
+    &foreign::REPORT,
+    &groundtruth::RECOMPILE,
+    &mve::FIXTURES,
+    &omf::DUMP,
+    &oracle::SWEEP,
+];
 
 /// Register the dev tier into the process's registries. Idempotent: the first call registers,
 /// later calls answer its result (a context is built more than once per process in tests).

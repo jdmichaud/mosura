@@ -164,6 +164,11 @@ enum Cmd {
         #[arg(long, value_name = "ID")]
         language: String,
     },
+    /// FID: the library functions recognised in the current program (`fid identify [--db DIR]`)
+    Fid {
+        #[command(subcommand)]
+        sub: FidCmd,
+    },
     /// The emit axes
     Axes,
     /// The emit arms
@@ -329,6 +334,16 @@ enum DataCmd {
 #[derive(Subcommand, Debug)]
 enum ConfigCmd {
     Set { kv: String },
+}
+
+#[derive(Subcommand, Debug)]
+enum FidCmd {
+    /// The functions FID recognises: address, name (empty when ambiguous), score, plate comment
+    Identify {
+        /// One database directory to search instead of every embedded/override database
+        #[arg(long, value_name = "DIR")]
+        db: Option<PathBuf>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -559,6 +574,12 @@ fn run(cli: Cli) -> Res<()> {
         }
         Cmd::Arms => {
             let t = app.ctx.emit_arms()?;
+            app.show(&t)
+        }
+        Cmd::Fid { sub: FidCmd::Identify { db } } => {
+            let db = db.map(|d| d.display().to_string()).unwrap_or_default();
+            let extra: Vec<(&str, &str)> = if db.is_empty() { vec![] } else { vec![("fid.db", db.as_str())] };
+            let t = app.call("fid.identify", &extra)?;
             app.show(&t)
         }
         Cmd::Data { what } => match what {

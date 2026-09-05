@@ -43,7 +43,9 @@ pub static COMPILE_UNITS: Schema = Schema { name: "compile_units", version: 1, c
 pub static COMPILE_OUTPUTS: Schema = Schema { name: "compile_outputs", version: 1, columns: &[C::new("key", T::Str), C::new("ok", T::Bool), C::new("adjudicated", T::Bool), C::new("object", T::Bytes), C::new("log", T::Str)] };
 pub static ROUNDS: Schema = Schema { name: "rounds", version: 1, columns: &[C::new("name", T::Str), C::new("program", T::Str), C::new("toolchain", T::Str), C::new("build", T::Str), C::new("created", T::Str), C::new("rows", T::U64), C::new("exact", T::U64), C::new("wgss", T::F64)] };
 
-pub static ALL: &[&Schema] = &[&OPS, &SCHEMA, &IDENTIFY, &PROGRAM_SUMMARY, &TABLES, &BYTES, &INSTRUCTIONS, &PCODE, &PROTOTYPE, &JUMPTABLES, &CALLS, &GLOBAL_WIDTHS, &EMIT_REPORT, &OPTION_REGISTRY, &FILES, &DATA, &LANGUAGES, &REGISTERS, &EMIT_AXES, &EMIT_ARMS, &TOOLCHAIN_SPECS, &TOOLCHAINS, &CHECK, &EMISSION, &BUILDCONFIG, &VERDICTS, &DIVERGENCES, &DIFF, &GATES, &COMPARE, &ROUNDS, &COMPILE_UNITS, &COMPILE_OUTPUTS];
+pub static FID_NAMES: Schema = Schema { name: "fid_names", version: 1, columns: &[C::hex("addr", T::U64), C::new("name", T::Str), C::new("score", T::F64), C::new("plate", T::Str)] };
+
+pub static ALL: &[&Schema] = &[&FID_NAMES, &OPS, &SCHEMA, &IDENTIFY, &PROGRAM_SUMMARY, &TABLES, &BYTES, &INSTRUCTIONS, &PCODE, &PROTOTYPE, &JUMPTABLES, &CALLS, &GLOBAL_WIDTHS, &EMIT_REPORT, &OPTION_REGISTRY, &FILES, &DATA, &LANGUAGES, &REGISTERS, &EMIT_AXES, &EMIT_ARMS, &TOOLCHAIN_SPECS, &TOOLCHAINS, &CHECK, &EMISSION, &BUILDCONFIG, &VERDICTS, &DIVERGENCES, &DIFF, &GATES, &COMPARE, &ROUNDS, &COMPILE_UNITS, &COMPILE_OUTPUTS];
 
 pub fn by_name(name: &str) -> Option<&'static Schema> {
     ALL.iter().copied().find(|s| s.name == name)

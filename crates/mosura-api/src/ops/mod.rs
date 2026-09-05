@@ -7,6 +7,7 @@
 //! context is built.
 
 pub mod emit;
+pub mod fid;
 pub mod function;
 pub mod identify;
 pub mod language;
@@ -81,6 +82,7 @@ impl Op {
 
 /// Every operation, sorted by name (a test pins order and uniqueness).
 pub static REGISTRY: &[&Op] = &[
+    &fid::IDENTIFY,
     &round::BUILDCONFIG_OP,
     &function::DECOMPILE,
     &emit::EMIT,
