@@ -228,7 +228,7 @@ mosura_status mosura_call(mosura_session *s, const char *op, const mosura_option
 /** Open or create a session. `dir == NULL` is an in-memory session (nothing persists). The
  *  session's own config table supplies option defaults for every operation run in it. */
 mosura_status mosura_session_open(mosura_ctx *ctx, const char *dir, const mosura_options *config, mosura_session **out);
-/** Add an input binary (content-addressed). `label` is a human name ("war2"); the digest is
+/** Add an input binary (content-addressed). `label` is a human name ("subject"); the digest is
  *  what keys everything derived from it. Re-adding identical bytes is a no-op returning the digest. */
 mosura_status mosura_session_add_input(mosura_session *s, mosura_view bytes, const char *label, mosura_bytes *digest_hex);
 /** inputs: label, digest, size, added. */
@@ -375,7 +375,7 @@ mosura_status mosura_round_run(mosura_session *s, const char *name, mosura_progr
 /** rounds: name, program_key, toolchain, build_id, when, exact, wgss, n. */
 mosura_status mosura_rounds(mosura_session *s, mosura_table **out);
 /** Compare two rounds over their common rows: the verdict transitions (ups, downs, unchanged),
- *  EXACT and WGSS deltas — today's war2-verdicts.sh. */
+ *  EXACT and WGSS deltas — today's verdict-comparison script. */
 mosura_status mosura_round_compare(mosura_session *s, const char *a, const char *b, mosura_table **out);
 /** The corpus gates (text gates over the TUs, verdict gates against a baseline): gate, outcome, detail. */
 mosura_status mosura_round_gates(mosura_session *s, const char *round, const char *baseline, mosura_table **out);

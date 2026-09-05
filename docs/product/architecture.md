@@ -41,11 +41,11 @@ document decides the shape; the numbered phases at the end are the order to buil
 | SLEIGH engine | `sleigh/` | `.sla` tables → disassembly, raw p-code, emulation, FID fingerprints | a parsed `Spec` per language (0.5–1 s to parse in a debug build; `speccache` leaks it as `&'static`) |
 | language registry | `lang.rs`, `paths.rs` | language id → `.sla`/`.pspec`/`.cspec`, Ghidra tree or vendored copy | paths derived from `CARGO_MANIFEST_DIR` and `GHIDRA_SRC` |
 | loaders + identification | `analysis/loader/`, `codegen_fingerprint`, `fid/` | bytes → `Program`; compiler evidence; library-function identification | FID databases live under `oracle/fid/db` |
-| auto-analysis | `analysis/` | `Program` → converged `Program` (listing, functions, references, jump tables, prototypes, foreign scope) | tens of seconds on WAR2; the whole-program prototype pass ~2 min (3023 functions, 117.7 s in round f8) |
+| auto-analysis | `analysis/` | `Program` → converged `Program` (listing, functions, references, jump tables, prototypes, foreign scope) | tens of seconds on the subject binary; the whole-program prototype pass ~2 min (3023 functions, 117.7 s in one round) |
 | decompiler | `decompile/` | `Program` + entry → `Funcdata` (SSA graph, types, structure) → C | 0.05–0.5 s per function; the graph is arena-indexed (`VarnodeId`/`OpId`/`BlockId` are `u32`) |
 | emit | `decompile/emit/` | `Funcdata × θ × witnesses → C`; the arms registry; report pass | `EmitChoices` is already reflective (`axes()`, `set(name, value)`) |
 | recompile | `recompile/` | compiler driver (a `CompilerSpec` as data + `Invocation`), content-addressed object cache, symbolic relink, instruction normalization, alignment + divergence taxonomy, build-flag recovery, gates, gcc ground truth | `.rc-cache`: 36 MB, ~3000 entries × (`.c`, `.obj`, `.log`) |
-| orchestration | `examples/war2_survey.rs` (4,568 lines), `examples/recompile_check.rs` (602), `scripts/war2-*.sh`, python | whole-program passes, TU synthesis (prelude, declarations, pragmas), manifests, rounds, verdict comparison | TSV files with git-stamped names; a shell script sequencing three binaries |
+| orchestration | the survey driver example (4,568 lines), `examples/recompile_check.rs` (602), the round scripts, python | whole-program passes, TU synthesis (prelude, declarations, pragmas), manifests, rounds, verdict comparison | TSV files with git-stamped names; a shell script sequencing three binaries |
 
 45 example programs (9,604 lines) are the entire user interface today. About 35 distinct
 environment variables are read across the crate (plus `CARGO_MANIFEST_DIR` at compile time);
@@ -445,6 +445,11 @@ a user edits a copy rather than authoring from nothing. The exported tree then w
 embedded one exactly as any override does; `mosura data list` shows which files are in effect
 and where each came from.
 
+**Size call (open).** The used SLEIGH tables are a few megabytes and our own FID databases
+3.7 MB — both embed. Ghidra's vendored FID databases are 76 MB: embedding them into every copy of
+the library is possible but heavy, so the recommendation is a cargo feature (`fid-ghidra`, off by
+default), with an optional data pack in the override directory as the alternative.
+
 ### 5.8 Parallelism and processes
 
 Functions are independent; content-addressed immutable files make N processes over one session
@@ -474,7 +479,7 @@ Against the 130k-line rewrite that flat-everywhere would be, this is a contained
 **Performance: no degradation anywhere that runs hot.** The translation JD asks about is the
 thaw, and it runs once per load, linearly:
 
-- A `Program` thaw rebuilds hash indexes over ~10^5 rows (WAR2's listing holds over 100k
+- A `Program` thaw rebuilds hash indexes over ~10^5 rows (the subject's listing holds over 100k
   instructions). A hash insert costs tens of nanoseconds; the thaw is on the order of 10 ms. The
   analysis it replaces is tens of seconds to minutes. Today there is no persistence at all, so
   every invocation pays the minutes.
@@ -493,11 +498,14 @@ it is listed as optional in §5.7 and is not needed for either speed or the prod
 it, so every schema becomes a compatibility decision — append-only columns, versions in headers,
 readers tolerant of unknown schemas (§4.3). A daemon has no such cost because its state dies
 with it. This is the genuine trade of option 2, and it is worth paying because "a session I can
-pick up tomorrow, from another process, in another language" is the feature.
+pick up tomorrow, from another process, in another language" is the feature. **JD's ruling
+(2026-09-05): no backward compatibility before 1.0.** A development session is disposable; the
+version field stays only so that a stale file is REFUSED rather than misread, and the stage
+fingerprint below makes old sets unreachable on its own. The append-only discipline starts at 1.0.
 
 **Invalidation granularity, or the development loop.** Keying every cached table on the whole
 build id (§5.4) is correct and simple, but it means editing the printer re-runs the analysis
-(a minute or two on WAR2) on the next invocation — the loop this project most wants fast. The
+(a minute or two on the subject) on the next invocation — the loop this project most wants fast. The
 fix is Zig's per-unit fingerprint applied per stage: each operation declares which **stage
 fingerprint** it depends on — `analysis` (a hash of the analysis modules' sources), `decompile`
 (the decompiler's), `emit`, `recompile` — and the key uses those instead of the whole build id.
@@ -548,8 +556,8 @@ mosura emit <fn>|--all [--tu] [--arms-off a,b] [--out DIR]                      
 mosura annotate <kind> <addr> <payload>                                           (rename, prototype, noreturn, cspec, foreign …)
 mosura toolchain add <name> --spec watcom-10.0a-dos --install <dir>              (per-machine location, per-session choice)
 mosura recompile <fn>|--all --toolchain <name> [--round NAME]                     (emit → compile → verify → verdict + divergences)
-mosura round run <name> [--toolchain …] [--baseline NAME]                         (today's war2-round.sh)
-mosura round compare <a> <b>                                                      (today's war2-verdicts.sh: EXACT, WGSS, ups/downs)
+mosura round run <name> [--toolchain …] [--baseline NAME]                         (today's round script)
+mosura round compare <a> <b>                                                      (today's verdict-comparison script: EXACT, WGSS, ups/downs)
 mosura gates <round> [--baseline NAME]                                            (corpus-gates.tsv, text + verdict gates)
 mosura fid identify | fid build …
 mosura data export <dir> | data list                                              (dump the embedded spec/FID data into the override dir; what is in effect)
@@ -559,7 +567,7 @@ mosura dev …                                                                  
 ```
 
 A session is a directory; `-S` names it, the default is `./.mosura` (the `.git` convention). A
-session may hold several inputs (WAR2 and the ground-truth corpus side by side); operations name
+session may hold several inputs (the subject and the ground-truth corpus side by side); operations name
 the input by label or digest, defaulting to the only one.
 
 ### 6.3 Configuration without environment variables
@@ -574,7 +582,7 @@ config file; the library never reads the environment.
 ### 6.4 The dev tier
 
 "Dev tooling" means the tools that exist to develop mosura against its oracles, not to use
-mosura: the Ghidra oracle captures and the rule-trace diff, the divergence censuses over the WAR2
+mosura: the Ghidra oracle captures and the rule-trace diff, the divergence censuses over the subject
 corpus, the oracle sweep, the MVE fixture generators (compile a small C program under dosemu to
 make a test fixture), the gcc ground-truth runs, the perf harness. About half of today's 45
 examples are this kind, and they are also where the filesystem and process-spawning code of the
@@ -592,17 +600,17 @@ feature flag is the smaller mechanism for the same result.
 
 ### 6.5 The corpus round through the CLI
 
-`scripts/war2-round.sh` today: smoke → `war2_survey` (emit) → `recompile_check` → `war2-verdicts.sh`.
+The round script today: smoke → the survey driver (emit) → `recompile_check` → the verdict-comparison script.
 Tomorrow:
 
 ```
-mosura -S war2.mos round run f9 --toolchain watcom-10.0a-dos --baseline f8   # emit, compile (cached), verify, gates
-mosura -S war2.mos round compare f8 f9                                        # the verdict table: EXACT, WGSS, ups, downs
+mosura -S subject.mos round run f9 --toolchain watcom-10.0a-dos --baseline f8   # emit, compile (cached), verify, gates
+mosura -S subject.mos round compare f8 f9                                        # the verdict table: EXACT, WGSS, ups, downs
 ```
 
 with `functions/<key>/` and `compile/` making the second run of an unchanged function free, and
 `rounds/f9/manifest.tbl` recording the build id and options — the stamp the manifests carry
-today, structural. The run rule from `docs/war2-remeasure-runbook` (repeat until stable, never
+today, structural. The run rule from the round runbook (repeat until stable, never
 two Watcom rounds concurrently) becomes a property of the toolchain driver (one dosemu session at
 a time per install directory, enforced by a lock on the install path).
 
@@ -646,32 +654,42 @@ integration tests (identify → load → analyze → decompile → tables).
 | `dumpdis`, `lift`, `dumpmem`, `dumpobj`, `omfdump`, `le_funcs`, `bytesat` | `sleigh.disassemble`, `sleigh.lift`, `program.read`, `program.tables` | product |
 | `trace` | `function.decompile --trace` → `trace` table (rule firings; feeds `trace-diff`) | dev |
 | `fidnames` | `fid.identify`, `fid.build` | product |
-| `war2_survey` | `program.passes` (prototype pass, tail-return marks, param-order evidence, global widths — promoted into core), `function.emit` (TU synthesis promoted into `core::recompile::tu`), `round.run` | product |
+| the survey driver | `program.passes` (prototype pass, tail-return marks, param-order evidence, global widths — promoted into core), `function.emit` (TU synthesis promoted into `core::recompile::tu`), `round.run` | product |
 | `recompile_check` | `function.verify`, `round.run` | product |
-| `recompile_census`, `recompile_search`, `recompile_select`, `war2_oracle_sweep`, `over_decode`, `terminator_rate`, `watsched_census`, `watsched_split_census`, `foreign_propose`, `mz_noreturn` | dev operations returning tables (or deleted where the finding is recorded and the tool is spent) | dev |
+| `recompile_census`, `recompile_search`, `recompile_select`, the oracle sweep example, `over_decode`, `terminator_rate`, `watsched_census`, `watsched_split_census`, `foreign_propose`, `mz_noreturn` | dev operations returning tables (or deleted where the finding is recorded and the tool is spent) | dev |
 | `corpus_gates` | `gates` | product |
 | `gt_recompile`, `gt_recompile_probe`, `watcom_mve_fixtures` | `dev.groundtruth.*`, `dev.mve.*` | dev |
 | `perf_corpus` | `dev.bench` | dev |
 
-`scripts/war2-round.sh`, `war2-verdicts.sh`, `war2-smoke.sh`, the python classifiers → `round run`,
+The round, verdict-comparison and smoke scripts, the python classifiers → `round run`,
 `round compare`, `gates`, and dev census operations. `xtask baseline` stays an xtask (it
 regenerates committed goldens; that is repository maintenance, not product).
 
 ### 7.2 Environment variables → option keys
 
-| today | key | affects |
-| --- | --- | --- |
-| `GHIDRA_SRC`, `CARGO_MANIFEST_DIR` (paths) | none — specs embedded; `ctx.spec_dirs` override | environment |
-| `MOSURA_FID_DIR` | `ctx.fid_dirs` | environment |
-| `MOSURA_WATCOM`, `WATCOM_WCC386`, `DUMPWC_WATCOM`, `MOSURA_VC6_EXE`, `MOSURA_BC45_EXE` | `toolchain.<name>.install` | environment |
-| `MOSURA_X86_32_CSPEC` | `load.cspec` | result |
-| `MOSURA_DISABLE_ANALYZERS` | `analysis.disable` | result |
-| `MOSURA_PROTO_PASS`, `MOSURA_GLOBAL_WIDTH`, `MOSURA_CONS_REACH`, `MOSURA_CONS_PROBE`, `MOSURA_CONSISTENCY`, `MOSURA_KERNEL_*`, `MOSURA_AGG`, `MOSURA_AOU_PC`, `MOSURA_SHARED_RET`, `MOSURA_RETSPLIT`, `MOSURA_PROBE_FULL` | `passes.*` and `emit.*` keys — each one a documented option with a default equal to today's default-on/off | result |
-| `MOSURA_DEBUG`, `MOSURA_TRACE`, `MOSURA_TRACE_FUNC`, `MOSURA_OPACTION`, `MOSURA_MERGE_WATCH`, `MOSURA_WATCH_CALL`, `MOSURA_CALLEE_EFFECTS`, `MOSURA_RECOVER_FIXPOINT` | `debug.topics`, `debug.trace`, `debug.watch.*` | diagnostic |
-| `MOSURA_GT_RAW`, `MOSURA_GT_BASELINE`, `WAR2_EXE`, `CALLCS`, `HOME`, `PATH` | dev operations' parameters / removed | — |
+The switches commit (master 6b504a5, 2026-09-05) already collapsed the nine result-affecting
+knobs into one table (`switches.rs`: `Switch::ALL`, `on()`, `turn_off()`, `non_default()` → the
+manifest's `arms:` stamp) with `--arms-off <name>` as their command-line face. What remains, by
+class, and where each goes:
 
-Each row is a mechanical migration with an identity gate: the emitted tree is byte-identical
-before and after (the repo's existing identity-chain discipline).
+| class | today (master 6b504a5) | becomes | affects |
+| --- | --- | --- | --- |
+| result-affecting | the switch table's legacy variables (one read), the two thread-local overrides (`overrides.rs`: disabled analyzers, forced x86-32 cspec), the callee-effects knob | a `Knobs` value carried on `Program`/`Funcdata`; `--arms-off` fills it; later the `emit.*`/`passes.*`/`analysis.*`/`load.*` option keys | result |
+| diagnostics | `debug.rs` topics; the op-action trace and its function filter; the call-arity and merge watches; the ancestor-op-use pc; the raw-IR dump; the fixpoint check; the two probe wideners | one `debug::Config` set by the front-end (`--debug <spec>`), watches as its parameters; later `debug.*` option keys | diagnostic |
+| locations | the Ghidra tree, the FID directory, the user-provided binaries, the compile-time manifest dir | embedded data + override dirs (`ctx.spec_dirs`, `ctx.fid_dirs`); the developer config for dev-tier locations | environment |
+| tests, xtask, scripts | toolchain installs, sample binaries, the baseline-update mode, the Ghidra checkout | `dev-config.toml` (gitignored, committed example) and script flags | — |
+
+Each step is a mechanical migration with the identity gate (`docs/measurement-rules.md` §10):
+the emitted tree is byte-identical before and after. No legacy fallback survives: the round and
+diff scripts switch to flags in the same change, and a final guard test fails on any `std::env`
+read in the library outside test modules and the developer-config reader.
+
+### 7.3 The executable plan
+
+The work packages, their order, gates and file-level detail are in
+[`plan-2026-09-05.md`](plan-2026-09-05.md) (WP0 review items → WP1 these docs → WP2 knobs →
+WP3 diagnostics → WP4 developer config → WP8 no subject name in the repository → WP5 resource
+provider → WP6 closure), which also carries the decisions taken in discussion.
 
 ## 8. Staging
 
@@ -682,7 +700,7 @@ ordered so that every one delivers something usable.
 Resource provider (embedded vendored specs + our `specs/` + FID databases, override directory
 first; `paths.rs` becomes dev-only). `Options` object threaded to every env-var read site
 (§7.2); `debug!` gains a sink. Promote the TU synthesis and the program passes out of
-`war2_survey.rs` into core (`recompile::tu`, `analysis::interface`), gated on a byte-identical
+the survey driver into core (`recompile::tu`, `analysis::interface`), gated on a byte-identical
 emitted tree. This phase is where most of the risk is retired, and it is all internal.
 
 **Phase 1 — `mosura-api`.** Options registry, tables + schemas + `.tbl`, operation registry,
@@ -696,7 +714,7 @@ against the binding; the C smoke and Python clients. Retire the `dump*`/`identif
 examples (their outputs become CLI integration goldens).
 
 **Phase 3 — recompile through the CLI.** Toolchains, the compile cache in the store, `verify`,
-`round run/compare`, `gates`. Retire `recompile_check`, `war2_survey`, and the round scripts.
+`round run/compare`, `gates`. Retire `recompile_check`, the survey driver, and the round scripts.
 From here the corpus rounds are CLI runs — the "more systemic approach" JD asked for.
 
 **Phase 4 — dev tier.** The `mosura-dev-ops` crate behind the `dev-tools` feature: the
@@ -714,19 +732,29 @@ Decided 2026-09-05, in discussion:
 1. **The CLI is written against the C ABI** through the safe Rust binding (§6.6). The Rust-API
    route with a parity test was the draft's recommendation; JD's argument — coverage by
    construction, and maintenance pressure on the C surface over time — is the better one.
+2. **Sessions hold several inputs.** A session is the folder mosura keeps its work in; several
+   inputs means one folder can hold the subject next to the ground-truth programs, or two builds of
+   one program, sharing the compile cache and the specs. With one input the commands never need
+   to name it.
 3. **Dev tooling: same registry, own crate, behind a cargo feature** (§6.4); the release binary
-   has no dev tier. Proposed as the resolution of the pros and cons; JD to confirm.
+   has no dev tier.
 4. **Embedded spec data + override directory + `mosura data export`** to jump-start the
    override directory (§5.7).
+5. **No on-disk backward compatibility before 1.0** (§5.9).
+6. **The repository names no subject binary.** The binaries we study are inputs; everything
+   that is about one of them lives in a subject profile outside the repository, declared in the
+   developer config; the repository speaks of "the subject". Enforced by a guard test.
+7. **fable-b implements directly**; the worker/review model is retired.
 
 Still the owner's:
 
-2. **Sessions hold several inputs** (recommended) or one binary per session. A session is the
-   folder mosura keeps its work in; several inputs means one folder can hold WAR2 next to the
-   ground-truth programs, or two builds of one game, sharing the compile cache and the specs.
-   With one input the commands never need to name it.
-5. **Names.** `libmosura` / `mosura.h`; session directory `.mosura`; option keys as dotted
-   lower-case.
+- **Names.** `libmosura` / `mosura.h`; session directory `.mosura`; option keys as dotted
+  lower-case; `dev-config.toml`.
+- **The FID data-pack size call** (§5.7).
+- Whether shell scripts may keep environment variables as their parameter mechanism
+  (recommended: flags with developer-config defaults).
+- Whether neutral specimen identifiers (`FUN_xxxxxxxx`) may stay in code comments once the
+  subject's name is gone (recommended: yes — they are the provenance of a witness).
 
 Assumptions taken to keep moving: the C API is not ABI-stable before 1.0 but is versioned from
 the first commit; the `.tbl` format is little-endian only; the frozen IR record is optional and
