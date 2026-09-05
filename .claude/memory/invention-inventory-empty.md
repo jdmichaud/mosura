@@ -28,7 +28,7 @@ effective". See [[invention-worse-at-its-own-job]] and [[trace-diff-keys-mechani
 
 **Two gate lessons from the arc:**
 - *Prove redundancy, don't argue it.* Restricting RuleIdempotent's oplist to only its divergent
-  opcode and showing 0 of 1303 WAR2 functions moved is what established that the faithful rule
+  opcode and showing 0 of 1303 the subject functions moved is what established that the faithful rule
   covered the rest — reading the two rules side by side would only have suggested it.
 - *Gate economy, stated explicitly.* When the emitted C is byte-identical for every function AND the
   manifest is byte-identical, results.tsv, the absolute call gauge, the wrong-code scan and the cast

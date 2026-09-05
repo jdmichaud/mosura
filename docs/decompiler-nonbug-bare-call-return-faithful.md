@@ -1,12 +1,12 @@
 # Verified-faithful (NOT a bug): mosura drops a bare call-result return, exactly like Ghidra
 
-**Status: VERIFIED FAITHFUL — do not "fix".** This closes the WAR2 remediation Stage 3 target
+**Status: VERIFIED FAITHFUL — do not "fix".** This closes the subject remediation Stage 3 target
 (cross-function propagation to capture dropped returns / retire `extraout_`). The premise that
 Ghidra captures a bare call-result return is FALSE, proven against full-analysis `analyzeHeadless`.
 
 ## The question
 
-WAR2 functions of the shape `func_0x...(); return;` (a call whose result is not obviously used,
+the subject functions of the shape `func_0x...(); return;` (a call whose result is not obviously used,
 then a bare `return`) were suspected to be a mosura defect — that Ghidra would render
 `return func();` and mosura drops it. Task #3 was scoped to recover that via cross-function
 callee-prototype propagation.
@@ -36,7 +36,7 @@ The two cases Ghidra DOES capture are already matched by mosura and are separate
   isolated Ghidra and mosura (the downstream use forces the call output).
 - **Bare tail-call** (`jmp B`) → Ghidra makes the caller a **thunk** inheriting B's signature
   (`thunk_FUN_...`), not a return-capture. Fixture `oracle/ground-truth-notes/tailcall.bin`.
-  (WAR2's 3 `thunk`-classed MISMATCHes are this shape — a separate concern.)
+  (the subject's 3 `thunk`-classed MISMATCHes are this shape — a separate concern.)
 
 ## Consequence for Stage 3
 
@@ -47,12 +47,12 @@ built during Stage 3 (branch `stage3-trial-lifecycle`) is byte-neutral but its o
 return-side) is non-faithful, so it stays UNMERGED (inert scaffolding — per the d51 lesson, do not
 land corpus-inert scaffolding).
 
-## What remains for the WAR2 recompilation gap (NOT this target)
+## What remains for the subject recompilation gap (NOT this target)
 
 The residual `extraout_` reads (93 after Stage 1) are a mix of genuine killed-by-call reads
 (faithful) and possible effect-model/regalloc divergence — each needs its OWN per-case
 `analyzeHeadless` diff before any change (specimen: `FUN_00051b2d`, whose TU
-`war2_survey <exe> <out> --only 0x51b2d` prints read-only). That is a scoped investigation,
-distinct from the (non-faithful) bare-return target closed here. The dominant remaining WAR2
+`corpus_emit <exe> <out> --only 0x51b2d` prints read-only). That is a scoped investigation,
+distinct from the (non-faithful) bare-return target closed here. The dominant remaining the subject
 mismatch driver is codegen/register-allocation, and the COMPILE_FAIL tail is the C-cluster
 type-inference foundation (task #4) — both deep, both user investment calls.

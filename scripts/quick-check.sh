@@ -5,13 +5,13 @@
 #
 #   T1  quick-check.sh          ~60s    every commit. Build + lib suite + clippy + corpus.
 #                                       Catches: compile breaks, unit regressions, x86-64
-#                                       fixture movement. BLIND TO: everything WAR2/x86-32.
+#                                       fixture movement. BLIND TO: everything the subject/x86-32.
 #
-#   T2  mvp-check.sh <va>       ~2-4m   when a change targets a specific WAR2 function.
+#   T2  mvp-check.sh <va>       ~2-4m   when a change targets a specific the subject function.
 #                                       Decompiles that function and diffs its shape against
 #                                       Ghidra's. Validates the FIX on its own specimen.
 #
-#   T3  war2-battery            ~40m    OCCASIONAL, for reporting — not per commit.
+#   T3  battery (subject-profile note)            ~40m    OCCASIONAL, for reporting — not per commit.
 #                                       Full emit + 1303-TU recompile + compare: byte-clean
 #                                       count, call gauge, wrong-code scans, strict-subset.
 #                                       Batch it across several commits.
@@ -42,6 +42,6 @@ out=$(cargo test --release --test decompile_corpus -- --nocapture 2>&1 | grep -m
 [ -n "$out" ] && ok "$out" || bad "no corpus line"
 
 echo
-[ $fail -eq 0 ] && echo "T1 GREEN — safe to commit. WAR2 state is UNMEASURED (that is T2/T3)." \
+[ $fail -eq 0 ] && echo "T1 GREEN — safe to commit. the subject state is UNMEASURED (that is T2/T3)." \
                || echo "T1 RED — do not commit."
 exit $fail

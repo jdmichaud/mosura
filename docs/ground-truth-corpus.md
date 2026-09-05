@@ -4,9 +4,9 @@
 riscv64 / m68k, sdcc z80, Open Watcom x86-32) × a grown program set, all build-derived +
 stripped-tested + green. The oracle strategy behind the multi-arch / compiler-detection line,
 made explicit: validate mosura against programs **whose source we own**, compiled by real
-compilers — *not* against Ghidra, which is often wrong (it invented ~20 fake switches in WAR2
+compilers — *not* against Ghidra, which is often wrong (it invented ~20 fake switches in the subject
 that were really loops/searches — see [`le-loader-notes.md`](le-loader-notes.md) /
-[[war2-dos4gw-le]]).
+(subject-profile note `dos4gw-le`)).
 
 ## Why source-owned truth
 
@@ -33,11 +33,11 @@ an **exact, Ghidra-independent** ground truth, and it directly serves the projec
   for the three-way read (source / our C / divergence).
   **First measurement (2026-08-22, gcc 14, -O2): 20 programs, 70 functions, 1,412 instructions,
   WGSS 0.29, 17 EXACT — with the compiler known and fixed.** The divergence-class profile is
-  WAR2's (extra 25 % / selection 20 % / regalloc 15 % / missing 14 % / operand-form 11 %), which
-  settles the compiler question for WAR2: the gap is the decompiler's source shape. First
+  the subject's (extra 25 % / selection 20 % / regalloc 15 % / missing 14 % / operand-form 11 %), which
+  settles the compiler question for the subject: the gap is the decompiler's source shape. First
   named finding: gcc's `-fipa-ra` keeps a caller's value in a register the callee is known not
   to clobber (`cube` reads `extraout_EDX` after calling `square`) — the same callee-clobber
-  recovery the WAR2 survey does with recovered `modify` lists, needed here as a decompiler
+  recovery the subject survey does with recovered `modify` lists, needed here as a decompiler
   feature. The compiler is the objective judge (it ignores
   names/structure); closeness (byte-identical → functionally-equivalent) is the quality metric.
   This is precisely where mosura can beat Ghidra, whose C usually won't even recompile. Measured

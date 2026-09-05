@@ -1,13 +1,13 @@
 # Decompiler bug report → decompiler agent: `trimOpInput` OOB panic on INDIRECT (FIXED)
 
-**Owner: decompiler track (`master`). Status: FIXED** (this commit). Surfaced by the WAR2
-recompilation-parity survey (docs/war2-function-status.md): all 117 DECOMPILE_FAIL functions
+**Owner: decompiler track (`master`). Status: FIXED** (this commit). Surfaced by the subject
+recompilation-parity survey (<subject-profile>/notes/function-status.md): all 117 DECOMPILE_FAIL functions
 were the *same* panic, and this fix clears every one of them (re-measured: 1286/1286 functions
 decompile, `fail=0`).
 
 ## Symptom
 
-Decompiling many WAR2 functions (first: `FUN_00011954`) panicked:
+Decompiling many the subject functions (first: `FUN_00011954`) panicked:
 
 ```
 index out of bounds: the len is 0 but the index is 0
@@ -60,7 +60,7 @@ predecessor's end. `trim_op_input` now branches exactly as Ghidra does.
 - **Unit test** `merge::tests::trim_op_input_on_indirect_trims_in_own_block` — builds an
   INDIRECT in a 0-in-edge block and asserts `trim_op_input` does not panic and inserts the COPY
   before the op in its own block. (Panics on the pre-fix code.)
-- **Ground truth (the real binary):** re-running the WAR2 survey EMIT stage over all 1286
+- **Ground truth (the real binary):** re-running the subject survey EMIT stage over all 1286
   functions now reports `fail=0` (was 117 panics). Corpus byte-neutral (0.9513/57): no datatest
   fixture exercises an INDIRECT force-trim, which is why the decompiler suite stayed green while
   real Watcom-compiled functions hit it.

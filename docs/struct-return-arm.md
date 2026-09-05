@@ -55,7 +55,7 @@ small struct comes back in EAX, so rewriting an out-parameter function moves the
 caller's buffer into a register and the program changes behaviour. State the convention before
 reusing this witness on another target.
 
-### Measured on WAR2 (2026-08-31): the axis stays OFF for Watcom
+### Measured on the subject (2026-08-31): the axis stays OFF for Watcom
 
 A probe (the survey's prototype pass keeping the sret facts, the axis on the recovered pass only,
 side directories, nothing landed) put numbers on it. **Nine of 3,024 functions carry the sret
@@ -67,19 +67,19 @@ a `struct s2_x2` return — which, under Watcom's register return, is exactly th
 above. **Four of the nine shaped functions are EXACT today and one is SAME_SHAPE, so any widening
 of the caller-side witness aims straight at EXACT rows.**
 
-**Enabling the arm for WAR2 would take more than an axis flip: the survey's TU assembly has no
+**Enabling the arm for the subject would take more than an axis flip: the survey's TU assembly has no
 per-TU callee prototypes — every callee is declared `extern int func_0x...();` — so a
 struct-returning callee cannot be called from another TU at all** (`FUN_0003495c`, the one caller,
 renders `xStack_18 = func_0x00034918(&xStack_1c);` correctly and then fails to compile:
 `Error! E1010: Type mismatch`; MISMATCH -> COMPILE_FAIL, the round's only flip, WGSS 0.5576 ->
 0.5570). The ground-truth path has the mechanism the survey lacks — `make_tu` copies the callee's
-`struct sN { .. };` preamble AND its real signature line — so WAR2 enablement needs that
+`struct sN { .. };` preamble AND its real signature line — so the subject enablement needs that
 mechanism plus a witness that can tell an out-parameter from a hidden return pointer on a
 register-return ABI. Neither is built; the arm is a ground-truth-column tool.
 
 **The arm** (`decompile/emit/arms/struct_return.rs`; the axis is `witness` in the gt ARMS plan
 only — `EmitPlan::arms()` — never in `plain()` (the reference rendering every baseline measured)
-nor in the survey's `canonical_arm()`: the WAR2 identity emit is the proof it cannot move):
+nor in the survey's `canonical_arm()`: the subject identity emit is the proof it cannot move):
 - DEFINITION: `struct sN f(args minus slot 0) { struct sN __ret; __ret.f<off> = ..; return
   __ret; }`. The signature through the declarations family's FOURTH seam (`arms::signature`: the
   preamble `struct sN { .. };`, the return type, the dropped parameter — consulted once, at the

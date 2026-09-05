@@ -5,7 +5,7 @@ metadata:
   type: project
 ---
 
-**⭐ The largest single byte-delta bucket in the WAR2 survey — +3 bytes on 216 functions — is
+**⭐ The largest single byte-delta bucket in the subject survey — +3 bytes on 216 functions — is
 `8d 65 fc` (`lea esp,[ebp-4]`). Measured 2026-08-11 by diffing idx 00045/00046/00050 against
 their originals.**
 
@@ -90,7 +90,7 @@ by any compiler in the lineage, any flag, or any source shape tried.
 `52 | 55 89e5 | ... | 5d | 5a c3` and our candidate is `55 89e5 | 52 | ... | 8d65fc | 5a 5d c3`.
 Strip the original's leading `52` and our `52`+`8d65fc`, and the remainders are IDENTICAL. So the
 whole class may be an off-by-N function START, not a codegen difference — which is exactly what
-[[war2-tracker-anchors-mid-prologue]] warns about ("the tracker anchors save-first entries at
+(subject-profile note `tracker-anchors-mid-prologue`) warns about ("the tracker anchors save-first entries at
 `push ebp`; score SHIFT-TOLERANTLY"). Test that before touching the decompiler again: re-score the
 216 with a shift-tolerant alignment and see how many become clean.
 
@@ -112,7 +112,7 @@ and on the FUNCTION ITSELF `modify [eax]`, `modify [eax edx ebx ecx]`, `modify [
 
 One of those IS worth keeping: `modify [eax edx ebx ecx]` on the function under test removes the
 save and the `lea` entirely (28 -> 25 bytes, 23 after postlink). It does not match here — this
-function's contract genuinely preserves EDX — but warcraft2-re's proven sources declare exactly
+function's contract genuinely preserves EDX — but the RE tracker's proven sources declare exactly
 that list on most functions (`src/util/g2ac70.c`), and mosura's emitter declares NOTHING for the
 function it emits. That per-function contract is the untested lever, not the compiler.
 
@@ -134,12 +134,12 @@ until that is settled.
 **SUPERSEDED**SUPERSEDED**SUPERSEDED — the flag-sweep list below was written before the beta test:**
 
 **NEXT EXPERIMENT** (do not skip to a fix): decide between
-1. compiler VERSION — the 10.0a vs 10.0-beta known-unknown in `war2-survey/BYTE-EXACT-PLAN.md`.
+1. compiler VERSION — the 10.0a vs 10.0-beta known-unknown in `<subject-survey>/BYTE-EXACT-PLAN.md`.
    The systematic uniformity across 216 functions fits a version difference well. No 10.0-beta
    wcc386 is on disk; obtaining one is the blocking step.
 2. a wcc386 FLAG combination that moves the register save ahead of the frame setup.
 3. a postlink normalization, only if 1 and 2 both come back negative — the original genuinely
    lacks the `lea`, so this would be papering over a real codegen difference.
 
-Related: [[war2-byte-exact-campaign]], [[war2-recompile-survey]],
+Related: (subject-profile note `byte-exact-campaign`), (subject-profile note `recompile-survey`),
 [[gate-what-you-measured-not-what-you-guessed]], [[goal-is-the-binary-not-ghidra]].

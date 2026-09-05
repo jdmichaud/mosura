@@ -1,6 +1,6 @@
 ---
 name: subregister-write-not-merged
-description: "⭐ ROOT CAUSE 2026-07-29: a sub-register write (AL) is NOT merged into the containing register read (EAX), so the wide read binds to a stale def. Causes WRONG CODE in 92 WAR2 functions / 246 dropped calls. This IS foundation-menu item A (coarse-SSA / normalizeWriteSize), now measured."
+description: "⭐ ROOT CAUSE 2026-07-29: a sub-register write (AL) is NOT merged into the containing register read (EAX), so the wide read binds to a stale def. Causes WRONG CODE in 92 the subject functions / 246 dropped calls. This IS foundation-menu item A (coarse-SSA / normalizeWriteSize), now measured."
 metadata:
   type: project
 ---
@@ -11,7 +11,7 @@ mosura heritages each exact `(space, offset, size)` as its **own SSA location**,
 and `r0x0:4` (EAX) are separate variables unless width-normalization unifies them. It does not, on
 the first pass, for this shape.
 
-## The evidence (WAR2 `FUN_0001bd30`, baseline master, no patches)
+## The evidence (the subject's `FUN_0001bd30`, baseline master, no patches)
 Original: `xor eax,eax` / `mov al,[esi+0x1f]` / `cmp eax,0x5c` / `jne`.
 mosura IR:
 ```
@@ -39,7 +39,7 @@ Normalize mode), which do not cover a narrow write feeding a wider read of the s
 
 ## Why it matters
 **This is foundation-menu item A (coarse-SSA / normalizeWriteSize) with a price tag attached:**
-92 of 1286 WAR2 functions emit fewer calls than Ghidra, 246 calls missing, all rendered correctly by
+92 of 1286 the subject functions emit fewer calls than Ghidra, 246 calls missing, all rendered correctly by
 Ghidra. It is no longer an abstract investment choice.
 Plausibly also explains the stack-pointer patch's 12-call regression (same shape: a read resolving to
 a stale def, then a branch wrongly determined) — which would mean fixing A subsumes it. NOT verified.
@@ -63,6 +63,6 @@ cause — ~45 deficit functions did not match the crude pattern and may have oth
 Work queue: `scratchpad/deficits.txt` (92 VAs, worst first).
 
 Found by query, no ad-hoc probe: `--debug opaction` (action-level, [[print-raw-has-no-dead-filter]])
-then `--debug opaction` (rule-level). Reference = [[war2-per-function-ghidra-oracle]].
+then `--debug opaction` (rule-level). Reference = (subject-profile note `per-function-ghidra-oracle`).
 
-Related: [[absolute-vs-differential-wrongcode]], [[war2-stackptr-wrong-code]], [[bounded-levers-exhausted]].
+Related: [[absolute-vs-differential-wrongcode]], (subject-profile note `stackptr-wrong-code`), [[bounded-levers-exhausted]].

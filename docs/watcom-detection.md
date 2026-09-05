@@ -9,7 +9,7 @@ and Ghidra reports `Compiler = unknown` for a Watcom PE/MZ/LE. So this is valida
 ## Mechanism
 
 The Watcom C run-time startup (`_cstart_`) embeds a copyright banner immediately after the
-entry jump (WAR2.EXE's entry is `EB 76`, a short jump over the inline string). `loader::watcom`
+entry jump (the subject binary's entry is `EB 76`, a short jump over the inline string). `loader::watcom`
 scans the image for it (LE and MZ loaders call it) and records the detected era as the
 program `Compiler` info property (the `compilerinfo=` snapshot field).
 
@@ -31,8 +31,8 @@ A grounded finding, not a hidden limitation: the **run-time** banner (the one em
 compiled image) carries the copyright **year range**, not the `wcc`/`wpp` release. One
 toolchain ships several run-time libraries with different ranges — the real Watcom **10.0a**
 toolchain's libraries carry both `1988-1993` (older `C 386` / `C/C++32` runtimes) and
-`1988-1994` (the `C/C++` ones) — and WAR2.EXE, built by a compiler *older* than 10.0a (per the
-`warcraft2-re` codegen investigation), carries the same `1988-1994` banner as 10.0a. The
+`1988-1994` (the `C/C++` ones) — and the subject binary, built by a compiler *older* than 10.0a (per the
+`the RE tracker` codegen investigation), carries the same `1988-1994` banner as 10.0a. The
 precise release lives in the **tool** banner (`wcc386` startup: "Version 10.0a"), not in the
 compiled binary. So the detector reports the honest era fingerprint
 (`watcom:<year-range>` / `watcom:open:<year-range>`), never an invented version number.
@@ -42,7 +42,7 @@ compiled binary. So the detector reports the honest era fingerprint
 | Fixture | Source | Detected |
 | --- | --- | --- |
 | `watcom_hello.exe` (committed, 16 KB) | freshly built with a real Watcom **10.0a** toolchain under dosemu2 (DOS/4GW LE; `src/watcom_hello.c`) | `watcom:1988-1994` |
-| `WAR2.EXE` (user-provided) | real DOS/4GW-bound Watcom LE (ground truth) | `watcom:1988-1994` (LE + MZ) |
+| `the subject binary` (user-provided) | real DOS/4GW-bound Watcom LE (ground truth) | `watcom:1988-1994` (LE + MZ) |
 | 10.0a `CLIB3R.LIB` banner strings | real toolchain runtime libraries | 4 variants (unit tests) |
 | Open Watcom banner grammar | `open-watcom-v2 msgcpyrt.h` | `watcom:open:YYYY-YYYY` (unit test) |
 | `comcom32.exe` (DJGPP) | non-Watcom MZ | no match → `unknown` (no false positive) |
@@ -66,8 +66,8 @@ and decodes to the EAX/EDX/EBX/ECX arg order, and the LE loader assigns `compile
 (`oracle/analysis-corpus/src/watcall_probe.c`) compiled with a real Open Watcom 2.0 `wcc386`
 (`~/tools/open-watcom-v2/rel/binl/wcc386`), disassembled by **mosura's own engine**, loads the
 five args as `mov eax,a; mov edx,b; mov ebx,c; mov ecx,d; push e` and the callee returns in EAX
-with `ret 4` (callee stack cleanup) — exactly the convention the cspec declares. The **decompiler-side** consumption (recovering war2 function
-prototypes with watcall and validating them against the warcraft2-re recovered signatures) is
+with `ret 4` (callee stack cleanup) — exactly the convention the cspec declares. The **decompiler-side** consumption (recovering the subject function
+prototypes with watcall and validating them against the the RE tracker recovered signatures) is
 the decompiler's job — that lives in `crates/mosura/src/decompile/` and is task #9's main-agent
 handoff; the cspec is written and ready for it. The 16-bit MZ watcall variant is a follow-up.
 
@@ -101,8 +101,8 @@ Findings (measured, not inferred):
 - Every toolchain uses the `WATCOM International Corp.` vendor line and the documented banner
   shape, so **the detector's grammar already matches the entire 10.0–11.0 range** — now
   measured against 8 real ISOs (`detects_watcom_lineage_eras`), not assumed.
-- **WAR2.EXE's `1988-1994` cap** is consistent with a 10.0/10.0a-era toolchain and excludes
-  10.5+ (which would make a `1988-1995` lib available) — the `warcraft2-re` cap argument, now
+- **the subject binary's `1988-1994` cap** is consistent with a 10.0/10.0a-era toolchain and excludes
+  10.5+ (which would make a `1988-1995` lib available) — the `the RE tracker` cap argument, now
   empirically grounded.
 
 ## Follow-up: pre-10.0 (floppy) toolchains
@@ -122,7 +122,7 @@ follow-up.
 
 9.01 was installed from its floppies (`INSTALL.EXE` under dosemu — see
 `watcom-codegen-fingerprint.md`) and used to compile **and link** a DOS/4GW image (`MZ` + `LE`, the
-same format family as WAR2). Read from the produced binary, not from installer text:
+same format family as the subject). Read from the produced binary, not from installer text:
 
 ```
 9.01-linked image   WATCOM C Run-Time system code is provided on an "as is" basis and is
@@ -142,7 +142,7 @@ Runtime banner read from each release's `clib3r.lib` (or the linked image, for 9
 | 10.5  | `WATCOM International Corp. 1988-1995` |
 | 10.6  | `WATCOM International Corp. 1988-1995` |
 | 11.0  | `WATCOM International Corp. 1988-1994` |
-| **WAR2.EXE** | `WATCOM International Corp. 1988-1993` |
+| **the subject binary** | `WATCOM International Corp. 1988-1993` |
 
 **Two things fall out, and the second is a trap:**
 
@@ -153,7 +153,7 @@ Runtime banner read from each release's `clib3r.lib` (or the linked image, for 9
    release" heuristic silently orders 11.0 *before* 10.5. The banner is an **era** stamp, exactly as
    the top of this document says — this table is the measured proof of it.
 
-**And WAR2's `1988-1993` matches none of the four installed releases**, all of which are ≥1994. Its
+**And the subject's `1988-1993` matches none of the four installed releases**, all of which are ≥1994. Its
 runtime therefore predates 10.0a, which is independently consistent with the codegen fingerprint
 placing it on the *early 10.0 line* (the promoting `cmp eax,5`). ⚠️ Not yet pinned to a release: the
 10.0 ISOs here are packed floppy images (`DISK04/CLIBIHP.1` …) whose `clib3r.lib` needs an install

@@ -39,4 +39,4 @@ primitive (here `op_destroy`, env-gated and filtered) answers in one run what a 
 guesses gets wrong.
 
 Related: [[rule-indirect-collapse-unblocks-stackptr]], [[numbers-stale-unless-sha-stamped]],
-[[war2-band-root-cause]].
+(subject-profile note `band-root-cause`).

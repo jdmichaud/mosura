@@ -8,8 +8,8 @@ metadata:
   modified: 2026-07-29T18:01:30.613Z
 ---
 
-`war2-survey/prelude.h` is generated from the `PRELUDE` constant in
-`crates/mosura/examples/war2_survey.rs`, and every EMIT overwrites it. A `code`-typedef fix was
+`<subject-survey>/prelude.h` is generated from the `PRELUDE` constant in
+`crates/mosura/examples/corpus_emit.rs`, and every EMIT overwrites it. A `code`-typedef fix was
 hand-applied to the generated FILE, measured (COMPILE_FAIL 75 → 29, E1052 47 → 0), and written up in
 commit `26db108` as though it were the state of the tree — while the constant still said `void`. The
 next EMIT silently restored `void`, 47 E1052 failures came back, and they were then re-adjudicated
@@ -20,11 +20,11 @@ symptom gets re-explained by whatever doc is nearest. The re-explanation is the 
 
 **How to apply:** before recording a measurement, ask what WROTE the input that produced it and
 whether that input is generated. Fix generated content at its source, give it a cheap regeneration
-path (`war2_survey --prelude-only <dir>`), and STAMP its hash into the artifact chain so a run can
+path (`corpus_emit --prelude-only <dir>`), and STAMP its hash into the artifact chain so a run can
 never be attributed to an input it did not use (`compile.sh` writes `prelude_sha=` into
 `.compile-complete`; `compare.py` stamps it into `results.tsv` and refuses to score on a mismatch).
 Companion rule from the same incident: **a verified-faithful RENDER is a decompiler ceiling; whether
 it COMPILES is a separate axis owned by the prelude/extern declarations, and is legitimately
 fixable.** "Do not fix" binds the decompiler, not the harness.
 Related: [[numbers-stale-unless-sha-stamped]], [[variablepiece-extended-cover]],
-[[war2-recompile-survey]].
+(subject-profile note `recompile-survey`).

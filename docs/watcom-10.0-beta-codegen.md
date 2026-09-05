@@ -60,7 +60,7 @@ not survive into 10.5.
 
 ## Why it matters
 
-**It sharpens WAR2's identification.** WAR2 is identified by the promoting form. That form was
+**It sharpens the subject's identification.** the subject is identified by the promoting form. That form was
 previously understood as marking "the 10.0 line". It does not: it is unique to **10.0a retail**,
 with two measured revisions on each side emitting the non-promoting form. The anchor is
 narrower — and therefore stronger — than it was.

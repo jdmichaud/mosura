@@ -27,7 +27,7 @@ Hence `thunk::resolve_thunks` runs at the **top** of `compute_function_bodies` (
 whole-program stand-in for `fixupFunctionBody`). Landed `69cf941`, gate `55531a3`, module
 `crates/mosura/src/analysis/analyzers/thunk.rs`.
 
-**Why:** WAR2's entry `0x601f8` is `EB 76` — a short jump over the inline Watcom copyright banner
+**Why:** the subject's entry `0x601f8` is `EB 76` — a short jump over the inline Watcom copyright banner
 (`analysis/loader/watcom.rs`) — and `0x601f8 + 2 + 0x76 = 0x60270` exactly. Ghidra creates
 `FUN_00060270`; mosura's body walk followed the `jmp`, swallowed the target, and the overlap
 refusal then declined it forever. ⚠️ **Shared return cannot be the mechanism there**: the span
@@ -51,5 +51,5 @@ a function ENTRY.
   test was ALREADY RED at `a4081da` (`watcom-ow2-x86-32`, 3043/4593), so the widening is not
   attributable as a clean regression — regenerating the committed databases is lead-gated.
 
-Related: [[shared-return-cursor-cache-is-semantic]], [[war2-tailjmp-mve]],
+Related: [[shared-return-cursor-cache-is-semantic]], (subject-profile note `tailjmp-mve`),
 [[oracle-same-question-not-just-same-tool]], [[generated-artifact-drift]].

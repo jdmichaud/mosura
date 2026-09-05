@@ -17,7 +17,7 @@ function is still missing.
 
 ⚠️ **The failure mode this creates is subtle and I was inside it:** a chain of well-measured
 diagnoses reads like sustained progress while the actual number never moves. Four tasks closed in a
-row, three of them "measured, no defect / diagnosed, blocked" — and WAR2's missing count went
+row, three of them "measured, no defect / diagnosed, blocked" — and the subject's missing count went
 8 → 8. Depth of understanding is not a substitute for a fix.
 
 **The ONE legitimate case, and state it explicitly:** a task genuinely blocked by another task. Then

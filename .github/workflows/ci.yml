@@ -4,7 +4,7 @@
 # a fresh checkout + the pinned Ghidra (fetched by the job) runs the FULL cargo test suite
 # green with NONE of the regeneration-only tooling present — no Ghidra C++ oracle
 # (oracle/capture), analyzeHeadless, cross-toolchains, Open Watcom, dosemu2, or user binaries
-# (WAR2/cnv/comcom32). Every test that touches those must skip-if-absent, so the run stays
+# (the subject/cnv/comcom32). Every test that touches those must skip-if-absent, so the run stays
 # green; a new hard dependency turns it red.
 #
 # `scripts/ci-clean-clone.sh` is the portable authority — any CI can call it. GitHub Actions is

@@ -217,14 +217,14 @@ not any further set. So the free ride ends at MSVC.
 Ghidra ships signatures for **exactly one** of these nine rows. The other eight are the real work,
 and they are all served by the same Stage 6 ingest + the self-compiled-ground-truth setup already
 in `docs/ground-truth-corpus.md`. Honest scoping: **coverage grows one runtime at a time.** First
-useful milestone is Watcom clib (the WAR2 north-star) plus one gcc/glibc target.
+useful milestone is Watcom clib (the subject north-star) plus one gcc/glibc target.
 
 The library record pins `languageID` + `compilerSpecID`, so a DB never matches across
 architectures — the matcher is arch-safe by construction, and adding a column is additive.
 
-### Prior art next door: how `warcraft2-re` named the Watcom CRT in WAR2.EXE
+### Prior art next door: how `the RE tracker` named the Watcom CRT in the subject binary
 
-`../warcraft2-re` already labelled 161 Watcom CRT routines inside `WAR2.EXE`. It is worth being
+`../the RE tracker` already labelled 161 Watcom CRT routines inside `the subject binary`. It is worth being
 precise about how, because it looks at first glance like a counter-example to "Ghidra ships
 nothing for Watcom" — and it is in fact the strongest evidence for this plan's Stage 6/7.
 
@@ -237,7 +237,7 @@ nothing to say about a Watcom binary. So the agent wrote its own scheme from scr
 2. rebuild each module's `_TEXT` from its `LEDATA`/`LIDATA` payloads;
 3. mark every byte touched by a `FIXUPP` as a **wildcard** — a relocation mask;
 4. slice function bodies by `PUBDEF` offset (next public, or segment end), trimming padding;
-5. take the longest unmasked run (≥ 6 bytes) as a search anchor, scan WAR2's code region, verify
+5. take the longest unmasked run (≥ 6 bytes) as a search anchor, scan the subject's code region, verify
    the whole body modulo the mask;
 6. push names into Ghidra over MCP.
 
@@ -245,7 +245,7 @@ Result: **161 unique matches**, 175/533 `CLIB3R` publics covered, 3 ambiguous, 3
 
 **Why this validates the plan rather than replacing it.**
 - The 978 lines exist *because* nothing shipped for Watcom. That is the same gap §4 describes.
-- Its founding premise — the CRT bytes in `WAR2.EXE` are **byte-identical** to the bodies in the
+- Its founding premise — the CRT bytes in `the subject binary` are **byte-identical** to the bodies in the
   `.LIB`, because the same toolchain pre-compiled them — is exactly the premise Stage 7's Watcom
   column rests on, now demonstrated on the real target. That is a large de-risking.
 - Its signature source, the OMF `.LIB`, is exactly what Stage 6 ingest consumes. mosura already
@@ -275,14 +275,14 @@ already builds.
 
 **What we do NOT take from it — a standing constraint.**
 
-- **`WAR2.EXE` is not part of mosura's verification.** It is a user-supplied binary that can go
+- **`the subject binary` is not part of mosura's verification.** It is a user-supplied binary that can go
   away at any time, so no gate may depend on it. It serves as a **development guide** (a rich,
   real Watcom target to steer against while building) and as **post-release validation** — never
   as a test that must pass for the tree to be green. Stage 7's Watcom gate is built on
   **self-compiled** binaries whose CRT content we control and know: we own the source, the
   toolchain, and the link, so the expected name set is derivable from our own build, not from
   anyone's tracker. Same rule as the rest of `docs/ground-truth-corpus.md`.
-- **`warcraft2-re`'s data is a lead, not an oracle.** Its numbers (161 matched, 175/533 covered,
+- **`the RE tracker`'s data is a lead, not an oracle.** Its numbers (161 matched, 175/533 covered,
   the 152 `crt-known` tracker rows) come from a byte-search heuristic with its own documented
   failure modes — ambiguous hits, collapsed trampolines, an anchor-length floor. Useful for
   orientation and for cross-reading a result that looks wrong; never load-bearing. Anything from

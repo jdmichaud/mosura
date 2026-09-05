@@ -15,14 +15,14 @@ import ghidra.program.model.listing.Function;
 /// `oracle/capture_trace <sleighdir> <file.xml> --trace` can replay the function under
 /// OPACTION_DEBUG and report Ghidra's ACTUAL rule-firing sequence.
 ///
-/// This is the WAR2 counterpart of the datatest-fixture path in `scripts/trace-diff.sh`: that
-/// script can only trace fixtures shipped with Ghidra, so any question about a WAR2 function
+/// This is the subject counterpart of the datatest-fixture path in `scripts/trace-diff.sh`: that
+/// script can only trace fixtures shipped with Ghidra, so any question about a subject function
 /// ("which rule narrows this divide?") previously had to be answered by READING ruleaction.cc
 /// and inferring. Inference was wrong more than once. This closes that gap — Ghidra names the
 /// mechanism itself.
 ///
 /// Args: <va-list-file> <out-dir> — one hex VA per line (no 0x prefix); writes <out-dir>/<va>.xml.
-/// Driven by `scripts/ghidra-decompile-war2.sh` via POSTSCRIPT=DumpDecompDebug.java.
+/// Driven by `scripts/ghidra-decompile-subject.sh` via POSTSCRIPT=DumpDecompDebug.java.
 public class DumpDecompDebug extends GhidraScript {
     @Override
     public void run() throws Exception {

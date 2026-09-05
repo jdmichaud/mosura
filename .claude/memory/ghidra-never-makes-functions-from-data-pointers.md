@@ -34,5 +34,5 @@ Consequence for gates: `ground_truth_parity`'s nm-derived recall list will name 
 targets as functions (the compiler knows they are). They carry a documented, program-scoped
 carve-out; the real property is gated by `ground_truth_parity::data_pointer_function_discovery`.
 
-See [[war2-address-table-port]], [[war2-missing-calls-class]],
+See (subject-profile note `address-table-port`), (subject-profile note `missing-calls-class`),
 [[oracle-same-question-not-just-same-tool]].

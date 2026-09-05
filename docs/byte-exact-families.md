@@ -131,12 +131,12 @@ popped): the value sits in EDX because `IDIV` writes the remainder there, and th
 codegen assigns the add's result to **op1's own register** (in-place `ADD`, then a copy to the
 return register), where 10.0a assigns it to the **destination** register and therefore needs
 the `LEA`. That is a result-register-assignment preference — the same underlying dial as the
-`regalloc` divergence class and warcraft2-re's `ecx-allocator-mystery`, not a fold decision
+`regalloc` divergence class and the RE tracker's `ecx-allocator-mystery`, not a fold decision
 and not an emission question.
 
 **Consequence — a falsifiable PREDICTION for the allocation-order experiment, recorded before
 it runs:** if the interim build's difference is register-assignment preference, then patching
-10.0a's allocation dials toward WAR2's observed preference should move F2's rows *together
+10.0a's allocation dials toward the subject's observed preference should move F2's rows *together
 with* the `regalloc MOV>MOV` class. If the regalloc rows move and F2 does not (or vice versa),
 this unification is wrong.
 
@@ -173,7 +173,7 @@ any layer — a toolchain fingerprint. The chain of evidence:
 
 The original's code generator has a recognizably different peephole policy from the
 wcc386 10.0a we compile with, under every switch it accepts. The 10.0a identification
-came from the warcraft2-re side (runtime library matching); library version and compiler
+came from the the RE tracker side (runtime library matching); library version and compiler
 binary version need not agree. `/data/tools/watcom/` holds installable images for 9.5b,
 10.0 (incl. a 3-16-1994 beta), 10.6, and 11.0 — the discriminator is cheap once a tree
 exists: compile the specimen, look for the fold. If the true compiler differs, a version
@@ -185,19 +185,19 @@ further family session — otherwise family analyses chase compiler ghosts.
 disposition below carries an implicit "under wcc386 10.0a" qualifier.
 
 **UPDATE (same day — the version question is now settled as far as it can be):**
-[`war2-toolchain-synthesis.md`](war2-toolchain-synthesis.md) assembles both projects'
+[`watcom-toolchain-synthesis.md`](watcom-toolchain-synthesis.md) assembles both projects'
 evidence plus new measurements. Outcome for this family, in two halves:
 
 - The `SHL>LEA` sub-family was **flags, and is FIXED**: `-5r` (Pentium tuning — the CPU
   digit is tuning, not an instruction-set floor; the emitted code is pure 386 ISA)
   suppresses the in-place scaled LEA in 10.0a. Profile base changed `-4r` → `-5r`:
   SHL>LEA rows 157 → 12, EXACT 586 → **591** (+6/−1) on sb43 sources — and → **592**
-  once the CPU digit became per-function evidence: WAR2's one `-4r` module (9 functions,
+  once the CPU digit became per-function evidence: the subject's one `-4r` module (9 functions,
   0x69fb0..0x6e6e0, detected by its in-place scaled LEAs, a form `-5r` cannot emit) is
   downgraded per function by `buildconfig` (`/data/be2/sb43-5r.tsv`).
 - The `MOV>LEA` add-fold half **stands as a compiler fingerprint**: every shipped
   revision measured (9.5b, 10.0-LA beta, 10.0a wcc386+wpp386, 10.6, 11.0, OW2) folds
-  under every accepted flag except `-od`; WAR2 never does. WAR2's compiler is an
+  under every accepted flag except `-od`; the subject never does. the subject's compiler is an
   interim 10.0-line codegen build (a-level front end — the byte-compare promotion is a
   documented a-level fix, verified at 103 disassembled sites — with selection/allocation
   dials set between the shipped snapshots). Not closable by source or flags; do not
@@ -231,11 +231,11 @@ is therefore a scheduling-policy residue, not a contract one.
 
 716 functions missing a prologue `PUSH`; missing saves outnumber extra saves 1231 to
 150, spanning EBX/ECX/EDX/EDI/ESI evenly. Originally read here as knock-on of upstream
-value/shape divergences; the warcraft2-re investigation had already measured the real
+value/shape divergences; the the RE tracker investigation had already measured the real
 mechanism (`analysis/openwatcom-investigation/cgflag-bxsidi-save-no-modify.md`): **the
 target's compiler saves callee-save registers even when not modified**, where 10.0a's
 `SaveRegs()` intersects with the used set. A compiler-policy member of the pile-B
-residual ([`war2-toolchain-synthesis.md`](war2-toolchain-synthesis.md)) — some knock-on
+residual ([`watcom-toolchain-synthesis.md`](watcom-toolchain-synthesis.md)) — some knock-on
 component remains on top, so re-measure after F1, but the floor is the policy.
 
 ### SAME_SHAPE clusters (84 functions, every fix +1 EXACT)
@@ -466,7 +466,7 @@ the allocator function-wide). Full entry: byte-exact-status.md sb94.
 1. ~~F2 as the pilot~~ — **done**: SHL half fixed by `-5r` (+5 net EXACT); add-fold half
    is compiler policy, parked.
 2. ~~Settle the compiler version~~ — **done** as far as media exists:
-   [`war2-toolchain-synthesis.md`](war2-toolchain-synthesis.md). The pile-B compiler
+   [`watcom-toolchain-synthesis.md`](watcom-toolchain-synthesis.md). The pile-B compiler
    families (F2's add-fold, F3, load scheduling, pure-regalloc allocation order) are a
    bounded residual — parked, not worked.
 3. **F1** — the mass lever, but a complex; expect it to split into 2–3 mechanisms during

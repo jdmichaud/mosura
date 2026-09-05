@@ -19,7 +19,7 @@ back. So a contiguous function's interior is scanned **iff its successor is in t
 
 ## Measured (2026-08-10, the `1d74e` regression, reverted at `b2de9e8`)
 
-WAR2 MZ, `FUN_0001d76a` body `1d74e:1d790` (single range, contains the `EB C0` at `1d78c`):
+the subject MZ, `FUN_0001d76a` body `1d74e:1d790` (single range, contains the `EB C0` at `1d78c`):
 
 ```
 set = 140 fns, ∩window = [1d678 1d76a 1d7b5 1d7ba 1d7f6]   scan.contains(1d78c) = true

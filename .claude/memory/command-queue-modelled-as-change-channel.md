@@ -36,7 +36,7 @@ function_defined(...)    -> consumers=0.   FunctionCreator, Constant Propagation
 ```
 
 **One substitution produces BOTH known symptoms:**
-1. **The listing hole** — the request evaporates. WAR2: **374 / 3018 functions (12.4%)** have an
+1. **The listing hole** — the request evaporates. the subject: **374 / 3018 functions (12.4%)** have an
    undisassembled body end; 6 corpus functions have the *entire* body undisassembled.
    `analyze()` is the single common driver, so `analyze_le_file` hits the identical hole.
 2. **The infinite re-fire loop** — mosura fires `code_defined` on the **REQUEST**, Ghidra on the
@@ -49,12 +49,12 @@ it, and its comment's claim ("converges without changing which addresses are eve
 true as written. It was the lead hypothesis and it was wrong; don't re-suspect it.
 
 `consumers=0` also means a pattern-discovered function's **callees are never discovered** — a
-cascade, and the right shape to explain the 8 WAR2 addresses Ghidra finds and mosura misses.
+cascade, and the right shape to explain the 8 the subject addresses Ghidra finds and mosura misses.
 
 **✅ LANDED 2026-08-10 @ `1a81975`:** `Scheduling` holds the real queue —
 `BTreeMap<(priority, seq)>` FIFO-within-priority, Task/Disassemble/CreateFunction/OneShot
 entries executing regardless of registration, active−2/−1 priorities, one-shots carrying their
-instance. WAR2 LE SET-IDENTICAL 3023 (probe `examples/le_funcs.rs`); all suites green. The
+instance. the subject LE SET-IDENTICAL 3023 (probe `examples/le_funcs.rs`); all suites green. The
 two-manager split REMAINS (its ordering constraint stands).
 
 **⚠️ 2026-08-10 SAME DAY: the queue was NOT the missing piece for #6/#3.** Five further
@@ -63,7 +63,7 @@ refusal, unified executor) all fail — and Ghidra's own `CreateFunctionCmd` sem
 (source-verified) would create `1d74e` too, given mosura's state.
 
 **⭐ RESOLVED BY ORACLE MEASUREMENT (`oracle/ghidra_scripts/LogFunctionEvents.java`, a
-listener inside Ghidra's own war2 headless analysis):** `1d74e` is NEVER created; Ghidra
+listener inside Ghidra's own the subject headless analysis):** `1d74e` is NEVER created; Ghidra
 creates `1d7b5` at function event 177 and `1d76a` at 267 — different cascades, opposite order
 to mosura's batch: SR scans `1d7b5` while `1d76a` does not exist (no entry to cross → no
 verdict), and `1d76a`'s later real body shields `1d78c`. mosura batches them together only
@@ -86,7 +86,7 @@ Each link individually measured red; landing is one ATOMIC multi-link change, no
 sequence. Reach classification proving no separate mechanism exists: of 7435 main-phase-
 missing insns, 2 behind unfollowed edges, 91% rooted in byte-search-only discoveries
 (`examples/mz_mainreach.rs`). Landed before parking: repair port `f23099d` (§9 #5 gate
-green), detection `39bbdbe` (war2 misaligned 46→43), U1 `e24d92b`. Full ledger:
+green), detection `39bbdbe` (the subject misaligned 46→43), U1 `e24d92b`. Full ledger:
 `docs/analysis-open-tasks.md`. The byte-exact lane does not depend on any of it.
 
 Related: [[invention-inventory-empty]] (this is a NEW invention that inventory did not cover),

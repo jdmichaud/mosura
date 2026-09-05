@@ -1,6 +1,6 @@
 ---
 name: structured-graph-is-a-list-not-a-root
-description: "⭐ LANDED 2026-07-30 (282bf51/b3afd4d): a collapse that cannot reduce to ONE node is NORMAL in Ghidra — emitBlockGraph prints every top-level component. mosura emitted only the entry's and silently dropped 45 basic blocks across 10 WAR2 functions. reached==cfg 45→0, undefined labels 18→0, call deficit 10→4 (EMITTER side 0), COMPILE_FAIL 102→95, byte-clean unmoved at 15."
+description: "⭐ LANDED 2026-07-30 (282bf51/b3afd4d): a collapse that cannot reduce to ONE node is NORMAL in Ghidra — emitBlockGraph prints every top-level component. mosura emitted only the entry's and silently dropped 45 basic blocks across 10 the subject functions. reached==cfg 45→0, undefined labels 18→0, call deficit 10→4 (EMITTER side 0), COMPILE_FAIL 102→95, byte-clean unmoved at 15."
 metadata: 
   node_type: memory
   type: project
@@ -16,7 +16,7 @@ Ghidra's collapsed structure is a **list**, not a root. Three independent places
 - `PrintC::emitBlockGraph` (printc.cc:2746, reached from printc.cc:2660) loops over `getList()`.
 
 mosura modelled the result as a single `root` and emitted only that, so every other component
-vanished — 45 basic blocks in 10 WAR2 functions, including live CALLs, while sibling components kept
+vanished — 45 basic blocks in 10 the subject functions, including live CALLs, while sibling components kept
 jumping to labels inside them. Now `Structured::roots` holds Ghidra's list, ordered by
 `compareFinalOrder` (block.cc:709; entry index 0 first, RETURN-terminated last, else by index, where
 a composite's index is the MIN over its components per `addBlock`, block.cc:862).
@@ -44,4 +44,4 @@ The defect had been misdiagnosed three times because of [[oracle-same-question-n
 commit 7e14035 had explicitly killed this exact hypothesis on a graph Ghidra only had because it
 deleted live code.
 
-Related: [[gauge-counting-traps]], [[print-raw-has-no-dead-filter]], [[war2-byte-exact-campaign]].
+Related: [[gauge-counting-traps]], [[print-raw-has-no-dead-filter]], (subject-profile note `byte-exact-campaign`).

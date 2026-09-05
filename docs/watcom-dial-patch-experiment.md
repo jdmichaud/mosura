@@ -21,7 +21,7 @@ self-contained, but it links the existing documents you MUST also read rather th
 recopying them.
 
 **Author's note (Fable, 2026-08-22):** I wrote this after a day of source-shape levers on
-the WAR2 byte-exactness corpus netted +6 EXACT and +0.0004 WGSS and then hit the same wall
+the subject byte-exactness corpus netted +6 EXACT and +0.0004 WGSS and then hit the same wall
 three separate ways. Every one of those walls was the *compiler's* tie-breaking, not our
 emitted C. This experiment is the one remaining move with a large possible outcome, and I
 cannot run it myself (it is binary patching of a compiler executable). Do not treat my
@@ -32,13 +32,13 @@ because most of them are mistakes already made once here at real cost.
 
 ## 0. The one-paragraph version
 
-WAR2.EXE was built with a Watcom 10.0-line C compiler whose **code-generator dials are set
+the subject binary was built with a Watcom 10.0-line C compiler whose **code-generator dials are set
 differently from the shipped 10.0a** we compile with (an "interim build" — routine in that
 era; no such build survives publicly). We reproduce 764/2797 functions byte-exactly; the
 residue is dominated by **register-allocation tie-breaks** and **instruction-scheduling
 order** that are the *compiler's* choices, unreachable by changing our C. The experiment:
 locate those dials in 10.0a's own `wcc386.exe` (OW 1.0 source names them; mosura disassembles
-the binary), patch a **copy** of the compiler toward WAR2's observed behavior, recompile the
+the binary), patch a **copy** of the compiler toward the subject's observed behavior, recompile the
 corpus, and measure. A patch that moves EXACT by tens of functions **confirms** the ceiling is
 compiler identity and converts the rest of the campaign into a finite list of dials. A patch
 that moves nothing **refutes** it and sends the work back to our side. Either result is worth
@@ -94,7 +94,7 @@ In this order:
    important — **the construct-validity error that invalidated the first conclusion**. Your
    experiment is this one with different dials. Copy its structure.
 
-2. **`docs/war2-toolchain-synthesis.md`** — the interim-build hypothesis and its four legs
+2. **`docs/watcom-toolchain-synthesis.md`** — the interim-build hypothesis and its four legs
    (LEA fold [reclassified], `DoubleRegs[]` allocation order, callee-save policy, load
    scheduling). The "OW 1.0 source reconnaissance" section names the dials and their source
    locations. **Read the `DoubleRegs` subsection carefully: the naive version of THIS
@@ -106,26 +106,26 @@ In this order:
 
 3. **`docs/byte-exact-families.md`** — the F2 family and its **falsifiable prediction**,
    recorded before this experiment runs: *if the interim build's difference is
-   result-register-assignment preference, patching the allocation dial toward WAR2's preference
+   result-register-assignment preference, patching the allocation dial toward the subject's preference
    should move F2's rows TOGETHER WITH the regalloc MOV>MOV class. If regalloc moves and F2
    doesn't (or vice versa), the unification is wrong.* This is your pre-registered check — hold
    yourself to it.
 
 4. **`docs/watcom-codegen-fingerprint.md`** and **`docs/watcom-10.0-beta-codegen.md`** — every
    Watcom revision (7.0 … 10.0-beta … 10.0a … 10.6 … 11.0 … OW2) has been compiled and
-   fingerprinted; none matches WAR2 exactly. This is why the answer is "interim build," not
+   fingerprinted; none matches the subject exactly. This is why the answer is "interim build," not
    "some other shipped version." Don't re-litigate version identity; it's settled.
 
-5. **`docs/war2-recompile-remeasure.md`** — the canonical measurement runbook. Every trap in §7
+5. **`docs/corpus-round-runbook.md`** — the canonical measurement runbook. Every trap in §7
    below traces to a lesson recorded here or in the memory files.
 
 **Memory files** (`/home/jd/.claude/projects/-home-jd-projects-mosura/memory/`, indexed in
-`MEMORY.md`): `war2-compiler-identity.md` (pile-B is a LIST OF CLAIMS, not a verdict; the fold
+`MEMORY.md`): `compiler-identity (subject-profile note).md` (pile-B is a LIST OF CLAIMS, not a verdict; the fold
 member flip-flopped twice — re-check each claim's evidence, and beware over-correcting in
 either direction), `allocator-model-thread.md` (the full 2026-08-22 allocator investigation:
 what the OW allocator actually does, which levers landed, which were refuted and why),
 `volatile-recovery-and-scheduler.md` (the scheduler MODEL we already have — `recompile::watsched`
-— faithful to OW `inssched.c`; it PREDICTS 10.0a's behavior and disagrees with WAR2's on the
+— faithful to OW `inssched.c`; it PREDICTS 10.0a's behavior and disagrees with the subject's on the
 holdout functions, which is itself evidence a dial differs), `experiment-discipline.md`
 (census-before-code, WGSS-first landing bar, pre-register ceilings), `bisect-checkout-discipline.md`.
 
@@ -137,12 +137,12 @@ holdout functions, which is itself evidence a dial differs), `experiment-discipl
   `/home/jd/projects/mosura` is an sshfs mount, the repo is one level in). NOT a git repo at
   the outer level; `git` works inside the inner dir.
 - **Reference compiler (NEVER WRITE TO THIS):**
-  `/home/jd/projects/warcraft2-re/tmp/watcom-experiments/watcom_10.0a/WATCOM`. The compiler
+  `/home/jd/projects/the RE tracker/tmp/watcom-experiments/watcom_10.0a/WATCOM`. The compiler
   executable is `BINB/WCC386.EXE` (541,364 bytes, an LX / DOS-extender image — "MS-DOS
   executable, LX for OS/2, Intel i386"). It runs under dosemu via `BIN/W32RUN.EXE`
   (W32RUN-hosted; W32RUN must be on the DOS PATH).
-- **The subject:** `/home/jd/WAR2.EXE`.
-- **Corpus manifest + recovered C:** produced by `war2_survey` into `/data/be2/zcNN/`
+- **The subject:** `/home/jd/the subject binary`.
+- **Corpus manifest + recovered C:** produced by `corpus_emit` into `/data/be2/zcNN/`
   (manifest.tsv, recovered/NNNNN.c, prelude.h). The current baseline tree is `zc26`
   (764 EXACT / WGSS 0.4801). Column 9 of the manifest is the original function's bytes (hex).
 - **Compile cache:** `/data/be2/cache`. **Content-and-toolchain-id keyed.** The patched
@@ -212,13 +212,13 @@ transfer to the 10.0a binary. Confirm each against the binary before trusting it
   values are in `bld/cg/intel/386/c/386funit.c`.
 - **We already have a faithful MODEL of this:** `crates/mosura/src/recompile/watsched.rs`,
   documented against these exact source lines. It PREDICTS 10.0a's schedule and reproduces it
-  on most functions; it disagrees with WAR2's order on a small set of holdouts (e.g. the arg-setup
+  on most functions; it disagrees with the subject's order on a small set of holdouts (e.g. the arg-setup
   6th site, FUN_00019344, FUN_00073328). **Those holdouts are your Dial-B specimens** — they are
-  where WAR2's scheduler priority differs from 10.0a's. `dumpsched` (gitignored, in
+  where the subject's scheduler priority differs from 10.0a's. `dumpsched` (gitignored, in
   `crates/mosura/examples/`) prints model-prediction vs original per window; use it to see the
   disagreement before patching.
 - **In the binary:** the priority comparison in `ScheduleIns` and the `InsStallable` operand
-  weights. The operand weights (2/1/3) are the most likely single-dial difference — if WAR2
+  weights. The operand weights (2/1/3) are the most likely single-dial difference — if the subject
   weights a register operand differently, the arg-setup pair (`MOV reg,reg` vs `MOV reg,const`)
   reorders. Locate `ScheduleIns` via its `StallCost`/height/`InsStallable` structure; the
   operand-class constants are small immediates.
@@ -261,7 +261,7 @@ already have the model to tell us exactly which functions and windows to watch.
 6. **Corpus run with a SEPARATE cache** (`--cache /data/be2/cache-dialpatch`). Emit is already
    done (reuse the zc26 recovered tree — the C doesn't change, only the compiler does), so this
    is `recompile_check` only, pointed at the patched WATCOM dir and the separate cache.
-7. **Measure against the PREDICTION, not the raw count.** `scripts/war2-verdicts.sh
+7. **Measure against the PREDICTION, not the raw count.** `scripts/corpus-verdicts.sh
    <baseline-rec.tsv> <patched-rec.tsv>` for flips + WGSS movement. Check the pre-registered
    specimens flipped and the F2 co-move prediction held. Report EXACT and WGSS together, always.
 
@@ -271,8 +271,8 @@ already have the model to tell us exactly which functions and windows to watch.
 
 This is where the fold experiment went wrong the first time, so read it twice.
 
-- **A wholesale toggle tests a strawman.** Turning a transform fully OFF tests "WAR2 NEVER does
-  it" — but WAR2 both does and doesn't (it folds 336 sites AND declines to fold at the F2 rows).
+- **A wholesale toggle tests a strawman.** Turning a transform fully OFF tests "the subject NEVER does
+  it" — but the subject both does and doesn't (it folds 336 sites AND declines to fold at the F2 rows).
   A dial that can only be all-on or all-off can match NEITHER mixed state. If your patch is a
   wholesale disable, the only sound conclusion available is an INVARIANCE result (does the class
   move at all?), not a directional one. Prefer a patch that changes the *condition/order*, not
@@ -327,7 +327,7 @@ This is where the fold experiment went wrong the first time, so read it twice.
   not the code. For a dial-patch run the sources ARE identical by construction (same recovered
   tree), so ANY verdict shift is the compiler — which is exactly the signal you want, but verify
   the sources really are identical so you know the shift is the patch and nothing else.
-- **`war2_survey` and `recompile_check` are slow** (~100s analyze + ~100s emit for survey; a
+- **`corpus_emit` and `recompile_check` are slow** (~100s analyze + ~100s emit for survey; a
   full recompile is minutes cache-warm, much longer cache-cold — and a patched run is cache-cold
   by construction). Background anything over ~2 min. Never run cargo in the foreground while a
   background cargo may hold the target-dir lock.
@@ -366,9 +366,9 @@ Write your conclusion as a new section at the end of THIS document (or a sibling
 the source predicate, the located binary site (offset + disassembly + independent
 corroboration), the exact patch (offsets, before/after bytes, sha256 pre/post, idempotent
 script), the isolation-validation battery result, the corpus delta (EXACT and WGSS, baseline
-→ patched, via `war2-verdicts.sh`), whether the pre-registered specimens and the F2 co-move
+→ patched, via `corpus-verdicts.sh`), whether the pre-registered specimens and the F2 co-move
 prediction held, and the interpretation under §6's discipline. If a dial moved nothing, say so
-plainly and state what that rules out. Update `war2-compiler-identity.md` memory with the
+plainly and state what that rules out. Update `compiler-identity (subject-profile note).md` memory with the
 outcome (it is a list of claims — mark each as confirmed/refuted with the evidence).
 
 **Do not** change the shipped harness to use a patched compiler. The patched compiler is an

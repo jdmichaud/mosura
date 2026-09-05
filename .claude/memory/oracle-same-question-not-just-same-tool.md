@@ -9,9 +9,9 @@ metadata:
 ---
 
 Rule Zero says read Ghidra's output for the specimen before theorising. This is its necessary
-second half, bought with a three-pass misdiagnosis of WAR2 `FUN_00077dcb` (2026-07-30).
+second half, bought with a three-pass misdiagnosis of the subject's `FUN_00077dcb` (2026-07-30).
 
-The per-function oracle ([[war2-per-function-ghidra-oracle]]) imports only the requested function's
+The per-function oracle ((subject-profile note `per-function-ghidra-oracle`)) imports only the requested function's
 bytes, so every callee's prototype falls back to the database default — **no parameters**. Ghidra's
 dead-code pass then deletes every register the callee "does not read". On `FUN_00077dcb` that killed
 EDX, which deleted `xor %edx,%edx` and an entire comparison, which left Ghidra with 6 basic blocks
@@ -28,7 +28,7 @@ forces a callee's parameter storage, so both sides see the same liveness:
 
 ```sh
 GHIDRA_POSTSCRIPT=DecompileWithForcedParams.java GHIDRA_POSTSCRIPT_ARGS='63c35=EDX' \
-  scripts/ghidra-decompile-war2.sh 63cbf 722c8 63c35 77dcb   # callees FIRST — created in list order
+  scripts/ghidra-decompile-subject.sh 63cbf 722c8 63c35 77dcb   # callees FIRST — created in list order
 ```
 
 With the graphs made comparable, Ghidra produced mosura's partition block-for-block AND three gotos
@@ -36,7 +36,7 @@ of its own, and the entire real defect was one unported line: `PrintC::emitBlock
 loops over every top-level component and mosura emitted only the first.
 
 **Generalization:** before attributing any difference to the decompiler, check that the oracle had
-the same inputs — callee prototypes, calling conventions, reachable code. `scripts/ghidra-decompile-war2.sh`
+the same inputs — callee prototypes, calling conventions, reachable code. `scripts/ghidra-decompile-subject.sh`
 already warns that missing context makes Ghidra PRUNE LIVE CODE; the trap is that pruning is silent
 in the direction that makes Ghidra's output look *better structured*, so it reads as our bug.
 Companion instruments: `MOSURA_CFG=1` (mosura's partition) vs `DumpBlocks.java` (Ghidra's).

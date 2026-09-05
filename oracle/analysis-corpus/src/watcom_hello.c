@@ -6,7 +6,7 @@
  *     libpath <WATCOM>/lib386 libpath <WATCOM>/lib386/dos
  * The resulting DOS/4GW-bound LE embeds the run-time banner
  *   "WATCOM C/C++32 Run-Time system. (c) Copyright by WATCOM International Corp. 1988-1994"
- * The toolchain (warcraft2-re tmp/watcom-experiments/watcom_10.0a) is not committed;
+ * The toolchain (the RE tracker tmp/watcom-experiments/watcom_10.0a) is not committed;
  * the built .exe is (like the other corpus binaries) for a stable second-oracle fixture. */
 int add(int a, int b) { return a + b; }
 int main(void) { int s = 0, i; for (i = 0; i < 5; i++) s = add(s, i); return s; }

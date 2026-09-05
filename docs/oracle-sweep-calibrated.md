@@ -40,7 +40,7 @@ the `wc2src-reconcile` ledger. Two fixes make the class impossible rather than m
 
 ## 2. Method
 
-`war2_oracle_sweep` over all **2,803 `kind=user`** functions of the `3eff9a8` emit: each
+`oracle_sweep` over all **2,803 `kind=user`** functions of the `3eff9a8` emit: each
 function's bytes as a standalone fixture, Ghidra's C beside mosura's pure-pipeline C, scored with
 `ccompare::similarity`. **2,721 scored, 82 ORACLE_FAIL, mean score 0.9421, 821 byte-identical.**
 

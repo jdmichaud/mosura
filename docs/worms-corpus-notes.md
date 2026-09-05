@@ -1,7 +1,7 @@
 # Worms (Team17, 1995) — a standalone-LE corpus entry
 
 What the disc holds, what mosura does with it, and how the executables relate. Added because it is
-the first real binary exercising the **standalone** DOS/4GW LE dispatch — the branch WAR2 and
+the first real binary exercising the **standalone** DOS/4GW LE dispatch — the branch the subject and
 Descent do *not* take.
 
 Media: a mixed-mode CD (`CDWORMS.bin` + `.cue`), track 1 `MODE1/2352` data (44417 sectors), tracks
@@ -30,7 +30,7 @@ Media: a mixed-mode CD (`CDWORMS.bin` + `.cue`), track 1 `MODE1/2352` data (4441
 No loader, compiler spec or FID column had to be added. Two things are worth drawing out:
 
 **FID coverage here is the best of any game in the corpus** — 123 of 869 functions in the game
-itself (14%), against WAR2's 130 of 3023 (4%) and Descent's 43 of 1973 (2%). Same reason in each
+itself (14%), against the subject's 130 of 3023 (4%) and Descent's 43 of 1973 (2%). Same reason in each
 case: Worms is Watcom-built and the Watcom columns are the best-populated ones we have.
 
 **`DOS4GW.EXE` is identified by the 16-bit Microsoft marker added for Flashback** — Rational
@@ -49,7 +49,7 @@ That distinction picks the code path:
 | shape | `e_lfanew` | default dispatch | example |
 | --- | --- | --- | --- |
 | standalone | valid, → `LE` | **straight to `load_le`** — 32-bit view, no flag needed | Worms |
-| bound | invalid on purpose | the 16-bit MZ stub, Ghidra-parity; 32-bit view is opt-in | WAR2, Descent |
+| bound | invalid on purpose | the 16-bit MZ stub, Ghidra-parity; 32-bit view is opt-in | the subject, Descent |
 
 The standalone branch existed in `load_container` from the start but had **no real-binary
 coverage**, and the synthetic gates only exercised the scan (bound) path. Worms is the binary that

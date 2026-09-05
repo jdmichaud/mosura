@@ -42,15 +42,15 @@ lives inside the C libraries we ingest — 409 mangled names such as `@string@co
 
 ## What this bought on a real target: nothing, and that is worth stating
 
-WAR2.EXE named **121 functions before and 121 after** (one name refined, `___FPEHandlerEnd_` ->
-`FPEHandlerEnd_`). The +50% of records changed nothing there because WAR2 links none of the added
+the subject binary named **121 functions before and 121 after** (one name refined, `___FPEHandlerEnd_` ->
+`FPEHandlerEnd_`). The +50% of records changed nothing there because the subject links none of the added
 libraries — it has its own renderer and does no library float work.
 
 That is not an argument against the change. It is the difference between *coverage* and *this
 binary*: the gap was real for any program that does use `sqrt`, BGI graphics, or the `-3s` ABI,
 and none of those programs could be identified before.
 
-It also pointed the right way. The WAR2 misses were **not** a library-coverage problem, which is
+It also pointed the right way. The subject misses were **not** a library-coverage problem, which is
 what the audit was chasing — they were a loader problem, and the section below records what
 actually closed them.
 
@@ -116,7 +116,7 @@ Still not ingested, deliberately: `OBSOLETE.LIB` and the C++/Windows framework s
 `/usr/share/sdcc/lib/z80/z80.lib` is the only library the z80 target ships. This column is
 complete by construction.
 
-## How to compare against warcraft2-re's list (and how NOT to)
+## How to compare against the RE tracker's list (and how NOT to)
 
 ⚠️ **Compare by ADDRESS, not by name.** FID names the *implementation* using Watcom's internal
 symbol; the tracker names the *ANSI alias*, often at a thunk. A name-keyed diff therefore invents
@@ -143,7 +143,7 @@ that prompted this was never a disagreement: both are right about different addr
 
 ## What this audit did NOT explain — and what did
 
-The investigation started from 8 functions FID misses in WAR2 (`malloc_`, `free_`, `clock_`,
+The investigation started from 8 functions FID misses in the subject (`malloc_`, `free_`, `clock_`,
 `close_`, `delay_`, `heap_walk_static_`, `_asctime_static_`, `_localtime_static_`). **The missing
 math libraries do not explain them** — those names are symbols of `CLIB3R.LIB`, the library we
 *do* ingest, and they are not in the database anyway.
@@ -166,7 +166,7 @@ a different SLEIGH constructor with one fewer operand, and FID folds an operand 
 into the full hash.
 
 Applying every fixup Ghidra's `OmfLoader.processRelocations` applies — every location type, every
-target method, segment-relative as well as self-relative — moved WAR2 from **120 to 130 named
+target method, segment-relative as well as self-relative — moved the subject from **120 to 130 named
 functions, with nothing lost**, and hash parity against Ghidra unchanged at 308/320. `_asctime_`
 is among the ten recovered.
 

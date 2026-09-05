@@ -27,7 +27,7 @@ instrumentation (never by elimination).
   output OVERLAPS the INDIRECT's output**.
 
 ## The measurement that redirected the work
-Porting `indirect_source` faithfully (all 5 sites) was **completely inert on WAR2**: panics 25→25,
+Porting `indirect_source` faithfully (all 5 sites) was **completely inert on the subject**: panics 25→25,
 stale links 19444→19444, surviving-op count identical to the digit. Landed anyway at `914e087`
 (faithful, corpus byte-identical) — but it fixes nothing on its own.
 
@@ -43,7 +43,7 @@ coreaction.cc:5551) entirely. Overlap==0 falls through its COPY branch to
 INDIRECT is pointless. It also collapses when the `iop` is already dead (`if (!indop->isDead())` is
 simply skipped), so it repairs stranding **regardless of pass ordering**.
 
-Result: **panics 25→0** (WAR2 1286/1286), **stale guard links 19444→0** (731 fns→0), ops surviving
+Result: **panics 25→0** (the subject 1286/1286), **stale guard links 19444→0** (731 fns→0), ops surviving
 dead-code 104668→88160 (−15.8%, i.e. MORE dead code removed — the clear-side risk inverted).
 
 ## Gotchas worth keeping
@@ -58,5 +58,5 @@ dead-code 104668→88160 (−15.8%, i.e. MORE dead code removed — the clear-si
 - Post-hoc probing of destroyed ops is a trap: `op_destroy` clears the output, so an overlap computed
   after the fact reads as "no output". Measure inside the pipeline.
 
-Related: [[war2-band-root-cause]], [[war2-byte-exact-campaign]], [[faithful-type-of-wrong-ir]],
+Related: (subject-profile note `band-root-cause`), (subject-profile note `byte-exact-campaign`), [[faithful-type-of-wrong-ir]],
 [[gate-byte-identical-only]], [[numbers-stale-unless-sha-stamped]].

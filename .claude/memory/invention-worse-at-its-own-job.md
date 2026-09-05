@@ -18,7 +18,7 @@ correctly, and was already registered in the same pool.
 faithful rule that lands later. It survives on its origin story. Here the invention differed from
 the real rule by dropping the size mask (bare `wrapping_mul` at u64 vs Ghidra's
 `evaluateBinary` = `(in1*in2) & calc_mask(sizeout)`), so it emitted a 1-byte constant holding
-`0xfe01` — an IR invariant violation in 136 of 1303 WAR2 functions.
+`0xfe01` — an IR invariant violation in 136 of 1303 the subject functions.
 
 **How to apply:** when retiring an adaptation, (a) look for a faithful rule that already covers it
 before writing any replacement — the fix is often a pure DELETION, and patching the invention

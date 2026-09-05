@@ -11,17 +11,17 @@ metadata:
 Moved out of MEMORY.md 2026-08-06 (the index is a hook list; this is its detail). Every number
 here is STALE unless @sha==HEAD — see [[numbers-stale-unless-sha-stamped]].
 
-## Live status — `master` @ `8b528d6` (2026-08-10), WAR2 perf wave landed, suite FULLY green
+## Live status — `master` @ `8b528d6` (2026-08-10), the subject perf wave landed, suite FULLY green
 
-Perf round 2 on WAR2 LANDED, 4 commits `c47130c`..`8b528d6`: dense `cover::OpPositions` +
+Perf round 2 on the subject LANDED, 4 commits `c47130c`..`8b528d6`: dense `cover::OpPositions` +
 in-tree FxHash + `merge_required` position-rebuild-on-mutation-only (`c47130c`), the
-`refresh_covers` one-block trim filter (`79b9843`), docs (`5e648a2`). WAR2 LE end-to-end
+`refresh_covers` one-block trim filter (`79b9843`), docs (`5e648a2`). the subject LE end-to-end
 94.4s → 50.4s under identical perf-record conditions (Decompiler Switch 69.6 → 25.6s),
 analysis output byte-identical at every step; `analysis_parity` 82.9s (handoff target was
 106.5s); corpus **0.9569, 58/60 unchanged**; clippy adds nothing (2 pre-existing warnings
 remain: thunk.rs `MAX_INSN_LEN`, a merge.rs test unused var). `8b528d6` regenerated all 85
 FID databases — the `979bf4b`/`16edaf6` hasher change had left `fid_database_drift` RED at
-HEAD (verified pre-existing by stash-rerun); WAR2 output unmoved by the regen. Workspace
+HEAD (verified pre-existing by stash-rerun); the subject output unmoved by the regen. Workspace
 suite 39/39 binaries green @`8b528d6`. Next measured perf leads: docs/perf-log.md top
 section (ReferenceManager::remove tombstones ~5.6%, sleigh decode ~11%).
 
@@ -30,10 +30,10 @@ section (ReferenceManager::remove tombstones ~5.6%, sleigh decode ~11%).
 **The FID identification arc LANDED on master**, 4 commits `b678279`..`3889dfa`, T1 green on the
 master worktree (549 lib tests, clippy 0, corpus avg **0.9569, 58/60**).
 
-- `b678279` — ported Ghidra's `OmfLoader.processRelocations`: **WAR2 120 → 130 named**, nothing
+- `b678279` — ported Ghidra's `OmfLoader.processRelocations`: **the subject 120 → 130 named**, nothing
   lost; hash parity vs Ghidra unchanged **308/320**. All 85 databases regenerated. See
   [[unlinked-zero-field-changes-the-decode]].
-- `fba99de` — Watcom recall gate from a self-compiled probe (**no WAR2**): 38 names, red on the
+- `fba99de` — Watcom recall gate from a self-compiled probe (**no the subject**): 38 names, red on the
   pre-fix databases. See [[self-referential-gates-prove-nothing]].
 - `c676964` — Borland gate (small + large models, precision scored against the LINKER MAP) which
   immediately caught a 16-bit regression in `b678279`. See [[synthetic-layout-needs-range-guards]].
@@ -66,7 +66,7 @@ deficit 5 fns/10 calls → **1 fn/4 calls with the EMITTER layer at 0** (0007913
 recovery gap) · 0 functions lose a call · COMPILE_FAIL 102 → 95 · corpus 0.9534/58 unchanged ·
 suite 496/0 · clippy 0. ⚠️ **byte-clean UNMOVED at 15 with an identical member set** — no multi-block
 function became byte-exact, so that milestone is still open. Next: the call-site-vs-callee prototype
-disagreement (task #5 follow-on 1, blast radius = every WAR2 call).
+disagreement (task #5 follow-on 1, blast radius = every the subject call).
 
 **Wave 1 of the retirement track is underway on `heritage-spacebase-land`:** A3 (hardcoded RSP →
 cspec `<stackpointer>`) LANDED `9439fcf` — full battery green, and the placeholder subsystem went
@@ -79,7 +79,7 @@ the heritage core. Next: G1 the alias clone-probe, then F1.
 
 Separate lane from the decompiler status above; do not conflate the numbers.
 
-**WAR2 function discovery: 3018 functions; 2108 of the tracker's 2120 = 99.4%; 12 missing; 3 entries
+**the subject function discovery: 3018 functions; 2108 of the tracker's 2120 = 99.4%; 12 missing; 3 entries
 inside a tracker body (unchanged, the known secondary entries).** Was 2900 / 2078 / 42 at `556cdb3`.
 The jump is `be85c85` — the above-function guard vetoed on ADJACENCY where Ghidra tests
 FALL-THROUGH, so a prologue after a `pop…pop; ret` was refused. Gated locally at `4665c2b`
@@ -92,8 +92,8 @@ shape). Corroborates they are FUNCTIONS; says nothing about boundary correctness
 
 ⭐ **The biggest open gap: a THIRD prologue family — callee-saves with NO frame setup**
 (`56 57 83 ec 10`), 7 of the remaining 12. It is `wcc386`'s **default**, since `-of+` is what turns
-the frame pointer ON — so it is missing from every default-built Watcom binary, not just WAR2.
-Precision is the whole difficulty and is unmeasurable on WAR2; needs a self-compiled fixture.
+the frame pointer ON — so it is missing from every default-built Watcom binary, not just the subject.
+Precision is the whole difficulty and is unmeasurable on the subject; needs a self-compiled fixture.
 
 Compiler-version axis **CLOSED** across 9.01 → 10.0a → 10.6 → 11.0 → OW2: no release changes the
 entry shape. Floppy-set installs (7.0/8.5a/9.01/9.5b) work via `INSTALL.EXE` under dosemu — recipe
@@ -102,12 +102,12 @@ and its three traps in `docs/watcom-codegen-fingerprint.md`; needs `~/.dosemurc`
 
 Gauge = `cargo test --test decompile_corpus -- --nocapture`. `cargo xtask baseline` REGENERATES
 goldens (leaves 15 untracked x86_64 disasm goldens — don't commit). Gauge inputs live in
-`war2-survey/`, NEVER a session scratchpad: Ghidra per-function sweep `ghidra-all.txt` (1286 fns,
+`<subject-survey>/`, NEVER a session scratchpad: Ghidra per-function sweep `ghidra-all.txt` (1286 fns,
 not yet extended to the 17 new); durable emission bases `src.landed-c0ac350` (post-land, diff
 everything against this) and `src.stageB-08ca850` (pre-land). analyzeHeadless oracle at
 /data/tools/ghidra_12.0.3_PUBLIC/build/dist/ghidra_12.0.3_DEV/support/; native ow2 at
 ~/tools/open-watcom/binl.
 
 **Open:** `FUN_00077dcb` has not recovered its Stage-B-lost call (re-check first in wave 1) · 467 of
-1303 WAR2 functions changed their C at the land with zero call movement — documented in
-docs/war2-function-status.md so it is not misattributed later.
+1303 the subject functions changed their C at the land with zero call movement — documented in
+<subject-profile>/notes/function-status.md so it is not misattributed later.

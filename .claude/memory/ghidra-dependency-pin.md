@@ -32,14 +32,14 @@ Full doc: `docs/dependencies.md` (the manifest, BUILD/TEST tier). Shared infra (
 **Dependency-hardening line:** #15 manifest (done) → #4 pin `6bc227d` (done) → **#5 CI
 clean-clone split ✅ `1e8e986`**: `scripts/ci-clean-clone.sh` (fetch pinned Ghidra → full suite
 with NO oracle tools; `--hermetic` hides local oracle/user-binaries with restore-trap to prove
-it locally; validated green — ir_parity/decompile_corpus/le_war2/pe_compiler_opinion all
+it locally; validated green — ir_parity/decompile_corpus/le_subjects/pe_compiler_opinion all
 skip-if-absent) + `.github/workflows/ci.yml` (thin, portable). Audited: no test shells to a
 compiler/analyzeHeadless at test time → **#6 MOSURA_*_EXE vars ✅ `b0d298b`+`9b9dd7e`**:
-`paths.rs::{war2_exe,cnv_exe,comcom32_exe}` (env override, `$HOME`-relative default); adopted in
+`paths.rs::{cnv_exe,comcom32_exe}` (env override, `$HOME`-relative default); adopted in
 all tests + capture-analysis.sh + ci-clean-clone.sh; docs flipped to implemented; ZERO
 `/home/jd` literals remain in src/tests/scripts. `9b9dd7e`: `ci-clean-clone.sh --hermetic` now
 points MOSURA_*_EXE at `build/hermetic-absent/*` (user's $HOME files NEVER moved; only in-repo
 oracle tools still move-aside). Part-(a) audit: only beyond-Ghidra datum is the
 watcall cspec (specs/, vendored); noreturn lists are Ghidra data vendored as `const` — nothing
 else to vendor. **paths.rs is SHARED infra (decompiler track) — my change is additive-only.**
-See [[war2-dos4gw-le]].
+See (subject-profile note `dos4gw-le`).

@@ -21,15 +21,15 @@ processor tree, the same way `specs/` is appended for mosura-authored compiler s
 ## Why the Watcom entry exists
 
 Ghidra ships **no Watcom compiler spec**, so `patternconstraints.xml` has no `watcom` node and a
-strictly faithful port contributes exactly zero on a Watcom binary. Ghidra reaches WAR2's
-prologues at all only because auto-detect labels the warcraft2-re ELF wrapper `gcc`; mosura's
+strictly faithful port contributes exactly zero on a Watcom binary. Ghidra reaches the subject's
+prologues at all only because auto-detect labels the the RE tracker ELF wrapper `gcc`; mosura's
 loader correctly reports `watcom`.
 
 ## Oracle
 
 **Not Ghidra.** The pattern contents are validated against
 
-- the warcraft2-re expert function tracker (`analysis/decomp-tracker.csv`, 2120 hand-verified
+- the the RE tracker expert function tracker (`analysis/decomp-tracker.csv`, 2120 hand-verified
   functions), and
 - the self-compiled ground-truth program `fnpattern.watcom-x86-32` (`oracle/ground-truth/`),
   whose truth comes from the Open Watcom build, gated by

@@ -32,7 +32,7 @@ the per-file lines all read `N/N reproduced` — nothing failed, there was simpl
 panic. If those appear, fix the environment, don't chase the code. Setting `GHIDRA_SRC` makes it
 pass immediately.
 
-✅ **WAR2 measurements are NOT affected** — `x86.sla` is in the vendored set, and an isolated
+✅ **the subject measurements are NOT affected** — `x86.sla` is in the vendored set, and an isolated
 worktree at `0acd3a0` reproduced the main worktree's `3018 / 2108 / 12 / 3` and `899/900` exactly.
 The fallback only costs the multi-architecture golden test.
 

@@ -60,7 +60,7 @@ refinement; **basic function listing does not depend on them.**
   work) → then **retro platforms** (Amiga Hunk, Sega Genesis ROM) as bespoke loaders.
 - **Z80:** start with **CP/M `.COM`** (simplest flat loader — load image at `0x100`, entry `0x100`)
   → then **retro platforms** (ZX Spectrum `.sna`/`.z80`/`.tap`, MSX ROM). Each retro format gets
-  its own loader + a Ghidra-setup note (processor + base must be set manually, as for war2).
+  its own loader + a Ghidra-setup note (processor + base must be set manually, as for the subject).
 
 ## Current scope
 

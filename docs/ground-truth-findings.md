@@ -9,7 +9,7 @@ instructions. Numbers from the 2026-08-23 run: host gcc 14, `-O2`, 20 programs, 
 ## What the instrument removes, and what it leaves
 
 With the compiler held fixed, the score measures the decompiler alone, and the class profile is
-WAR2's: selection 23 %, extra 21 %, missing 16 %, operand-form 13 %, regalloc 10 %. Three
+the subject's: selection 23 %, extra 21 %, missing 16 %, operand-form 13 %, regalloc 10 %. Three
 instrument artifacts were found and removed before reading anything (each would have looked like
 a decompiler defect): unprototyped callee declarations (gcc zeroes `EAX` before every
 unprototyped call — the first "extra `XOR R,R`" mass, 51 rows, was this), `extern long
@@ -18,20 +18,20 @@ callee's recovered signature (now re-declared at the call site's arity, so the b
 defect's true cost instead of the fallback's). Two corpus-style artifacts remain and are excluded
 from the reading: the programs use `volatile` locals to defeat gcc's folding (a decompiler cannot
 know `volatile`; `tables/_start` reloads `[RSP+x]` where we pass constants), and every `_start`
-renders the `syscall` instruction as a call (15 missing `SYSCALL` rows / 9 functions — WAR2's
+renders the `syscall` instruction as a call (15 missing `SYSCALL` rows / 9 functions — the subject's
 `swi`/`int 21h` is the same class).
 
 ## Mechanisms, read against source
 
-| # | mechanism | source | our C | bytes | reach here | WAR2 |
+| # | mechanism | source | our C | bytes | reach here | the subject |
 |---|---|---|---|---|---|---|
-| 1 | **callee-clobber model.** gcc `-fipa-ra` keeps a caller's value in a register it *knows* the callee doesn't clobber; the convention says every call kills it. | `sum_to`: `for (i…) acc += square(i);` — `i` lives in `EDX` across the call | `while ((int4)uVar1 != (int4)extraout_RDX)` — the counter comes back as a call-produced value, the increment is lost: **wrong code** | the loop is gone; every caller of a small leaf is affected | `cube`, `sum_to`, `tables/_start`, … (the `extraout_*` reads) | the survey recovers per-callee `modify` lists for Watcom and it is what makes WAR2's calls come out right; this says callee-clobber recovery belongs in the decompiler (P2), not in the survey |
-| 2 | **return width over-widening.** The recovered return is the register's full width. | `static int l1(int x) { return l2(x) - 9; }` | `int8 FUN_…(void)` | `CDQE` after every result: 12 rows / 8 functions; `MOVSXD` at call sites 9 / 7 | all of `deepchain`, `arith` | WAR2's `return-width` family (EAX vs AL), already an axis there — the same defect one level up |
+| 1 | **callee-clobber model.** gcc `-fipa-ra` keeps a caller's value in a register it *knows* the callee doesn't clobber; the convention says every call kills it. | `sum_to`: `for (i…) acc += square(i);` — `i` lives in `EDX` across the call | `while ((int4)uVar1 != (int4)extraout_RDX)` — the counter comes back as a call-produced value, the increment is lost: **wrong code** | the loop is gone; every caller of a small leaf is affected | `cube`, `sum_to`, `tables/_start`, … (the `extraout_*` reads) | the survey recovers per-callee `modify` lists for Watcom and it is what makes the subject's calls come out right; this says callee-clobber recovery belongs in the decompiler (P2), not in the survey |
+| 2 | **return width over-widening.** The recovered return is the register's full width. | `static int l1(int x) { return l2(x) - 9; }` | `int8 FUN_…(void)` | `CDQE` after every result: 12 rows / 8 functions; `MOVSXD` at call sites 9 / 7 | all of `deepchain`, `arith` | the subject's `return-width` family (EAX vs AL), already an axis there — the same defect one level up |
 | 3 | **whole-TU facts lost by per-function recompilation.** The originals are `static` and gcc elides the ABI stack re-alignment around their calls; our one-function-per-TU makes every function external. | `static … l1` | `FUN_…` (external) | `SUB/ADD RSP,8`: 21 rows / 9 functions; `PUSH/POP RBX` | `deepchain`, every small caller | a limit of the METHOD, not the decompiler: Watcom's TU-level effects (`-oe` inlining of statics, pooling order) are the P4 "TU grouping" question; per-function recompilation cannot reach them |
-| 4 | **signedness inference.** Bit operations on a parameter make it `uint`. | `classify(int x, int y)`: `y \| 256` | `uint4 param_2`: `param_2 \| 0x100` | `OR AH,1` (int) vs `OR EAX,0x100` (unsigned) | `classify` | WAR2's typing rows (operand-form / selection) |
-| 5 | **argument arity at call sites.** Leftover registers read as arguments, or a parameter the callee never reads. | `dense(a, c)` | `func_0x…(7, 5, extraout_RDX, xVar1)` | extra argument moves; with mechanism 1 it is the same root | 16 of 70 functions had a call site disagreeing with the callee's signature | WAR2's `extra`/`missing` interface mass (P2) |
+| 4 | **signedness inference.** Bit operations on a parameter make it `uint`. | `classify(int x, int y)`: `y \| 256` | `uint4 param_2`: `param_2 \| 0x100` | `OR AH,1` (int) vs `OR EAX,0x100` (unsigned) | `classify` | the subject's typing rows (operand-form / selection) |
+| 5 | **argument arity at call sites.** Leftover registers read as arguments, or a parameter the callee never reads. | `dense(a, c)` | `func_0x…(7, 5, extraout_RDX, xVar1)` | extra argument moves; with mechanism 1 it is the same root | 16 of 70 functions had a call site disagreeing with the callee's signature | the subject's `extra`/`missing` interface mass (P2) |
 | 6 | **return-type disagreement.** A callee recovered as `void` whose caller uses its value. | `is_even` ↔ `is_odd` | `void FUN_…` vs `iVar = func_0x…()` | return setup missing | `recursion` | P2 |
-| 7 | **constant propagation past memory the compiler kept.** (corpus artifact: `volatile`) | `volatile int a = 7` | `func(7, …)` | missing stores / reloads | `tables/_start` and all `_start`s | real only for WAR2's volatile globals (sb95: five) |
+| 7 | **constant propagation past memory the compiler kept.** (corpus artifact: `volatile`) | `volatile int a = 7` | `func(7, …)` | missing stores / reloads | `tables/_start` and all `_start`s | real only for the subject's volatile globals (sb95: five) |
 
 ## What this says
 
@@ -40,14 +40,14 @@ renders the `syscall` instruction as a call (15 missing `SYSCALL` rows / 9 funct
    class, and a correctness bug rather than a cosmetic one". On this corpus it is not cosmetic:
    `sum_to` is wrong code.
 2. Mechanism 1 is the decisive one for gcc-built programs and it has a known answer in this
-   repo: the WAR2 survey's recovered `modify` lists. Moving callee-clobber recovery into the
+   repo: the subject survey's recovered `modify` lists. Moving callee-clobber recovery into the
    decompiler (decompile callees first, record the registers they actually write, use that set
    at the call site instead of the convention's `killedbycall`) fixes 1 and most of 5 at once,
    for both gcc and Watcom — and is the first thing this branch should build, because the
    instrument can then measure it against source immediately.
 3. Mechanism 3 bounds the method: a per-function recompile can never reproduce TU-level
-   decisions. For WAR2 that is a ceiling to *name* (how many functions show it), not to fix.
-4. The corpus must grow toward WAR2's loss band (20–200-instruction functions, structs, globals,
+   decisions. For the subject that is a ceiling to *name* (how many functions show it), not to fix.
+4. The corpus must grow toward the subject's loss band (20–200-instruction functions, structs, globals,
    compare ladders, strings, no `volatile`) before its WGSS means anything in absolute terms; at
    937 instructions it is a mechanism finder, not a score.
 
@@ -56,7 +56,7 @@ renders the `syscall` instruction as a call (15 missing `SYSCALL` rows / 9 funct
 - Callee-clobber recovery as a decompiler feature (mechanism 1 + 5), measured here first.
 - Return-width recovery from the callers' reads (mechanism 2).
 - Two or three era-style programs (no `volatile`, no `_start` shim in the scored set) so the
-  size mix matches WAR2's; score `_start`/shim functions separately.
+  size mix matches the subject's; score `_start`/shim functions separately.
 
 ## Update (2026-08-23): the functional oracle, and the first transfer test
 
@@ -83,10 +83,10 @@ Control corpus: `cube` and `sum_to` regain their parameters (`return iVar1 * par
 counter back in the loop); no function's functional verdict changed (the two are still FAIL for
 other reasons), and similarity fell slightly because gcc, recompiling our single-function TU,
 cannot know `square`'s clobbers and must now save `R12/RBP/RBX` around the call — mechanism 3.
-**WAR2 zc34 vs zc33: byte-identical, 0 movers** — Watcom's second return register was never
-gated in practice. A correctness fix at zero WAR2 cost; nothing to land on master from it yet.
+**the subject zc34 vs zc33: byte-identical, 0 movers** — Watcom's second return register was never
+gated in practice. A correctness fix at zero the subject cost; nothing to land on master from it yet.
 
-**Where this leaves the experiment.** Two things it has that WAR2 does not: a source to read
+**Where this leaves the experiment.** Two things it has that the subject does not: a source to read
 each divergence against, and a yes/no correctness oracle. Its list is now ten wrong programs,
 each a decompiler bug with the source beside it. Its limits are also clear: gcc `-O2`'s
 interprocedural optimizations (`-fipa-ra`, static-call alignment) cap what per-function
@@ -103,17 +103,17 @@ gate. Result: **19 PASS / 1 FAIL** (`varargs`). What each one was:
 |---|---|---|---|
 | `arith` (`sum_to`), `recursion` (`fib`) | mis-port | `Cover::rebuild` (cover.cc:477) extends a Varnode's cover through every consumer whose output is IMPLIED — the expression is evaluated at its consumer. mosura's `checkImpliedCover` inflate arm and the merge tests (`merge_copy`/`adjacent`/`same_storage`, `process_copy_trims`) compared PLAIN covers, so a phi input defined before a call whose argument was an implied expression of the phi's own value merged into the phi: `uVar2 = uVar2 - 2; fib(uVar2 - 1)`. | `all_covers_extended(f, explicit)` after `mark_explicit`; `check_implied_cover` tests the extended cover. |
 | `recursion`, `arith64`, `irreducible` | harness artifact | the harness (`-Dstatic=`) was built with gcc's `-fipa-ra`: `_start` kept `fact`'s result in `rdx` across a call to ITS `fib`, which never touches `rdx`; our interposed `fib` (correct C, different allocation) clobbers it. | harness compiled `-fno-ipa-ra`. |
-| `structval` | mosura-only (WAR2 heuristic misapplied) | the self-evidence prototype override in `analysis::decompiler` (a straight-line body that writes a convention-`<killedbycall>`/`<unaffected>` register replaces `proto_model.input/output` with the body's read ORDER and first-read WIDTHS) and the custom register-parameter append in `recover_input_params`. Both model Watcom's `#pragma aux` — a function declaring its own convention. Under SysV the ABI is fixed: `mk`'s parameters came out RSI-before-EDI, `dot`'s 8-byte inputs matched no 4-byte trial and printed as uninitialized locals. | `ProtoModel::custom_conventions` (`lang::per_function_conventions`: `watcom`, `highc`) gates both. WAR2 path unchanged. |
+| `structval` | mosura-only (the subject heuristic misapplied) | the self-evidence prototype override in `analysis::decompiler` (a straight-line body that writes a convention-`<killedbycall>`/`<unaffected>` register replaces `proto_model.input/output` with the body's read ORDER and first-read WIDTHS) and the custom register-parameter append in `recover_input_params`. Both model Watcom's `#pragma aux` — a function declaring its own convention. Under SysV the ABI is fixed: `mk`'s parameters came out RSI-before-EDI, `dot`'s 8-byte inputs matched no 4-byte trial and printed as uninitialized locals. | `ProtoModel::custom_conventions` (`lang::per_function_conventions`: `watcom`, `highc`) gates both. the subject path unchanged. |
 | `floats` | harness artifact | Ghidra's `TypeFloat::printNameBase` is `f` at every width; the harness typed `fRam0000000000402000` (8 bytes, 0.5) as `float` and read its low half as `0.0f`. | width-aware: `float4`/`float8`/`float10` (x87 literals kept as image bytes). |
 | `ptrarith` | mis-port | `PrintC::pushConstant`'s TYPE_PTR arm falls through to the "Default printing" branch, which prints a pointer-typed constant WITH its type as a cast — `(int4 *)0x403040`. Without it the PTRADD arm's `base + index` was integer arithmetic: `0x403040 + n` for `grid + n`. | `render_var` prints `(T)0x…` for `Datatype::Pointer`; `Callind` keeps its own `(code *)` only for an untyped target (Ghidra's `pushPtrCodeConstant` fall-through). |
 | `strdata` (`checksum`) | mis-port | `PrintC::checkArrayDeref` takes the subscript/member form only when the address Varnode is IMPLIED; an explicit address is a named variable and prints `*name`. `render_mem` re-rendered the explicit PTRADD: `param_1 = param_1 + 1; uVar1 = param_1[1];`. | `render_mem` gated on `!is_explicit(addr)`. |
 | `strdata` (`slen`, `total`) | mosura-only | `explicit_trailing` had an arm "PTRADD/PTRSUB are implied even with multiple uses". `baseExplicit` (coreaction.cc:3007) has no such exemption — it only lifts the reference LIMIT for a PTRSUB of the spacebase — and `ActionMarkImplied::checkImpliedCover` still decides. `slen`'s address `param_1 + iVar3` is read at the loop's CBRANCH after the back-edge COPY redefines `iVar3`; Ghidra names it `pcVar1 = param_1 + iVar3;`, the shortcut read the incremented index. | arm retired in `explicit_trailing`/`is_mark_candidate`/`is_core_explicit`; `max_implied_ref(f, v)` carries the spacebase-PTRSUB lift. |
 | `fnptr` | harness artifact | an address-of reference (`ActionConstantPtr`'s `PTRSUB(#spacebase, #addr)`, printed `&xRam…`) has no Varnode at the address, so the TU declared it at the default width 8 and `&xRam402fe0 + (which & 3) * 8` strode by 64 (SIGSEGV). | the per-TU globals map records PTRSUB references at the pointee's width (`undefined *` → `xunknown1`). |
-| `varargs` | **unported subsystem → ported** | Ghidra's `LoadGuard` / `discoverIndexedStackPointers` / `ValueSetSolver` (heritage.cc:700-1200, 1563-1600; rangeutil.cc:1503-2605, plus `CircleRange::pushForward*`): a LOAD through a computed stack pointer guards the range it may read (a COPY with `setAddrForce` before the LOAD), which is what keeps the register-save-area stores alive. mosura had none of it (Task #19), so `vsum`'s six saves were dead code. | ported in bb08e77 (`valueset.rs`, heritage.rs LoadGuard section, `RuleIndirectCollapse` arm, `MapState::addGuard`). `vsum` now prints Ghidra's shape exactly — six parameters, the five saves, the indexed reads. The verdict stays FAIL and is **beyond Ghidra**: the overflow-area walk is a phi of the INPUT STACK POINTER (`register0x00000020 = (BADSPACEBASE *)(… + 8)` in Ghidra's own C), the stack pointer as data, which no C expresses without `va_list`. On WAR2 the class is small (3 TUs with a variable-indexed stack array, ~71 with stack address arithmetic, of 3,023); zc38 measures it. |
+| `varargs` | **unported subsystem → ported** | Ghidra's `LoadGuard` / `discoverIndexedStackPointers` / `ValueSetSolver` (heritage.cc:700-1200, 1563-1600; rangeutil.cc:1503-2605, plus `CircleRange::pushForward*`): a LOAD through a computed stack pointer guards the range it may read (a COPY with `setAddrForce` before the LOAD), which is what keeps the register-save-area stores alive. mosura had none of it (Task #19), so `vsum`'s six saves were dead code. | ported in bb08e77 (`valueset.rs`, heritage.rs LoadGuard section, `RuleIndirectCollapse` arm, `MapState::addGuard`). `vsum` now prints Ghidra's shape exactly — six parameters, the five saves, the indexed reads. The verdict stays FAIL and is **beyond Ghidra**: the overflow-area walk is a phi of the INPUT STACK POINTER (`register0x00000020 = (BADSPACEBASE *)(… + 8)` in Ghidra's own C), the stack pointer as data, which no C expresses without `va_list`. On the subject the class is small (3 TUs with a variable-indexed stack array, ~71 with stack address arithmetic, of 3,023); zc38 measures it. |
 
-**WAR2 transfer, measured.** The merge-cover fix alone (zc35 vs zc34): **767 EXACT (+2: 2d6f8,
+**the subject transfer, measured.** The merge-cover fix alone (zc35 vs zc34): **767 EXACT (+2: 2d6f8,
 3ef60)**, WGSS 0.4831 → 0.4820 (−138.5 weighted, 80 up / 77 down), one MISMATCH → COMPILE_FAIL.
-The downs are the same wrong-code class the control corpus exposed, now corrected on WAR2:
+The downs are the same wrong-code class the control corpus exposed, now corrected on the subject:
 FUN_0006b8f0 printed `param_1 = param_1 + 0xc; if (param_1 < param_1 + iVar1)` (the end
 pointer read the incremented base), FUN_0005bae4 `while (iVar1 = f(), iVar1 - (iVar1 + 0x7d) <
 0)` (the call result merged into the variable it is compared against). The wrong code compiled
@@ -125,7 +125,7 @@ the 32-bit target, so the emitter gained the explicit half of the int8-divide ar
 narrowed divide declares and assigns at int width). **zc36 vs zc33 (the master baseline): 767
 EXACT (+2), 3 flips all upward (2d6f8 SAME_SHAPE→EXACT, 3ef60 MISMATCH→EXACT, 46e68
 MISMATCH→SAME_SHAPE), 0 verdict regressions, WGSS 0.4831 → 0.4827 (−59.2 weighted, 89 up / 90
-down).** zc37 (the checkArrayDeref gate + PTRADD explicitness) is byte-identical to zc36 on WAR2.
+down).** zc37 (the checkArrayDeref gate + PTRADD explicitness) is byte-identical to zc36 on the subject.
 **zc38 (the LoadGuard port) vs zc37: +26.6 weighted (WGSS +0.0002), 0 flips, 15 up / 14 down**;
 the largest down (FUN_00058d54, −8) is another correction — the old C passed two spurious stack
 arguments to a two-register-argument callee (`func_0x00058c48(param_3, &xStack_14, param_3,
@@ -149,7 +149,7 @@ Ghidra and one a mis-port found on the way (b43ba63):
    `printf_` format string); the printer appends `...`, prints the PTRSUB's definition as
    `va_start(var, param_N)` and its uses as the variable. Each target's prelude defines
    `va_start` as the raw address of the first anonymous argument — Watcom `(char *)&last +
-   sizeof(last)` rounded (the original's `lea`), gcc `__builtin_next_arg(last)`. WAR2's
+   sizeof(last)` rounded (the original's `lea`), gcc `__builtin_next_arg(last)`. the subject's
    `sprintf_`/`printf_`/FUN_00050434 wrappers, which took the address of a positive-offset
    LOCAL (`&xStack0000000c`, wrong code), now read `va_start(pxStack_10, param_6);`.
 2. **`RangeList::upper_bound` mis-port** (space.rs): the probe was ordered by the derived
@@ -174,7 +174,7 @@ The corpus grew by seven era-style programs (`structs`, `strbuf`, `globals`, `la
 `linklist`, `bitops`, `fixed`: entity tables, byte strings, a global state machine, compare
 ladders, an intrusive list with a global head, bit manipulation, 16.16 fixed point; 20–80-insn
 functions). Six passed first time; `globals` failed, and its one FAIL carried four decompiler
-defects, every one also present on WAR2:
+defects, every one also present on the subject:
 
 1. **`Funcdata::opSetInput`'s constant rule** (funcdata_op.cc:108): a constant that already has a
    reader is CLONED before being wired into another op. mosura shared constant Varnodes across
@@ -187,11 +187,11 @@ defects, every one also present on WAR2:
    memory block, initialized or not; mosura's `is_loaded` only knew byte-backed blocks.
 4. **`Funcdata::opInsertAfter` an INDIRECT** (funcdata_op.cc:376) means after the op it is
    indirect for. The snip fix (eccdac4) had patched one caller; `Merge::trimOpOutput` was the
-   other — WAR2 FUN_0002cca0 (a list push) wrote the global head BEFORE the store that must read
+   other — the subject's FUN_0002cca0 (a list push) wrote the global head BEFORE the store that must read
    the old one, `iRam = iVar1; *(param_1 + 8) = iRam;`. The redirect now lives in
    `op_insert_after` itself.
 
-The constant-uniqueness fix then re-typed two WAR2 globals signed (as Ghidra does) and cost two
+The constant-uniqueness fix then re-typed two the subject globals signed (as Ghidra does) and cost two
 EXACT (zc42: FUN_00019344/000207b8, the 16-bit `iRam = (uint2)byte * 2` losing its cast). The
 sweep named the gap and two more ports followed: `PrintC::opIntZext/opIntSext` with
 `CastStrategyC::isExtensionCastImplied` (mosura printed every ZEXT bare), and
@@ -349,7 +349,7 @@ EDX is `param_1, param_2`). The 13 NOLINKs are unchanged (the callee-resolution 
 order); their TUs also gained regparm signatures (compgoto 1, dispatch 3, fnptr 1, globals 2,
 ladder 3, linklist 3, ptrarith 2, strbuf 4, strdata 2, structs 2, tables 2; floats and strloop 0)
 -- movement only, unmeasured. gt-arms alone: 27 programs, plain-32 PASS 13, arms-32 = plain-32
-in every program (4.0 s); the 64-bit baseline test alone: ok against master's baseline. WAR2:
+in every program (4.0 s); the 64-bit baseline test alone: ok against master's baseline. the subject:
 identity, 0 differing entries in recovered/ and raw/ (3,023 files each), corpus gates OK --
 Watcom's cspec has no `<resolveprototype>`, so every Watcom function keeps its default model and
 the call-side split reproduces the model every call had before.

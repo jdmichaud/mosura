@@ -14,7 +14,7 @@ metadata:
   perfectly, so drift is invisible.
 - `fid_database_drift` proves a database **reproduces from its libraries** — says nothing about
   whether it matches a program.
-- WAR2 was the only end-to-end evidence, and it is barred as a gate by the standing user rule
+- the subject was the only end-to-end evidence, and it is barred as a gate by the standing user rule
   (development guide / post-release validation only).
 
 That is exactly why [[unlinked-zero-field-changes-the-decode]] survived: every check was green.
@@ -38,4 +38,4 @@ source — its committed MSVC binary cannot be rebuilt without VC98, and editing
 binary/source correspondence. `setup-watcom-dosemu.sh` stages the dir holding WCC386 (`BINB`);
 `WLINK.EXE` is in the sibling `BIN`, and `system dos4g` resolves via `$WATCOM/binb/wlsystem.lnk`.
 
-Related: [[fid-port-track]], [[war2-pragmatism-over-faithfulness]], [[load-the-artifact-directly]].
+Related: [[fid-port-track]], (subject-profile note `pragmatism-over-faithfulness`), [[load-the-artifact-directly]].

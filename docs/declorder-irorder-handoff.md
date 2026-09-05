@@ -64,7 +64,7 @@ frozen) whose value is **inferred from the original's bytes**, never searched wi
    to convert and the 9 to be untouched or improved, never regressed) PLUS the full population
    of currently-EXACT functions with ≥2 movable register temps — compile all of them at probe
    scale, not a sample (the aggregation arm lost five EXACTs to a three-function sample). Then
-   one corpus round against zc27 with `scripts/war2-verdicts.sh`: the landing bar is zero
+   one corpus round against zc27 with `scripts/corpus-verdicts.sh`: the landing bar is zero
    verdict regressions and positive weighted WGSS. Pre-register the expected flips (≤3 EXACT)
    and the expected WGSS (the family and 47c6c sims, roughly +0.0004 insn-weighted) before the
    round; report the miss if it misses.
@@ -76,7 +76,7 @@ outcome. Report that as the result; the fitted search stays a ceiling, not a lev
 
 `held-patches/permute.py` (single-function permutation probe) and
 `held-patches/declorder_ceiling.py` (the batched ceiling census, corrected freeze regex). Point
-both at zc27. The probe-staging trick for the emitter side: `war2_survey … --only <va,…>` prints
+both at zc27. The probe-staging trick for the emitter side: `corpus_emit … --only <va,…>` prints
 the recovered TUs to stdout (no files in probe mode); cut each at its final `}` into a staging
 `recovered/` dir beside a copied `prelude.h` and run `recompile_check … --only` against the
 zc27 manifest.
@@ -126,7 +126,7 @@ and the blast radius (every call site whose original order already matches).
 
 - Pre-register each prediction in the results document before the measurement that tests it.
 - Separate compile caches per distinct compiler or distinct harness behaviour.
-- `scripts/war2-verdicts.sh <baseline> <candidate>` for every comparison; quote EXACT and WGSS
+- `scripts/corpus-verdicts.sh <baseline> <candidate>` for every comparison; quote EXACT and WGSS
   together (the comparison now prints the insn-weighted net and its WGSS delta).
 - dosemu is shared with other sessions on this machine; a survey emit is ~7 min, a cache-warm
   corpus round ~15 min — budget for contention.

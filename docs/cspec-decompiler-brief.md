@@ -22,7 +22,7 @@
 
 Validation (analysis side): `cspec` unit tests assert the cspec-loaded SysV input equals
 `fspec::sysv_input` (`RDI,RSI,RDX,RCX,R8,R9`), MS-x64 = `RCX,RDX,R8,R9`, and x86-16
-`default` = no register args (so a 16-bit binary invents nothing — comcom32/war2 stay
+`default` = no register args (so a 16-bit binary invents nothing — comcom32/the subject stay
 0-spurious).
 
 ## What is left (decompiler side — requires editing `decompile/`)

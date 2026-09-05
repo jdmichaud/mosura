@@ -60,7 +60,7 @@ They were one item, not two: `covers` had exactly one consumer in printc, the co
 that pass to Ghidra's slot **changed real output**, so this class is no longer "structurally exposed,
 not yet demonstrated" — it is demonstrated, with a named mechanism.
 
-WAR2 `FUN_000722c8`, the only one of 1286 functions to move (corpus stayed byte-identical). Before:
+the subject's `FUN_000722c8`, the only one of 1286 functions to move (corpus stayed byte-identical). Before:
 
 ```c
   pRam00000000000a8014 = (int4 *)pVar4;
@@ -85,7 +85,7 @@ enough; the marked op's own Varnode index was below `classified_upto` and looked
 
 Closed by moving the pass to `merge::ActionCopyMarker`, after `ActionMergeType` and before
 `ActionSetCasts`, with printc consuming `Funcdata::nonprinting` via `.expect()` and no recompute path
-left. Scans: 1286/1286 WAR2 functions emitted both sides, one file changed by one line, rendered
+left. Scans: 1286/1286 the subject functions emitted both sides, one file changed by one line, rendered
 call-expression count identical everywhere (5224); corpus byte-identical over all 62 fixtures.
 
 ## #8: measured, and the exposure is nil

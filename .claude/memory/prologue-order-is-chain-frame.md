@@ -1,6 +1,6 @@
 ---
 name: prologue-order-is-chain-frame
-description: "The WAR2 prologue order (save-then-frame vs frame-then-save) is Watcom's CHAIN_FRAME path in GenProlog, selected by -of/-of+ — our survey flags force the wrong one"
+description: "The subject prologue order (save-then-frame vs frame-then-save) is Watcom's CHAIN_FRAME path in GenProlog, selected by -of/-of+ — our survey flags force the wrong one"
 metadata:
   type: project
 ---
@@ -106,7 +106,7 @@ without `-of` these compilers address locals off ESP.
 **Only `-d2` produces the order, and it changes the body.** The two available flag settings give
 +3 (`-of+`) or -4 (no `-of`) — measured as M10/M11: 0 gained either way.
 
-**Independent corroboration.** warcraft2-re wrote hand-verified source for 980 functions of this
+**Independent corroboration.** the RE tracker wrote hand-verified source for 980 functions of this
 shape and matched NONE of them; 838 carry their own blocker label `cgflag:ecx-pre-frameptr-save`.
 Two projects, opposite directions, same wall.
 
@@ -119,7 +119,7 @@ that is mosura's to take, and it is decompiler work, not a flag.
 
 ## What this means for the survey
 
-`war2-survey/flags.py` picks `-of+` when it sees a frame setup in the first 8 bytes. **That
+`<subject-survey>/flags.py` picks `-of+` when it sees a frame setup in the first 8 bytes. **That
 inference is unsound**: a frame also appears from `Enter()` on the non-CHAIN path. For every
 function whose frame came that way we compile with `-of+`, take the CHAIN_FRAME branch, and
 guarantee a +3 mismatch. Fixing the flag inference is the real work — NOT rewriting the object
@@ -129,4 +129,4 @@ Next: find what actually forces `ROUTINE_WANTS_DEBUGGING`/BP-frame in the origin
 re-derive `flags.py`'s `-of` choice from evidence rather than from the presence of a frame.
 
 Related: [[plus3-is-lea-esp-prologue-order]] (the six-compiler A/B that ruled out a version
-difference), [[war2-byte-exact-campaign]].
+difference), (subject-profile note `byte-exact-campaign`).

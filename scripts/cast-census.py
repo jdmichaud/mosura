@@ -14,7 +14,7 @@ gone. "Same definition both sides" was carrying the whole claim — the DELTAS w
 were sound, the ABSOLUTES were never reproducible by anyone else, and subtracting one of them from a
 number this script prints would be comparing two different definitions and calling it a regression.
 This script's output is the canonical definition from `e517104` on; the anchor future deltas measure
-against is **9031** over the 1303-function WAR2 emit at that commit.
+against is **9031** over the 1303-function the subject emit at that commit.
 
 ⭐ AND THE GENERAL RULE THIS COST US, which applies to every gate, not just this one: AN INSTRUMENT
 MUST BE REPRODUCIBLE BY SOMEONE WHO WAS NOT THERE. A gate whose recipe lives only in the operator is

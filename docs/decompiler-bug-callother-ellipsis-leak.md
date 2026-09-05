@@ -1,12 +1,12 @@
 # Decompiler bug report: `CALLOTHER`/`SBORROW`/`POPCOUNT` leak the `NAME(...)` catch-all (FIXED)
 
-**Owner: decompiler track (`master`). Status: FIXED** (this commit). Surfaced by the WAR2
-recompilation-parity survey (docs/war2-function-status.md) as the top COMPILE_FAIL feeder:
+**Owner: decompiler track (`master`). Status: FIXED** (this commit). Surfaced by the subject
+recompilation-parity survey (<subject-profile>/notes/function-status.md) as the top COMPILE_FAIL feeder:
 `E1063 Missing operand` on an unrendered `...` operand.
 
 ## Symptom
 
-The emitted C for many WAR2 functions contained tokens like `CALLOTHER(...)`, `INT_SBORROW(...)`,
+The emitted C for many the subject functions contained tokens like `CALLOTHER(...)`, `INT_SBORROW(...)`,
 and `POPCOUNT(...)`. Watcom `wcc386` rejects the `...` as a missing operand:
 
 ```
@@ -60,7 +60,7 @@ pseudo-calls (`in`, `cpuid`, …) compile as C89 implicit-`int` functions (a war
   the pre-fix catch-all.
 - **Corpus**: byte-identical (0.9513/57) — the new arms fire only on ops that previously hit the
   catch-all, none of which appear in the x86-64 corpus.
-- **WAR2 re-measure**: `E1063 Missing operand` 113 → 4 (the 4 residual are `MULTIEQUAL`/`INDIRECT`
+- **the subject re-measure**: `E1063 Missing operand` 113 → 4 (the 4 residual are `MULTIEQUAL`/`INDIRECT`
   raw-marker leaks — a distinct upstream class, not CALLOTHER); COMPILE_FAIL 229 → 137 (**92
   functions now compile**), zero regressions.
 

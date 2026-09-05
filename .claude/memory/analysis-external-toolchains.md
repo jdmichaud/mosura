@@ -51,5 +51,5 @@ goldens/analysis/<name>.loaded.snapshot -deleteProject`. The snapshot header car
 
 Status (analysis-port, see `docs/analysis-tasklist.md`): **A3 COMPLETE** — all PE compiler
 branches golden-validated (Clang/Gcc-64/Gcc-32/VisualStudio/Borland). **A4 Stage 1 DONE** —
-Watcom 10.0–11.0 runtime-banner lineage measured. Relates: [[war2-issues-become-source-tests]],
+Watcom 10.0–11.0 runtime-banner lineage measured. Relates: (subject-profile note `issues-become-source-tests`),
 [[direction-analysis-port]].

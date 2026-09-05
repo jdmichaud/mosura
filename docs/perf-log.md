@@ -1,8 +1,8 @@
 # Performance log
 
-## WAR2 end-to-end (2026-08-10, round 2 of the handoff)
+## the subject end-to-end (2026-08-10, round 2 of the handoff)
 
-The whole-binary run (`over_decode ~/WAR2.EXE --le`), measured under identical conditions
+The whole-binary run (`over_decode ~/the subject binary --le`), measured under identical conditions
 (`perf record -e cpu-clock:u -F 299 --call-graph dwarf,4096`, `MOSURA_ANALYSIS_TRACE=1`
 per-analyzer sums), analysis output byte-identical at every row:
 

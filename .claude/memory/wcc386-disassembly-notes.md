@@ -6,7 +6,7 @@ metadata:
 ---
 
 **Groundwork for disassembling Watcom's own compiler, done 2026-08-11 while chasing where the
-WAR2 prologue swap comes from. mosura can now LOAD it; finding the prologue emitter is still open.**
+the subject prologue swap comes from. mosura can now LOAD it; finding the prologue emitter is still open.**
 
 ## Getting at the code
 

@@ -1,6 +1,6 @@
 ---
 name: absolute-vs-differential-wrongcode
-description: "⭐ 2026-07-29: a differential (before/after) gauge cannot see a defect present on BOTH sides. Measured against GHIDRA per-function, mosura drops calls in 92/1286 WAR2 functions (246 calls). ⚠️ The earlier '455 fns / 41%' figure was WRONG — an objdump linear sweep is a useless reference."
+description: "⭐ 2026-07-29: a differential (before/after) gauge cannot see a defect present on BOTH sides. Measured against GHIDRA per-function, mosura drops calls in 92/1286 the subject functions (246 calls). ⚠️ The earlier '455 fns / 41%' figure was WRONG — an objdump linear sweep is a useless reference."
 metadata: 
   node_type: memory
   type: project
@@ -17,8 +17,8 @@ failure has now cost this project three items in one week, all on the function-d
 
 | item | the differential said | the truth |
 | --- | --- | --- |
-| §1 "bodies over-extend" | 51 missing functions, all inside a mosura body, 0 in open space | the tracker anchors save-first entries mid-prologue; **50 were the same functions at their TRUE entry** ([[war2-tracker-anchors-mid-prologue]]) |
-| the no-return diagnosis | a drift that "explained the distribution" | `noreturn::analyze` never runs on WAR2 — **the mechanism could not fire at all** |
+| §1 "bodies over-extend" | 51 missing functions, all inside a mosura body, 0 in open space | the tracker anchors save-first entries mid-prologue; **50 were the same functions at their TRUE entry** ((subject-profile note `tracker-anchors-mid-prologue`)) |
+| the no-return diagnosis | a drift that "explained the distribution" | `noreturn::analyze` never runs on the subject — **the mechanism could not fire at all** |
 | §6 "7,322 extra instruction starts" | 104.4% of Ghidra's code coverage, i.e. we over-decode | measured absolutely: **A1 = 0**, nothing outside the LE object table's executable range. It was measuring **GHIDRA's under-decode** |
 
 **Every time the culprit was the differential or a derived summary — never the binary.** Three
@@ -44,9 +44,9 @@ A before/after scan (candidate vs baseline) can only see **incremental** loss. A
 on *both* sides is invisible to it, no matter how large. This is not a subtlety — it hid a
 92-function call-dropping class for the whole campaign.
 
-## The numbers (WAR2, 1286 functions, 2026-07-29)
+## The numbers (the subject, 1286 functions, 2026-07-29)
 Reference = **Ghidra's own per-function decompilation** of all 1286 (see
-[[war2-per-function-ghidra-oracle]]), which is the right absolute reference:
+(subject-profile note `per-function-ghidra-oracle`)), which is the right absolute reference:
 - GHIDRA emits **3909** calls · mosura emits **3705** (**94.8%**)
 - **mosura emits FEWER calls than Ghidra in 92 of 1286 functions — 246 calls missing**
 - worst specimens: `0003dd60` Ghidra 31 → mosura 0 · `0006af2c` 18 → 1 · `00051298` 12 → 2
@@ -90,9 +90,9 @@ prologue constant and the last branch is pruned.
 ## The rule
 Per [[goal-is-the-binary-not-ghidra]], the binary is the authority. For any "did we lose real code?"
 question, measure **absolutely** — emitted vs Ghidra's per-function output
-([[war2-per-function-ghidra-oracle]], `scripts/ghidra-decompile-war2.sh --all`) or vs hand-verified
+((subject-profile note `per-function-ghidra-oracle`), `scripts/ghidra-decompile-subject.sh --all`) or vs hand-verified
 disassembly — never emitted vs the last build. Keep the differential scan too: it is the right tool
 for ATTRIBUTION ("did this change cause it"), and useless for DETECTION.
 
-Related: [[war2-stackptr-wrong-code]], [[print-raw-has-no-dead-filter]],
+Related: (subject-profile note `stackptr-wrong-code`), [[print-raw-has-no-dead-filter]],
 [[measurement-determinism-first]], [[numbers-stale-unless-sha-stamped]].

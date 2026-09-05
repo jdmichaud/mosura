@@ -59,13 +59,13 @@ Session 2026-07-23 on `analysis-port` (worked the "unblocked/ready" tasks per us
   IDIV+CDQ rejects the unsigned `XOR;DIV` form every revision shares; classic's SAR never matches.
   Probe extended append-only, 4 `<rev>.{obj,code}` regenerated (each obj→code byte-identical).
   Robustness only (same classic→ow2 boundary as movzx) — division is just far more common in a real
-  binary; WAR2 is classic (SAR) so it does NOT fire there. Verified by me: git-isolated to
+  binary; the subject is classic (SAR) so it does NOT fire there. Verified by me: git-isolated to
   analysis-port, 8/8 codegen + 24/24 parity + clippy 0, CDQ=1/SAR=0(ow2) vs CDQ=0/SAR=1(classic) in
   committed bytes, `whole_program_matcher_never_wrongly_excludes` green. Next construct should be
-  war2-issues-become-source-tests-driven.
+  issues-become-source-tests-driven (subject-profile note).
 
 Recurring root cause across all blockers: an overnight disk cleanup keeps deleting EXTRACTED
 toolchains (Ghidra checkout, open-watcom, m68k-gcc driver, dosemu Watcom trees) while the source
 archives under `/data/tools` survive. The marker-fragments + vendored-ghidra + R2 work all move
 coverage toward being self-contained/reproducible against exactly this churn. See
-[[analysis-external-toolchains]], [[war2-issues-become-source-tests]].
+[[analysis-external-toolchains]], (subject-profile note `issues-become-source-tests`).

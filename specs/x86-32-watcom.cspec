@@ -37,7 +37,7 @@
           observed also pushes ECX when it uses it.
         * only EAX is left unpreserved, and EAX is the return register.
 
-      Corroborated independently by warcraft2-re/analysis/toolchain.md (~line 590): WAR2
+      Corroborated independently by the RE tracker/analysis/toolchain.md (~line 590): the subject
       functions save ECX in their prologues project-wide, implying a
       `#pragma aux DEFAULT … modify exact [eax]` build — everything preserved except EAX.
 

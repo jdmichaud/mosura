@@ -21,10 +21,10 @@ x86:LE:32:default / gcc         -> all four
 x86:LE:16:Real Mode / default   -> Search
 ```
 
-**Why:** on 2026-08-10 I concluded "the Function Start Search block never runs on WAR2 LE, so a
+**Why:** on 2026-08-10 I concluded "the Function Start Search block never runs on the subject LE, so a
 new invocation after it is inert" from Ghidra's
 `Processors/x86/data/patterns/patternconstraints.xml`, which lists only windows / borlandcpp /
-borlanddelphi / gcc for `x86:LE:32:default`. The block in fact runs on WAR2 — the Watcom pattern
+borlanddelphi / gcc for `x86:LE:32:default`. The block in fact runs on the subject — the Watcom pattern
 set is what took it from ~1303 to ~2900 functions. Same shape as the FID two-directory bug fixed at
 `3fd317e`: **the vendored Ghidra directory is never the whole search path.**
 

@@ -393,7 +393,7 @@ applied the far models sit in line with the near ones (303–377).
 ⚠️ **Do not narrow this back to "the encodings a call uses."** That is what it was, and it made
 *data* references keep a zero displacement — which changes the SLEIGH constructor, not just the
 value, so byte-identical code hashed differently in the library and in the linked program. It
-cost WAR2 ten CRT names while every internal check stayed green. See
+cost the subject ten CRT names while every internal check stayed green. See
 [`fid-library-coverage.md`](fid-library-coverage.md).
 
 #### Getting the libraries out of a Borland install set

@@ -2,7 +2,7 @@
 
 *2026-08-22, measured at zc33 (`0f38e00`). Every number below comes from one
 `recompile_check` run (`/data/be2/zc33b-rec.tsv` + `/data/be2/zc33-div.tsv`) and is
-reproducible with `scripts/war2-mechanism-census.py <rec.tsv> <div.tsv>`. The goal is
+reproducible with `scripts/corpus-mechanism-census.py <rec.tsv> <div.tsv>`. The goal is
 recompilation, not resemblance to Ghidra: the only score that counts is the insn-weighted
 similarity of the recompiled bytes (WGSS) and the EXACT count.*
 
@@ -202,7 +202,7 @@ per function) where the freedom is small, model-inverse where it is not.
 
 ## 7. Instruments (all in the tree)
 
-`scripts/war2-verdicts.sh` (census + movers, WGSS), `scripts/war2-mechanism-census.py`
-(this document's tables), `war2_oracle_sweep` + `scripts/war2-osweep-{rank,cmp}.py` (Ghidra
+`scripts/corpus-verdicts.sh` (census + movers, WGSS), `scripts/corpus-mechanism-census.py`
+(this document's tables), `oracle_sweep` + `scripts/osweep- (subject-profile note){rank,cmp}.py` (Ghidra
 divergence as a defect finder), `recompile_check --divergences` (the rows), the probe recipe
-in `war2-recompile-remeasure.md`, and the oracle recipe in the memory notes.
+in `corpus-round-runbook.md`, and the oracle recipe in the memory notes.

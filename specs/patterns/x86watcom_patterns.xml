@@ -4,20 +4,20 @@
 
   BEYOND-GHIDRA. Ghidra ships no Watcom compiler spec and therefore no Watcom pattern file;
   `Processors/x86/data/patterns/patternconstraints.xml` has entries for windows, borlandcpp,
-  borlanddelphi and gcc only. Its ORACLE is not Ghidra: it is the warcraft2-re expert function
+  borlanddelphi and gcc only. Its ORACLE is not Ghidra: it is the the RE tracker expert function
   tracker (analysis/decomp-tracker.csv, 2120 hand-verified functions) plus the self-compiled
   `fnpattern.watcom-x86-32` ground-truth program. The FORMAT and the engine that reads it are a
   faithful port (ghidra.util.bytesearch); only the contents of this file are mosura's.
 
   WHY IT EXISTS — the measured finding. Watcom emits a SAVE-FIRST prologue: a run of 1..5
-  register-save pushes BEFORE the frame setup, e.g. WAR2 0x16ed4 =
+  register-save pushes BEFORE the frame setup, e.g. the subject's 0x16ed4 =
 
       53 51 52 56 57   55 89 e5   83 ec 04
       push ebx/ecx/edx/esi/edi  push ebp; mov ebp,esp  sub esp,4
 
   Ghidra's x86gcc file has no pattern that starts at such a run; its `0x5589e583ec` anchors at the
   `55`, N bytes PAST the true entry. Measured over the tracker with mosura's own engine:
-  x86gcc_patterns.xml produces 1002 function-start addresses on WAR2 — 275 exactly on a tracker
+  x86gcc_patterns.xml produces 1002 function-start addresses on the subject — 275 exactly on a tracker
   entry and 662 INSIDE a tracker function body, every one of them 1-6 bytes in. (The same
   measurement rules out x86win_patterns.xml on the evidence rather than on the a-priori
   "Watcom is DOS-era" argument: 60 exact, 337 in-body of which 328 are deeper than 8 bytes,
@@ -54,7 +54,7 @@
        A run of 1..5 callee-save pushes IN WATCOM'S FIXED ORDER, then `push ebp; mov ebp,esp`.
        The match is marked at the FIRST PUSH, which is the true function entry.
 
-       THE ORDER IS RIGID — measured, not assumed. warcraft2-re's census of WAR2's 1317
+       THE ORDER IS RIGID — measured, not assumed. the RE tracker's census of the subject's 1317
        save-first functions finds the run is always a SUBSEQUENCE of
 
            ebx (0x53)   ecx (0x51)   edx (0x52)   esi (0x56)   edi (0x57)
@@ -407,7 +407,7 @@
 
   <!-- =========================================================================================
        (2) THE FRAME-FIRST FAMILY — a frame setup at offset 0, with the register saves (if any)
-       AFTER it. 239 of WAR2's 1556 framed functions, and the ONLY shape modern Open Watcom emits
+       AFTER it. 239 of the subject's 1556 framed functions, and the ONLY shape modern Open Watcom emits
        under `-of+`.
 
        THIS IS x86gcc_patterns.xml's OWN FRAME-FIRST SET, COMPLETED. `push ebp; mov ebp,esp` is
@@ -421,7 +421,7 @@
            x86gcc #5  0x5589e5 01010... 01010...  frame, then two register saves
            x86gcc #6  0x5589e58b 01...101         frame, then `mov r32,[ebp+disp8]`
 
-       and that omission is measurable: per the warcraft2-re census **81% of framed WAR2
+       and that omission is measurable: per the the RE tracker census **81% of framed the subject
        functions have no `sub esp`** (save-first 891 without / 426 with, frame-first 187 / 52), so
        a set that demands one cannot see most of them. Bare `55 89 e5` is only 24 bits of check
        and Ghidra never states it alone anywhere in its x86 set — every one of its frame-first
@@ -670,7 +670,7 @@
 
   <!-- =========================================================================================
        (5) THE STACK-PROBE FAMILY — functions compiled WITHOUT `-s`.
-       `-s` suppresses Watcom's stack-overflow probe. WAR2 was built with it; most binaries are
+       `-s` suppresses Watcom's stack-overflow probe. the subject was built with it; most binaries are
        NOT, because it is not the default. Without it wcc386 opens every framed function with
 
            68 <framesize:imm32>   e8 <rel32 to __CHK>
@@ -755,7 +755,7 @@
        default, `nfprologue.watcom-x86-32` contains three such functions reachable by nothing else,
        and the patterns recovered all three. The fixture gate was sound and vacuity-checked.
 
-       IT WAS STILL WRONG, and the corpus could not see it. Landed on WAR2 the family added 53
+       IT WAS STILL WRONG, and the corpus could not see it. Landed on the subject the family added 53
        functions, recovered NONE of the entries it was written for, and moved `MATCHED` against the
        expert tracker by ZERO. The population instrument then convicted it: of its 53 additions
        only **14 end in a terminator (26%)**, where the expert-verified population scores
@@ -790,7 +790,7 @@
        Covering it needs an anchor that distinguishes a prologue from mid-function code — which
        the byte pattern alone does not supply.
 
-       ⭐ WAR2 `0004de58` IS AN INSTANCE OF THIS GAP, and it was pursued as a separate lead before
+       ⭐ the subject `0004de58` IS AN INSTANCE OF THIS GAP, and it was pursued as a separate lead before
        that was noticed. Its bytes are
 
            56 57 55 8b 4c 24 10    push esi ; push edi ; push ebp ; mov ecx,[esp+0x10]

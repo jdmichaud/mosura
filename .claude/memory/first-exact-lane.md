@@ -5,7 +5,7 @@ metadata:
   type: project
 ---
 
-**USER, 2026-07-29, on the WAR2 status: "It hasn't moved a hair."** Correct: **1 EXACT of 1286** (`FUN_00070805`, a 1-byte `ret` stub) — unchanged for weeks across many landed decompiler fixes.
+**USER, 2026-07-29, on the subject status: "It hasn't moved a hair."** Correct: **1 EXACT of 1286** (`FUN_00070805`, a 1-byte `ret` stub) — unchanged for weeks across many landed decompiler fixes.
 
 ## WHY THE HEADLINE CANNOT MOVE — the distribution is a WALL AT 0%
 Per-function table, `%match` bands: **0-9% = 1052 fns · 10-19% = 68 · 20-29% = 12 · 30%+ = FOUR.** Best non-trivial 75% (`0x0006a7d0`), then 64%, 42%, 38%, nothing else. **Byte-exactness is CONJUNCTIVE (every instruction must match) ⇒ a STEP FUNCTION ⇒ and essentially the entire corpus is nowhere near the step.** Weeks of landed fixes moved it zero because they were never *capable* of moving it.
@@ -23,7 +23,7 @@ Re-aimed at a CLEAN BOUNDARY (B1 reverted, master clean, nothing parked, port no
 
 **⛔ DO NOT GENERALIZE EARLY.** The instinct will be to see the shared shape and build the general fix. **Resist until ONE function is genuinely EXACT — a general fix built before a single end-to-end success is exactly how we got a flat headline plus a menu of foundations.**
 
-`placeMultiequals` port stays QUEUED as wrong code (it recovers calls in 92 fns, none in the tiny tier ⇒ won't move this number ⇒ no longer first). See [[war2-subregister-heritage-rootcause]].
+`placeMultiequals` port stays QUEUED as wrong code (it recovers calls in 92 fns, none in the tiny tier ⇒ won't move this number ⇒ no longer first). See (subject-profile note `subregister-heritage-rootcause`).
 
 ## ✅ LANE RESULT (2026-07-29): SECOND FUNCTION PROVEN — and the lane found a METRIC BUG
 guardReturns port landed `6e1b113`. **`FUN_0005f84c` RECOMPILES TO THE ORIGINAL LOADED BYTES** (wcc386 OBJ `b80c8d0800c3` == fixup-applied original). The survey couldn't see it — see [[measurement-determinism-first]] sixth instance: compare.py sliced RAW bytes vs mosura's fixup-applied image. **The ordered-blocker-list method delivered exactly as designed: blocker #1 = return recovery (hardcoded RAX/XMM0, fixed), blocker #2 = the METRIC's reference mismatch (not a decompiler defect at all). None of it was codegen.** Emitter symbolization of relocated operands (render `&_DAT_...` so wcc386 emits FIXUPPs → relocatable object like the original) filed as the honest end state.
@@ -37,6 +37,6 @@ Diff (loaded ref, 1286 common fns): 11 FIXED / 15 NEW; **all 17 newly-discovered
 **⭐ CLASS RULE: harness assumptions keyed to DECOMPILER LIMITATIONS are time bombs that detonate on improvement** — same family as the E1032 partial-symbol accessor. When the decompiler improves, re-audit the prelude/harness assumptions that existed to paper over the old weakness. E1052 is 47 of 75 COMPILE_FAILs and COMPILE_FAIL is an absolute bar to EXACT ⇒ this is headline-path.
 
 ## STRETCH FINAL @6e1b113 (+ prelude fix, `results.6e1b113.intcode.tsv`)
-**5 EXACT + 4 RELOC_EXACT = 9 byte-clean (was 1) · COMPILE_FAIL 29 (was 71; E1052 47→0 via `typedef int (*code)()`) · DECOMPILE_FAIL 0 · of 1303.** The 46 recovered fns land in MISMATCH — no EXACT bought today, but the absolute bar is removed. Remaining classes: E1079 10, E1018 9, E1010 4, E1029 2, singles E1090/E1081/E1080/E1063. Commits: 6e1b113 · 496778d · b5ce76c · d6299dd (switchcall ground-truth: NEGATIVE reduction — narrowed-selector+calls keeps its bodies in all 3 variants — plus a real narrowed-selector defect found) · 26db108. **OPEN #1 close-out: war2-function-status.md headline block; blockers for the three orig=8 accessors (65ed0/65ed8/65ee0).**
+**5 EXACT + 4 RELOC_EXACT = 9 byte-clean (was 1) · COMPILE_FAIL 29 (was 71; E1052 47→0 via `typedef int (*code)()`) · DECOMPILE_FAIL 0 · of 1303.** The 46 recovered fns land in MISMATCH — no EXACT bought today, but the absolute bar is removed. Remaining classes: E1079 10, E1018 9, E1010 4, E1029 2, singles E1090/E1081/E1080/E1063. Commits: 6e1b113 · 496778d · b5ce76c · d6299dd (switchcall ground-truth: NEGATIVE reduction — narrowed-selector+calls keeps its bodies in all 3 variants — plus a real narrowed-selector defect found) · 26db108. **OPEN #1 close-out: function-status.md (subject profile) headline block; blockers for the three orig=8 accessors (65ed0/65ed8/65ee0).**
 **QUEUE RULED: #8 stage-name diff only (block graph vs render, persists across IR changes) → `recover_call_args` TWIN (input-side of [[hardcoded-x86-64-vs-cspec-class]] instance #2: hardcoded RDI..R9 width 8 on every x86-32 CALL, same spurious-8-byte-range mechanism; promoted because the empty-switch carriers' IR may change wholesale under it — don't diagnose a moving target) → re-measure → #8 in full → rest of #5 → #7.**
 

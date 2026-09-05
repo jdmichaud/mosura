@@ -71,7 +71,7 @@ faithful twin already in the tree. Everything left is structural, and C1 GATES C
 · **phi input slot order** by block-index instead of `addInEdge` temporal order.
 · **Minors:** check_call_double_use within-block position; LaneDivide lanedMap re-derived.
 
-**The risk-register framing is UNCHANGED and now has more evidence behind it** — this campaign has retired six inventions and every single one was masking something: XMM0:8 → merged cover · RAX:8 → narrow-switch recovery · RDI..R9:8 → the whole stack-trial subsystem · the multi-exit heuristic → destroyed WAR2 switches while corpus-inert · B2's double-declaration → **stayed legal C only because two name synthesizers disagreed about the stem** (an adaptation DEPENDING ON A SECOND BUG to remain valid) · `heritage_complete` → stopped the stack pass from ever running. **"Corpus-inert" has now failed as a safety signal six times out of six.**
+**The risk-register framing is UNCHANGED and now has more evidence behind it** — this campaign has retired six inventions and every single one was masking something: XMM0:8 → merged cover · RAX:8 → narrow-switch recovery · RDI..R9:8 → the whole stack-trial subsystem · the multi-exit heuristic → destroyed the subject switches while corpus-inert · B2's double-declaration → **stayed legal C only because two name synthesizers disagreed about the stem** (an adaptation DEPENDING ON A SECOND BUG to remain valid) · `heritage_complete` → stopped the stack pass from ever running. **"Corpus-inert" has now failed as a safety signal six times out of six.**
 
 ## ⚠️ RE-VERIFIED AGAINST THE TREE 2026-07-29 @08ca850 (the audit body below is 2026-07-18 and partly stale)
 

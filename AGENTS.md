@@ -120,7 +120,7 @@ and read the IR.**
 ## The oracle
 
 There are **two** Ghidra oracles and they disagree by construction. `oracle/capture --c` is the
-C++ decompiler alone — it answers *how the decompiler renders something*. `war2-survey/
+C++ decompiler alone — it answers *how the decompiler renders something*. `<subject-survey>/
 ghidra-all.txt` is analyzeHeadless, Java layer included — it answers *what the whole tool
 produces on a real binary*. **mosura ports the C++ decompiler**, so rendering questions go to
 `capture --c`. Full rule and worked examples:
@@ -141,8 +141,8 @@ g++ -std=c++11 -I"$CPP" -O2 -o oracle/capture oracle/capture.cc \
   -Wl,--whole-archive "$CPP/libdecomp_dbg.a" -Wl,--no-whole-archive -lbfd -lz
 ```
 
-For WAR2 specifically, the per-function recipe's limits — including that it can change block
-structure — are in `scripts/ghidra-decompile-war2.sh`'s header and in
+For the subject specifically, the per-function recipe's limits — including that it can change block
+structure — are in `scripts/ghidra-decompile-subject.sh`'s header and in
 [`docs/measurement-rules.md` §1](docs/measurement-rules.md).
 
 ## Verification (the quality bar)
@@ -159,7 +159,7 @@ Every change is verified; never ship semantically-wrong output.
   datatests. **A coarse progress gauge, never a hard gate** — it must not block a faithful
   change.
 
-Wrong-code gates (WAR2): `reached == cfg` per function, no undefined `goto` labels, no
+Wrong-code gates (the subject): `reached == cfg` per function, no undefined `goto` labels, no
 fall-off-end, no empty `switch(){}` / `while(true){}`. A structuring change shows up in these
 before it shows in the recompile.
 

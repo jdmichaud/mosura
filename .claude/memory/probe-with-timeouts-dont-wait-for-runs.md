@@ -14,7 +14,7 @@ You almost never need a run to *complete* to learn what you need.
   which is usually the whole question.
 - **Threshold questions are yes/no.** Verifying a perf fix does not need the final number:
   ```sh
-  timeout 120 cargo test --release --test analysis_parity -- le_war2 > /tmp/t.log 2>&1
+  timeout 120 cargo test --release --test analysis_parity -- le_subjects > /tmp/t.log 2>&1
   #   completes -> fixed (was ~880 s)      times out -> still slow
   ```
   Bisect only if the actual figure matters: 120 → 240 → 480. **Three capped runs beat one uncapped
@@ -32,7 +32,7 @@ You almost never need a run to *complete* to learn what you need.
 2. **Never report a capped run as a pass.** Say *"completed under N s"* or *"still exceeded N s"* —
    never "green". Same discipline as never saying "0 failed" when tests are ignored.
 
-**Context:** a single WAR2 analysis is ~4 min (~15 min while the 4.1× regression stands), the
+**Context:** a single the subject analysis is ~4 min (~15 min while the 4.1× regression stands), the
 workspace suite ~10 min. Waiting out full runs to learn one bit was the dominant cost of the
 2026-08-07 session, and the user stopped it twice.
 

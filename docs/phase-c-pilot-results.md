@@ -26,7 +26,7 @@ byte-identical to that tree's, which matters because `base-cb97296/` itself carr
 ## 1. The selection: 479 functions, not 403
 
 The plan's "403 low-semantic mid-size functions" was measured before the five W-rounds landed.
-Reproducing its own selection with its own script's definitions — `scripts/war2-mechanism-census.py`
+Reproducing its own selection with its own script's definitions — `scripts/corpus-mechanism-census.py`
 `SEM = {'missing','branch-target'}` (:26), `MISMATCH && 20 <= orig_n < 200` (:52), the `<= 2` bin
 (:56) — against the current baseline gives:
 
@@ -48,7 +48,7 @@ asm, so it has no C source form to hill-climb. It is reported, not filtered.
 
 ## 2. Method
 
-**The two costs that shaped the harness.** A `war2_survey --only` invocation costs **111–130 s**
+**The two costs that shaped the harness.** A `corpus_emit --only` invocation costs **111–130 s**
 of load and analysis and **0.28 s** of actual emit per function-arm. Per-vector invocations are
 therefore hopeless: the 6,144-vector exhaustive below would have cost 190 hours that way.
 

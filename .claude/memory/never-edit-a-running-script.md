@@ -16,7 +16,7 @@ OFFSET. Rewriting the file while it runs shifts everything after the current off
 resumes in the middle of whatever now occupies that position. It does not fail cleanly: it
 executes a fragment.
 
-Measured 2026-08-11: `war2-survey/compile.sh` was mid-run (a ~25 minute dosemu batch) when I
+Measured 2026-08-11: `<subject-survey>/compile.sh` was mid-run (a ~25 minute dosemu batch) when I
 committed an edit to it. The dosemu compile finished, then the object-collection loop died with
 
 ```
@@ -32,5 +32,5 @@ either wait, or `cp script.sh /tmp/frozen.sh && bash /tmp/frozen.sh` so the runn
 immutable. The same applies to a Python script only while it is still being *imported*; Python
 compiles the whole file up front, so it is far less exposed — this is a bash-specific trap.
 
-Related: [[measurement-determinism-first]], [[war2-survey-artifacts-stamped]] (the sibling trap of
+Related: [[measurement-determinism-first]], [[the subject survey folder-artifacts-stamped]] (the sibling trap of
 reading an artifact mid-write).

@@ -7,7 +7,7 @@ wrong-code defect.
 
 ## Specimen
 
-`FUN_0005ce84` (WAR2.EXE @ `0x5ce84`, 125 bytes): a 5-entry jump table at `0x5ce70` (in the
+`FUN_0005ce84` (the subject binary @ `0x5ce84`, 125 bytes): a 5-entry jump table at `0x5ce70` (in the
 gap BETWEEN functions) where **case 2's target is the post-switch code** — the entry jumps
 straight past the switch.
 

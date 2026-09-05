@@ -71,7 +71,7 @@ comparator/harness faults this campaign, three of them in one afternoon.
   trial inactive, the active stack trial included. mosura's implementation matches Ghidra's
   `fspec.cc:1111` line for line — **do not "fix" it.**
 
-  The real gap: these functions are not using default `__watcall` at all. warcraft2-re's proven
+  The real gap: these functions are not using default `__watcall` at all. the RE tracker's proven
   sources declare them `#pragma aux ... parm []` — ALL arguments on the stack, a different
   convention our cspec does not model. Recovering them needs PER-FUNCTION convention detection
   from binary evidence (`ret imm16` is the callee-pop signal and encodes the byte count), which is
@@ -125,7 +125,7 @@ Related: [[plus3-is-lea-esp-prologue-order]] (the +3 is NOT a compiler-version a
 ## The Phase-1 lane is the honest target
 
 264 functions the tracker proves reproducible; we hold 83 (34 EXACT + 49 RELOC_EXACT), 177 miss,
-4 COMPILE_FAIL. `void_proto` is on 110 of the 177. **warcraft2-re's `src/util/*.c` is proven
+4 COMPILE_FAIL. `void_proto` is on 110 of the 177. **the RE tracker's `src/util/*.c` is proven
 byte-exact C for these** — diffing mosura's output against it is the sharpest oracle available for
 the watcall path, and far better than guessing. Two diffs done that way immediately explained two
 failures (the stack-param stub, the truncated shim).
@@ -136,8 +136,8 @@ failures (the stack-param stub, the truncated shim).
   no-op — which is why the pragma experiment gained 0 (and lost 7 where the scan over-approximated).
   Reverted at `7c8c823`. Do not retry without an exact preservation proof.
 - mosura already nails the common wrapper shape (`FUN_00010d1c` is RELOC_EXACT and matches
-  warcraft2-re's `cwrap1.c` almost token for token).
+  the RE tracker's `cwrap1.c` almost token for token).
 
-Related: [[war2-byte-exact-campaign]], [[plus3-is-lea-esp-prologue-order]],
-[[void-proto-is-body-elimination]], [[war2-function-set-ground-truth]],
+Related: (subject-profile note `byte-exact-campaign`), [[plus3-is-lea-esp-prologue-order]],
+[[void-proto-is-body-elimination]], (subject-profile note `function-set-ground-truth`),
 [[gate-what-you-measured-not-what-you-guessed]].

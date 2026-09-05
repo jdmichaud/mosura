@@ -26,7 +26,7 @@ Three consumers now ask the CALL, not the caller's model:
   Staging also keeps the default path bit-identical, so the corpus cannot move.
 - `check_input_trial_use` — vetoes an argument trial for a register the callee never reads.
 
-Measured on the `regout` MVE (reproduces WAR2 FUN_00074744):
+Measured on the `regout` MVE (reproduces the subject's FUN_00074744):
 
 ```
 gated off   pxVar1 = pxRam08049070; func_0x08048106(param_2); *pxVar1 = param_1;
@@ -73,6 +73,6 @@ used whenever the destination is not EAX; same relocation argument, same mask.
 
 Same subsystem unblocks task #14 (`ActionDefaultParams`).
 
-Related: [[war2-byte-exact-campaign]], [[watcall-killedbycall-too-aggressive]],
-[[subregister-write-not-merged]], [[war2-pragmatism-over-faithfulness]],
+Related: (subject-profile note `byte-exact-campaign`), [[watcall-killedbycall-too-aggressive]],
+[[subregister-write-not-merged]], (subject-profile note `pragmatism-over-faithfulness`),
 [[mve-first-then-solve-the-mve]].

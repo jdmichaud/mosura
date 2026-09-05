@@ -75,5 +75,5 @@ code-units, reject < 14.6 ✔, multi-name gate 30 ✔.
 column's recall gate asserts **zero false names**, not just recall — a recall-only ratchet rewards
 guessing.
 
-Status: replanned, not implemented. See [[war2-issues-become-source-tests]],
+Status: replanned, not implemented. See (subject-profile note `issues-become-source-tests`),
 [[ghidra-dependency-pin]].

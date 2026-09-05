@@ -27,7 +27,7 @@ import ghidra.program.model.pcode.PcodeOp;
 ///   CFG <name> nblocks=<n>
 ///   CFG blk<i> start=<addr> stop=<addr> ops=<n> ins=[..] outs=[..] last=<opcode>
 ///
-/// Driven by `scripts/ghidra-decompile-war2.sh` with `GHIDRA_POSTSCRIPT=DumpBlocks.java`.
+/// Driven by `scripts/ghidra-decompile-subject.sh` with `GHIDRA_POSTSCRIPT=DumpBlocks.java`.
 public class DumpBlocks extends GhidraScript {
     @Override
     public void run() throws Exception {

@@ -54,7 +54,7 @@ Three more arms followed in the same method (rounds e8–e10):
 The dropped-parameter fact has no self-compiled fixture: a callee stub of the generator never
 reads a second register, so no MVE recovers the phantom; the byte half of the witness
 (`preserved_registers`) is unit-tested and the two specimens are pinned as an EXACT guard set in
-`scripts/corpus-gates.tsv` (gate 7).
+`<subject-profile>/corpus-gates.tsv` (gate 7).
 
 Two corrections rode along, both value-preserving and both measured:
 
@@ -124,7 +124,7 @@ Two corrections rode along, both value-preserving and both measured:
 The scrutinee-compared-elsewhere gate on the narrow switch was measured and dropped: declining a
 one-case switch whose scrutinee has other compares cost −0.70 sim over 47 TUs (the fragment
 recompiles closer than the `if` more often than not). The corpus-gate rows the switch moved are
-re-stamped in `scripts/corpus-gates.tsv`: two chain TUs (0x14b44, 0x3d470) left the chain set
+re-stamped in `<subject-profile>/corpus-gates.tsv`: two chain TUs (0x14b44, 0x3d470) left the chain set
 after improving, three switch-label counts grew by one.
 
 ## The design review of the push (2026-09-04) and its four items
@@ -140,7 +140,7 @@ byte-neutral against the e42 tree (re-emit + diff, 0 differing units), suite onc
 | F4 facts | `Evidence` proves named `Fact`s (`Frame`, `SavesBeforeFrame`, `PrePentiumTuning`, `NoReorderer`); a `Rule` is `when: Fact` — the two reorderer shapes are one rule; `buildconfig::recover` shares `Profile::apply_rules` (its own copy applied two rules) | `afe3388` |
 | F3 fixpoint | `recovery::derive` applied once more under the decisions in debug builds or `--debug fixpoint`; a decision the third render INTRODUCES is named on stderr. Corpus: 183 functions grow (171 `widen_local_reps`, 11 `complement_sites`, 1 `cmp_order_sites`; 37 EXACT today) — the tier-2 widening does not converge at two rounds; counted as any difference it was 217, mostly consumed candidates | `ecacc7e` |
 | F1 registry | `EmitReport`/`RecoveredChoices` left printc.rs for `emit::arms::registry::{Report, Recovered}`, one typed sub-struct per arm in its own module, the R2b backlog as `arms::port`; printc keeps the two names as aliases and holds two opaque fields | `04fca4e` |
-| F2 switch | `war2_survey --arms-off <arm>,..`: `Recovered::switch_off` empties the named arm's witnessed decisions (`Off`, arm-owned: `port` switches the backlog as one block so a widened declaration never outlives its rendering); the manifest's `arms:` line is stamped `; off: ..`. Measured: `--arms-off cmp-sign` changes exactly the 22 units that arm decided, each compare reverting to the port's rendering, stamp on the manifest and on stderr | `F2` |
+| F2 switch | `corpus_emit --arms-off <arm>,..`: `Recovered::switch_off` empties the named arm's witnessed decisions (`Off`, arm-owned: `port` switches the backlog as one block so a widened declaration never outlives its rendering); the manifest's `arms:` line is stamped `; off: ..`. Measured: `--arms-off cmp-sign` changes exactly the 22 units that arm decided, each compare reverting to the port's rendering, stamp on the manifest and on stderr | `F2` |
 
 The suite run once for the batch found two defects of the push itself, fixed in `337e83f`: the
 branch-return form had made `return_split` a second owner of `SiteKind::Return` (now the one owner,

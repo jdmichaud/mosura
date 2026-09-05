@@ -12,7 +12,7 @@ looks exactly like a result.** The countermeasures differ; the failure does not.
 ## 1. Rule Zero — read Ghidra's output for the specimen first
 
 **Before diagnosing why mosura's X differs from Ghidra's, READ GHIDRA'S OUTPUT FOR THAT
-SPECIMEN.** It is usually already on disk (`war2-survey/ghidra-all.txt`, sections
+SPECIMEN.** It is usually already on disk (`<subject-survey>/ghidra-all.txt`, sections
 `===== FUNC <va> =====`), costs one `awk`, and bounds the whole question.
 
 Four instrument passes and five hypotheses were spent inside a rule Ghidra fires **zero times**
@@ -20,7 +20,7 @@ on the fixture, because nobody looked first.
 
 ### Second clause — necessary is not sufficient: confirm the oracle decompiled the SAME PROGRAM
 
-Reading Ghidra's output proves nothing if Ghidra was asked a different question. The WAR2
+Reading Ghidra's output proves nothing if Ghidra was asked a different question. The subject
 per-function oracle imports only the requested bytes, so absent callees default to *no
 parameters*; Ghidra's dead-code pass then deletes registers mosura correctly keeps live, and
 deleting a register deletes the instructions that computed it — **which deletes basic blocks and
@@ -35,13 +35,13 @@ forcing the callee storage is **mandatory, not optional**:
 
 ```sh
 GHIDRA_POSTSCRIPT=DecompileWithForcedParams.java GHIDRA_POSTSCRIPT_ARGS='63c35=EDX' \
-  scripts/ghidra-decompile-war2.sh 63cbf 722c8 63c35 77dcb   # callees FIRST in the list
-GHIDRA_POSTSCRIPT=DumpBlocks.java scripts/ghidra-decompile-war2.sh 77dcb   # Ghidra's partition
+  scripts/ghidra-decompile-subject.sh 63cbf 722c8 63c35 77dcb   # callees FIRST in the list
+GHIDRA_POSTSCRIPT=DumpBlocks.java scripts/ghidra-decompile-subject.sh 77dcb   # Ghidra's partition
 ```
 
 `DumpBlocks.java` prints Ghidra's own `HighFunction::getBasicBlocks` — the `BlockBasic` list
 `CollapseStructure` runs on — and `--debug structure` prints the same fields, so the two partitions
-diff line-for-line. Full ledger of the recipe's limits in `scripts/ghidra-decompile-war2.sh`'s
+diff line-for-line. Full ledger of the recipe's limits in `scripts/ghidra-decompile-subject.sh`'s
 header. **Note the bias direction, because it is what made this survive:** the pruning makes
 *Ghidra's* output look better structured, so it reads as our bug.
 
@@ -56,7 +56,7 @@ would have **invented a Java-layer behaviour into a C++ port**.
 | oracle | what it is | answers |
 |---|---|---|
 | `oracle/capture --c` | the **C++ decompiler** alone, on an XML fixture. No Program, no symbol table. | how the decompiler **renders** something: names it generates, types, casts, literals, structure |
-| `war2-survey/ghidra-all.txt` | **analyzeHeadless** — the full Ghidra, Java layer included, with a populated **symbol table** and type manager | what the whole tool produces on a real binary: recovered functions, call targets, applied symbols |
+| `<subject-survey>/ghidra-all.txt` | **analyzeHeadless** — the full Ghidra, Java layer included, with a populated **symbol table** and type manager | what the whole tool produces on a real binary: recovered functions, call targets, applied symbols |
 
 **mosura ports the C++ decompiler.** For any question about what the decompiler itself emits,
 `oracle/capture --c` is the reference and analyzeHeadless is the WRONG oracle — its output
@@ -82,10 +82,10 @@ Two worked examples, both of which nearly cost a wrong port:
 or a TYPE NAME, suspect the Java layer first and re-ask `oracle/capture --c` before writing
 anything.
 
-**And there are questions neither oracle can answer.** On WAR2, `capture --c` cannot run (the
+**And there are questions neither oracle can answer.** On the subject, `capture --c` cannot run (the
 DOS/4GW loader problem is why `ghidra-all.txt` exists) and analyzeHeadless carries a Java type
-model — so a **cast or type** comparison on WAR2 is confounded with no clean side. Ground those
-on the corpus and carry the WAR2 numbers as unattributable.
+model — so a **cast or type** comparison on the subject is confounded with no clean side. Ground those
+on the corpus and carry the subject numbers as unattributable.
 
 ---
 
@@ -120,7 +120,7 @@ on whatever it asserts is absent, then `git merge-base --is-ancestor`. Two comma
 false, the audit then asserted the work was "not lattice-blocked, merely unwritten." **That was
 wrong and it shipped in two commits.** `Datatype::Struct` is declared and read in five modules —
 and **constructed nowhere.** Every occurrence is a `matches!`, a match arm, or a field read. The
-variant is uninhabited, so *0 of 37* corpus SUBPIECEs and *0 of 1704* WAR2 SUBPIECEs carry a
+variant is uninhabited, so *0 of 37* corpus SUBPIECEs and *0 of 1704* the subject SUBPIECEs carry a
 struct-typed input, and every `TypeStruct::*` port would be inert.
 
 ⇒ "Does the variant exist?" is the wrong question. Ask **"does anything CONSTRUCT one?"**
@@ -183,7 +183,7 @@ One item, one reason, and a **revival condition** that says what would make it w
 **Bundling hides difference.** One sentence in `setcasts.rs` deferred four things "with the
 composite/union lattice they concern". The four answers were: genuinely gated (`resolveUnion`),
 wrongly described *and* measurably inert (`checkPointerIssues` — 0 occurrences in Ghidra's own
-WAR2 output), a live unported gap needing no lattice at all (the PTRADD refit — 59 measured
+the subject output), a live unported gap needing no lattice at all (the PTRADD refit — 59 measured
 firings, every one a pointer to a primitive), and one still open (the PTRSUB refit, gated on the
 `ScopeLocal` **symbol query**, not the lattice the note named).
 
@@ -285,7 +285,7 @@ This happened **three times in one day** (2026-08-05), in three different shapes
 - A manifest row count read while the emit was still writing looked plausible and was wrong.
 
 ⇒ **Equal totals are a hypothesis to disprove, not a result.** Before reporting "no change",
-either (a) show the SET, not the count — `members()` in `scripts/war2-wrongcode-scan.py` exists
+either (a) show the SET, not the count — `members()` in `scripts/corpus-wrongcode-scan.py` exists
 because keying a delta on the *function* rather than the individual finding let one function
 trade `pcVar4` for `pcVar3` and score as a wash; or (b) exhibit one input the predicate *should*
 have flagged and show it flagged. A predicate that cannot move is not a stable measurement, it
@@ -417,7 +417,7 @@ already defines it. One grep would have settled it before a build.
 
 ## 9. WGSS has ONE canonical computation
 
-**Canonical: `scripts/war2-verdicts.sh`'s census** — over the recompile TSV's user rows,
+**Canonical: `scripts/corpus-verdicts.sh`'s census** — over the recompile TSV's user rows,
 `WGSS = 1 − Σ orig_insns·(1 − sim) / Σ orig_insns` (columns 9 and 7 of the
 `recompile_check --out` contract). Every number in docs/byte-exact-status.md,
 docs/plan-to-0.8.md and the campaign memories is this computation; quote no other.
@@ -436,8 +436,8 @@ because ad-hoc column picks have burned rounds before; see its header).
 `docs/foreign-scope-plan.md`) drops the named third-party libraries from the denominator, so
 its WGSS/EXACT are a **different series** from a full run — the same trap as the ad-hoc-awk
 offset above, but silent, because the TSV looks identical. Two guards make it visible: the
-output TSV's header carries an `EXCLUDE-FOREIGN=<file>@<hash>` stamp, and `war2-verdicts.sh`
-prints a `!! FOREIGN-EXCLUDED SERIES` line when it sees one. **The canonical WAR2 series is the
+output TSV's header carries an `EXCLUDE-FOREIGN=<file>@<hash>` stamp, and `corpus-verdicts.sh`
+prints a `!! FOREIGN-EXCLUDED SERIES` line when it sees one. **The canonical the subject series is the
 FULL denominator (no `--exclude-foreign`)** until JD decides otherwise; a foreign-excluded number
 is only ever reported *next to* the full one (both-numbers), never as the headline. Do not compare
 a stamped TSV against an unstamped one.
@@ -449,7 +449,7 @@ survey emits, and "it obviously can't" is not evidence (2026-09-05: a knob read 
 sat outside the switches table and changed trees unstamped for a day). The gate is cheap and
 mechanical, and it is the same measurement the switches commit (6b504a5) used to land:
 
-1. **Emit the baseline** once from the pre-change tree — the release `war2_survey` binary built
+1. **Emit the baseline** once from the pre-change tree — the release `corpus_emit` binary built
    at `CARGO_TARGET_DIR=/data/mosura-target`, run over the subject binary into a fresh directory
    (a tree is ~38 MB; check `df -h /data` first — the floor is 4 GB). An existing tree emitted by
    the same code state (e.g. the last round's) serves as the baseline.

@@ -13,7 +13,7 @@ A Ghidra reference typed `UNCONDITIONAL_CALL` does **not** mean the source instr
 re-derives the reference type through `getDefaultJumpOrCallFlowType` → `UNCONDITIONAL_CALL`. The
 same happens for PLT tail calls (`COMPUTED_CALL_TERMINATOR`).
 
-**Why:** the WAR2 analysis-gap report split its seeds into "3 × UNCONDITIONAL_CALL (plain direct
+**Why:** the subject analysis-gap report split its seeds into "3 × UNCONDITIONAL_CALL (plain direct
 call)" vs "4 × UNCONDITIONAL_JUMP (tail call)" by reading `DumpCallers.java`'s reftype column. All
 seven were `e9 rel32` jumps. The whole "direct-call mechanism" framing of the task was an artifact
 of that read, and the real mechanism was `SharedReturnAnalysisCmd` for all of them.
@@ -22,5 +22,5 @@ of that read, and the real mechanism was `SharedReturnAnalysisCmd` for all of th
 confirm the opcode before building on it — `objdump -b binary -m i386 --adjust-vma` over the image
 takes seconds. Reference types are analysis OUTPUT; instructions are the input.
 
-Related: [[war2-per-function-ghidra-oracle]], [[oracle-same-question-not-just-same-tool]],
+Related: (subject-profile note `per-function-ghidra-oracle`), [[oracle-same-question-not-just-same-tool]],
 [[shared-return-cursor-cache-is-semantic]].

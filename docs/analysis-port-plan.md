@@ -137,7 +137,7 @@ its switch recovery** — it depends on `DecompInterface` + the decompiler. This
 replaced the removed `decomp/jumptable.rs`, and what gates the switch half of A6 on
 decompiler-port progress.
 
-**A6 status (landed; corpus = basic.elf + war2):**
+**A6 status (landed; corpus = basic.elf + the subject):**
 
 - **Switch recovery** — `analyzers/switch.rs` (the decompiler-driven analyzer above). 7/7
   on the `switchtab` fixture, 0 spurious.
@@ -218,7 +218,7 @@ state for a given set of enabled analyzers**, not per-action.
   - Task 6 demangler — BLOCKED on faithfulness: Ghidra's GNU demangler is a native libiberty
     (`demangler_gnu`) process wrapper, not a Java grammar; porting it means porting libiberty's
     cp-demangle (out of scope), and hand-rolling a grammar is forbidden. Left unimplemented.
-  - Explicitly OUT of A7: war2's unrecovered switches/protected-mode code (a LOADER-format gap
+  - Explicitly OUT of A7: the subject's unrecovered switches/protected-mode code (a LOADER-format gap
     — the DOS/4GW LE stub needs LE32 support, not an A7 bug); GOT-pointer-following /
     computed-call-target promotion (the `0x401004→0x405010` DATA ref + `__gmon_start__`
     function — A6-family indirect-flow follow-on); decompiler-fed facts not in the snapshot.

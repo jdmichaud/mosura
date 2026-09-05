@@ -25,12 +25,12 @@ metadata:
    the way `fnpattern.c` properties 2-5 specify.
 
 **Why:** a pattern set can only be specified where BOTH recall and precision are decidable, which
-is a self-compiled binary where every function is known — never WAR2 (its tracker covers 71.4%, so
-a hit in a gap is undecidable). See [[war2-per-function-ghidra-oracle]] for the WAR2 side.
+is a self-compiled binary where every function is known — never the subject (its tracker covers 71.4%, so
+a hit in a gap is undecidable). See (subject-profile note `per-function-ghidra-oracle`) for the subject side.
 
 **How to apply:** before believing any function-start number, print `prog.compiler_spec_id` and
 re-run with `Knobs::disabled_analyzers` (`--disable-analyzers`) naming the four byte-pattern analyzers. If the number does
 not move, the gate is not measuring the pattern set. This is [[oracle-same-question-not-just-same-tool]]
 in a new place: reading a green test is not enough, verify it was asked the right question.
 
-Related: [[self-compiled-ground-truth]], [[war2-issues-become-source-tests]].
+Related: [[self-compiled-ground-truth]], (subject-profile note `issues-become-source-tests`).

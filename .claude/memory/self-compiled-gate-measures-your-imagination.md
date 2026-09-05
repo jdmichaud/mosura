@@ -12,8 +12,8 @@ metadata:
 
 Pattern family (6) (no-frame prologues, `50bea92` backs it out) shipped with what looked like strong
 precision evidence: fixture recall 3/3 vacuity-checked, **0 spurious across 17 fully-known Watcom
-binaries**, zero marks outside its own fixture on the 16 pre-existing ones, and WAR2 body-intrusions
-unchanged at 3. On WAR2 it then added **53 functions of which 39 do not end like functions** — 26%
+binaries**, zero marks outside its own fixture on the 16 pre-existing ones, and the subject body-intrusions
+unchanged at 3. On the subject it then added **53 functions of which 39 do not end like functions** — 26%
 on the terminator instrument against a 99.8% population baseline.
 
 **Why:** the ground-truth binaries are small, freestanding, and nearly free of stack-passed
@@ -31,7 +31,7 @@ central precision argument and it was wrong. Argument pushes frequently conform 
 `ebx,ecx,edx,esi,edi` by coincidence; for a 2-element run **half of all ordered pairs conform**.
 Ordering discriminates a save-run from a *reordered* run, never from an argument run.
 
-**The decisive artifact** (WAR2 `0x53000` region, read from the image): a 16-byte idiom inlined at
+**The decisive artifact** (the subject `0x53000` region, read from the image): a 16-byte idiom inlined at
 dozens of sites, byte-identical including its operand, each preceded by a backward `e9` jmp —
 
 ```
@@ -55,9 +55,9 @@ existing flow; it says nothing about candidates that aren't. See
 
 **What to do instead:** for any pattern lacking a frame-setup anchor, the self-compiled corpus is
 not sufficient evidence — score the **population** on a large real binary against a control
-(see [[war2-byte-exact-campaign]] and the terminator instrument: expert-verified 2111/2118 = 99.7%
+(see (subject-profile note `byte-exact-campaign`) and the terminator instrument: expert-verified 2111/2118 = 99.7%
 vs pattern-only 899/900 = 99.9%). ⚠️ Body-intrusion counts are also insufficient alone: they can
-only see intrusions into the 28.6% of WAR2 the tracker covers with sizes.
+only see intrusions into the 28.6% of the subject the tracker covers with sizes.
 
 Also from the same arc: **stating a limitation is not reasoning from it.** The commit documented
 both of the family's exclusions and never composed them into "therefore its recall against the 12

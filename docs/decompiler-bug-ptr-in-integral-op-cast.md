@@ -1,13 +1,13 @@
 # Decompiler bug report: pointer/float fed to an integral op is not cast (FIXED)
 
-**Owner: decompiler track (`master`). Status: FIXED** (this commit). Surfaced by the WAR2
-recompilation-parity survey (docs/war2-function-status.md) as the E1079/E1080/E1036 COMPILE_FAIL
+**Owner: decompiler track (`master`). Status: FIXED** (this commit). Surfaced by the subject
+recompilation-parity survey (<subject-profile>/notes/function-status.md) as the E1079/E1080/E1036 COMPILE_FAIL
 classes. Class **(A) GENERAL** per the differential-triage methodology (task #4): compiler-independent,
 proven with a gcc reproducer against full-analysis Ghidra.
 
 ## Symptom
 
-The emitted C for many WAR2 functions used a pointer-typed (or float-typed) value directly as an
+The emitted C for many the subject functions used a pointer-typed (or float-typed) value directly as an
 operand of an integral C operator, which `wcc386` rejects:
 
 ```
@@ -53,7 +53,7 @@ by full-analysis Ghidra (`analyzeHeadless`) on the **identical binary**:
 | `*p - (long)p` | `*param_1 - (long)param_1` | `*param_1 - param_1` | `*param_1 - (int8)param_1` |
 
 Ghidra inserts the cast; mosura did not. The fix makes mosura insert it (the residual `(uint)` vs
-`(uint8)` width difference is an x86-64 8-byte-pointer subpiece detail; for WAR2's 32-bit pointers
+`(uint8)` width difference is an x86-64 8-byte-pointer subpiece detail; for the subject's 32-bit pointers
 both render `(uint)`). Compiler-independent → fixed in the general path, not scoped to Watcom.
 
 ## The fix
@@ -63,7 +63,7 @@ ops: `cast_standard(reqtype, cur, false, true)` with `reqtype = Uint(sz)` for th
 `Int(sz)` for the arithmetic ones. Transparent for the primitive lattice (int/uint/undefined
 reconcile silently, so no corpus churn); casts pointer/float operands as Ghidra does.
 
-Brick 1 lands the pointer-arith set most directly tied to the WAR2 classes: `INT_AND`, `INT_OR`,
+Brick 1 lands the pointer-arith set most directly tied to the subject classes: `INT_AND`, `INT_OR`,
 `INT_XOR`, `INT_NEGATE`, `INT_SUB`, `INT_MULT`, `INT_2COMP`. `INT_ADD`/`INT_LEFT` are held for a
 separate measurement (INT_ADD interacts with PTRADD conversion and is very common; staged to isolate
 any corpus effect).
@@ -75,7 +75,7 @@ any corpus effect).
   zero regressions.
 - Suite 559/0 (+ the new `pointer_in_integral_op_is_cast` regression), clippy 0.
 
-## WAR2 re-measure (clean-vs-clean, same methodology)
+## the subject re-measure (clean-vs-clean, same methodology)
 
 Full survey EMIT + wcc386 (dosemu2) + wardiff over all 1286 functions, `obj/` cleaned before each
 compile (the original 137 baseline had minor stale-object undercounting; a clean pre-fix re-measure

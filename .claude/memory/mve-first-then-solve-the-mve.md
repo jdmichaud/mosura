@@ -1,6 +1,6 @@
 ---
 name: mve-first-then-solve-the-mve
-description: "USER RULE (restated 2026-08-05) — a defect found on WAR2 becomes an MVE first, and the MVE is what you solve; now AGENTS.md directive 6"
+description: "USER RULE (restated 2026-08-05) — a defect found on the subject becomes an MVE first, and the MVE is what you solve; now AGENTS.md directive 6"
 metadata: 
   node_type: memory
   type: feedback
@@ -8,18 +8,18 @@ metadata:
   modified: 2026-08-05T08:43:55.634Z
 ---
 
-**"If you find an issue decompiling WAR2, generate an MVE to surface the problem. Then solve the
+**"If you find an issue decompiling the subject, generate an MVE to surface the problem. Then solve the
 MVE."** — the owner, 2026-08-05, restating it because it had been lost.
 
-**Why:** WAR2 is temporary scaffolding and cannot be shipped. A gate built on it dies when the
+**Why:** the subject is temporary scaffolding and cannot be shipped. A gate built on it dies when the
 binary goes, and until then is unreproducible by anyone who lacks it. The owner's framing: *"As
-war2 is temporary, this is why I asked you to reinforce our tests with MVEs and small programs
-to reproduce the issue you see so that we can 'solidify' our test suite. At one point, WAR2 will
+the subject is temporary, this is why I asked you to reinforce our tests with MVEs and small programs
+to reproduce the issue you see so that we can 'solidify' our test suite. At one point, the subject will
 disappear."* Also 2026-08-05: **no mentions of the copyrighted binary in the mosura repo** — the
-survey tooling gets its own repo in `war2-survey/` instead.
+survey tooling gets its own repo in `<subject-survey>/` instead.
 
-**How to apply:** WAR2 defect → minimal self-compiled program in `oracle/ground-truth/src/` →
-gate in `crates/mosura/tests/ground_truth_parity.rs` → fix THAT. WAR2 stays as corroboration,
+**How to apply:** the subject defect → minimal self-compiled program in `oracle/ground-truth/src/` →
+gate in `crates/mosura/tests/ground_truth_parity.rs` → fix THAT. the subject stays as corroboration,
 never as the gate. Two conditions make the MVE worth having:
 
 1. **Prove it FAILS pre-fix and passes post-fix.** A gate that never caught the bug is
@@ -50,5 +50,5 @@ MULTIEQUAL in the head, so `findLoopVariable` finds nothing). Use it to force a 
 never use it when you need a `for`, or the gate passes vacuously against the wrong printer arm.
 This is the same mechanism behind the ~6 `DAT_`-loop-variable cases in [[task7-missed-for-loops]].
 
-Related: [[war2-issues-become-source-tests]] (the older statement of the same rule),
-[[self-compiled-ground-truth]], [[war2-survey-artifacts-stamped]].
+Related: (subject-profile note `issues-become-source-tests`) (the older statement of the same rule),
+[[self-compiled-ground-truth]], [[the subject survey folder-artifacts-stamped]].

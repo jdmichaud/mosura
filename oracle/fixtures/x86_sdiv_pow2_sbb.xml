@@ -1,4 +1,4 @@
-<!-- Watcom 10.0a signed division by a power of two (WAR2 0x23108's `x / 32` sites, W3): the SBB
+<!-- Watcom 10.0a signed division by a power of two (the subject's 0x23108's `x / 32` sites, W3): the SBB
      template `MOV EDX,EAX; SAR EDX,0x1f; SHL EDX,5; SBB EAX,EDX; SAR EAX,5` = (x + 31) >> 5 for a
      negative x, x >> 5 otherwise. Wrapped as `mov eax,[esp+4]; <template>; ret`. -->
 <binaryimage arch="x86:LE:32:default:watcom">

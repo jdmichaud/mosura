@@ -29,7 +29,7 @@ byte-counting all five committed `.code` artifacts:
 **less precise and correct**. What separates the two is the loop register and switch order, the
 artifacts that whole-binary scale drops by design.
 
-**WAR2 is unaffected and its anchor gets stronger:** WAR2 keys on the *promoting* `cmp eax,5`, which
+**the subject is unaffected and its anchor gets stronger:** the subject keys on the *promoting* `cmp eax,5`, which
 is 10.0a's alone. 9.01 showing a plain byte compare makes the promotion a **one-revision anomaly
 with plain compares on both sides**, not "early Watcom" behaviour.
 

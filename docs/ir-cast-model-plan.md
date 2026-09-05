@@ -17,7 +17,7 @@
 > composite/union lattice: the PTRADD/PTRSUB refit, LOAD/STORE `checkPointerIssues`,
 > `insertPtrsubZero`, and union resolution. Say *that* when declining cast work, not the retired one.
 
-Owner: war2-arraytype. PLAN-FIRST (lead gates this before any code). Funds the convergence foundation
+Owner: arraytype (subject-profile note). PLAN-FIRST (lead gates this before any code). Funds the convergence foundation
 (E1010 + E1045 + E1029 + partialsplit): replace mosura's print-time cast-decision + print-time
 re-inference with Ghidra's IR-CAST-op model, where `ActionSetCasts` inserts real `CPUI_CAST` ops that
 **block type propagation**, and printc renders them.
@@ -91,7 +91,7 @@ Stage 0 dominates (zero-gauge, the risk). Stages 1–3 are a standard op port on
 (pointercmp/pointerrel/E1010 toward-oracle) appears only after Stage 2+3 on the branch. No incremental
 toward-oracle gate before then — that is the all-or-nothing property already escalated + funded.
 
-## Stage 0a VERDICT (2026-07-24, agent war2-arraytype) — PROCEED; persistent HighVariable NOT required
+## Stage 0a VERDICT (2026-07-24, agent arraytype (subject-profile note)) — PROCEED; persistent HighVariable NOT required
 
 Grounded 0a empirically (probe reverted): compared, over the WHOLE datatest corpus, the print-time
 re-inference (`infer(f,&locks)`, printc.rs:1884) against the in-pipeline committed `Varnode::ty`
@@ -266,14 +266,14 @@ master + open those two as separate deep follow-ons.
 
 ## MERGED TO MASTER (2026-07-24) — merge 6e9c6a4, whole rewrite Stage 0/1/2/2.5
 
-Lead GO after the WAR2 payoff proof. Isolated (base e9c0655 vs branch, both clean-obj):
+Lead GO after the subject payoff proof. Isolated (base e9c0655 vs branch, both clean-obj):
 COMPILE_FAIL 108→87, E1045 12→0 ELIMINATED, E1080 5→0, E1029 net −7; datatest 0.9517→0.9527
 net toward-oracle (pointercmp 1.000 exact); ZERO wrong-code, ZERO cast mis-fires, no new panics.
 
 ### Two follow-ons opened at merge (deep, NOT cast-port bugs)
 
 **(i) 0x70f4d / pVar13 pointer-mistyping → the type-inference-core foundation.** The ONE real
-cast-model regression (WAR2 FUN_00070f4d, E1010): the branch renders `pVar13 < (uint4)param_4[5]`
+cast-model regression (the subject's FUN_00070f4d, E1010): the branch renders `pVar13 < (uint4)param_4[5]`
 where the base rendered `pVar3 < param_4[5]`. The `(uint4)` is a FAITHFUL `getInputCast` on the
 unsigned INT_LESS operand (Ghidra does it). It fails only because `pVar13`/`pVar5[4]` is mistyped
 `xunknown4 *` (pointer) UPSTREAM — pre-existing (present in the base too, latent as a Watcom
@@ -283,12 +283,12 @@ type-inference divergence, NOT a cast mis-fire. FIX belongs with the type-infere
 array-symbol-type-dominance foundation (the partialmerge work), not the cast port. Faithful-ports-land:
 the cast stays; suppressing it to keep 1 fn compiling would be non-faithful.
 
-**(ii) war2_survey `--le` decode non-determinism — a HARNESS bug, not the decompiler.** 3 of the 4
-apparent WAR2 "regressions" (segment far-pointer STOREs, `*segment(...)` → E1029) are NOT the cast
-model. The canonical single-function path (`dumpwar2` = `decompiler::decompile_function`) renders
+**(ii) corpus_emit `--le` decode non-determinism — a HARNESS bug, not the decompiler.** 3 of the 4
+apparent the subject "regressions" (segment far-pointer STOREs, `*segment(...)` → E1029) are NOT the cast
+model. The canonical single-function path (`the single-function dump probe` = `decompiler::decompile_function`) renders
 them IDENTICALLY base==branch (32-bit, compilable); the 16-bit SEGMENTOP form appears ONLY in the
-`war2_survey` full-survey emit, and only in one run. The `--le` whole-program survey shares flow/
+`corpus_emit` full-survey emit, and only in one run. The `--le` whole-program survey shares flow/
 discovery state across 1286 functions and lands a few in the wrong address-size (16 vs 32-bit) mode
 run-to-run — so its per-run COMPILE_FAIL total jitters ±few, affecting base AND branch surveys
-equally. Detail: docs/war2-survey-decode-nondeterminism.md. Verify any single "regression" with
-`dumpwar2 <va>` (canonical) before attributing it to a decompiler change.
+equally. Detail: <subject-profile>/notes/survey-decode-nondeterminism.md. Verify any single "regression" with
+`the single-function dump probe <va>` (canonical) before attributing it to a decompiler change.

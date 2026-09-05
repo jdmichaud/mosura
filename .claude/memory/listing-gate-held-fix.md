@@ -19,9 +19,9 @@ that lands the fix; it goes 5 -> 0 in one step.
 
 The fix itself is in `held-patches/listing-command-channel.patch` (388 lines, applies cleanly at
 `71876a2`). It closes [[command-vs-notification-channel]] and [[r-min-range-iteration-misport]] and
-deletes `SCHEDULED`/`PROPOSED`. It is **blocked**, not abandoned: on the war2 MZ stub it decodes an
+deletes `SCHEDULED`/`PROPOSED`. It is **blocked**, not abandoned: on the subject MZ stub it decodes an
 inline call parameter and destroys a real instruction —
-[[war2-mz-inline-call-parameters]]. Wrong code, so the "a faithful port lands" rule does not apply.
+(subject-profile note `mz-inline-call-parameters`). Wrong code, so the "a faithful port lands" rule does not apply.
 
 **How to apply:** the unblocker is a **fall-through override model** (`Instruction.getFallThrough()`
 as analysis output, not opcode-derived), MVE first, and never by special-casing the `0x13a56` shape.

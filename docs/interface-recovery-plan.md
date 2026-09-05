@@ -4,7 +4,7 @@
 
 ## The measurement
 
-Over the WAR2 corpus, with foreign-toolchain functions excluded, the dominant divergence in
+Over the subject corpus, with foreign-toolchain functions excluded, the dominant divergence in
 **779** attributable functions is `missing`: an instruction the original has and the recompiled
 candidate does not. That is not a cosmetic gap. A missing instruction means the emitted C is a
 description of a *different program*, and it would be worth fixing even if byte-exactness were

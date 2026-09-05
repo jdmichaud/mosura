@@ -25,8 +25,8 @@ Keep this current, not historic. If a line grows past ~1.5 lines, move the detai
 - [faithful-type-of-wrong-ir](faithful-type-of-wrong-ir.md) — ugly render from a faithful layer = wrong upstream IR; fix the IR.
 - [gate-byte-identical-only](gate-byte-identical-only.md) — self-approve only on byte-IDENTICAL corpus; any fixture move is gated.
 - [numbers-stale-unless-sha-stamped](numbers-stale-unless-sha-stamped.md) — every number is STALE unless @sha==HEAD.
-- [perf-constants-are-configuration-scoped](perf-constants-are-configuration-scoped.md) — **⭐ a per-call cost is SCOPED to its (language, cspec): `resolve_cspec` spans 1.14ms→118.6ms, and WAR2 short-circuits it. Right mechanism, wrong account of where it bites — made TWICE in one task, the second time flagging another baseline "stale" that moved 0.**
-- [war2-issues-become-source-tests](war2-issues-become-source-tests.md) — **every WAR2 issue → a self-compiled Watcom source test as ground truth.**
+- [perf-constants-are-configuration-scoped](perf-constants-are-configuration-scoped.md) — **⭐ a per-call cost is SCOPED to its (language, cspec): `resolve_cspec` spans 1.14ms→118.6ms, and the subject short-circuits it. Right mechanism, wrong account of where it bites — made TWICE in one task, the second time flagging another baseline "stale" that moved 0.**
+- [issues-become-source-tests (subject-profile note)](issues-become-source-tests (subject-profile note).md) — **every the subject issue → a self-compiled Watcom source test as ground truth.**
 - [mve-obvious-version-tests-nothing](mve-obvious-version-tests-nothing.md) — **⭐ 4/4: the obvious MVE passes unfixed; write it, RUN it, then sharpen.**
 - [mve-first-then-solve-the-mve](mve-first-then-solve-the-mve.md) — **⭐ USER RULE 2026-08-05: MVE FIRST, then solve the MVE — now AGENTS.md directive 6. Carries the MVE-building traps.**
 - [could-it-have-come-out-otherwise](could-it-have-come-out-otherwise.md) — **⭐ PRE-FLIGHT: a predicate whose answer is fixed in advance measures nothing (4 in one day).**
@@ -37,58 +37,58 @@ Keep this current, not historic. If a line grows past ~1.5 lines, move the detai
 - [gate-what-you-measured-not-what-you-guessed](gate-what-you-measured-not-what-you-guessed.md) — **⭐ a dump missing one field invented a wrong root cause; a hypothesis port got reverted.**
 ## Primary track: retire the inventions
 - [retirement-track-wave1](retirement-track-wave1.md) — **⭐ WAVE 1 A3 `9439fcf`: the held stackptr regression was CURED by the heritage core; 3820 stack trials vs a structural ZERO. New class: undefined `goto` labels.**
-- [direction-retire-inventions-first](direction-retire-inventions-first.md) — **★ USER PIVOT 2026-07-29: retiring inventions is THE primary track; WAR2-specific work parked. Protocol + 4 waves.**
+- [direction-retire-inventions-first](direction-retire-inventions-first.md) — **★ USER PIVOT 2026-07-29: retiring inventions is THE primary track; the subject-specific work parked. Protocol + 4 waves.**
 - [hardcoded-x86-64-vs-cspec-class](hardcoded-x86-64-vs-cspec-class.md) — **⭐ THE CLASS: mosura hardcodes x86-64 registers where Ghidra QUERIES THE CSPEC — fatal on x86-32.**
 - [adaptations-inventory](adaptations-inventory.md) — the audited list of every remaining adaptation, file:line cited, bounded vs deep.
 - [bounded-levers-exhausted](bounded-levers-exhausted.md) — bounded corpus levers EXHAUSTED; don't force deep foundations autonomously.
 
-## Active campaign: WAR2 byte-exact
-- [war2-byte-exact-campaign](war2-byte-exact-campaign.md) — **ACTIVE SUSTAINED**: drive WAR2 byte-exact via faithful ports; lead holds delegated gating.
-- [war2-band-root-cause](war2-band-root-cause.md) — **⭐ the 0-16% band is hardcoded RSP=0x20 vs the cspec `<stackpointer>`, not a codegen wall.**
+## Active campaign: the subject byte-exact
+- [byte-exact-campaign (subject-profile note)](byte-exact-campaign (subject-profile note).md) — **ACTIVE SUSTAINED**: drive the subject byte-exact via faithful ports; lead holds delegated gating.
+- [band-root-cause (subject-profile note)](band-root-cause (subject-profile note).md) — **⭐ the 0-16% band is hardcoded RSP=0x20 vs the cspec `<stackpointer>`, not a codegen wall.**
 - [watcall-killedbycall-too-aggressive](watcall-killedbycall-too-aggressive.md) — **⭐ cspec says killedbycall [EAX,ECX,EDX]; wcc386 keeps EDX LIVE across an indirect call → INFINITE LOOPS. No Ghidra watcom cspec = no oracle.**
 - [subregister-write-not-merged](subregister-write-not-merged.md) — **⭐ the call-dropping class: a sub-register write is not merged into the containing wide read, so it binds a stale def.**
-- [war2-subregister-heritage-rootcause](war2-subregister-heritage-rootcause.md) — the same defect measured: 92 fns / 246 calls; `determinedbranch` is the executioner, not the culprit.
+- [subregister-heritage-rootcause (subject-profile note)](subregister-heritage-rootcause (subject-profile note).md) — the same defect measured: 92 fns / 246 calls; `determinedbranch` is the executioner, not the culprit.
 - [absolute-vs-differential-wrongcode](absolute-vs-differential-wrongcode.md) — **⭐ measure ABSOLUTELY; a differential scan cannot see a defect present on both sides. Counting traps inside.**
-- [war2-relocation-seeding](war2-relocation-seeding.md) — **⭐ `ef98638` LE fixups seed disassembly: 1631→1965. THE RULE: score FPs by BODY INTRUSION, not by "not in Ghidra".**
-- [war2-address-table-port](war2-address-table-port.md) — **⭐ `93ca489` AddressTableAnalyzer: 1308→1653, 1 FP. ⚠️ `-processor` forces cspec=windows → 1944; auto-detect → 2145.**
+- [relocation-seeding (subject-profile note)](relocation-seeding (subject-profile note).md) — **⭐ `ef98638` LE fixups seed disassembly: 1631→1965. THE RULE: score FPs by BODY INTRUSION, not by "not in Ghidra".**
+- [address-table-port (subject-profile note)](address-table-port (subject-profile note).md) — **⭐ `93ca489` AddressTableAnalyzer: 1308→1653, 1 FP. ⚠️ `-processor` forces cspec=windows → 1944; auto-detect → 2145.**
 - [ghidra-never-makes-functions-from-data-pointers](ghidra-never-makes-functions-from-data-pointers.md) — **⭐ data-side analyzers DISASSEMBLE pointer targets and create NO function; the yield is the CASCADE.**
-- [war2-missing-calls-class](war2-missing-calls-class.md) — the RULE (measure vs the binary). ⚠️ its "41% / 455 fns" figure is RETRACTED — linear-sweep artifact.
+- [missing-calls-class (subject-profile note)](missing-calls-class (subject-profile note).md) — the RULE (measure vs the binary). ⚠️ its "41% / 455 fns" figure is RETRACTED — linear-sweep artifact.
 - [reftype-is-post-override-not-the-instruction](reftype-is-post-override-not-the-instruction.md) — **⭐ reftypes are analysis OUTPUT — an UNCONDITIONAL_CALL ref can sit on a `jmp`.**
 - [command-vs-notification-channel](command-vs-notification-channel.md) — **⭐ Ghidra's disassemble/createFunction are COMMANDS, not codeDefined/functionDefined; the channel model DROPS them.**
 - [r-min-range-iteration-misport](r-min-range-iteration-misport.md) — **⭐ `set.ranges()` + `r.min` skips every adjacent address; Ghidra iterates ADDRESSES (`<= 4` cut).**
-- [war2-mz-inline-call-parameters](war2-mz-inline-call-parameters.md) — **⭐ the war2 MZ `0x13a56` thunks are followed by a 2-byte INLINE PARAMETER; decoding it destroys a real instruction.**
+- [mz-inline-call-parameters (subject-profile note)](mz-inline-call-parameters (subject-profile note).md) — **⭐ the subject MZ `0x13a56` thunks are followed by a 2-byte INLINE PARAMETER; decoding it destroys a real instruction.**
 - [listing-gate-held-fix](listing-gate-held-fix.md) — **⭐ `9d2f0e9`+`71876a2`: gate committed RED+`#[ignore]`d; fix HELD in `held-patches/`; unblocker = a fall-through override model.**
 - [shared-return-cursor-cache-is-semantic](shared-return-cursor-cache-is-semantic.md) — SharedReturnAnalysisCmd's functionBefore/AfterSrc caches CHANGE the answer; open gap = invocation granularity.
 - [thunk-resolution-runs-before-the-body](thunk-resolution-runs-before-the-body.md) — **⭐ `69cf941`: a jump-only entry is a THUNK; Ghidra creates its target's function BEFORE storing the body. Run it after the walk and every thunk vetoes its own target. NOT shared return.**
-- [war2-tailjmp-mve](war2-tailjmp-mve.md) — the tail-call MVE; `-oc` suppresses the shape, and C can't make a forward tail jmp.
-- [war2-per-function-ghidra-oracle](war2-per-function-ghidra-oracle.md) — **⭐ RECIPE: ask Ghidra about any WAR2 function despite the DOS/4GW-LE loader problem.**
-- [war2-guardreturns-port](war2-guardreturns-port.md) — **⭐ `6e1b113` return candidates from the cspec; headline 1→9 byte-clean, narrow-switch bug closed.**
+- [tailjmp-mve (subject-profile note)](tailjmp-mve (subject-profile note).md) — the tail-call MVE; `-oc` suppresses the shape, and C can't make a forward tail jmp.
+- [per-function-ghidra-oracle (subject-profile note)](per-function-ghidra-oracle (subject-profile note).md) — **⭐ RECIPE: ask Ghidra about any the subject function despite the DOS/4GW-LE loader problem.**
+- [guardreturns-port (subject-profile note)](guardreturns-port (subject-profile note).md) — **⭐ `6e1b113` return candidates from the cspec; headline 1→9 byte-clean, narrow-switch bug closed.**
 - [structured-graph-is-a-list-not-a-root](structured-graph-is-a-list-not-a-root.md) — **⭐ `282bf51`: `emitBlockGraph` prints EVERY top-level component; we printed one and dropped 45 blocks. reached==cfg 45→0, CFAIL 102→95.**
 - [guardreturns-port-held](guardreturns-port-held.md) — its gating argument: the blocking rule stops SILENT undiagnosed wrong code, not diagnosed+owned regressions.
 - [first-exact-lane](first-exact-lane.md) — **⭐ the lane paid: drive ONE function end-to-end, blockers in order. Don't generalize before one EXACT.**
-- [war2-exact-reference-mismatch](war2-exact-reference-mismatch.md) — **⭐ EXACT must compare the FIXUP-APPLIED image, not raw on-disk bytes.**
-- [war2-survey-manifest-idx-trap](war2-survey-manifest-idx-trap.md) — **key surveys on the FUN_ name in each .c, NEVER the manifest idx.**
-- [war2-recompile-survey](war2-recompile-survey.md) — the recompilation-parity survey; doc `docs/war2-function-status.md`, recipe `docs/war2-recompile-remeasure.md`.
-- [war2-survey-artifacts-stamped](war2-survey-artifacts-stamped.md) — **⭐ `4f929e8` emits are commit-stamped; bare `src/` was a 23.6% BLEND. war2-survey/ is NOT in git.**
-- [war2-stackptr-wrong-code](war2-stackptr-wrong-code.md) — the stackptr patch's historical call-drop; only the CALL-COUNT SCAN caught it. Re-tested in wave 1.
-- [war2-stackpointer-rootcause](war2-stackpointer-rootcause.md) — the live file:line deep-dive map for the RSP/ESP arc.
+- [exact-reference-mismatch (subject-profile note)](exact-reference-mismatch (subject-profile note).md) — **⭐ EXACT must compare the FIXUP-APPLIED image, not raw on-disk bytes.**
+- [the subject survey folder-manifest-idx-trap](the subject survey folder-manifest-idx-trap.md) — **key surveys on the FUN_ name in each .c, NEVER the manifest idx.**
+- [recompile-survey (subject-profile note)](recompile-survey (subject-profile note).md) — the recompilation-parity survey; doc `<subject-profile>/notes/function-status.md`, recipe `docs/corpus-round-runbook.md`.
+- [the subject survey folder-artifacts-stamped](the subject survey folder-artifacts-stamped.md) — **⭐ `4f929e8` emits are commit-stamped; bare `src/` was a 23.6% BLEND. <subject-survey>/ is NOT in git.**
+- [stackptr-wrong-code (subject-profile note)](stackptr-wrong-code (subject-profile note).md) — the stackptr patch's historical call-drop; only the CALL-COUNT SCAN caught it. Re-tested in wave 1.
+- [stackpointer-rootcause (subject-profile note)](stackpointer-rootcause (subject-profile note).md) — the live file:line deep-dive map for the RSP/ESP arc.
 - [rule-indirect-collapse-unblocks-stackptr](rule-indirect-collapse-unblocks-stackptr.md) — the 25 panics were a MISSING RULE (`RuleIndirectCollapse`, `006fabc`), not a flag.
-- [war2-remediation-campaign](war2-remediation-campaign.md) — remediation #1-#3 complete; remaining gap deep.
-- [war2-le-fixups-root-cause](war2-le-fixups-root-cause.md) — `cbd6295`: `load_le` applies LE fixups → 541→1279 funcs.
-- [war2-function-set-ground-truth](war2-function-set-ground-truth.md) — **⭐ WAR2 truth = the expert tracker (2120), NOT Ghidra 1944; real gap 820 not 641.**
-- [war2-tracker-anchors-mid-prologue](war2-tracker-anchors-mid-prologue.md) — **⭐ the tracker records save-first entries at the `push ebp`; score SHIFT-TOLERANTLY or overstate the gap by 50. Real gap 42, not 92. A DISTRIBUTION can be an artifact too.**
-- [war2-dos4gw-le](war2-dos4gw-le.md) — **⭐ warcraft2-re's ELF32 wrapper gives Ghidra FULL whole-image analysis — it beats the per-function recipe.**
-- [war2-branchind-classification](war2-branchind-classification.md) — the 9 unrecovered BRANCHIND classified; loader ruled out.
+- [remediation-campaign (subject-profile note)](remediation-campaign (subject-profile note).md) — remediation #1-#3 complete; remaining gap deep.
+- [le-fixups-root-cause (subject-profile note)](le-fixups-root-cause (subject-profile note).md) — `cbd6295`: `load_le` applies LE fixups → 541→1279 funcs.
+- [function-set-ground-truth (subject-profile note)](function-set-ground-truth (subject-profile note).md) — **⭐ the subject truth = the expert tracker (2120), NOT Ghidra 1944; real gap 820 not 641.**
+- [tracker-anchors-mid-prologue (subject-profile note)](tracker-anchors-mid-prologue (subject-profile note).md) — **⭐ the tracker records save-first entries at the `push ebp`; score SHIFT-TOLERANTLY or overstate the gap by 50. Real gap 42, not 92. A DISTRIBUTION can be an artifact too.**
+- [dos4gw-le (subject-profile note)](dos4gw-le (subject-profile note).md) — **⭐ the RE tracker's ELF32 wrapper gives Ghidra FULL whole-image analysis — it beats the per-function recipe.**
+- [branchind-classification (subject-profile note)](branchind-classification (subject-profile note).md) — the 9 unrecovered BRANCHIND classified; loader ruled out.
 
-- [war2-pragmatism-over-faithfulness](war2-pragmatism-over-faithfulness.md) — **⭐ USER RULE 2026-08-05: for WAR2 PRAGMATISM wins — but beyond-Ghidra has NO ORACLE: validate against a 2nd oracle, stay ADDITIVE.**
+- [pragmatism-over-faithfulness (subject-profile note)](pragmatism-over-faithfulness (subject-profile note).md) — **⭐ USER RULE 2026-08-05: for the subject PRAGMATISM wins — but beyond-Ghidra has NO ORACLE: validate against a 2nd oracle, stay ADDITIVE.**
 
 - [void-proto-is-body-elimination](void-proto-is-body-elimination.md) — **⭐ `void_proto` is the SYMPTOM: the body was deleted as dead code because the return register wasn't recognized. The 5-byte `void FUN(void){return;}` rows are ELIMINATED bodies, not stubs.**
-- [byte-exact-class-map-2026-08-11](byte-exact-class-map-2026-08-11.md) — **⭐ every defect class MEASURED: no single lever >216 fns. Phase-1 lane + warcraft2-re's proven C is the sharpest oracle.**
+- [byte-exact-class-map-2026-08-11](byte-exact-class-map-2026-08-11.md) — **⭐ every defect class MEASURED: no single lever >216 fns. Phase-1 lane + the RE tracker's proven C is the sharpest oracle.**
 - [wcc386-disassembly-notes](wcc386-disassembly-notes.md) — how to reach wcc386 10.0a's code: LX stub + flat payload, code at file 0x30000-0x71000; **VA = file - 0x2200** (the "base = file offset" claim was corrected 2026-08-22).
 - [prologue-order-is-chain-frame](prologue-order-is-chain-frame.md) — **⭐ ANSWERED: the +3 is Watcom's CHAIN_FRAME branch, forced by `-of+`. flags.py infers `-of+` from seeing a frame — unsound.**
 - [plus3-is-lea-esp-prologue-order](plus3-is-lea-esp-prologue-order.md) — **⭐ the +3 bucket (216 fns) is `lea esp,[ebp-N]`: register saved AFTER the frame instead of before. Also why ZERO mismatches have equal length.**
 - [caller-evidence-prototypes](caller-evidence-prototypes.md) — **⭐ `54ef51f` per-call prototype (overwrites+reads) LANDED, gated; gap = both-input-and-output register.**
-- [war2-crt-identified-by-omf-lib-search](war2-crt-identified-by-omf-lib-search.md) — ⭐ warcraft2-re's 152 `crt-known` rows are free non-circular ground truth.
+- [crt-identified-by-omf-lib-search (subject-profile note)](crt-identified-by-omf-lib-search (subject-profile note).md) — ⭐ the RE tracker's 152 `crt-known` rows are free non-circular ground truth.
 ## Function discovery (analysis lane)
 - [command-queue-modelled-as-change-channel](command-queue-modelled-as-change-channel.md) — **⭐⭐ THE ROOT CAUSE: Ghidra's `disassemble()`/`createFunction()` are COMMAND-QUEUE pushes; we model them as change notifications, so they silently drop. Explains the 374-function listing hole AND the re-fire loop.**
 - [empty-bodies-take-the-permissive-branch](empty-bodies-take-the-permissive-branch.md) — **⭐ an empty body doesn't blur a ported body query, it INVERTS it to the permissive branch; the fix can legitimately REMOVE refs. Carries the `added()`-called-directly vacuity trap.**
@@ -169,4 +169,4 @@ Keep this current, not historic. If a line grows past ~1.5 lines, move the detai
 ## Pre-existing (were already versioned here)
 - [mosura-project](mosura-project.md) — Rust port of Ghidra logic; pinned to Ghidra 12.0.3 (matches MCP oracle); SLEIGH-engine-first test-baseline strategy.
 - [respect-plan-decisions](respect-plan-decisions.md) — respect agreed plan decisions; ask approval before changing any.
-- [WAR2's remaining gap is structural](war2-remaining-gap-is-structural.md) — 81% of mismatches differ in >40% of instructions; only ~97 are near-misses, so 600 cannot come from the tail.
+- [the subject's remaining gap is structural](remaining-gap-is-structural (subject-profile note).md) — 81% of mismatches differ in >40% of instructions; only ~97 are near-misses, so 600 cannot come from the tail.

@@ -1,12 +1,12 @@
 # Stage 3 checkpoint — persistent per-CALL output trial lifecycle (`FuncCallSpecs::activeoutput`)
 
-**Status: GROUNDED, build not started. Owner: war2-remediation (decompiler agent).**
+**Status: GROUNDED, build not started. Owner: remediation (subject-profile note) (decompiler agent).**
 This doc is the warm-resume anchor: it holds the complete Ghidra mechanism, mosura's current
 state, the crux, the prior-attempt lessons, and the brick plan. Read it before writing any code.
 
 ## Goal
 
-Retire the 473-function `extraout_`/`unaff_` reg-artifact MISMATCH class (WAR2 survey) + the
+Retire the 473-function `extraout_`/`unaff_` reg-artifact MISMATCH class (the subject survey) + the
 D4-residual bare-return + P6, by giving every CALL its own **persistent output-trial lifecycle**,
 so `uVar = FUN_...()` is captured even when the function's own RETURN doesn't use the value. This
 RETIRES the D5 `resolve_call_output` post-heritage local scan (`recover.rs:913`) once the faithful
@@ -87,7 +87,7 @@ Action order (coreaction.cc:5490-5688): actmainloop { Heritage:5492 · **ActionA
   (avoid over-recovering every clobber as an output). Verify the `possibleoutput` flag's dead-code
   liveness matches Ghidra (a possible-output creation is held as a candidate; a pure clobber dies).
 - **Brick 4 — retire D5 local scan.** Once Bricks 1–3 cover it, delete the `resolve_call_output`
-  backward-scan body; prove byte-parity on corpus + deepchain + is_even/is_odd. Re-measure WAR2
+  backward-scan body; prove byte-parity on corpus + deepchain + is_even/is_odd. Re-measure the subject
   (extraout_ 93 → target lower; MISMATCH reg-artifact class).
 
 ## Brick 0 finding (DONE, read-only trace @ ca4532e tree)
@@ -156,5 +156,5 @@ find; the persistent call `activeoutput` alone still gets its creation pruned ea
 
 Corpus `cargo test --release --test decompile_corpus` BYTE-IDENTICAL (0.9513/57) or STOP+report to
 lead (no self-approve on fixture moves); `cargo test --release` green; `cargo clippy --all-targets`
-0; then WAR2 re-measure + doc update. A revert of newly-written code is a process failure — Brick 0
+0; then the subject re-measure + doc update. A revert of newly-written code is a process failure — Brick 0
 instrumentation must confirm the mechanism before Brick 2's code lands.

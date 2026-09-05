@@ -694,7 +694,7 @@ Adding debug info to the corpus perturbs existing numbers, so, per
 - Function-count and FID-coverage baselines must be re-cut when debug-derived functions appear:
   debug info creates functions discovery would not have found, and names functions FID would
   otherwise have named. Report the two effects separately or the FID numbers become unreadable.
-- The DOS-era corpus is unaffected — it has no debug info at all (§2) — so `WAR2`, Descent,
+- The DOS-era corpus is unaffected — it has no debug info at all (§2) — so `the subject`, Descent,
   Flashback, Worms and POOL.EXE measurements are untouched by this whole track.
 
 ## 7. Phases and exit criteria

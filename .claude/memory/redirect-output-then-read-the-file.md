@@ -22,10 +22,10 @@ it once, then query it as often as needed.
 **Why:** on 2026-08-07 I ran the full workspace suite (~10 min on a 600 KB binary), grepped one
 pattern, then **re-ran the entire suite** just to sum the pass/fail totals — a number that was
 already in the output I had discarded. The user stopped it. In this project a single run is minutes:
-a WAR2 analysis is ~4 min, `ground_truth_parity` ~145 s, `analysis_parity` ~230 s, the workspace
+a subject analysis is ~4 min, `ground_truth_parity` ~145 s, `analysis_parity` ~230 s, the workspace
 suite ~10 min. Re-running to re-read is one of the most expensive mistakes available.
 
-**Applies to:** test suites, WAR2 runs, Ghidra `analyzeHeadless`, corpus sweeps, dosemu builds —
+**Applies to:** test suites, the subject runs, Ghidra `analyzeHeadless`, corpus sweeps, dosemu builds —
 anything that takes more than a few seconds.
 
 ⚠️ Corollary: pipe the **whole** output to the file, not a pre-filtered subset. `cmd | grep X > f`

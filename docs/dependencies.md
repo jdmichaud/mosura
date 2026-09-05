@@ -21,7 +21,7 @@ reader can place a dependency anywhere and name it there. No environment variabl
 
 **A clean clone + the pinned Ghidra processor data + the in-repo committed goldens/fixtures
 runs the full `cargo test` suite.** Everything else — the Ghidra C++ oracle tools,
-`analyzeHeadless`, the cross-toolchains, Open Watcom, dosemu2, `warcraft2-re`, and the
+`analyzeHeadless`, the cross-toolchains, Open Watcom, dosemu2, `the RE tracker`, and the
 user-provided binaries — is **regeneration-only**: it exists to re-derive the committed
 goldens and fixtures, and is never touched by `cargo test`. The user-provided-binary gates
 **skip when the file is absent**, so they never fail a clean checkout.
@@ -34,7 +34,7 @@ Two tiers, made explicit:
 - **DEV-ORACLE** — needed **only** to regenerate goldens/fixtures, **not** by `cargo test`:
   `oracle/capture`(+`_trace`), `decomp_dbg`/`decomp_test_dbg`, `analyzeHeadless`, the
   cross-toolchains, Open Watcom, the historical Watcom 10.0a toolchain, dosemu2,
-  `warcraft2-re`, and the user-provided binaries.
+  `the RE tracker`, and the user-provided binaries.
 
 ## Inventory
 
@@ -99,7 +99,7 @@ Notes on the Ghidra BUILD/TEST dependency:
 | **Open Watcom** (built `wcc386`, native Linux) | `GT_WATCOM → $HOME/tools/open-watcom` (`wcc386` at `$GT_WATCOM/binl/wcc386`) | built from git `open-watcom/open-watcom-v2` HEAD `4e566a7891`; **source tree dropped, only the ~295 MB release retained** (grounding is committed — cspec citations + inlined banner strings) | empirical `watcall` cross-check + `watcall_probe.c` + the `narrowsw`/`watprog` ground-truth columns (runs native on Linux — no dosemu2) |
 | **Watcom 10.0a toolchain** (historical, under dosemu2) | *unpinned — see [Gaps](#gaps--honesty-notes)* | release **10.0a** (not publicly pinned) | `watcom_hello.exe` fixture + CLIB3R.LIB banner strings |
 | **dosemu2** (to run the DOS Watcom 10.0a tools) | `n/a` (PATH: `dosemu`) | `dosemu2-2.0pre9-dev-20260428-4642-gc24eb0498` (source/PPA build, not dpkg-owned) | prerequisite for the Watcom 10.0a fixture regen only |
-| **warcraft2-re** (RE ground truth, read-only) | `WARCRAFT2_RE → $HOME/projects/warcraft2-re` | git `github.com/jdmichaud/warcaft2-re` HEAD `71f8193` | reference (not executed): WAR2 objects/entry/switch ground truth for the native-LE two-oracle path |
+| **the RE tracker** (RE ground truth, read-only) | no key — a read-only checkout beside the workspace | the RE tracker repository (private), a pinned HEAD | reference (not executed): the subject objects/entry/switch ground truth for the native-LE two-oracle path |
 
 ### Historical toolchain media — where it is, and what it unlocks
 
@@ -130,14 +130,14 @@ against.
 
 | Binary | Locator (env → default) | sha256 / size | Used by | What it validates |
 | --- | --- | --- | --- | --- |
-| `WAR2.EXE` (DOS/4GW-bound Watcom LE) | `binaries.war2 → $HOME/WAR2.EXE` | `4789987d1c4f4c3d02ad28cd20377d58d54f51c1fd2976d842ac33861eed0f63` / 878119 B | `le_war2_analysis`, `le_war2_objects`, `watcom_detection` | native-LE analysis + Watcom detection ground truth |
+| a **subject binary** under study (e.g. a DOS/4GW-bound Watcom LE) | a `[[subject]]` entry: `id` (its sha256 prefix), `path`, `profile` (the directory of everything about it — goldens, gates, expectations, notes) | recorded in its profile | the subject tests (`le_subjects_*`, `subjects_*`, the corpus gates); all skip with a note when no subject is configured |
 | `cnv.exe` (Clang PE) | `binaries.cnv → $HOME/cnv.exe` | `132b8d5c005cc0cdb6c5e7f91d326eb1339f4faf97c132c94552bc6d65dd9903` / 1075200 B | `pe_compiler_opinion` | `PeLoader.CompilerOpinion` → `clangwindows`/`clang:unknown` |
 | `msc16.exe` (16-bit Microsoft C DOS program) | `binaries.msc16 → $HOME/msc16.exe` | `bf6cef92ae8606180b907c4f901734470699b9bb999fed23a744e27eb19644ea` / 162012 B | `fid_msc_identify` | 16-bit real-mode analysis + the `msc-7.0-*` FID columns and the 16-bit MS run-time banner (`docs/flashback-corpus-notes.md`) |
 | `x32.exe` (FlashTek X-32 / X-32VM-bound 32-bit DOS exe) | `binaries.x32 → $HOME/x32.exe` | `2e22dab11d4ae283acf89ce16944b83f9c4e88ba510fe09608f1e6685a4cf294` / 325075 B | `x32_loader::real_x32_binary_analyses_cleanly` | native X-32 analysis ground truth (`docs/x32-loader-notes.md`); the synthetic gates in that file need no binary |
 | `comcom32.exe` (DJGPP MZ) | `binaries.comcom32 → $HOME/.local/share/comcom32/comcom32.exe` | `e079ab24ef15a2855fde282c4a2fc020b09fc720487e67b82ec2f2f0c98cea56` / 219648 B | `watcom_detection` | Watcom no-false-positive (non-Watcom MZ → `unknown`) |
 
 > **Implemented (task #6).** These three env vars are live, resolved by
-> `crates/mosura/src/paths.rs::{war2_exe, cnv_exe, comcom32_exe}` (env override, else the
+> `crates/mosura/src/paths.rs::{ cnv_exe, comcom32_exe}` (env override, else the
 > `$HOME`-relative default above — the same convention as `ghidra_src`). The
 > tests (`analysis_parity.rs`, `analysis/loader/{pe,mz}.rs`, `analysis/mod.rs`) and
 > `scripts/capture-analysis.sh` + `scripts/ci-clean-clone.sh` all honor them; no absolute path
@@ -184,7 +184,7 @@ For the Ghidra oracle/dist builds — **not** needed by `cargo test`:
 Used **only** to regenerate PE/MZ compiler-detection fixtures (`pe_compiler_opinion`) and the
 Watcom banner→version table (`watcom_detection`); the resulting fixtures + goldens are
 **committed**, so `cargo test` never needs any of this. All of it is a beyond-Ghidra /
-WAR2-recompilation aid, not a build/test dependency.
+the subject-recompilation aid, not a build/test dependency.
 
 - **Toolchain archives** live outside the repo (the `[toolchains]` keys; e.g. `$HOME/projects/tools`)
   (env-var-located, `$HOME`-relative default — no absolute path). Three families, each as raw
@@ -235,11 +235,11 @@ package.
   **Open Watcom** build is pinned and present, but it emits the *Open Watcom Contributors*
   banner, not the classic *WATCOM International Corp.* one — a different era fingerprint — so
   it does not substitute for 10.0a as the fixture source.) Follow-up: task #14.
-- **The `[binaries]` locators are implemented** (task #6; dev-config since 2026-09-05) — `paths.rs::{war2_exe,cnv_exe,comcom32_exe}`;
+- **The `[binaries]` locators are implemented** (task #6; dev-config since 2026-09-05) — `paths.rs::{cnv_exe,comcom32_exe}`;
   tests + scripts honor them with `$HOME`-relative defaults (no hard-coded absolute paths).
 - **dosemu2 is a source/PPA build**, not a distro package, so its pin is the build-string
   version rather than an `apt` version.
-- **`warcraft2-re` origin spells `warcaft2-re`** (single `r`) in the remote URL — recorded
+- **`the RE tracker` origin spells `warcaft2-re`** (single `r`) in the remote URL — recorded
   verbatim so the clone URL is correct.
 
 ## Reproduction entry points (for context)

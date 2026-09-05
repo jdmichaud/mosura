@@ -1,13 +1,13 @@
 # Verified-faithful (NOT a bug): a void-typed indirect-call result, exactly like Ghidra
 
-**Status: VERIFIED FAITHFUL — do not "fix".** This reclassifies the WAR2 survey's largest
+**Status: VERIFIED FAITHFUL — do not "fix".** This reclassifies the subject survey's largest
 COMPILE_FAIL class (`E1052 Expression has void type`, ~34) out of the actionable type-inference set.
 The premise that a faithful type-inference port could make `iVar = (*(code *)p)();` compile is FALSE,
 proven against full-analysis `analyzeHeadless` — Ghidra emits the identical uncompilable construct.
 
 ## The symptom
 
-WAR2 functions of the shape `iVar8 = (*(code *)ptr)();` — the result of an indirect call through an
+the subject functions of the shape `iVar8 = (*(code *)ptr)();` — the result of an indirect call through an
 opaque (memory-loaded, no recoverable prototype) code pointer is assigned to an integer variable.
 `wcc386` rejects it:
 
@@ -72,14 +72,14 @@ The verdict above was over-extended into "these functions must stay COMPILE_FAIL
 follow, and it caused 47 functions to be parked twice.
 
 "Do not fix" binds the **decompiler**. `prelude.h` is not the decompiler — it is *our* compile-support
-header, written by `crates/mosura/examples/war2_survey.rs`'s `PRELUDE` constant, and it exists
+header, written by `crates/mosura/examples/corpus_emit.rs`'s `PRELUDE` constant, and it exists
 precisely to make Ghidra-shaped C compilable under Watcom C89. It declared `typedef void (*code)();`,
 so the faithful text `iVar9 = (*(code *)p)();` was rejected as E1052. Declaring `typedef int
 (*code)();` compiles the identical, unchanged decompiler output. The decompiler's untyped-return
 ceiling is real; it just never implied an uncompilable *harness*.
 
 How the double-park happened, and the mechanization that stops it recurring: the typedef was
-hand-edited in the GENERATED `war2-survey/prelude.h`, measured (COMPILE_FAIL 75 → 29, E1052 47 → 0)
+hand-edited in the GENERATED `<subject-survey>/prelude.h`, measured (COMPILE_FAIL 75 → 29, E1052 47 → 0)
 and written up in commit `26db108` — but the `PRELUDE` constant that *generates* that file was never
 changed. The next EMIT restored `void`, the next compile produced 74 E1052 lines in
 `dos/WCCOUT.TXT`, and the 47 fresh COMPILE_FAILs were re-adjudicated against *this document* as
@@ -87,7 +87,7 @@ changed. The next EMIT restored `void`, the next compile produced 74 E1052 lines
 (`iVar9 = (*(code *)(*((xunknown4 *)(iVar1 + -0x10))))();`) is indeed this construct — the
 adjudication was right about the construct and wrong about the conclusion.
 
-Now: the typedef is fixed at the source; `war2_survey --prelude-only <dir>` regenerates the header
+Now: the typedef is fixed at the source; `corpus_emit --prelude-only <dir>` regenerates the header
 without a re-emit; `compile.sh` records `prelude_sha=` in `.compile-complete`; and `compare.py`
 stamps it into `results.tsv`'s header and refuses to score if `prelude.h` moved since the compile.
 No COMPILE_FAIL number can be attributed to a prelude the run did not use.

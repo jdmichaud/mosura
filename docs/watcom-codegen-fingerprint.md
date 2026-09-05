@@ -1,10 +1,10 @@
 # Watcom codegen fingerprinting — pinning the exact revision
 
 Watcom's runtime banner is an **era** stamp (copyright year range) and no header field
-carries the exact release for **DOS/4GW LE** output (the WAR2 case) — see
+carries the exact release for **DOS/4GW LE** output (the subject case) — see
 [`watcom-detection.md`](watcom-detection.md). The exact revision is recoverable only from the
 **code the compiler generates**: different `wcc386` revisions make different instruction /
-register-allocation choices for the same source. This is the signal that pins WAR2's exact
+register-allocation choices for the same source. This is the signal that pins the subject's exact
 Watcom revision and feeds byte-exact recompilation (the `D1` north star).
 
 ## Check order: banner first, always
@@ -136,8 +136,8 @@ see the correction at the end of this file.)
 ## The `version → fingerprint` table (measured across the lineage)
 
 Each revision compiled the probe under dosemu (native OW 2.0 directly); `cmpbyte` disassembled
-with `wdis`. The **byte-compare-promotion** — the divergence the `warcraft2-re` A-level-patch
-note tied to WAR2 — pins the boundary:
+with `wdis`. The **byte-compare-promotion** — the divergence the `the RE tracker` A-level-patch
+note tied to the subject — pins the boundary:
 
 `cmpbyte(unsigned char c){ return c == 5; }`
 
@@ -174,7 +174,7 @@ was wrong in one direction:
 - **`cmp eax,5` (promote) is unique to 10.0a**, and 9.01 makes that claim *stronger*, not weaker:
   the promotion is a one-revision anomaly with plain byte compares on both sides of it, not the
   "early Watcom" behaviour it looked like when 10.0a was the oldest column. This is exactly the
-  WAR2 base the `warcraft2-re` codegen investigation identified, now confirmed through mosura's
+  the subject base the `the RE tracker` codegen investigation identified, now confirmed through mosura's
   tooling.
 - **`+movzx` is NOT a "classic → Open Watcom" marker.** 9.01 emits it, 10.0a/10.6/11.0 do not, and
   Open Watcom does again. It brackets the lineage's **outer ends**; the classic 10.0a-11.0
@@ -199,7 +199,7 @@ Boundaries, per construct: the `movzx` (**9.01 → 10.0a** *and* **11.0 → OW**
 two ends), byte-compare-promotion (**10.0a → 10.6**, a one-revision anomaly), `loop` bound register
 `ebx→ecx` (**10.6 → 11.0**), and `sw` compare-order (**classic → Open Watcom**). The matcher
 classifies each committed probe **uniquely** (`matches_committed_self_compiled_probes`) — and
-10.0a's `(promote, ebx, ascending)` tuple is the WAR2 base fingerprint.
+10.0a's `(promote, ebx, ascending)` tuple is the subject base fingerprint.
 
 **9.01 required a new `TABLE` row, not a new `Signals` variant.** Its tuple
 `(byte compare, movzx, ebx, ascending)` is expressible in the four existing signal columns; what it
@@ -266,7 +266,7 @@ Revisions currently covered: `7.0`, `8.5a`, `9.01`, `9.5b`, `10.0-beta`, `10.0a`
      `{9.01, open}` — two independent, mutually-corroborating anchors, either sufficient). Absence
      is inconclusive. The register/loop/switch artifacts are dropped at this scale (register choice
      varies per site), which is exactly why 9.01 and Open Watcom cannot be separated here — those
-     two artifacts are the only things that separate them. Result: a class (the era — what WAR2
+     two artifacts are the only things that separate them. Result: a class (the era — what the subject
      needs), never a wrong exclusion.
 
 The remaining depth (turning a class into an exact minor revision on an arbitrary binary) needs
@@ -285,7 +285,7 @@ Notes: 11.0's DOS host lives in `BINW` (with its own `W32RUN.EXE`), 10.0a's in `
 - **Matcher**: mosura disassembles an unknown binary (dogfooding its own engine), locates the
   equivalent constructs, and matches against the table to report the revision — the codegen
   counterpart to the header-field `compiler_version` detector.
-- **WAR2**: its banner era (`1988-1994`) + DOS/4GW Professional pin the **10.0 family**; the
+- **the subject**: its banner era (`1988-1994`) + DOS/4GW Professional pin the **10.0 family**; the
   byte-compare-promotion then selects the exact revision. That anchor got NARROWER, and therefore
   stronger, once the beta was measured: the promoting form is unique to **10.0a retail**, not to
   "the 10.0 line" — its own beta, and 9.5b/10.5/10.6 either side, all emit the non-promoting form.
@@ -309,11 +309,11 @@ bpatch deltas and `APPLYA.BAT`) documents the promoting byte compare as a **fix*
 compare of an unsigned type shorter than an int and a constant which could be
 represented in that type would be done as the original type instead of being promoted
 to an integer."* So the excursion's left edge is the a-level patch itself, measured AND
-documented. WAR2 carries the promotion at 103 instruction-verified byte-load sites
-(`dumpfp`), so its compiler is at-or-after a-level. The full WAR2 toolchain synthesis —
+documented. the subject carries the promotion at 103 instruction-verified byte-load sites
+(`dumpfp`), so its compiler is at-or-after a-level. The full the subject toolchain synthesis —
 including the LEA-fold table across the lineage and the `-5r` in-place-scale gate that
 moved the recompile profile off `-4r` — is
-[`war2-toolchain-synthesis.md`](war2-toolchain-synthesis.md). (Provenance caution for
+[`watcom-toolchain-synthesis.md`](watcom-toolchain-synthesis.md). (Provenance caution for
 [`watcom-detection.md`](watcom-detection.md)'s banner table: the shelf's
 `Watcom_C++_10.0.iso` is the 10.0a disc under another name — volume `WATCOM_C10A`,
 identical listing — so a "10.0 retail" row sourced from it is 10.0a data; no genuine GA
@@ -331,7 +331,7 @@ beta and 10.0a retail, and was gone again by 10.5. 10.0a is a single-release exc
 measured revisions agreeing against it, two on each side. Nothing can be interpolated *to* it or
 *through* it.
 
-This **sharpens** WAR2's identification rather than weakening it: the promoting form is now known
+This **sharpens** the subject's identification rather than weakening it: the promoting form is now known
 to be unique to one release, not merely to "the 10.0 line". Gated by
 `watcom_10_0a_is_a_one_release_excursion`.
 
@@ -385,7 +385,7 @@ matcher separates them. The old label claimed a precision it never had.
 > would have given the wrong answer.
 
 That is the sharpest available argument against inferring an unmeasured revision from the ones
-around it, and it is gated by `watcom_9_5b_is_not_on_a_monotonic_lineage`. WAR2 is unaffected: its
+around it, and it is gated by `watcom_9_5b_is_not_on_a_monotonic_lineage`. the subject is unaffected: its
 identification rests on 10.0a's promoting `cmp eax,5`, still unique to that row.
 
 **The banner still separates what the codegen cannot.** Read from each install's own `clib3r.lib`:
@@ -514,7 +514,7 @@ Consequences, all landed:
   `watcom:open` was a wrong exclusion of the kind that matcher exists to avoid.
 - `inline_const_div_anchor_fires_on_ow2_not_classic` is renamed
   `inline_const_div_anchor_fires_on_the_cdq_revisions` and now asserts the anchor on 9.01 too.
-- **WAR2 is unaffected.** Its fingerprint is the *promoting* `cmp eax,5`, which is 10.0a's alone
+- **the subject is unaffected.** Its fingerprint is the *promoting* `cmp eax,5`, which is 10.0a's alone
   and is a positive 10.0-line anchor, not a `movzx`/`cdq` one. Nothing about the 10.0a base
   identification rests on the corrected claim.
 

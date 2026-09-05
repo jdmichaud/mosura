@@ -19,7 +19,7 @@ Ghidra iterates addresses: `CreateFunctionCmd.java:158` `origEntries.getAddresse
 `addrsLeft <= 4`** — a SHORT range contributes every address as a seed, a LONG one is
 flow-disassembled from its minimum and the decoded extent deleted.
 
-⚠️ **Do not "fix" this by seeding every address of every range.** Measured: that turns the war2 MZ
+⚠️ **Do not "fix" this by seeding every address of every range.** Measured: that turns the subject MZ
 over-decode bound from 8 to 53. The `<= 4` cut is the line that governs it, and it is Ghidra's.
 
 Sites found: `Disassembler::added` and `FunctionCreator::added` (`analyzers/mod.rs`) — fixed;

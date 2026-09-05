@@ -1,6 +1,6 @@
 ---
 name: perf-constants-are-configuration-scoped
-description: "A per-call cost measured on one (language, compiler spec) is not that cost on another — resolve_cspec spans 1.14ms to 118.6ms across four configurations, and extrapolating produced a confident wrong root cause for WAR2"
+description: "A per-call cost measured on one (language, compiler spec) is not that cost on another — resolve_cspec spans 1.14ms to 118.6ms across four configurations, and extrapolating produced a confident wrong root cause for the subject"
 metadata:
   node_type: memory
   type: feedback
@@ -13,8 +13,8 @@ profiled onto the binary you care about, check that both take the same path.
 **Why, concretely (2026-08-10).** `lang::resolve_cspec` re-walked every processor directory and
 re-XML-parsed every `.ldefs` on each call. Measured on `mingw_hello.exe` (`x86:LE:64` + `windows`)
 at **34.7–118.6 ms/call**, it was 94% of Constant Propagation. Real defect, correctly found, fix
-landed (`f435e89`, `5760850`). Then I extrapolated that constant onto WAR2 to explain its ~1.5 s
-per-invocation floor — and WAR2 **never pays it**:
+landed (`f435e89`, `5760850`). Then I extrapolated that constant onto the subject to explain its ~1.5 s
+per-invocation floor — and the subject **never pays it**:
 
 ```
 x86:LE:64:default  windows   118.6 ms      x86:LE:32:default  watcom     1.14 ms
@@ -22,7 +22,7 @@ x86:LE:64:default  gcc        42.1 ms      x86:LE:32:default  gcc       34.7 ms
 ```
 
 `resolve_cspec` short-circuits at `lang.rs:49` on the mosura-authored `specs/x86-32-watcom.cspec`
-and returns **before the tree walk starts**. WAR2 LE is `x86:LE:32:default` + `watcom`
+and returns **before the tree walk starts**. the subject LE is `x86:LE:32:default` + `watcom`
 (`loader/le.rs:243`), so its per-walk setup is ~1.7 ms — **22× smaller**. A factor of ~100 hides
 between two rows of the same function. Correction: `22f7216`.
 
@@ -32,9 +32,9 @@ fixed while the account of WHERE it bites is wrong.** The fix's own numbers cann
 they are from the configuration that does pay.
 
 ⭐ **I made the SAME mistake twice in one task, and the second time I did not notice.** Having
-retracted the WAR2 attribution, I still declared Decompiler Switch's 247 s baseline **STALE** —
+retracted the subject attribution, I still declared Decompiler Switch's 247 s baseline **STALE** —
 because `decompile/build.rs` asks three of the same cached accessors per function, so it "must"
-have moved for free. On `mingw_hello` it had (5.547 s → 0.400 s). On WAR2 the lead measured
+have moved for free. On `mingw_hello` it had (5.547 s → 0.400 s). On the subject the lead measured
 **247.1 s → 249.3 s: zero.** Same short-circuit, same lesson, one layer over. **A free win from a
 shared root is a PREDICTION, not a consequence** — do not retire another agent's baseline on one,
 because "your number is stale" sends someone off to re-measure work that was never affected.
@@ -47,7 +47,7 @@ because "your number is stale" sends someone off to re-measure work that was nev
   `flow_constants` (126 calls / 126 walks), not per call site. One `AtomicU64` settled a question
   two people had hypotheses about.
 - **Withdrawing early is what makes a later measurement a confirmation.** The retraction landed
-  before the lead's WAR2 run; when the run came back flat it *corroborated* the finding instead of
+  before the lead's the subject run; when the run came back flat it *corroborated* the finding instead of
   exposing it. The same words after the run would have been an excuse.
 
 **How to apply:** when a fix is justified by a per-call constant, name the configuration the

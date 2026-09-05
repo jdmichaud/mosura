@@ -5,7 +5,7 @@ metadata:
   type: project
 ---
 
-**⭐ `void_proto` (the smell that dominates every top-5 WAR2 mismatch cluster) is, for the
+**⭐ `void_proto` (the smell that dominates every top-5 the subject mismatch cluster) is, for the
 non-default-convention population, the SYMPTOM of whole-body dead-code elimination — not a
 prototype-printing bug. Fix the body, and the prototype follows.**
 
@@ -26,7 +26,7 @@ The chain, in order — each step is correct given the last, which is why it is 
 4. `recover_input_params` (fspec.rs:1178) finds no trials → the prototype is `(void)`.
 
 **This explains the 5-byte `void FUN(void){ return; }` rows in the survey.** The user flagged them
-as implausible — "don't seem like a function warcraft2 would need" — and was right: they are not
+as implausible — "don't seem like a function the subject would need" — and was right: they are not
 stubs, they are functions whose ENTIRE BODY was eliminated. Any census that reads them as trivial
 functions is miscounting the defect. Same root as the plan's open finding "non-default register
 conventions silently lose instructions" (FUN_00074744 and siblings).
@@ -64,6 +64,6 @@ Note while reading: Ghidra guards that early return with `if (!trial->hasCondExe
 (fspec.hh:221). mosura has no `condexe_effect` flag at all, so the guard is INERT rather than
 mis-ported — it can only matter once conditional-execution marking is ported.
 
-Related: [[caller-evidence-prototypes]], [[war2-byte-exact-campaign]],
+Related: [[caller-evidence-prototypes]], (subject-profile note `byte-exact-campaign`),
 [[watcall-killedbycall-too-aggressive]], [[goal-is-the-binary-not-ghidra]],
 [[gate-what-you-measured-not-what-you-guessed]].

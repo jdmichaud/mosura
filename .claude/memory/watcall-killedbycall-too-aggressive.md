@@ -28,14 +28,14 @@ sink_  01 05 6c 90 04 08  add [0x804906c],eax
 
 wcc386 keeps a live loop counter in EDX **across an indirect call**. It would never do that if a
 callee could destroy EDX. Corroborated independently by
-`warcraft2-re/analysis/toolchain.md` (~line 590): WAR2 functions save ECX in their prologues
+`the RE tracker/analysis/toolchain.md` (~line 590): the subject functions save ECX in their prologues
 project-wide, which only makes sense under `#pragma aux DEFAULT … modify exact [eax]` — every
 function preserves everything except EAX.
 
 **The symptom is WRONG CODE.** The spurious `killedbycall` on EDX makes `Heritage::guardCalls`
 insert an INDIRECT that takes over the loop phi's tail input; the `INT_ADD` update's only
 surviving consumer becomes the call argument, so no update statement is emitted and the loop
-cannot terminate. Seen on WAR2 `FUN_00057034` and reproduced on the MVE.
+cannot terminate. Seen on the subject's `FUN_00057034` and reproduced on the MVE.
 
 **Fix belongs in the cspec** (the owner's standing rule: compiler behaviour goes through the
 cspec, never `if (target)` in the core). Before changing the list, verify: (a) re-derive from
@@ -45,7 +45,7 @@ list, which are different clauses; (b) whether the killed set is per-call-site, 
 a callee that genuinely clobbers EDX and see whether the caller spills. Blast radius is every
 call in the binary.
 
-## ⚠️ Ghidra is NOT a valid oracle for any call-effect question on WAR2
+## ⚠️ Ghidra is NOT a valid oracle for any call-effect question on the subject
 
 **Ghidra has no Watcom cspec.** Its x86 options are gcc / win / borland / delphi / golang. Asked
 to decompile the same MVE it reported `CSPEC=gcc default=__cdecl` and emitted
@@ -55,7 +55,7 @@ while (iVar1 < param_1) { (*param_2)(param_3); param_1 = extraout_ECX; iVar1 = e
 ```
 
 — also wrong, merely not infinite. It is modelling a different calling convention than the
-binary uses. The `for` in `war2-survey/ghidra-all.txt` that motivated this whole investigation is
+binary uses. The `for` in `<subject-survey>/ghidra-all.txt` that motivated this whole investigation is
 a per-function-oracle artefact ([[oracle-same-question-not-just-same-tool]]).
 
 **This is [[goal-is-the-binary-not-ghidra]] in its sharpest form yet:** two of us spent an
@@ -64,4 +64,4 @@ in five lines of objdump. When the question is about calling convention or call 
 the compiler's own output first — [[self-compiled-ground-truth]].
 
 Related: [[mve-first-then-solve-the-mve]] (callclob.c is the gate),
-[[could-it-have-come-out-otherwise]], [[war2-dos4gw-le]].
+[[could-it-have-come-out-otherwise]], (subject-profile note `dos4gw-le`).

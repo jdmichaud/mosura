@@ -8,7 +8,7 @@ This document fixes the design and the staged plan so the work does not drift.
 flag on `recompile_check` (denominator wiring, Phase 4). The per-binary confirmation file (Phase 2)
 is **reverse-engineering data about a proprietary binary — it lives with that binary's own artifacts,
 not in the repo.** Default-safe: with no confirmation the classification is exactly today's
-FID/loader set (verified on WAR2: 130 foreign, 0 held). Usage (`<foreign-file>` is the out-of-repo
+FID/loader set (verified on the subject: 130 foreign, 0 held). Usage (`<foreign-file>` is the out-of-repo
 confirmation file):
 
 ```text
@@ -23,7 +23,7 @@ cargo run --release --example foreign_propose -- <binary> --report [--confirm <f
 recompile_check <binary> <manifest> <src> recover <watcom> --exclude-foreign <foreign-file>
 ```
 
-On WAR2 the confirmed `war2.foreign` (Miles/AIL + SciTech UVBE bands) takes foreign from 130→278
+On the subject the confirmed `the subject.foreign` (Miles/AIL + SciTech UVBE bands) takes foreign from 130→278
 (the two bands + their reachable-private helpers), in-scope denominator 2893→2745, 28 held.
 
 ## 1. The one decision this serves
@@ -31,7 +31,7 @@ On WAR2 the confirmed `war2.foreign` (Miles/AIL + SciTech UVBE bands) takes fore
 The recompilation score (EXACT / WGSS) is a fraction whose denominator is "functions we intend to
 reproduce from C." A DOS/4GW game binary is not only the game: the Watcom linker concatenates the
 game's object modules with **foreign** modules it did not author — the C runtime (CRT), and
-licensed libraries (WAR2: Miles/AIL audio, SciTech/UVBE VESA). Foreign code is reproduced by
+licensed libraries (the subject: Miles/AIL audio, SciTech/UVBE VESA). Foreign code is reproduced by
 *linking the library*, not by decompiling it; counting it measures the toolchain, not the port.
 
 mosura already excludes *some* foreign code. This plan is about closing the gap **generically** —
@@ -43,7 +43,7 @@ never mis-classifies another binary's own code as foreign.
 - **`Function::is_identified()`** (`program/function.rs`): a function with a non-default name
   (from a **FID** signature match or a loader symbol) is "identified." The doc-comment there
   already states this is "what decides whether a function belongs in a recompilation denominator."
-- **`kind_of` / `kind_of_insns`** (`examples/war2_survey.rs`): manifest `kind` = `library` when
+- **`kind_of` / `kind_of_insns`** (`examples/corpus_emit.rs`): manifest `kind` = `library` when
   identified, else `user`; a `user` function whose original insns trip
   **`buildconfig::looks_hand_written`** (segment ops, `INT 0x21`, `CS:[…]`, `PUSHF`…) becomes
   `asm`. The survey excludes `library` and `asm` from the denominator.
@@ -56,14 +56,14 @@ has a database for.
 
 Method: `foreign_propose <binary> --facts` (one analysis pass → per-function TSV: VA, size,
 prologue, call-graph degrees, foreign-fingerprint, anchor) reduced by an ad-hoc script. Binaries:
-WAR2.EXE (deep), WRMS.EXE (Worms, degradation case), DESCENTR.EXE (overtraining case). The `--facts`
+the subject binary (deep), WRMS.EXE (Worms, degradation case), DESCENTR.EXE (overtraining case). The `--facts`
 dump is a kept tool, so the table below is reproducible.
 
-| # | Hypothesis | Verdict | Evidence (WAR2 unless noted) |
+| # | Hypothesis | Verdict | Evidence (the subject unless noted) |
 |---|---|---|---|
 | H1 | FID seeds known libraries, no game false-positives | **CONFIRMED** | 130 CRT named (memset/sprintf/…); **0% FID hits below the game/lib seam**; WRMS 107 |
 | H2 | Anchor strings seed foreign functions FID misses | **CONFIRMED** | 66 AIL funcs via self-naming `AIL_startup()` refs; **0 of them FID-known** |
-| H2b | Generic anchor regex over-captures game strings | **CONFIRMED** | 3 stray singletons: `Build.c`, `count.c` (game debug/trace strings that merely contain a `.c` token — WAR2 has no debug info), `UVBELib` (real SciTech, 1 anchor) |
+| H2b | Generic anchor regex over-captures game strings | **CONFIRMED** | 3 stray singletons: `Build.c`, `count.c` (game debug/trace strings that merely contain a `.c` token — the subject has no debug info), `UVBELib` (real SciTech, 1 anchor) |
 | H3 | Locality clustering isolates the module | **CONFIRMED — load-bearing** | AIL = one cluster of 63 anchors in `0x5191e..0x56815`; game strings stay singletons |
 | H4 | A foreign module is a contiguous VA band | **CONFIRMED** | band = 68 funcs, the 5 non-anchored ones are AIL JMP-thunks + a cdecl helper → 100% foreign |
 | H5 | Codegen fingerprint is bimodal (convention) | **CONFIRMED** | foreign leads `56 57`(save esi/edi, cdecl)=93% of band vs 6% of game; game = push ebx/ecx/edx + `89 e5` (__watcall param regs) |
@@ -72,7 +72,7 @@ dump is a kept tool, so the table below is reproducible.
 | H7 | Modules are concatenated game-first, libs-last (master seam) | **CONFIRMED** | `0x10000..~0x50000`: 91–100% watcall, 0% FID, ~3% foreign-fp = game. `0x50000+`: FID 10–26%, foreign-fp 30–56%, watcall falls = library zone |
 | H8 | Degrades safely when signals are absent | **CONFIRMED** | WRMS (release, no traces): 0 anchors → falls back to FID's 107, invents nothing |
 | H9 | Does not overtrain: source-refs are not presumed foreign | **CONFIRMED** | Descent's *entire* anchor set (11 funcs) = its **own** modules `gamesave.c`/`game.c`/`piggy.c`/`fuelcen.c`/`ntmap.c`; auto-flagging would delete the game |
-| H10 | The dominant signal varies by binary | **CONFIRMED** | WAR2 = self-naming traces (AIL); Descent = FID+fingerprint (its libs don't self-name); WRMS = FID-only — only the composite generalizes |
+| H10 | The dominant signal varies by binary | **CONFIRMED** | the subject = self-naming traces (AIL); Descent = FID+fingerprint (its libs don't self-name); WRMS = FID-only — only the composite generalizes |
 
 Load-bearing conclusions:
 - **No single signal is sufficient.** FID misses un-databased libs (AIL/SciTech); anchors are
@@ -83,7 +83,7 @@ Load-bearing conclusions:
 - **The tool must never decide foreign-vs-game by itself, and the human must not have to hunt.**
   The proposer lists candidates; the developer confirms the ones they *recognize* as foreign and
   ignores the rest — default-safe keeps every unconfirmed candidate in scope, so no `reject` and no
-  binary-scanning is required for stray matches (WAR2's `Build.c`/`count.c` are just game trace
+  binary-scanning is required for stray matches (the subject's `Build.c`/`count.c` are just game trace
   strings that happen to contain `.c`; they need no action). `reject` is only for carving a known
   game function out of a *confirmed* foreign span. Only a human — or the fingerprint within a
   confirmed band — ever promotes a band to foreign.
@@ -111,7 +111,7 @@ A **generic engine** consuming **binary-specific data behind a boundary**.
    members whose callers are *all* foreign are foreign (corroborated by fingerprint or the band
    span); members also called by in-scope code are **shared** and are held, never dropped.
    **NOT yet implemented: contiguity-fill to the module seams.** A confirmed band today spans only
-   `[first seed VA, last seed VA]`, so the unanchored head/tail of a module (e.g. WAR2's 191 AIL-
+   `[first seed VA, last seed VA]`, so the unanchored head/tail of a module (e.g. the subject's 191 AIL-
    tail functions past the last `AIL_` string) is reached only if reachability happens to walk into
    it. Filling to the linker's alignment-padding seams would close that — see §6, deferred.
 
@@ -167,7 +167,7 @@ A **generic engine** consuming **binary-specific data behind a boundary**.
   default-off, so a run **without** `--exclude-foreign` reproduces today's number; comparing the two runs is
   the honest "both numbers" (the same idiom as `--include-library`). *A full corpus round to
   measure the WGSS/EXACT delta is a separate, JD-run activity.*
-- **Phase 5 — Generalization gate.** *(DONE)* Proposer run on WAR2 / Descent / WRMS / BLACK: sane
+- **Phase 5 — Generalization gate.** *(DONE)* Proposer run on the subject / Descent / WRMS / BLACK: sane
   bands or none, no per-binary tuning, and **no game-module false exclusion** (Descent's own
   `*.c` bands are proposed but never auto-foreign).
 
@@ -183,7 +183,7 @@ A **generic engine** consuming **binary-specific data behind a boundary**.
 
 ## 6. Coverage, open risks & the decision that stays with JD
 
-**Confirmed coverage is a LOWER BOUND — state it next to the 278.** On WAR2 the foreign-ish zones
+**Confirmed coverage is a LOWER BOUND — state it next to the 278.** On the subject the foreign-ish zones
 hold ~939 functions (AIL `0x5191e–0x5c000` ≈ 259; CRT/SciTech `0x5c000–0x7c520` ≈ 680, of which FID
 already names 128). The confirmed classification excludes **278** — roughly **a third** of the
 foreign code. What it misses: the 191 unanchored AIL-tail functions past the last `AIL_` string
@@ -196,7 +196,7 @@ risking a game false-positive.
 **Three mechanisms would lift coverage without breaking the invariants (deferred, JD to greenlight):**
 - **(a) Module-seam fill — VERIFIED, NOT worth building as proposed (2026-08-25).** Extend a
   confirmed band across the linker's zero-padding-run seams to reach a module's unanchored head/tail.
-  Measured on WAR2 (`dumpseams`, a throwaway probe): the seams are **real but weak** — 171 gaps have
+  Measured on the subject (`dumpseams`, a throwaway probe): the seams are **real but weak** — 171 gaps have
   a leading zero-run ≥4 bytes, 117 ≥8, but the **maximum run is 15 bytes; none ≥16**. So pure
   seam-fill has a **threshold cliff**: at T≤8 it is bounded and clean (AIL band → `0x50b10..0x583c4`,
   +57 tail funcs, 0 game-call FP), but at T≥16 nothing stops it and it engulfs the whole binary

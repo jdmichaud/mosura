@@ -10,7 +10,7 @@ propose a form, compile it, and compare. That makes P3 a **search**, and everyth
 either a fact that shrinks the search space or a measurement of how the search behaves.
 
 Everything here was measured with Watcom C 10.0a at `-4r -fpi87 -s -onatx -d1+` against
-WAR2.EXE, in a single-function compile loop of about **one second per probe**. It is
+the subject binary, in a single-function compile loop of about **one second per probe**. It is
 compiler-specific by construction; treat the catalog as calibrated for this toolchain and re-run
 the probes before trusting any of it on another.
 
@@ -204,7 +204,7 @@ converge structurally but not exactly.
 
 ## Preserved artifacts
 
-`oracle/war2-convergence/` holds the working state, so the reconstructions are not lost:
+`<subject-profile>/notes/convergence/` holds the working state, so the reconstructions are not lost:
 
 * `FUN_0006c6f0.c` — the hand-converged source at its best structural state. Roughly forty
   reconstructions verified line-by-line against the disassembly; re-deriving it is a session of

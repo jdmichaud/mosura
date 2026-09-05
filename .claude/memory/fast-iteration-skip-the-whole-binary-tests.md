@@ -9,7 +9,7 @@ metadata:
 
 ```sh
 # FAST ITERATION — ~27 s total, covers 40 of the 46 tests in these two binaries
-cargo test --release --test analysis_parity      -- --skip le_war2 --skip pe_mz
+cargo test --release --test analysis_parity      -- --skip le_subjects --skip pe_mz
 cargo test --release --test ground_truth_parity  -- --skip ground_truth_parity
 
 # PRE-COMMIT — the full pass, ~10 min, ALWAYS before landing
@@ -26,7 +26,7 @@ ground_truth_parity      143.74 s  ->  16.37 s   (skip 1 corpus-wide test;  19 s
 ```
 
 **The cost is concentrated in four tests, each of which analyzes a real program end to end:**
-`le_war2_analysis`, `pe_mz_convergence_parity`, `pe_robustness_cnv` (already `#[ignore]`d as
+`le_subjects_analysis`, `pe_mz_convergence_parity`, `pe_robustness_cnv` (already `#[ignore]`d as
 "slow (~140 s)"), and the corpus-wide `ground_truth_parity`. Everything else is fast.
 
 ⚠️ **CACHING ANALYSIS ACROSS TESTS DOES NOT HELP WALL CLOCK — measured and nearly wrong about it.**

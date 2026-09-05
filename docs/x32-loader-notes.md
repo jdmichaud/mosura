@@ -208,7 +208,7 @@ Gates, as implemented:
    for a plain DOS MZ (which the default dispatch owns).
 8. **Real-binary extra (skip-if-absent)** — `MOSURA_X32_EXE`: the derived layout, >100 functions
    recovered, the entry inside mapped memory, and every recovered reference targeting mapped
-   memory — the clean-subset invariants `le_war2_analysis` uses, since there is no Ghidra golden
+   memory — the clean-subset invariants `le_subjects_analysis` uses, since there is no Ghidra golden
    to diff.
 
 ## Open items

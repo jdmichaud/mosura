@@ -3,7 +3,7 @@
 **Status: planned, not started.** The 64-bit strand is being worked separately (see the last
 section); everything else here is recorded for later.
 
-71 of WAR2's 2,893 non-library functions (2.5%) emit C that does not compile. This is the
+71 of the subject's 2,893 non-library functions (2.5%) emit C that does not compile. This is the
 complete population — mined from the cached compile logs, all 71 matched to their diagnostics,
 not a sample.
 
@@ -106,7 +106,7 @@ fixed yet".
 
 **Phase 2 — prelude generation, in its inverted form** (see open question 1). Generate for
 target-representable widths; make anything wider a reported defect rather than a definition.
-**DONE in full (2026-08-17) — detector + contract-closure. Detector half:** `war2_survey` now classifies every rendered TU against
+**DONE in full (2026-08-17) — detector + contract-closure. Detector half:** `corpus_emit` now classifies every rendered TU against
 the representability contract at emit time (`contract_violations`) — `CONCAT<h><l>` is out
 when h+l > 4, `SUB`/`ZEXT`/`SEXT` when the SOURCE width exceeds 4 (the result may fit but the
 operand cannot exist), the impossible-width typedefs and `POPCOUNT` always — and reports in
@@ -239,7 +239,7 @@ upstream type assignment (the locked `Pointer(Spacebase)` reaching a declared lo
 Ghidra carries `undefined1 *`), recorded as its own item. Standing rule adopted with JD during
 this phase: printc stays the faithful Ghidra renderer — a printc change must be Ghidra's own
 rendering (cited) or an explicit `MOSURA_*` failure channel; every compilability mechanism
-lives in the emitter layer (war2_survey / EmitChoices arms).
+lives in the emitter layer (corpus_emit / EmitChoices arms).
 
 **Phase 6 — the genuine defects. DONE (2026-08-17), all three classified, two were wrong code.**
 The guarded-store hoist: **FIXED** (MIS-PORT in printc's `comma_separate` contract; the
@@ -324,7 +324,7 @@ way from either C; the win is the corrected code.
 C fell through into the next case): FIXED (2026-08-26, wc2src-reconciliation-4 W8).** The case
 terminator was a heuristic — "the case's exit basic block ends in a RETURN, so it is terminal" —
 which is false for a case whose body is `if (...) { ...; return; }`: the block after the `if` still
-has its fall-out edge to the switch tail (WAR2 0x2c00c case 13, original `JE 0x2c085`; also
+has its fall-out edge to the switch tail (the subject's 0x2c00c case 13, original `JE 0x2c085`; also
 0x2191c ×3, 0x3ed74 ×2, 0x152e0, 0x3d534). Ghidra's rule (`PrintC::emitBlockSwitch`):
 `if (bl->isExit(i) && i != last) print "break;"`, where a case is an exit when its STRUCTURED block
 has exactly one out-edge (`BlockSwitch::addCase`: `isexit = bl->sizeOut()==1`) and the last case
@@ -357,7 +357,7 @@ prints a case's goto after its body (`emitBlockGoto`, unless the target is the n
 — so the suppression is keyed by (node, target) over the head's node chain only.
 
 **Phase 10 — a store into an address-taken stack aggregate between two calls was dropped as dead
-(wrong code): FIXED (2026-08-27, wc2src-reconciliation-4 W4, the dead-store half).** WAR2 0x2dcd4
+(wrong code): FIXED (2026-08-27, wc2src-reconciliation-4 W4, the dead-store half).** the subject's 0x2dcd4
 builds a struct on the stack, stores the first call's result into it (`MOV [EBP+0x7c],AX` under
 a biased EBP) and passes the struct to a second call; mosura printed the struct without that
 field, Ghidra prints `xStack_cc = func_0x000422b8(param_3,1);` (oracle on the extracted fixture
@@ -467,7 +467,7 @@ now prints `if (cond) goto LAB;` with the whole condition. Landed on round `w5c`
 no verdict regression, gated suite 972/0.
 ## CORRECTION — most of the "64-bit problem" is not 64-bit arithmetic
 
-Traced in the IR (`dumpwar2 --raw`) rather than inferred from rendered C, which had misled the
+Traced in the IR (`the single-function dump probe --raw`) rather than inferred from rendered C, which had misled the
 diagnosis twice. Wide (>= 8 byte) varnodes are created by exactly **two** mechanisms:
 
 **A. `PIECE` + `INT_RIGHT` — an overlapping/misaligned stack access.** Three of four specimens,
@@ -537,21 +537,21 @@ pervasive.
 
 ## CORRECTION 2 — the divide non-narrowing traced to its root: late dead-code removal
 
-Established by running Ghidra's own OPACTION_DEBUG trace on the WAR2 function and mosura's
+Established by running Ghidra's own OPACTION_DEBUG trace on the subject function and mosura's
 trace beside it — not by reading source. Three claims made from source-reading died on the
 traces in one session: "Ghidra emits `longlong` for these too" (it narrows the unsigned case),
 "`subvar_subpiece` is what narrows this divide" (it is `subcommute`), and a first-draft "800x
 churn" figure (a scope confound — see the measurement note below).
 
 **New capability: `oracle/ghidra_scripts/DumpDecompDebug.java`.** `scripts/trace-diff.sh` can
-only trace Ghidra's shipped datatest fixtures, so questions about WAR2 functions used to be
+only trace Ghidra's shipped datatest fixtures, so questions about the subject functions used to be
 answered by inference from `ruleaction.cc`. The script dumps Ghidra's decompiler debug
-savefile for any WAR2 VA, which `oracle/capture_trace <sleighdir> <xml> --trace` replays under
+savefile for any the subject VA, which `oracle/capture_trace <sleighdir> <xml> --trace` replays under
 OPACTION_DEBUG so Ghidra names its own mechanisms:
 
 ```sh
 GHIDRA_POSTSCRIPT=DumpDecompDebug.java GHIDRA_POSTSCRIPT_ARGS=<outdir> \
-  WAR2_MANIFEST=<manifest.tsv> GHIDRA_DIST=<dist> scripts/ghidra-decompile-war2.sh 0002a4f0
+  (survey.manifest and oracle.ghidra_dist set in dev-config.toml) scripts/ghidra-decompile-subject.sh 0002a4f0
 ./oracle/capture_trace <ghidra-src-or-dist-root> <outdir>/0002a4f0.xml --trace
 ```
 
@@ -559,7 +559,7 @@ GHIDRA_POSTSCRIPT=DumpDecompDebug.java GHIDRA_POSTSCRIPT_ARGS=<outdir> \
 block; the non-debug path never encodes options, which is why `DecompileFunctions.java` gets
 away without it.)
 
-**Measurement note — scope the trace before comparing.** `--debug opaction` on `dumpwar2`
+**Measurement note — scope the trace before comparing.** `--debug opaction` on `the single-function dump probe`
 captures every decompile in `analyze_le_file` (4,718 distinct instruction addresses), not just
 the requested function; the target's own decompile is only the final contiguous block of the
 trace. A first-draft comparison missed this and reported the whole-analysis count (462,152)
@@ -636,7 +636,7 @@ This is the tractable, well-scoped part of the original 64-bit plan, and it stan
 
 ## Original 64-bit notes (superseded in part by the correction above)
 
-Settled by measurement on WAR2:
+Settled by measurement on the subject:
 
 * **No function computes in 64 bits.** Zero high-half reads across all 25 multiplies; all 10
   divides are extension idioms (6 sign-extend, 3 zero-extend, 1 `cwtd` at 16-bit width).

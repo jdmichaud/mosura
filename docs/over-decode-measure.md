@@ -2,12 +2,12 @@
 
 **Status:** ✅ USED AND VINDICATED, 2026-08-06 — it closed §6. Part A implemented in
 `crates/mosura/examples/over_decode.rs`; Part B deliberately never built (its precondition,
-"A1 shows something to attribute", came out false). Result on WAR2: **A1 = 0, A2 = 0**, so the
+"A1 shows something to attribute", came out false). Result on the subject: **A1 = 0, A2 = 0**, so the
 "7,322 extra starts" differential was measuring Ghidra's under-decode, not mosura's over-decode.
 
 ⚠️ **Quote the self-test line with every result.** It doubles as a build identifier: the run that
 closed §6 printed `A1, A2, A3 …`, which is how we know it predated A4 and that A4 is still
-unmeasured on WAR2.
+unmeasured on the subject.
 
 **Status of the original spec:** spec, 2026-08-06. Written because §6's only evidence — "7,322 extra instruction starts,
 255 runs, 104.4% of Ghidra's code coverage" — is **differential against Ghidra's decode**, and this
@@ -36,11 +36,11 @@ Each check below is decidable from the loaded image plus mosura's listing alone.
 | **A1** | an instruction start inside a memory block whose container marks it **non-executable** | the LE object table (`le.rs:219`, `objN_text` vs `objN_data`) and the ELF section flags are the *producer's own* statement of what is code. Decoding there is wrong with no oracle needed. |
 | **A2** | an instruction start that is **offcut** — strictly inside another instruction's extent | a byte cannot be both mid-instruction and an instruction start. Pure self-consistency. Expected 0; if it is not 0 that is the defect, found without any comparison. |
 | **A3** | a flow edge (fall-through, branch, call) whose **target is offcut** w.r.t. an existing instruction | same, for flow rather than starts. Also expected 0. |
-| **A4** | a relocation/fixup **target** that lands *inside* an instruction rather than at one | the fixup table names, per slot, the address it resolves to; where that address is in an executable object the file itself says "this is code", so no instruction starting there means our decode is misaligned. mosura already parses the table (`war2-le-fixups-root-cause`). |
+| **A4** | a relocation/fixup **target** that lands *inside* an instruction rather than at one | the fixup table names, per slot, the address it resolves to; where that address is in an executable object the file itself says "this is code", so no instruction starting there means our decode is misaligned. mosura already parses the table (`le-fixups-root-cause (subject-profile note)`). |
 | **A5** | an instruction start with **no inbound flow edge and no seed**, i.e. unreachable from any function entry | not wrong on its own — a legitimate seed produces these — but it is the *entry set* for Part B, and it should be small. |
 
 ⚠️ **A4 was first specified as "an instruction overlapping a fixup slot" and that was WRONG** —
-LE fixups routinely patch operands *inside* instructions (a `call rel32` displacement, WAR2's own
+LE fixups routinely patch operands *inside* instructions (a `call rel32` displacement, the subject's own
 `jmp cs:[reg*4+disp]` and its table entries), so that form fires on every correctly-decoded
 relocated call in the image. Caught by reading `le.rs` before shipping it, not by running it. The
 target-side formulation above is the one implemented.
@@ -50,9 +50,9 @@ mosura decoded that the file itself says are not code. If A1+A4 is near zero whi
 is 7,322, then **§6 is not a defect at all** and the differential was measuring Ghidra's
 *under*-decode — which is a live possibility nobody has excluded, and which would close the item.
 
-**A2 and A3 are free assertions** that belong in the corpus regardless of §6: they need no WAR2 and
+**A2 and A3 are free assertions** that belong in the corpus regardless of §6: they need no the subject and
 should hold on every fixture. If they hold everywhere, over-decode is a *seeding* problem, not a
-decoding one, which halves the search space before any WAR2 run.
+decoding one, which halves the search space before any the subject run.
 
 ## Part B — provenance by ablation (attribution, not magnitude)
 

@@ -10,7 +10,7 @@ MOV EDX,EAX ; SAR EDX,0x1f ; SHL EDX,n ; SBB EAX,EDX ; SAR EAX,n
 
 = `(x + 2^n - 1) >> n` for a negative `x`, `x >> n` otherwise (the `SHL`'s carry supplies the
 `- 1`). Ghidra lifts it faithfully and simplifies the `SHL`/`SBB` into an add/mult/zext chain
-(fixture `oracle/fixtures/x86_sdiv_pow2_sbb.xml`, the template extracted from WAR2 0x23108):
+(fixture `oracle/fixtures/x86_sdiv_pow2_sbb.xml`, the template extracted from the subject's 0x23108):
 
 ```
 s  = INT_SRIGHT(x, 31)
@@ -51,7 +51,7 @@ it is `SBB` (`1B /r`) — and render the recovered sites as `x / 2^n` with `x` t
 cast rule (the `(int4)` the arithmetic shift already carries). Value-identical in both shapes
 (shape 2 under the fold's own proof). Default arm = the reference rendering.
 
-## What the 22-function census taught (2026-08-27, `war2_survey --only`)
+## What the 22-function census taught (2026-08-27, `corpus_emit --only`)
 
 First build: 41 of 43 sites rendered, but four rules were missing, each named by a site:
 

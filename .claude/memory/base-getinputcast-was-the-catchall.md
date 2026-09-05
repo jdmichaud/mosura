@@ -17,7 +17,7 @@ it *declares* an override, and of the 25 that do, only `TypeOpCpoolref`/`TypeOpN
 needs casting" (typeop.hh:867/878). The placeholder came in with `79f5406`, which wired only the
 comparisons; it was never a decision about INT_ADD, INT_LEFT, the FLOAT ops, or the shifts' slot ≠ 0
 (whose overrides *delegate* to the base, typeop.cc:1555/1597). Cost: 3 casts on the 79 datatests,
-**693 on WAR2**, every one the same shape — a pointer consumed by integer arithmetic, needing
+**693 on the subject**, every one the same shape — a pointer consumed by integer arithmetic, needing
 `(int4)`.
 
 **Why: the port's default must be the base, never "nothing."** When a dispatch mirrors a C++ class
@@ -31,7 +31,7 @@ silently).
 
 **How to apply:** grep any `_ => None` / `_ => {}` in a file that mirrors a Ghidra class hierarchy
 and ask what the BASE method does. Before changing one, bound it read-only first — a throwaway
-`eprintln!` in the arm, run over the corpus *and* WAR2, tallied by opcode — then Rule-Zero each
+`eprintln!` in the arm, run over the corpus *and* the subject, tallied by opcode — then Rule-Zero each
 corpus specimen against `oracle/capture --c`. That sequence turned a 2-fixture question into a
 693-firing single-class change with three oracle-confirmed specimens, and it is reusable.
 
@@ -45,7 +45,7 @@ guard Ghidra wrote** — the case for [[direction-faithful-port]] in its purest 
 for it and no gauge could have.
 
 ⚠️ **No oracle-checkable specimen exists for that refit and it must not be claimed otherwise.** The
-guard fires **0 times on all 79 datatests** and only on WAR2, where `capture --c` cannot run
+guard fires **0 times on all 79 datatests** and only on the subject, where `capture --c` cannot run
 (DOS/4GW LE) and `ghidra-all.txt` is analyzeHeadless with a Java TYPE model — while the guard is
 itself a type test. Same confound as the cast question; see
 [[oracle-same-question-not-just-same-tool]].

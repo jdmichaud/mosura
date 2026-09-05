@@ -6,16 +6,16 @@ that disables exactly one code-generator decision: folding `reg = reg2; reg += i
 
 ## Why
 
-[`war2-toolchain-synthesis.md`](war2-toolchain-synthesis.md) splits WAR2's compiler
-fingerprint into two piles. **Pile B** is the set of behaviours WAR2's binary shows that our
+[`watcom-toolchain-synthesis.md`](watcom-toolchain-synthesis.md) splits the subject's compiler
+fingerprint into two piles. **Pile B** is the set of behaviours the subject's binary shows that our
 10.0a will not produce under any flag or source shape, and its largest member is the absent
-add-fold: **zero `LEA reg,[reg+imm]` folds in 380 KB of WAR2**, where 10.0a folds under every
+add-fold: **zero `LEA reg,[reg+imm]` folds in 380 KB of the subject**, where 10.0a folds under every
 optimisation setting we can pass it. The conclusion was an *interim 10.0-line build* with
 different code-generator settings — extinct, so unobtainable.
 
 That leaves one way to test the hypothesis: take the compiler we DO have and turn that single
-dial off. If WAR2 was built by a 10.0a-line code generator that did not fold, a no-fold 10.0a
-should reproduce more of WAR2's bytes. This is a *falsifiable experiment about one variable*,
+dial off. If the subject was built by a 10.0a-line code generator that did not fold, a no-fold 10.0a
+should reproduce more of the subject's bytes. This is a *falsifiable experiment about one variable*,
 not an attempt to reconstruct the lost compiler.
 
 ## Locating the site (method, because the method generalises)
@@ -123,7 +123,7 @@ open(tgt, "wb").write(bytes(d))
 
 Reverting is the same script with `old` and `new` swapped, or simply re-copying the reference
 install — **the patch is only ever applied to a scratch copy; the reference tree at
-`warcraft2-re/tmp/watcom-experiments/watcom_10.0a/WATCOM` is never written to.**
+`the RE tracker/tmp/watcom-experiments/watcom_10.0a/WATCOM` is never written to.**
 
 ## Validation before trusting any number
 
@@ -133,7 +133,7 @@ install — **the patch is only ever applied to a scratch copy; the reference tr
 | `x * 3` (MUL arm) | identical | identical |
 | `x * 4` under `-5r` (LSHIFT arm) | `SHL EAX,0x2` | `SHL EAX,0x2` |
 
-The fold is gone and its replacement is exactly the shape WAR2 uses; the neighbouring arms are
+The fold is gone and its replacement is exactly the shape the subject uses; the neighbouring arms are
 untouched. Corpus runs with the patched compiler use a SEPARATE object cache
 (`/data/be2/cache-nofold`) — the cache is keyed on source content and toolchain id, and the
 patch does not change the id, so sharing a cache would silently serve stock objects.
@@ -141,10 +141,10 @@ patch does not change the id, so sharing a cache would silently serve stock obje
 ## Result — and what this experiment can and cannot test
 
 **Read this before trusting the conclusions: the wholesale-no-fold patch tests the wrong
-proposition.** Turning folding OFF everywhere tests "WAR2 *never* folds" — a strawman.
-It CANNOT test the real hypothesis, "WAR2's fold CONDITIONS differ from 10.0a's", because
-WAR2 both folds (336 sites) and declines to fold (the F2 rows) — a wholesale toggle can
-match neither state. Any conclusion of the form "hypothesis dead, WAR2 folds like 10.0a"
+proposition.** Turning folding OFF everywhere tests "the subject *never* folds" — a strawman.
+It CANNOT test the real hypothesis, "the subject's fold CONDITIONS differ from 10.0a's", because
+the subject both folds (336 sites) and declines to fold (the F2 rows) — a wholesale toggle can
+match neither state. Any conclusion of the form "hypothesis dead, the subject folds like 10.0a"
 drawn from this patch is a construct-validity error and was retracted 2026-08-19. The
 load-bearing result is not the ± you get from the toggle; it is the *invariance* finding
 below.
@@ -165,12 +165,12 @@ then disassembled, and every one of them contains the fold:
 00980  LEA EDX,[EAX + 0x7c]      02053  LEA EAX,[EBX + 0x1]
 ```
 
-So WAR2's compiler **does** fold `reg+imm` into `LEA` — the "never folds" reading is dead.
-It does NOT follow that WAR2 folds *under the same conditions* as 10.0a; the F2 rows are
+So the subject's compiler **does** fold `reg+imm` into `LEA` — the "never folds" reading is dead.
+It does NOT follow that the subject folds *under the same conditions* as 10.0a; the F2 rows are
 direct evidence it declines to fold where 10.0a folds. What the no-fold run is actually
 good for is the invariance test two sections down.
 
-**And it exposed a wrong foundational measurement.** `war2-toolchain-synthesis.md` recorded
+**And it exposed a wrong foundational measurement.** `watcom-toolchain-synthesis.md` recorded
 pile-B's largest member as "**zero** `LEA reg,[reg+imm]` folds in 380KB … the 39 hex hits in
 MISMATCH originals are not this form". Counting properly — disassembling every user
 function's original bytes rather than matching hex (`examples/dumplea`) — gives:
@@ -231,7 +231,7 @@ dead — it gets popped): `IDIV` leaves the remainder in EDX, and the original's
 the add's result to **op1's own register** (in-place `ADD`, then a copy to the return
 register), where 10.0a assigns it to the **destination** register and therefore needs the
 `LEA`. F2 is a result-register-assignment difference — the same dial as the `regalloc` class
-and warcraft2-re's `ecx-allocator-mystery` — not a fold decision and not an emission question.
+and the RE tracker's `ecx-allocator-mystery` — not a fold decision and not an emission question.
 `byte-exact-families.md` records the falsifiable prediction this generates for the
 allocation-order experiment (F2's rows should move together with the regalloc class, or the
 unification is wrong).
@@ -243,7 +243,7 @@ treatment. It is NOT used as a verifier; the harness continues to use stock 10.0
 
 ## Correction to an earlier claim
 
-`war2-toolchain-synthesis.md` recorded, from black-box probing, that OW 1.0's
+`watcom-toolchain-synthesis.md` recorded, from black-box probing, that OW 1.0's
 `if( OptForSize > 50 ) return FALSE` gate on `V_LEA_GOOD` "measurably does not exist in 10.0a
 or 10.5 (both fold under `-os`)". **That inference was wrong.** The gate is right there at
 `0x717d8` in 10.0a's own binary (`CMP byte ptr [0x7f90e],0x32 ; JA`), and the ADD/SUB arm
@@ -251,5 +251,5 @@ carries its `OptForSize < 50` companion too. The probe conclusion failed because
 not push `OptForSize` above 50, and/or the fold site in that probe verifies through `V_LEA`
 rather than `V_LEA_GOOD` — either way the observable was not the thing being inferred. The
 dial-was-being-worked-on argument for the interim build loses this piece of support; what
-survives is the direct one: WAR2 folds zero of these and 10.0a folds all of them, and the
+survives is the direct one: the subject folds zero of these and 10.0a folds all of them, and the
 difference is now known to be *one arm of one switch*.

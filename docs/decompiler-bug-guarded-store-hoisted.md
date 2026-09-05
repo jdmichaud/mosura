@@ -78,7 +78,7 @@ The subject stores through a pointer only on the taken side of a test. mosura em
 **unconditionally, before the test**. When the guard is false, the recompiled program writes a
 value the original never writes.
 
-## Specimen 1 — `FUN_0006c6f0` @ `0x6c8e2` (WAR2.EXE)
+## Specimen 1 — `FUN_0006c6f0` @ `0x6c8e2` (the subject binary)
 
 Original, `p = piRam000a8770`, field `p[0xb]` at `0x2c`:
 
@@ -144,13 +144,13 @@ difference.
 
 ## Suggested first step (do this before writing any fix)
 
-Ask the oracle whether Ghidra guards the store, using the WAR2 recipe — **callee first, then the
+Ask the oracle whether Ghidra guards the store, using the subject recipe — **callee first, then the
 caller**, or every call defaults to no-parameters and the block structure changes underneath the
 question (that trap is documented in the script header):
 
 ```
-WAR2_MANIFEST=<manifest.tsv> GHIDRA_DIST=<dist> \
-  scripts/ghidra-decompile-war2.sh 0006c6f0
+(survey.manifest and oracle.ghidra_dist set in dev-config.toml) \
+  scripts/ghidra-decompile-subject.sh 0006c6f0
 ```
 
 If Ghidra guards it, this is a MIS-PORT with a specific suspect: whatever merges the two branch

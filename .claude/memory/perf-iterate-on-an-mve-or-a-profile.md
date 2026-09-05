@@ -9,7 +9,7 @@ metadata:
 uncapped test only once, at the end.**
 
 ⚠️ **A capped probe is informative only if the cap sits BETWEEN the competing hypotheses.**
-2026-08-07: `le_war2_analysis` was ~880 s; a fix might plausibly bring it to ~250 s. A **150 s cap
+2026-08-07: `le_subjects_analysis` was ~880 s; a fix might plausibly bring it to ~250 s. A **150 s cap
 times out in both cases** — "no improvement" and "3× faster" are indistinguishable. That probe's
 answer was fixed before it ran. It is [[could-it-have-come-out-otherwise]] applied to a
 *measurement of myself*, and it wasted a full iteration.

@@ -30,7 +30,7 @@ directions (mine and the agent's), and each one *looked* like a result:
 cannot describe a concrete result that would falsify the claim, redesign the measurement. Then
 check set MEMBERSHIP rather than totals ([[gauge-counting-traps]]), measure ABSOLUTELY rather
 than differentially ([[absolute-vs-differential-wrongcode]]), and confirm the artifact is
-finished before reading it ([[war2-survey-artifacts-stamped]]).
+finished before reading it ([[the subject survey folder-artifacts-stamped]]).
 
 This is the *pre-flight* half; the equal-totals rule (now `docs/measurement-rules.md` §6) is the
 *post-hoc* half — it catches a broken predicate after the run is spent, this catches it before.
@@ -38,7 +38,7 @@ This is the *pre-flight* half; the equal-totals rule (now `docs/measurement-rule
 **Corollary, learned the same day:** a generalisation drawn from one observation is the same
 defect in explanation form. I wrote into `loopcomma.c` that "a global has no register phi, so no
 `for` is formed"; Ghidra recovers `for` loops over plain globals — ram is heritaged — and five
-WAR2 functions prove it. The MVE's *effect* was real and its gate re-proves it every run; only my
+the subject functions prove it. The MVE's *effect* was real and its gate re-proves it every run; only my
 *mechanism* was invented. **When an MVE depends on an effect, state the effect as observed and
 mark the cause unestablished** unless it is verified, because the next editor reasons from what
 the file says. See [[mve-first-then-solve-the-mve]].

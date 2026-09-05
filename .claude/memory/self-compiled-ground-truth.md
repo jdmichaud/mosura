@@ -17,7 +17,7 @@ used as the ground truth.
 
 **Why it's strong (and why the user raised it):** the source IS the truth, so it does not
 depend on Ghidra being correct — and Ghidra is often wrong (it invented ~20 false switches in
-WAR2 that were really loops/searches; see [[war2-dos4gw-le]]). Reproducible + portable (compile
+the subject that were really loops/searches; see (subject-profile note `dos4gw-le`)). Reproducible + portable (compile
 anywhere, no external oracle checkout). It directly serves the project's stated purpose — **do
 better than Ghidra**: Ghidra-parity goldens only measure "matches Ghidra"; source-recovery
 measures "recovers the actual program."
@@ -38,7 +38,7 @@ ID), the self-compiled source ALSO gives an exact, clean oracle for those proper
 than Ghidra, and it's what this whole multi-arch/compiler-detection line has been validating.
 
 Relates to [[direction-analysis-port]] and the two-oracle policy. For-the-record correction:
-the warcraft2-re WAR2 ground truth was corrected by the AGENT, not hand-authored by the user.
+the the RE tracker the subject ground truth was corrected by the AGENT, not hand-authored by the user.
 
 **SCOPED 2026-07-20 (task #3; build deferred, keep-in-mind).** Grounded feasibility:
 - **The self-compiled SET already exists** — `oracle/analysis-corpus/src/` (10 sources across
@@ -46,7 +46,7 @@ the warcraft2-re WAR2 ground truth was corrected by the AGENT, not hand-authored
   `goldens/analysis/*.snapshot` are still Ghidra-captured (analyzeHeadless), not source-derived.
 - **(A) ANALYSIS source-derived oracle = TRACTABLE (my lane, incremental).** Assert source
   invariants (compiler-ID + function/switch-computed-jump/ref *presence* + 0-spurious) — a 2nd
-  oracle alongside the byte-exact Ghidra golden (WAR2 two-oracle pattern). Caveat: source gives
+  oracle alongside the byte-exact Ghidra golden (the subject two-oracle pattern). Caveat: source gives
   invariants not addresses (compile-dependent), so it complements, not replaces. Brick-1 = a
   source-oracle harness over the existing corpus.
 - **(B) DECOMPILER recompilation-equivalence = DEEP, BLOCKED.** `dumpc` emits Ghidra-pseudo-C

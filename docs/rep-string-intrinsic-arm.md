@@ -41,7 +41,7 @@ loop-entry values of the `MULTIEQUAL` phis (initial EDI/ESI/ECX).
 at that address and confirm a repeated string instruction by bytes — `bytes[0] ∈ {0xF2, 0xF3}`
 (Watcom 10.0a emits the **REPNE `F2`** prefix; F2/F3 are equivalent for MOVS/STOS) and
 `bytes[1] ∈ {0xA4 movsb, 0xA5 movsd, 0xAA stosb, 0xAB stosd}`. The same `*_from_evidence` shape as
-the other witnessed arms; the original disassembly is already produced in war2_survey (`normalize`).
+the other witnessed arms; the original disassembly is already produced in corpus_emit (`normalize`).
 
 ## Render
 
@@ -102,7 +102,7 @@ down, +987 insn-sim; 9 verdict flips, all upward (MISMATCH→EXACT 0x11b44 0x225
 - **V1 (built):** axis `string-ops={loop,intrinsic}`; pair-aware recognizer (`RepLoop`/`RepMovs`,
   size = `c1*4+c2` | the pre-`>>2`/`&3` varnode | `count1*4+count2`); witness `F2|F3` MOVS/STOS;
   prelude pragma; dead phi-entry COPY suppression; fixtures `x86_repmovsd.xml` (single) and
-  `x86_repmovs_pair.xml` (runtime-n pair); war2_survey selects `string-ops=intrinsic`.
+  `x86_repmovs_pair.xml` (runtime-n pair); corpus_emit selects `string-ops=intrinsic`.
 - **Corpus round (stringops2 vs tracked, 2026-08-26): WGSS 0.5234 → 0.5364 (+0.01295, +1586
   insn-sim); EXACT 828 → 834; SAME_SHAPE 75 → 79; 10 verdict flips, all upward, 0 downward
   (→EXACT 0x11b44 0x225e0 0x2a0ec 0x2b184 0x34540 0x6f8f4; →SAME_SHAPE 0x31e2c 0x32168 0x3242c

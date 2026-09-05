@@ -12,10 +12,10 @@ idiom arms.
 
 
 *Re-measured from scratch on branch `be2`. Regenerate rather than quote these after any change:
-`war2_survey <exe> <out>` then `recompile_check <exe> <out>/manifest.tsv <out>/src recover
+`corpus_emit <exe> <out>` then `recompile_check <exe> <out>/manifest.tsv <out>/src recover
 <WATCOM> --out <tsv> --divergences <tsv>`. Before ANY corpus round, run the ~3-minute
-`scripts/war2-smoke.sh` gate — 15 pinned mechanism sentinels (expected verdicts in
-`scripts/war2-smoke.expected.tsv`, baseline 734/8e3ad7b) that fail on drift in either
+`scripts/corpus-smoke.sh` gate — 15 pinned mechanism sentinels (expected verdicts in
+`scripts/smoke.expected.tsv (subject profile)`, baseline 734/8e3ad7b) that fail on drift in either
 direction; it exists because two full corpus rounds were burned on state corruption a
 probe would have caught in minutes (the sb99 retrospective).*
 
@@ -26,7 +26,7 @@ probe would have caught in minutes (the sb99 retrospective).*
 materialized tree, not by joining verdict files).
 
 The default configuration is the one that matters: it is a single decompile pass, so it is
-what `war2_survey <exe> <out>` produces with no environment set. The arm requires a second
+what `corpus_emit <exe> <out>` produces with no environment set. The arm requires a second
 decompile of every function and a second compile round, and buys 18 functions.
 
 | step (default configuration) | EXACT |
@@ -78,9 +78,9 @@ form are Ghidra's; the missing `spacebaseConstant` type lock was the root cause 
 85-EXACT do/undo cascade), and the byte-exact emitter models Ghidra's STANDALONE global-scope
 context (`Program::global_scope_all_loaded`), where the action is silent exactly as the
 standalone oracle is — the full story is coverage.md's ActionConstantPtr row. **590 held with
-byte-identical WAR2 emissions** (sb34) through the Phase-4 refinement carve-out + stand-in
+byte-identical the subject emissions** (sb34) through the Phase-4 refinement carve-out + stand-in
 retirement, the per-fixture cspec threading (`raw_funcdata_flow_image_arch` — datatest-path
-only; WAR2 threads its own `__watcall` ids), and `buildReturnOutput`'s multi-piece PIECE
+only; the subject threads its own `__watcall` ids), and `buildReturnOutput`'s multi-piece PIECE
 reassembly (never fires on watcall's single-EAX verdicts; mixfloatint 0.857 → 1.000). 590 →
 **585** (sb35) is the E1032 partial-symbol resolution (`compilable-c-remediation.md`, Phase 4
 addendum): three faithful ports (baseExplicit's lone-descendant escapes, the deadcode
@@ -127,19 +127,19 @@ SAME_SHAPE / 1 SAME_CODE / 2210 MISMATCH / 11 COMPILE_FAIL / 1 EMIT_FAIL). The �
 sb42's re-score is purely the DECOMPILE_FAIL function's 379 instructions entering the
 denominator at weight 0.
 
-**586 → 591 (sb43 sources, `-5r`).** The build profile's CPU digit was wrong: WAR2 was
+**586 → 591 (sb43 sources, `-5r`).** The build profile's CPU digit was wrong: the subject was
 tuned for Pentium, and 10.0a's `-5r` suppresses the in-place scaled-LEA selection
 (`SHL EAX,2` where `-4r` emits `LEA EAX,[EAX*4]` — a tuning choice between equally
 386-legal encodings, found via the Open Watcom source's CPU_586 gate on V_LEA_GOOD's
 OP_LSHIFT arm). +6/−1 EXACT, SHL>LEA divergence rows 157 → 12, global similarity
-0.3841 → **0.3858** (`/data/be2/sb43-5r.tsv`). 591 → **592**: WAR2's own build was not
+0.3841 → **0.3858** (`/data/be2/sb43-5r.tsv`). 591 → **592**: the subject's own build was not
 uniform — one contiguous module (9 functions, 0x69fb0..0x6e6e0) carries the in-place
 scaled-LEA form `-5r` can never emit, so the CPU digit is now per-function EVIDENCE
 (`buildconfig::Evidence::in_place_scaled_lea`: presence proves pre-Pentium tuning,
 downgrades that function to `-4r`; absence keeps the profile's `-5r`). The full
 toolchain story — including why
 the remaining LEA-fold/allocation/callee-save divergences are a bounded compiler
-residual, not workable defects — is `war2-toolchain-synthesis.md`.
+residual, not workable defects — is `watcom-toolchain-synthesis.md`.
 
 **592 → 605 (sb44): the hardware shift-mask elision — F1's first resolved sub-shape.**
 Ghidra faithfully prints the SLEIGH lifter's shift-count mask (`1 << (x & 0x1f)` — the
@@ -147,7 +147,7 @@ oracle prints it too, verified on FUN_00038d88), but the x86 shift instruction p
 that mask itself, so Watcom materializes the printed one as a real `AND CL,0x1f` the
 originals never have. New `EmitChoices` axis `shift-mask=hardware` (decompile/emit.rs —
 passes all three axis-honesty rules; the elision applies only to an implied single-use
-`INT_AND(x, 0x1f)` on a ≤4-byte shift), set by war2_survey on every arm like the
+`INT_AND(x, 0x1f)` on a ≤4-byte shift), set by corpus_emit on every arm like the
 loop-overflow form. +13 EXACT, 0 regressions; extra AND-0x1f rows 94 → 25; global
 similarity 0.3858 → **0.3868**.
 
@@ -264,7 +264,7 @@ deliberate departures from Ghidra's rendering, so the question "are these Watcom
 and do they pollute other targets?" was audited rather than assumed. Layering held:
 `decompile/` carries no compiler conditional (the only "Watcom" strings in `emit.rs` are the
 probe citations its own axis contract requires), the `-5r` profile lives in
-`recompile::buildconfig`, the caller pragmas and arm selection in `war2_survey`, and every
+`recompile::buildconfig`, the caller pragmas and arm selection in `corpus_emit`, and every
 axis DEFAULTS to Ghidra's rendering — a different target that selects no arm gets the
 faithful port untouched. Three ISA/ABI constants had leaked in anyway and were replaced:
 `PROMOTE_SIZE = 4` in the integer-promotion port (the serious one — **default path, every
@@ -279,7 +279,7 @@ is **byte-identical corpus-wide** and verdicts are unchanged (661 EXACT, 0.3973)
 parameterization, not behaviour.
 
 **Register naming was the fourth leak (sb61).** `printc` named `extraout_*` from a
-seven-entry x86-64 offset table that ignored the varnode's SIZE, so WAR2's 32-bit `EAX`
+seven-entry x86-64 offset table that ignored the varnode's SIZE, so the subject's 32-bit `EAX`
 printed as `RAX` at 14 sites where the oracle prints `extraout_ECX`/`extraout_CL`. Ghidra
 names it through the TRANSLATOR (`glb->translate->getRegisterName(space, offset, size)`,
 database.cc:2495) with a literal `var` fallback; mosura now carries the processor's own
@@ -345,7 +345,7 @@ direct readouts, not correlations, and they are the ones to convert next.
 
 The second axis converted, and this one's evidence is a direct readout rather than a
 correlation: at each candidate comparison the ORIGINAL's own `CMP`/`TEST` immediate says which
-spelling the source used. Measured over WAR2's candidate sites:
+spelling the source used. Measured over the subject's candidate sites:
 
 - **452 sites** want the complemented rendering, **749** want it as rendered, 204 match neither
   (the value was transformed), 96 have no compare in the window.
@@ -356,7 +356,7 @@ Implemented per site: `printc::EmitReport::compare_sites` records every candidat
 spellings; `buildconfig::complement_compares_from_evidence` (target-specific — x86 compare
 mnemonics, and the flag-setting compare sits at or just before the IR op's address, since that
 address is usually the `Jcc`) returns the sites to complement; `printc::print_c_recovered`
-takes the set. `war2_survey --recovered <dir>` emits that single tree.
+takes the set. `corpus_emit --recovered <dir>` emits that single tree.
 
 | emission | compiler needed | EXACT | WGSS |
 | --- | --- | --- | --- |
@@ -1050,7 +1050,7 @@ call's ARITY. Two recompile-side consequences, each measured to a verdict:
   built and measured INERT: by print time the valueless arguments are genuine `const 0`
   varnodes (the indirect-creation placeholder collapses upstream) — the detection needs an
   analysis-time channel, recorded for the reopened design.
-- **Project-wide `modify exact [eax]` default** (the warcraft2-re toolchain.md
+- **Project-wide `modify exact [eax]` default** (the the RE tracker toolchain.md
   convention): corpus round, net −11 with ZERO gains (730) — refuted as a BLANKET callee
   declaration. The toolchain finding describes the original functions' OWN prologue
   contracts; call sites prove per-callee variation (the sb98 vararg family's caller saves,
@@ -1172,7 +1172,7 @@ Watcom tree (`/data/watcom16`) — every cache-missing TU "failed" with dosemu's
 or file name - WCC386` and the 312 fresh entries poisoned the cache as COMPILE_FAIL. Wild
 verdict shifts on a small source diff = wrong harness invocation, exactly as the runbook
 says; the canonical path is
-`/home/jd/projects/warcraft2-re/tmp/watcom-experiments/watcom_10.0a/WATCOM`. Purge the
+`/home/jd/projects/the RE tracker/tmp/watcom-experiments/watcom_10.0a/WATCOM`. Purge the
 poisoned entries (they are keyed on content, so they do NOT age out) before re-running.
 
 **The transferable win is the METHOD:** recovered-vs-searched can now be measured for any axis
@@ -1359,7 +1359,7 @@ thread 1. 996 missing `ADD ESP,K` rows across 354 functions are the caller-side 
 ## Open thread 1 — the propagated-prototype argument, RE-DIAGNOSED
 
 Whole-program prototype recovery is built (`analysis::interface`, `Program::recovered_protos`,
-bound at every direct call). It was OFF by default then (today the `proto-pass` switch, on by default). Measured on WAR2 with
+bound at every direct call). It was OFF by default then (today the `proto-pass` switch, on by default). Measured on the subject with
 the corrected instrument: `missing` 1157 → 1081, but `extra` 467 → 603 and COMPILE_FAIL 75 → 96,
 so EXACT goes 421 → 394. The prototypes are right; the pass loses on spurious arguments.
 
@@ -1413,7 +1413,7 @@ that same action — that is the next thing to isolate, and it is a *dataflow* q
 action-ordering one.
 
 **Ground truth, from Ghidra with the callee's parameter forced** (`GHIDRA_POSTSCRIPT=
-DecompileWithForcedParams.java GHIDRA_POSTSCRIPT_ARGS='5a48c=EAX' scripts/ghidra-decompile-war2.sh
+DecompileWithForcedParams.java GHIDRA_POSTSCRIPT_ARGS='5a48c=EAX' scripts/ghidra-decompile-subject.sh
 5a48c 596b0 13c50`):
 
 ```c
@@ -1581,9 +1581,9 @@ OTHER functions compile into the wrong arithmetic. Survey, design principles and
 
 The source-form evidence base is [`byte-exact-source-forms.md`](byte-exact-source-forms.md): the
 catalog of binary-evidence -> C-shape mappings measured against Watcom 10.0a, the one-second
-single-function probe loop, the plateau analysis from hand-converging WAR2's largest honestly-
+single-function probe loop, the plateau analysis from hand-converging the subject's largest honestly-
 measured function (27 -> 177 of 536 instructions matching), and the design the evidence implies
-for an automated P3 search. Working artifacts are preserved in `oracle/war2-convergence/`.
+for an automated P3 search. Working artifacts are preserved in `<subject-profile>/notes/convergence/`.
 
 That session also produced a WRONG-CODE defect, filed separately:
 [`decompiler-bug-guarded-store-hoisted.md`](decompiler-bug-guarded-store-hoisted.md) — a store
@@ -1652,7 +1652,7 @@ and it is the difference between a 35x over-estimate and a calibrated one.
 width the body reads is net **−28** (432 → 404, gained 1, lost 29). It is recorded here because the
 premise checks out and the conclusion still does not.
 
-The premise: WAR2's `FUN_00015224` takes a value in EAX and hands it straight to another function.
+The premise: the subject's `FUN_00015224` takes a value in EAX and hands it straight to another function.
 Declared `xunknown1 param_1` it compiles with an `AND EAX,0xff` the original does not have. Asked
 with the callee's parameter forced, Ghidra declares `undefined4 in_EAX` and passes it untouched —
 four bytes, the whole register. So on that specimen the wide declaration is right, and it agrees
@@ -1703,7 +1703,7 @@ To become a search it needs:
 ## zc19–zc26 (2026-08-22) — the WGSS-first bar, the allocator thread, and the asymptote
 
 **Bar change (JD):** judge by WGSS movement + zero verdict regressions, not EXACT flips —
-multi-defect functions advance one defect at a time. `scripts/war2-verdicts.sh` now prints the
+multi-defect functions advance one defect at a time. `scripts/corpus-verdicts.sh` now prints the
 insn-weighted net and its WGSS effect beside the flips. Canonical record: `/data/be2/zc*-rec.tsv`.
 
 **Landed (each measured alone, zero verdict regressions):**
@@ -1786,7 +1786,7 @@ random gate; zc27 re-measures the deterministic version.
 Other review findings: the status doc had not been updated since `d76c1de` (fixed above);
 the smoke set pinned no sentinel for any of the day's landings (now 20 sentinels: 294b8/25f50
 sum-order, 45aa4 aggregation, 3342c deterministic pragma merge, 36b30 stack-append kernel);
-`war2-verdicts.sh` reported only the unweighted sim net while the bar is weighted (fixed,
+`corpus-verdicts.sh` reported only the unweighted sim net while the bar is weighted (fixed,
 `a970c90`); "declaration order inert" was over-generalized from one probe (the 6c6f0 finding
 above stands — first-use order is already the printer's behavior, the per-function search is
 measured selection); the sum-order lever's pointer-context gate covers 120 chains while 670
@@ -1852,15 +1852,15 @@ correct, IR intact, trace identical → printer. One arm ported, fixture + stric
 committed. Corpus: 0 flips, 765 EXACT, weighted +181 insn-sim — the largest WGSS move since the
 WGSS-first bar (the defect touched every do-while ending in a short-circuit condition).
 
-### zc30 (2026-08-22): the WAR2 oracle sweep, `AncestorRealistic`, and the stack-slot guard — WGSS 0.4817 → 0.4821
+### zc30 (2026-08-22): the subject oracle sweep, `AncestorRealistic`, and the stack-slot guard — WGSS 0.4817 → 0.4821
 
-**The sweep.** `examples/war2_oracle_sweep.rs` renders every user function's bytes as a standalone
+**The sweep.** `examples/oracle_sweep.rs` renders every user function's bytes as a standalone
 fixture through both decompilers — Ghidra's C (`oracle/capture --c`, cached by `oraclecache`)
 and mosura's pure pipeline — and scores them with `ccompare::similarity`: a Watcom-independent
-"how far from Ghidra" signal per function, ranked by `scripts/war2-osweep-rank.py` and compared
-run-to-run by `scripts/war2-osweep-cmp.py`. First run over 2715 scorable functions: mean 0.9273,
+"how far from Ghidra" signal per function, ranked by `scripts/corpus-osweep-rank.py` and compared
+run-to-run by `scripts/corpus-osweep-cmp.py`. First run over 2715 scorable functions: mean 0.9273,
 691 exact matches, 208 below 0.8. The do-while port (zc29) had shown the largest WGSS yield of the
-campaign came from a Ghidra divergence on a WAR2 fixture; the sweep is that search made
+campaign came from a Ghidra divergence on a subject fixture; the sweep is that search made
 systematic.
 
 **Finding #1 → two faithful ports.** The lowest score (FUN_00066da8, 0.085) was a 61-line body
@@ -1993,12 +1993,12 @@ comma-statement class, FUN_000686bc).
 
 ### zc34–zc38 (2026-08-23): the ground-truth control corpus lands — 767 EXACT, WGSS 0.4829
 
-JD's question "would we do better if WAR2 had been compiled by 10.0a?" was answered with a
-WAR2-free control (`recompile::groundtruth`, docs/ground-truth-findings.md): our own gcc-built
+JD's question "would we do better if the subject had been compiled by 10.0a?" was answered with a
+the subject-free control (`recompile::groundtruth`, docs/ground-truth-findings.md): our own gcc-built
 programs decompiled, recompiled with the same gcc, and RUN against the original. With the compiler
-known the similarity is no better than on WAR2 — the gap is ours — and the functional oracle
+known the similarity is no better than on the subject — the gap is ours — and the functional oracle
 named ten wrong programs. Fixing them one decompiler bug at a time (branch `gt-recompile`,
-fast-forwarded onto master as a2e3678) took the corpus 10 FAIL → 1 FAIL and, measured on WAR2:
+fast-forwarded onto master as a2e3678) took the corpus 10 FAIL → 1 FAIL and, measured on the subject:
 
 - zc34 (secondary-return downgrade): byte-identical.
 - zc35 (`Cover::rebuild` implied-extended covers in the merge tests): **+2 EXACT** (2d6f8,
@@ -2020,7 +2020,7 @@ fast-forwarded onto master as a2e3678) took the corpus 10 FAIL → 1 FAIL and, m
 JD landed it. Lesson recorded: a faithful port's WGSS downs must be classified before they are
 read as regressions — wrong code can score better (memory: wrong-code-scores-better).
 
-The control corpus stays as the WAR2-free functional gate (`cargo test --release --test
+The control corpus stays as the subject-free functional gate (`cargo test --release --test
 ground_truth_recompile`, per-machine baseline). Its one remaining FAIL, `varargs`, is next: the
 overflow-area walk is a phi of the input stack pointer (Ghidra prints `register0x00000020`).
 
@@ -2030,7 +2030,7 @@ JD asked for the control corpus' last FAIL (`varargs`) to be worked. The result 
 `decompile/varargs.rs` (docs/ground-truth-findings.md "variadic recovery"): a post-pipeline
 un-push of `RulePushMulti`'s spacebase substitute, `va_start` recognition on the address of the
 first caller-frame slot past the named parameters, a per-target `va_start` in the prelude, and an
-emission arm that declares a guarded register-save area as one array. Measured on WAR2:
+emission arm that declares a guarded register-save area as one array. Measured on the subject:
 
 - zc39 (first cut): ten MISMATCH → COMPILE_FAIL, −529.6 weighted — the array arm used an
   unlocked guard's maximum (the frame top) and swallowed whole frames. Restricted to a contiguous
@@ -2044,7 +2044,7 @@ emission arm that declares a guarded register-save area as one array. Measured o
   read preceded its def's cover point and the liveness walk wrapped the value across every
   predecessor; FUN_0006c6f0's `piRam + k` PTRADDs all failed `checkImpliedCover` (sweep
   0.678 → 0.807 after the fix, pre-session 0.769). Sweep cumulative vs the pre-session baseline:
-  up 332 / down 159, +406 weighted (mean 0.9036 → 0.9065). zc41 on WAR2: byte-identical to zc40
+  up 332 / down 159, +406 weighted (mean 0.9036 → 0.9065). zc41 on the subject: byte-identical to zc40
   (0 movers) — Watcom already folded the named `piVar = piRam + k` the same way.
 
 **Net, master 6dca533 vs zc33 (where the day started): 768 EXACT (+3), 5 flips all upward, 0
@@ -2052,7 +2052,7 @@ verdict regressions, WGSS 0.4831 → 0.4840 (+98.2 weighted).**
 
 ### zc42–zc45 (2026-08-23, night): the era-style corpus round and the cast ports
 
-Seven era-style control programs (27/27 PASS now); `globals` alone exposed four WAR2-relevant
+Seven era-style control programs (27/27 PASS now); `globals` alone exposed four the subject-relevant
 defects (docs/ground-truth-findings.md, "era-style programs"): constant uniqueness
 (`opSetInput`), marker-reader explicitness (`baseExplicit`), `.bss` as loaded memory, and
 `opInsertAfter`-an-INDIRECT (the list push FUN_0002cca0 wrote the head before the store).
@@ -2084,7 +2084,7 @@ own MOVZX/XOR forms), not a port question — logged for that design.
   byte memory loads in address arithmetic do not; no printc rule lands on the right side of both.
 - `ext-cast` is now an `EmitChoices` axis: `ghidra` (default; the reference the sweep and the
   datatests compare against) / `promotion` (bare zext, `(intN)` sext — zc42's rendering). The
-  Watcom-32 emitter (`war2_survey`'s default arm) selects `promotion`.
+  Watcom-32 emitter (`corpus_emit`'s default arm) selects `promotion`.
 - zc47 (that, with the `opInsertAfter` redirect and the INT_ADD constant propagation kept): 0
   flips, −10 weighted vs zc42.
 

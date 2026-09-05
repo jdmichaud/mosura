@@ -19,7 +19,7 @@ and conventions decay.
 **from disk on every call** — a `read_dir` over all processor directories plus an XML parse of every
 `.ldefs`, at **34.7 ms/call**. It sat behind `cspec::default_input_paramlist` →
 `symbolic::integer_arg_registers`, reached from `flow_constants`, and made Constant Propagation
-**~94% compiler-spec I/O** — 122 s of a 427 s WAR2 run. ⚠️ **mosura already cached the SLEIGH side of
+**~94% compiler-spec I/O** — 122 s of a 427 s the subject run. ⚠️ **mosura already cached the SLEIGH side of
 the same layer** (`lang::load_cached`) and the cspec side simply never got it. One half cached, one
 half not, both public: that is the shape this rule prevents.
 

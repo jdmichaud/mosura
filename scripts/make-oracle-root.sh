@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the ORACLE ROOT: the directory `oracle/capture` and `decomp_dbg` are pointed at
-# (SLEIGHHOME / GHIDRA_SRC) so that Ghidra decompiles WAR2 under *mosura's own* Watcom compiler
+# (SLEIGHHOME / GHIDRA_SRC) so that Ghidra decompiles the subject under *mosura's own* Watcom compiler
 # spec — the same file the decompiler reads.
 #
 # WHY THIS EXISTS (2026-08-31). An oracle capture takes its calling convention from the compiler
@@ -10,7 +10,7 @@
 #   root whose Processors are third_party/ (no watcom entry):  arch=…:watcom -> __fastcall  (x86win!)
 #   root whose Processors are a dist that registers watcom:    arch=…:watcom -> no keyword   (watcall)
 #
-# Every WAR2 capture taken before this script existed used the first kind of root, so Ghidra was
+# Every the subject capture taken before this script existed used the first kind of root, so Ghidra was
 # decompiling under Visual Studio's convention while mosura used watcall; four investigative
 # findings had to be withdrawn. This root removes the failure class rather than detecting it: the
 # spec it installs IS `specs/x86-32-watcom.cspec`, so the oracle and the decompiler provably read
@@ -19,7 +19,7 @@
 # usage: scripts/make-oracle-root.sh [<root-dir>]     (default: <workspace>/build/oracle-root)
 #        PROCESSORS=<dir>  override the Processors tree (default: third_party/ghidra/Processors)
 #
-# Then: GHIDRA_SRC=<root-dir> (oracle/capture, war2_oracle_sweep) or SLEIGHHOME=<root-dir> (decomp_dbg).
+# Then: GHIDRA_SRC=<root-dir> (oracle/capture, oracle_sweep) or SLEIGHHOME=<root-dir> (decomp_dbg).
 #
 # CALIBRATION, which callers must still perform (a root can be right and the CACHE wrong): a watcom
 # capture prints NO convention keyword on a default-model function. `__fastcall` or `__regparm3`

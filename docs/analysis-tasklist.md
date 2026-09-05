@@ -10,7 +10,7 @@
   compiler-detection arc began. Suite: 489 lib + 25 analysis (+3 this session: marker fragments,
   m68k variant equivalence, m68k dynamic-link path), clippy clean.
 - Landed & in master (older): A0–A8, multi-arch listing (x86/ARM64/RISC-V/68k/Z80), PE
-  CompilerOpinion, Watcom detect + watcall, WAR2 native-LE switch win, dependency-hardening.
+  CompilerOpinion, Watcom detect + watcall, the subject native-LE switch win, dependency-hardening.
 
 ## ✅ LANDED THIS SESSION (on analysis-port, awaiting H1 merge)
 - **Compiler VERSION + format detection arc — COMPLETE across the real-world set.**
@@ -42,19 +42,19 @@ BufferFile format — zero fidelity lost, Ghidra ships no DBs for our runtimes a
 tree) but does NOT surface on `sleigh::Instruction`, and `sleigh/` is the **decompiler agent's** lane.
 Needs a small additive read-only accessor (cross-lane coordination) before the faithful hasher is
 reachable. Distinct from `codegen_fingerprint`/`compiler_version` (those ID the whole-binary
-COMPILER; FID IDs a FUNCTION). Payoff milestone: Watcom clib (WAR2 north-star) + one gcc/glibc,
+COMPILER; FID IDs a FUNCTION). Payoff milestone: Watcom clib (the subject north-star) + one gcc/glibc,
 both self-compiled-validated. NOT STARTED — plan awaiting user GO + Stage-0 coordination.
 
 ## 🔎 FUNCTION DISCOVERY — open backlog (2026-08-06)
-Full detail in **`docs/function-discovery-backlog.md`**. WAR2 state: 2898 functions, 2026/2120 of
+Full detail in **`<subject-profile>/notes/function-discovery-backlog.md`**. the subject state: 2898 functions, 2026/2120 of
 the expert tracker (95.6%), 94 missing, 3 in-body entries (all legitimate secondary entry points).
 Open, in value order: (1) **function bodies over-extend** — 50 of the 94 missing are swallowed by a
 neighbour's body, and a wrong extent can never recompile byte-exact; (2) bare frame-first prologue
 unmatched (17); (3) tighten patterns with the measured rigid push order + 5-push cap (free
 precision); (4) save-first regression fixture (recipes verified); (5) ⭐ **STANDING USER RULE:
 generalise across the whole Watcom matrix — versions x frame mode x calling convention x stack
-checking x optimization — mosura is for all binaries, WAR2 is one example**; (6) the 7322
-over-decode (3 hypotheses dead by measurement); (7) 872 discovered functions handed to warcraft2-re.
+checking x optimization — mosura is for all binaries, the subject is one example**; (6) the 7322
+over-decode (3 hypotheses dead by measurement); (7) 872 discovered functions handed to the RE tracker.
 
 ## ⏩ UNBLOCKED — READY / next up (user said: work these)
 - **A3-V Phase 3 — CI-runnable proprietary version fixtures** — ✅ `39a7356`+`6feca33`.
@@ -112,10 +112,10 @@ the unsigned `XOR;DIV` form every revision shares; classic's `SAR` never matches
 binary. Verified: CDQ=1/SAR=0 (ow2) vs CDQ=0/SAR=1 (classic) in the committed bytes; anchor never
 false-narrows real 10.0a (`whole_program_matcher_never_wrongly_excludes`). Further enrichment now
 needs the MISSING versions (10.0-beta/10.5/9.01), not more constructs — apply
-`war2-issues-become-source-tests` for the next construct.
+`issues-become-source-tests (subject-profile note)` for the next construct.
 **⚠️ CORRECTED 2026-08-06 when 9.01 arrived:** "sound one-sided **ow2** anchor" was wrong.
 9.01 emits `MOV EBX,7 ; CDQ ; IDIV EBX` *and* `SETcc ; MOVZX`, so both anchors mark the lineage's
-OUTER ENDS (`{9.01, open}`), not Open Watcom. The half that survives is the one WAR2 rests on:
+OUTER ENDS (`{9.01, open}`), not Open Watcom. The half that survives is the one the subject rests on:
 the classic 10.0a/10.6/11.0 interior emits neither. The anchor itself and its guards are unchanged;
 `identify_watcom_program` now reports the pair. Full account:
 `docs/watcom-codegen-fingerprint.md` §CORRECTION. This is the predicted "missing versions" risk

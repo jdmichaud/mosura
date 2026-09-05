@@ -43,5 +43,5 @@ false, the refit goes live, and **it must be ported in the same commit as that c
 mosura renders a PTRSUB into a frame slot no symbol covers. Anyone doing ScopeLocal-in-types reads
 this first.
 
-**Measured against:** WAR2's 1303 functions at `8d9e42c`. The guard's reach on the 79 datatests is
+**Measured against:** the subject's 1303 functions at `8d9e42c`. The guard's reach on the 79 datatests is
 **UNMEASURED** and this certificate does not cover it ([[numbers-stale-unless-sha-stamped]]).

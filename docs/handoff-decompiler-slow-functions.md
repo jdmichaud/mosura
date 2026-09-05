@@ -1,4 +1,4 @@
-# Handoff: the two functions that dominate every WAR2 analysis run
+# Handoff: the two functions that dominate every the subject analysis run
 
 **Status 2026-08-10 @`41ffc82`.** Round 1 of this handoff was acted on and worked — thank you.
 This is round 2, with the analysis-side costs now removed so the remaining number is clean.
@@ -21,7 +21,7 @@ Measured by the analysis track, not taken on report:
 
 ## Round 2: they are now 63% of the whole run
 
-WAR2 LE (`analyze_le_file`), `MOSURA_ANALYSIS_TRACE=1`, per-analyzer:
+the subject LE (`analyze_le_file`), `MOSURA_ANALYSIS_TRACE=1`, per-analyzer:
 
 ```
 analyzer                        invocations   addrs delivered   seconds
@@ -63,7 +63,7 @@ Everything that was analysis-layer cost is gone, and none of it was in your lane
 - `90dd655` — constant propagation asked for a 16-byte window and kept one instruction of ~5.
 - `41ffc82` — `ReferenceManager::refs_from`/`refs_to` were linear scans of a `Vec` of >20k
   references, and `get_function_body` calls `refs_from` **once per instruction**. Indexing them by
-  source and destination took `analysis_parity` **243.58s -> 146.58s**, and the WAR2 LE run
+  source and destination took `analysis_parity` **243.58s -> 146.58s**, and the subject LE run
   197.8s -> 111.1s. Measured cause: `refresh_function_bodies` was 98.0s of the run while the
   constant propagation it serves was 1.0s.
 
@@ -71,7 +71,7 @@ So the 69.0s below is not hiding any analysis-layer defect behind it.
 
 ## The ask
 
-Profile `decompile_function` on **`0007a5b0`** (20.09s) and **`000793e0`** (14.40s) on the WAR2 LE
+Profile `decompile_function` on **`0007a5b0`** (20.09s) and **`000793e0`** (14.40s) on the subject LE
 image. They are ~20-40x more expensive than any other function in the binary, which suggests a
 super-linear structure rather than a constant factor — the same shape `df93e00` already found once
 in `HighVariable` membership.
@@ -80,13 +80,13 @@ Reproduce with:
 
 ```
 cargo build --release --example over_decode
-MOSURA_ANALYSIS_TRACE=1 ./target/release/examples/over_decode ~/WAR2.EXE --le
+MOSURA_ANALYSIS_TRACE=1 ./target/release/examples/over_decode ~/the subject binary --le
 ```
 
 `perf` is now usable on this machine (`kernel.perf_event_paranoid=1`):
 
 ```
-perf record -e cpu-clock:u -F 299 -g -o /tmp/p.data -- ./target/release/examples/over_decode ~/WAR2.EXE --le
+perf record -e cpu-clock:u -F 299 -g -o /tmp/p.data -- ./target/release/examples/over_decode ~/the subject binary --le
 perf report -i /tmp/p.data --stdio --sort symbol
 ```
 
@@ -96,10 +96,10 @@ once because the build had actually failed and the previous binary ran silently.
 
 ## Value
 
-Halving these two takes the WAR2 analysis run from ~111s to ~76s, and every verification run in the
+Halving these two takes the subject analysis run from ~111s to ~76s, and every verification run in the
 project with it. There is nothing else above 8s.
 
-## Round 2 addendum: the attributed profile (2026-08-10, `perf` call-graph, WAR2 LE)
+## Round 2 addendum: the attributed profile (2026-08-10, `perf` call-graph, the subject LE)
 
 `perf record -e cpu-clock:u -F 299 --call-graph dwarf,4096`, whole run, `--no-children`. This is
 where the 69.0s actually goes — you should not have to re-derive it:
@@ -153,7 +153,7 @@ Both leads in the addendum were real, and both are retired:
    function** per trim, where only the covers touching the one mutated block can change
    (`refresh_covers`).
 
-Measured on the same WAR2 LE run, identical `perf` config, analysis output byte-identical:
+Measured on the same the subject LE run, identical `perf` config, analysis output byte-identical:
 Decompiler Switch **69.6s → 25.6s**, traced total **94.4s → 50.4s**. The remaining profile
 is flat; the largest single item is back in the analysis lane —
 `ReferenceManager::remove`'s hit path (retain + full endpoint-index rebuild per removal,

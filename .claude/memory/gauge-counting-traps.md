@@ -1,6 +1,6 @@
 ---
 name: gauge-counting-traps
-description: The WAR2 absolute gauge had two OPPOSITE one-sided counting bugs; half-fixing a two-sided counter is worse than not fixing it.
+description: The subject absolute gauge had two OPPOSITE one-sided counting bugs; half-fixing a two-sided counter is worse than not fixing it.
 metadata: 
   node_type: memory
   type: feedback
@@ -8,7 +8,7 @@ metadata:
   modified: 2026-07-29T18:01:15.118Z
 ---
 
-`scripts/war2-absolute-gauge.py` carried two counting bugs at once, in opposite directions
+`scripts/corpus-absolute-gauge.py` carried two counting bugs at once, in opposite directions
 (found and fixed 2026-07-29, `68e7d7a` + `719d46f`):
 
 - **TRAP 3** — `\b(?:FUN_|func_0x)` cannot match `thunk_FUN_00067d38(`: the char before `FUN_` is

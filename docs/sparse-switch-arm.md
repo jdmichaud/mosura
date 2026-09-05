@@ -147,7 +147,7 @@ from `BRANCHIND`). Rules, each named by the 0x14620 fixture's diagnostics:
   Ghidra's rule (one out-edge, not the last); join groups print `body; goto L;` for every member
   but the address-last, which prints `body; L: continuation`.
 
-Fixture `oracle/fixtures/x86_14620_sparse_switch.xml` (a self-compiled MVE with the specimen's case set; the WAR2 address is provenance only), test
+Fixture `oracle/fixtures/x86_14620_sparse_switch.xml` (a self-compiled MVE with the specimen's case set; the subject address is provenance only), test
 `tests/sparse_switch.rs`: the case set {4, 0xc, 0xd, 0xf, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
 0x19, 0x1a}, `case 0xd: break;`, `case 4: case 0x10:`, `switch (*((uint1 *)(param_1 + 6)))`.
 

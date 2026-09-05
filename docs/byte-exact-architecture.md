@@ -1,7 +1,7 @@
 # Byte-exact recompilation — the architecture
 
 *What has to exist for mosura to decompile a binary into source that the original toolchain
-recompiles into the same bytes. WAR2.EXE is the first subject, not the design target: every
+recompiles into the same bytes. the subject binary is the first subject, not the design target: every
 piece below is stated so that a second binary, compiler, or architecture costs configuration
 rather than a rewrite.*
 
@@ -41,7 +41,7 @@ principles. It has to be **searched, with the compiler in the loop**.
 A search needs a signal that improves as the candidate gets closer. Byte agreement is not one:
 one inserted instruction shifts every later byte, so a candidate one register-allocation choice
 from exact scores the same as an unrelated function. That is not a hypothetical — under byte
-comparison, 2074 of 2552 WAR2 mismatches scored under 25%, and 96% of them were attributed to
+comparison, 2074 of 2552 the subject mismatches scored under 25%, and 96% of them were attributed to
 "unclassified". There was no gradient and no diagnosis.
 
 `crates/mosura/src/recompile/` supplies both. Both sides are lifted with mosura's own SLEIGH
@@ -141,7 +141,7 @@ to `system()`.
   not have, cannot be reached from C. These must be *identified* (a function whose divergences
   are all `encoding`, or whose original uses instructions no C construct produces) and excluded
   from the denominator, or the score becomes a measure of how much assembler the game has.
-- **Overfitting to WAR2.** A knob that helps one binary and is not derived from a measured
+- **Overfitting to the subject.** A knob that helps one binary and is not derived from a measured
   compiler rule is a liability. Every codegen rule must come with the probe that established it.
 - **A search that optimizes the instrument instead of the goal.** The alignment score is a
   gradient, not the target; the target is `EXACT`. Accepting a θ that improves similarity while

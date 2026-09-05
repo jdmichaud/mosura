@@ -16,7 +16,7 @@ import ghidra.program.model.listing.Function;
 ///   ===== FUNC <va> =====
 ///   <Ghidra's C, or an ERROR line>
 ///
-/// Used by `scripts/ghidra-decompile-war2.sh` to get Ghidra's own rendering of WAR2 functions,
+/// Used by `scripts/ghidra-decompile-subject.sh` to get Ghidra's own rendering of the subject functions,
 /// which the DOS/4GW-LE loader otherwise makes impossible (see that script's header).
 public class DecompileFunctions extends GhidraScript {
     @Override

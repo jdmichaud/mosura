@@ -266,15 +266,15 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
   - [x] **MZ** (`mz.rs`, 16-bit DOS): segments discovered from relocation fixups (`+0x1000`) + the
         initial/entry segments → `CODE_<i>` blocks to the next segment, `CODE_<i>u` uninit tail,
         `DATA` (`e_minalloc` paragraphs). Flat-linear addresses (`seg<<4`), `x86:LE:16:Real Mode`.
-        Header + relocations hand-parsed (`object` doesn't decode bare MZ). WAR2.EXE/comcom32 match.
+        Header + relocations hand-parsed (`object` doesn't decode bare MZ). the subject binary/comcom32 match.
   - [x] Magic dispatch (`loader::load`: ELF / MZ→PE / MZ→DOS). **Memory-map parity 5/5**
-        (freestanding, basic, cnv PE, comcom32 MZ, WAR2 MZ). PE/MZ binaries are user-provided
+        (freestanding, basic, cnv PE, comcom32 MZ, the subject MZ). PE/MZ binaries are user-provided
         (not committed) → harness skips if absent; loader-stage goldens committed.
   - [ ] **LE (Linear Executable) — DEFERRED until Ghidra parity** (beyond-Ghidra; no oracle).
-        WAR2.EXE is a DOS/4GW-bound LE; Ghidra (no LE loader) sees only the 16-bit MZ stub, which
+        the subject binary is a DOS/4GW-bound LE; Ghidra (no LE loader) sees only the 16-bit MZ stub, which
         mosura now matches. When parity is reached, build a **native `le.rs`** (NOT the ELF32-wrapper
-        workaround), validated against the `warcraft2-re` object ground truth + the LE spec. Full
-        design + WAR2 specifics: [`docs/le-loader-notes.md`](docs/le-loader-notes.md).
+        workaround), validated against the `the RE tracker` object ground truth + the LE spec. Full
+        design + the subject specifics: [`docs/le-loader-notes.md`](docs/le-loader-notes.md).
   - [x] **Symbols + entry points** → `SymbolTable`/`entry_points` (snapshot **v2** `sym`/`entry`;
         validated against the loader-stage golden). Snapshot-v2 schema + `DumpAnalysisSnapshot`
         dumper + `loader_detail_parity` gate. **Loader detail 5/5** (funcs+entries+symbols exact)
@@ -286,7 +286,7 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
     - [x] **PE** (`recover_pe`): `.pdata` RUNTIME_FUNCTION → `FUN_<addr>` functions (skipping
           chained-unwind), `AddressOfEntryPoint` → `entry`, `_tls_index` from the TLS directory.
           cnv exact (1767 funcs).
-    - [x] **MZ** (`MzLoader.processEntryPoint`): `entry` label at `CS:IP` + entry point. WAR2/comcom32 exact.
+    - [x] **MZ** (`MzLoader.processEntryPoint`): `entry` label at `CS:IP` + entry point. the subject/comcom32 exact.
   - [ ] Relocations; non-x86-64 language ids; stripped-dynsym defined symbols (only `.symtab`
         defined symbols are processed today — fine for the corpus).
   - [x] **Loader-stage references** (audit finding) — ELF data-structure markup DONE.
@@ -320,18 +320,18 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
         functions, recall 17/19; `function_body_parity` — bodies match Ghidra **exactly** (17 validated).
         (audit fix: A4's core output had been ungated.)
   - [x] **PE/MZ convergence** (`pe_mz_convergence_parity` + `pe_robustness_cnv`): comcom32 exact
-        (0 spurious, 0 misaligned); war2 bounded (0 spurious, ≤8 misaligned); cnv smoke (opt-in).
+        (0 spurious, 0 misaligned); the subject bounded (0 spurious, ≤8 misaligned); cnv smoke (opt-in).
   - [x] **Perf** (audit/perf pass): fixed O(N²) blowups — `Listing` sorted-Vec→HashMap (the big one),
         `Reference`/`Symbol`/`FunctionManager` per-add sort→HashSet, `SymbolicPropogator` String-key→int
         + `flow_constants` bounded to function entries. cnv analyze 1043s→142s. Also fixed a real SLEIGH
         engine panic (`fmt_hex(i64::MIN)` negate-overflow) that crashed PE/MZ disassembly.
   - [x] **Call-target functions** (audit fix): create a function at every in-memory direct-call
         target (not just executable) — Ghidra's behaviour; comcom32 3/8 → 8/8 exact.
-  - [ ] **war2/cnv precision** (later-phase, A6/A7 — audit-verified, not bugs): over-decode vs
+  - [ ] **the subject/cnv precision** (later-phase, A6/A7 — audit-verified, not bugs): over-decode vs
         Ghidra's data analysis. **Audit-and-fix loop conclusion:** every remaining miss across the
-        corpus is A6 (indirect flow: basic PLT-via-GOT, war2 142 unreached) or A7 (data analysis:
+        corpus is A6 (indirect flow: basic PLT-via-GOT, the subject 142 unreached) or A7 (data analysis:
         cnv 2 spurious funcs + 1097 misaligned — their callers are over-decoded non-Ghidra
-        instructions) or war2-16-bit specifics (12 jump-target/boundary funcs). No fixable-without-
+        instructions) or the subject-16-bit specifics (12 jump-target/boundary funcs). No fixable-without-
         A6/A7 bug remains in the corpus.
   - [x] **Function bodies** computed (see `function_body_parity`); exact match. (was: empty body gap)
   - [ ] The 4 instructions / 2 functions mosura misses (PLT[0] `0x401020`, GOT-indirect `0x405010`)
@@ -408,11 +408,11 @@ per-action IR. New module tree `src/analysis/`. **Not started.**
         the GOT slot to the slot's referent, and (b) promote that referent to a Function. Both are
         Ghidra constant/reference-propagation + function-creation-at-call/pointer-target —
         **A6-family indirect-flow follow-on, not an A7-tail analyzer**. Reported, not invented.
-  - [~] **war2 switches/COMPUTED_CALL** (Task 4): honestly 0/20 COMPUTED_JUMP + 0/2 COMPUTED_CALL,
-        0 spurious. war2 loads as x86:LE:16:Real Mode (DOS/4GW MZ stub); the switch sources are in
+  - [~] **the subject switches/COMPUTED_CALL** (Task 4): honestly 0/20 COMPUTED_JUMP + 0/2 COMPUTED_CALL,
+        0 spurious. the subject loads as x86:LE:16:Real Mode (DOS/4GW MZ stub); the switch sources are in
         protected-mode LE code the 16-bit function discovery never reaches, so they're never
         disassembled (a code-discovery gap, not a switch-analyzer failure). The pe_mz gate now locks
-        the computed-flow subset invariant (0 spurious) for war2 + comcom32.
+        the computed-flow subset invariant (0 spurious) for the subject + comcom32.
   - [x] *Decompiler-track gap reported + FIXED by master* (`4049e5d`, merged): gcc -O2
         register-guard switches now recover (cfg root at the entry, not the lowest-address block);
         switch fixture upgraded to the realistic -O2 form, A6 switch gate 7/7 through the bridge.
@@ -556,10 +556,10 @@ CodeView/HLL marker — so this track needs its own corpus and does not perturb 
 
 ## Recompile-emitter generalization (deferred by JD, 2026-08-17 — not a priority yet)
 
-`war2_survey`/`recompile_check` carry WAR2.EXE inheritance that should become **per-target
+`corpus_emit`/`recompile_check` carry the subject binary inheritance that should become **per-target
 (32-bit Watcom), not per-binary**: the emit/manifest/TU-assembly layer, the representability
 contract (`build_prelude`'s closed vocabulary + `contract_violations` — widths are already a
-target property, not a WAR2 one), the declaration safety net, and the standalone-scope
+target property, not a subject one), the declaration safety net, and the standalone-scope
 selection all generalize as "the Watcom-x86-32 emitter"; only the input loading and per-binary
 bookkeeping are binary-specific. The ground-truth corpus's `watprog` column is the natural
 second consumer that proves the split. Keep the printc separation rule while doing it: printc
@@ -823,7 +823,7 @@ original's save/restore pair around a register the prototype claims.
     so loopcomma's head counts 3 statements -> overflow `while(true)` form. mosura's re-deriving
     orientation builds recomputed `complex` on the late graph and flipped the verdict. Fixed:
     `Funcdata::structure_complex` pins the first collapse's verdicts, cleared exactly at
-    `structure_reset()`. Both walk_ shapes now byte-match the oracle; the WAR2 nested-if family
+    `structure_reset()`. Both walk_ shapes now byte-match the oracle; the subject nested-if family
     (14 EXACT) that briefly regressed under the dead-skip alone came back +1 (sb38: 586 EXACT).
   - `callee_register_return_is_recovered_with_its_argument`: the call-arg monotone union
     resurrected a POSITIONAL HOLE (`fillin_map` marks inactive trials between actives used AND
@@ -859,9 +859,9 @@ original's save/restore pair around a register the prototype claims.
   answers false (this is why CAPTURE_FLAGS_AT printed `addrtied=0` for ZF and why the loopcomma
   investigation's register-addrtied theory kept failing). mosura's flag-only accessor now
   matches the compound; flag SETTING (spacebase/ram at alloc, registers never) already agreed.
-  Verdict-neutral everywhere: full suite green, fixture corpus 0.9700, WAR2 sb40 zero verdict
+  Verdict-neutral everywhere: full suite green, fixture corpus 0.9700, the subject sb40 zero verdict
   transitions AND zero changed emissions vs sb39.
-  Measured: fixture corpus 0.9700 held exactly; WAR2 sb39 zero verdict
+  Measured: fixture corpus 0.9700 held exactly; the subject sb39 zero verdict
   transitions (586 EXACT / 14 COMPILE_FAIL) with 38 emissions improved (deeper propagation);
   full suite green in the canonical config.
 
@@ -883,7 +883,7 @@ original's save/restore pair around a register the prototype claims.
   branch (printc.cc:2273) prints it bare. Plus `Callother` was missing from the call-class
   (`isCall()`) arms: `baseExplicit`'s call-output-explicit rule and `checkImpliedCover`'s
   call-crossing list both include it (`TypeOpCallother` opflags `special|call|nocollapse`,
-  typeop.cc:814). 112 WAR2 emissions gained their previously-dropped I/O (02334's `out()`
+  typeop.cc:814). 112 the subject emissions gained their previously-dropped I/O (02334's `out()`
   sightings were expression-position survivors only); zero verdict transitions (585 EXACT / 14
   COMPILE_FAIL hold), dominant-cause "missing" 921 → 906, fixture corpus 0.9679 unchanged.
 - **Persist-store ordering vs byte-exactness** (the −5 EXACT from the deadcode-blanket

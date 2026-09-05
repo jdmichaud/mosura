@@ -53,7 +53,7 @@ EXACT is reachable by changing the order in which locals are DECLARED in our emi
 - **Prediction C1.** `InsStallable`'s operand-class weights are small immediates in the compiled
   binary and can be changed without collateral effect on any other transform — i.e. Dial B, unlike
   Dial A's table, is a genuinely isolated dial.
-- **Prediction C2.** If WAR2's scheduler priority differs from 10.0a's by those weights, patching
+- **Prediction C2.** If the subject's scheduler priority differs from 10.0a's by those weights, patching
   them should reorder the watsched holdout windows (`FUN_00073328`, `FUN_00019344`,
   `FUN_0004b750`'s 6th call site) toward the original. If the holdouts do not move, the operand
   weights are not the difference.
@@ -86,7 +86,7 @@ version. The located predicate is `GiveBestReg`'s equal-score test (`regalloc.c:
   registers score 0), this edit will not be a narrow tie flip — it will shift allocation toward
   the tail of the table across most functions, including allocating EBP as a general temp.
 - **Prediction D3 (the discriminating test).**
-  - *Under the interim-build/dial hypothesis* (WAR2's compiler broke allocation ties the other
+  - *Under the interim-build/dial hypothesis* (the subject's compiler broke allocation ties the other
     way): the patched corpus should convert a substantial share of the regalloc residue, i.e.
     EXACT should RISE, and in particular the strict regalloc-only specimens should flip.
   - *Under the declaration-order model established in §3* (the tie is decided by the order the
@@ -97,7 +97,7 @@ version. The located predicate is `GiveBestReg`'s equal-score test (`regalloc.c:
   of the six strict specimens converts.** If EXACT instead rises, the declaration-order model is
   wrong and the interim-build hypothesis is alive.
 - **Interpretation limit, registered in advance.** Per brief §6, a change this broad can support
-  only a directional/invariance reading. A large fall refutes "WAR2's compiler broke ties
+  only a directional/invariance reading. A large fall refutes "the subject's compiler broke ties
   last-wins"; it does **not** by itself prove no tie-break dial differs, only that this one, in
   this direction, is not it.
 
@@ -173,7 +173,7 @@ OW 1.0.0 has **two** tables there — `DoubleRegs` (EAX,EDX,**ECX,EBX**,…) for
 EAX, EDX, EBX, ECX, ESI, EDI, BP, SP.** Every model note that quotes the OW 1.0.0 `DoubleRegs`
 order for 10.0a is wrong at positions 2 and 3.
 
-### Dating the drift — the table order is invariant across WAR2's whole era
+### Dating the drift — the table order is invariant across the subject's whole era
 
 The same signature scan run over every Watcom revision staged on this machine (a scan for *any*
 run of E-register words terminated by `HW_EMPTY`, so it finds the table whatever its order):
@@ -192,7 +192,7 @@ run of E-register words terminated by `HW_EMPTY`, so it finds the table whatever
 they return no table; they bracket nothing that 8.5a and 9.5b do not already bracket.)
 
 **The `DoubleRegs`/`DoubleParmRegs` split, and with it the ECX-before-EBX general allocation
-order, first appears in Watcom 11.0** — after WAR2. Four shipped compilers spanning 1991–1995,
+order, first appears in Watcom 11.0** — after the subject. Four shipped compilers spanning 1991–1995,
 including the 10.0 beta and 10.0a themselves, carry one table in one order.
 
 > **Conclusion (Dial A, table-order leg): REFUTED on direct binary evidence.**
@@ -525,7 +525,7 @@ movement below on the patched byte and nothing else: not the build, not the harn
 cache.
 
 ```
-$ bash scripts/war2-verdicts.sh /data/be2/zc26-rec.tsv /data/be2/zc26-dialA-tieorder-rec.tsv
+$ bash scripts/corpus-verdicts.sh /data/be2/zc26-rec.tsv /data/be2/zc26-dialA-tieorder-rec.tsv
 == census: zc26 (stock 10.0a)              == census: zc26 + tie-order patch
   WGSS 0.4801                                WGSS 0.3156
       1 COMPILE_FAIL                             1 COMPILE_FAIL
@@ -560,11 +560,11 @@ The six strict regalloc-only specimens under the patch: `FUN_0001798c` SAME_SHAP
   than rounding it into a win.
 
 > **Conclusion (Dial A, tie-order leg): REFUTED, in this direction.**
-> If WAR2's compiler had broken equal-score register ties last-wins, the six clean specimens were
+> If the subject's compiler had broken equal-score register ties last-wins, the six clean specimens were
 > the functions that should have converted. Not one did, and across 2,797 functions **not a
 > single function anywhere gained EXACT**. Combined with §1 (the table order did not move across
 > the whole era) and §3 (three of the six specimens convert with no compiler patch at all), the
-> register-allocation dial is not where the WAR2 residue lives.
+> register-allocation dial is not where the subject residue lives.
 >
 > Registered limit, restated: this refutes *this* dial in *this* direction. It does not prove no
 > allocation dial whatsoever differs — e.g. the `GivenRegisters`-reuse preference could have been
@@ -577,7 +577,7 @@ The six strict regalloc-only specimens under the patch: `FUN_0001798c` SAME_SHAP
 makes it the double-confirmation for a positive Dial-A result:
 
 > if the interim build's difference is result-register-assignment preference, patching the
-> allocation dial toward WAR2's preference should move F2's rows **together with** the
+> allocation dial toward the subject's preference should move F2's rows **together with** the
 > `regalloc MOV>MOV` class. If the regalloc rows move and F2 does not (or vice versa), the
 > unification is wrong.
 
@@ -598,7 +598,7 @@ ordinary cascade from functions that broke elsewhere, not with a response to the
 
 The prediction was written to be falsifiable in exactly this way, so it should be read at its
 word: **F2 is not the same dial as the regalloc class, and the unification recorded in
-`byte-exact-families.md` and `war2-compiler-identity` is refuted.**
+`byte-exact-families.md` and `compiler-identity (subject-profile note)` is refuted.**
 
 Registered limit: this is an *invariance* reading, and a sound one. The patch moved the
 allocation dial hard — hard enough to double the regalloc class and destroy 332 EXACT functions.
@@ -798,7 +798,7 @@ nothing", and said either result would be decisive. The outcome is the third, wi
 
 Four of the six legs are now closed, and every leg tested in this run closed *against* the
 hypothesis — on direct measurement rather than on inference. The register-allocation dial in particular is not
-where the WAR2 residue lives: its cleanest specimens convert with **no compiler patch at all**,
+where the subject residue lives: its cleanest specimens convert with **no compiler patch at all**,
 by reordering local declarations in our own emitted C (§3).
 
 **The single most useful correction for anyone continuing:** 10.0a's 4-byte allocation order is
@@ -842,5 +842,5 @@ Everything is under `/data/dialpatch` (scratch) and reproducible from this docum
 | `/data/be2/cache-dialA-tieorder`, `cache-dialB-*`, `cache-declorder`, `cache-stockfresh` | the separate caches, one per compiler |
 | `/data/ow100-src` | Open Watcom 1.0.0 source, extracted from `/data/tools/watcom/open_watcom_1.0.0-src.zip` |
 
-The reference install at `warcraft2-re/tmp/watcom-experiments/watcom_10.0a/WATCOM` was never
+The reference install at `the RE tracker/tmp/watcom-experiments/watcom_10.0a/WATCOM` was never
 written to; its sha256 is unchanged.

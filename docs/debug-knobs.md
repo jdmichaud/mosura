@@ -41,7 +41,7 @@
 | `MOSURA_GT_DEBUG` | debug print gate | recompile/groundtruth.rs:825 | MIGRATED, R6 commit 4 -> `--debug ground-truth` (commit 4g) -- done |
 | `MOSURA_GT_RAW` | debug print with a value | recompile/groundtruth.rs:554 | KEEP as a documented hook for now: prints one function's raw IR in the gt oracle (`=<symbol>`); candidate for `debug::param` later -- listed — RETIRED 2026-09-05 → `--debug gt-raw=<function>` (WP3). |
 | `MOSURA_HIGH_DEBUG` | debug print with a value (emit) | decompile/printc.rs:3410 decompile/printc.rs:3413 | DELETE `debug_high_classes` and its call: a one-off merge-grouping view keyed by a register offset, no reader since the split-local rounds; if wanted again it is a `debug::param` design, not an env var -- R6 (3), executed |
-| `MOSURA_ILV_CENSUS` | debug print gate (example: war2_survey) | examples/war2_survey.rs (the interleave census) | MIGRATED, R6 commit 3b -> `--debug recover`; the census also reports the orders `interleave_orders` would apply (the parked lever's caller) -- done |
+| `MOSURA_ILV_CENSUS` | debug print gate (example: corpus_emit) | examples/corpus_emit.rs (the interleave census) | MIGRATED, R6 commit 3b -> `--debug recover`; the census also reports the orders `interleave_orders` would apply (the parked lever's caller) -- done |
 | `MOSURA_ILV` | behaviour knob (emit) | recompile/recovery.rs:104 recompile/recovery.rs:105 | DELETE the switch and its branch: `=1` enabled the blind interleave form, measured 2026-08-22 as a loser and OFF by default; `interleave_orders` stays exercised by the survey's interleave census (`--debug recover`); the `ilv_orders` mark and `apply_ilv_orders` stay as a mark NOTHING SETS (the field is `Default` until the model-inverse variant fills it) -- said in the marks block, so it does not read as live -- R6 (3), executed |
 | `MOSURA_ILV_DEBUG` | debug print gate (emit) | decompile/printc.rs:4360 | MIGRATED, R6 commit 2 -> `--debug printc` -- done |
 | `MOSURA_IMPLIED_DEBUG` | debug print gate | decompile/merge.rs:751 | MIGRATED, R6 commit 4 -> `--debug merge` (commit 4d) -- done |
@@ -88,19 +88,19 @@
 | `MOSURA_UNRENDERED_` | text | decompile/printc.rs:2288 | a placeholder identifier prefix in the printer, not an env read -- listed |
 | `MOSURA_VARARGS_DEBUG` | debug print gate | decompile/varargs.rs:48 decompile/varargs.rs:79 decompile/varargs.rs:194 | MIGRATED, R6 commit 4 -> `--debug varargs` (commit 4b) -- done |
 | `MOSURA_VARMAP` | debug print gate | decompile/varmap.rs:858 decompile/varmap.rs:862 decompile/varmap.rs:893 decompile/restrictlocal.rs:78 | MIGRATED, R6 commit 4 -> `--debug varmap` (commit 4c) -- done |
-| `MOSURA_WAR2_EXE` | path | paths.rs:158 paths.rs:161 | paths.rs configuration, untouched |
+| `the subject's `[[subject]]` entry` | path | paths.rs:158 paths.rs:161 | paths.rs configuration, untouched |
 | `MOSURA_WATCH_CALL` | debug print with a value | decompile/funcdata.rs:2148 decompile/funcdata.rs:2149 decompile/funcdata.rs:2180 decompile/funcdata.rs:2182 | DECIDE later (not emit): watches one call's input edits; a `debug::param` candidate -- since R6 (4d) the print it selects is under `--debug pipeline` as well; the value filter stays -- listed — RETIRED 2026-09-05 → `--debug watch-call=<hex va>` (WP3). |
 | `MOSURA_WATCOM_DIR` | path | paths.rs:186 paths.rs:190 | paths.rs configuration, untouched |
 | `MOSURA_X32_EXE` | path | paths.rs:172 paths.rs:176 | paths.rs configuration, untouched |
 | `MOSURA_X86_32_CSPEC` | test hook | analysis/overrides.rs:5 analysis/overrides.rs:50 analysis/overrides.rs:63 analysis/overrides.rs:111 analysis/loader/watc | KEEP, documented: the forced x86-32 cspec (`analysis::overrides`, loader/watcom.rs explains why it must exist) -- listed — RETIRED 2026-09-05 → `Knobs::x86_32_cspec`, `--cspec` (WP2). |
-| `MOSURA_ZAP_DEBUG` | debug print gate | recompile/watsched.rs:644 (+ examples/war2_survey.rs, the zapcheck driver) | MIGRATED, R6 commit 4 -> `--debug watsched` (commit 4g, 4h) -- done |
-| `MOSURA_KERNEL_SHADOW` | debug print gate (survey) | examples/war2_survey.rs | MIGRATED, R6 commit 4h -> `--debug survey` (the survey's own diagnostics; its normal output stays plain) -- done |
-| `MOSURA_SHARED_RET_DEBUG` | debug print gate (survey) | examples/war2_survey.rs | MIGRATED, R6 commit 4h -> `--debug survey` (the survey's own diagnostics; its normal output stays plain) -- done |
-| `MOSURA_SHADOW_DEBUG` | debug print gate (survey) | examples/war2_survey.rs | MIGRATED, R6 commit 4h -> `--debug survey` (the survey's own diagnostics; its normal output stays plain) -- done |
-| `MOSURA_RAW_IR` | debug print gate (survey) | examples/war2_survey.rs | MIGRATED, R6 commit 4h -> `--debug raw-ir` (the survey's own diagnostics; its normal output stays plain) -- done |
-| `MOSURA_EXTENT` | debug print gate (survey) | examples/war2_survey.rs | MIGRATED, R6 commit 4h -> `--debug survey` (the survey's own diagnostics; its normal output stays plain) -- done |
-| `MOSURA_AUX_DEBUG` | debug print gate (survey) | examples/war2_survey.rs | MIGRATED, R6 commit 4h -> `--debug survey` (the survey's own diagnostics; its normal output stays plain) -- done |
-| `MOSURA_AGG_DEBUG` | debug print gate (survey) | examples/war2_survey.rs | MIGRATED, R6 commit 4h -> `--debug survey` (the survey's own diagnostics; its normal output stays plain) -- done |
+| `MOSURA_ZAP_DEBUG` | debug print gate | recompile/watsched.rs:644 (+ examples/corpus_emit.rs, the zapcheck driver) | MIGRATED, R6 commit 4 -> `--debug watsched` (commit 4g, 4h) -- done |
+| `MOSURA_KERNEL_SHADOW` | debug print gate (survey) | examples/corpus_emit.rs | MIGRATED, R6 commit 4h -> `--debug survey` (the survey's own diagnostics; its normal output stays plain) -- done |
+| `MOSURA_SHARED_RET_DEBUG` | debug print gate (survey) | examples/corpus_emit.rs | MIGRATED, R6 commit 4h -> `--debug survey` (the survey's own diagnostics; its normal output stays plain) -- done |
+| `MOSURA_SHADOW_DEBUG` | debug print gate (survey) | examples/corpus_emit.rs | MIGRATED, R6 commit 4h -> `--debug survey` (the survey's own diagnostics; its normal output stays plain) -- done |
+| `MOSURA_RAW_IR` | debug print gate (survey) | examples/corpus_emit.rs | MIGRATED, R6 commit 4h -> `--debug raw-ir` (the survey's own diagnostics; its normal output stays plain) -- done |
+| `MOSURA_EXTENT` | debug print gate (survey) | examples/corpus_emit.rs | MIGRATED, R6 commit 4h -> `--debug survey` (the survey's own diagnostics; its normal output stays plain) -- done |
+| `MOSURA_AUX_DEBUG` | debug print gate (survey) | examples/corpus_emit.rs | MIGRATED, R6 commit 4h -> `--debug survey` (the survey's own diagnostics; its normal output stays plain) -- done |
+| `MOSURA_AGG_DEBUG` | debug print gate (survey) | examples/corpus_emit.rs | MIGRATED, R6 commit 4h -> `--debug survey` (the survey's own diagnostics; its normal output stays plain) -- done |
 
 ## After R6 (4) — what the tree still reads and prints
 
