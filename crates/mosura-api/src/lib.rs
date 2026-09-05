@@ -21,7 +21,7 @@ pub use ctx::{Context, ContextConfig};
 pub use error::{Error, Result};
 pub use fingerprint::Stage;
 pub use key::Key;
-pub use ops::{dispatch, NoProgress, Op, Progress};
+pub use ops::{dispatch, Cache, Extension, NoProgress, Op, Progress, Tier};
 pub use options::{Affects, OptType, OptionSpec, Options};
 pub use render::{render, Format};
 pub use set::TableSet;

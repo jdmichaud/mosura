@@ -140,6 +140,9 @@ pub unsafe extern "C" fn mosura_ctx_new(config: *const mosura_ctx_config, out: *
         cfg.data_dirs = data_dirs;
         cfg.debug = debug;
         cfg.abort_on_panic = abort;
+        // the dev tier joins the registries before the first dispatch (a `dev-tools` build only)
+        #[cfg(feature = "dev-tools")]
+        mosura_dev_ops::register()?;
         let ctx = Context::new(cfg)?;
         ABORT_ON_PANIC.store(abort, Ordering::Relaxed);
         *out = handle::new(Kind::Ctx, Arc::new(ctx)) as *mut mosura_ctx;

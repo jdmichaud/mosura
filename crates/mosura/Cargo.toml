@@ -9,5 +9,9 @@ description = "mosura — the safe Rust binding over the mosura C ABI (libmosura
 [lib]
 name = "mosura"
 
+[features]
+# forwards the dev tier (see mosura-capi)
+dev-tools = ["mosura-capi/dev-tools"]
+
 [dependencies]
 mosura-capi = { path = "../mosura-capi" }

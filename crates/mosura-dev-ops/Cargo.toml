@@ -1,0 +1,14 @@
+[package]
+name = "mosura-dev-ops"
+version = "0.0.0"
+description = "mosura dev operations: the oracle sweeps, censuses, ground truth, fixtures and probes that develop mosura against its oracles — the dev tier, registered into the operation registry under mosura-capi's `dev-tools` feature. Never in a release library."
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "mosura_dev_ops"
+
+[dependencies]
+mosura-api = { path = "../mosura-api" }
+mosura-core = { path = "../mosura-core", features = ["dev"] }

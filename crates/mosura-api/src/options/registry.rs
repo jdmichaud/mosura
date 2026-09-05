@@ -1,12 +1,14 @@
 //! The option registry: the hand-written keys of `keys.rs` plus the keys generated from the
 //! core's own tables — `emit.<axis>` for every `EmitChoices::AXES` entry, `knobs.off` over
 //! `Switch::ALL`, `emit.arms-off` over `Recovered::ARMS`, `debug.topics` over `Topic::ALL` — so a
-//! new axis, switch, arm or topic appears here without an edit. Assembled once per process.
+//! new axis, switch, arm or topic appears here without an edit. Assembled once per process;
+//! an extension (the dev tier) adds its keys at run time through `register`.
 
 use std::collections::HashMap;
-use std::sync::OnceLock;
+use std::sync::{OnceLock, RwLock};
 
 use super::{keys, Affects, OptType, OptionSpec};
+use crate::error::{Error, Result};
 use mosura_core::decompile::emit::arms::registry::Recovered;
 use mosura_core::decompile::emit::EmitChoices;
 use mosura_core::debug::Topic;
@@ -70,15 +72,49 @@ fn build() -> Vec<OptionSpec> {
     specs
 }
 
-pub fn registry() -> &'static [OptionSpec] {
+/// The compiled registry (assembled once).
+fn compiled() -> &'static [OptionSpec] {
     static REG: OnceLock<Vec<OptionSpec>> = OnceLock::new();
     REG.get_or_init(build)
 }
 
-pub fn lookup(key: &str) -> Option<&'static OptionSpec> {
+fn compiled_lookup(key: &str) -> Option<&'static OptionSpec> {
     static INDEX: OnceLock<HashMap<&'static str, usize>> = OnceLock::new();
-    let idx = INDEX.get_or_init(|| registry().iter().enumerate().map(|(i, s)| (s.key, i)).collect());
-    idx.get(key.trim()).map(|&i| &registry()[i])
+    let idx = INDEX.get_or_init(|| compiled().iter().enumerate().map(|(i, s)| (s.key, i)).collect());
+    idx.get(key).map(|&i| &compiled()[i])
+}
+
+/// Keys registered at run time (an extension's; see `ops::register`), leaked once per process.
+static EXTRA: RwLock<Vec<&'static OptionSpec>> = RwLock::new(Vec::new());
+
+/// Add option keys at run time. A key already registered, not spelled dotted lower-case, or
+/// without a doc line is `InvalidArg` (the same rules the compiled registry's test pins).
+pub fn register(specs: Vec<OptionSpec>) -> Result<()> {
+    let mut extra = EXTRA.write().unwrap_or_else(|e| e.into_inner());
+    for s in specs {
+        let spelled = !s.key.is_empty() && s.key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-');
+        if !spelled || s.doc.is_empty() {
+            return Err(Error::InvalidArg(format!("option key `{}`: keys are dotted lower-case and carry a doc line", s.key)));
+        }
+        if compiled_lookup(s.key).is_some() || extra.iter().any(|x| x.key == s.key) {
+            return Err(Error::InvalidArg(format!("option key `{}` is already registered", s.key)));
+        }
+        extra.push(Box::leak(Box::new(s)));
+    }
+    Ok(())
+}
+
+/// Every key — the compiled registry plus the registered extensions — sorted.
+pub fn registry() -> Vec<&'static OptionSpec> {
+    let mut all: Vec<&'static OptionSpec> = compiled().iter().collect();
+    all.extend(EXTRA.read().unwrap_or_else(|e| e.into_inner()).iter().copied());
+    all.sort_by(|a, b| a.key.cmp(b.key));
+    all
+}
+
+pub fn lookup(key: &str) -> Option<&'static OptionSpec> {
+    let key = key.trim();
+    compiled_lookup(key).or_else(|| EXTRA.read().unwrap_or_else(|e| e.into_inner()).iter().copied().find(|s| s.key == key))
 }
 
 #[cfg(test)]
@@ -91,7 +127,7 @@ mod tests {
     fn registry_is_sorted_unique_and_complete() {
         let r = registry();
         assert!(r.windows(2).all(|w| w[0].key < w[1].key), "sorted, unique");
-        for s in r {
+        for s in &r {
             assert!(s.key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-'), "{}", s.key);
             assert!(!s.doc.is_empty(), "{} has a doc line", s.key);
         }

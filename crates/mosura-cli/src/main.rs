@@ -186,6 +186,14 @@ enum Cmd {
         #[arg(value_name = "KEY=VALUE")]
         args: Vec<String>,
     },
+    /// A dev-tier operation by name: `mosura dev <op> key=value ...` (`ops --dev` lists them; the
+    /// `dev.` prefix may be left out). Present only in a build with the `dev-tools` feature.
+    #[cfg(feature = "dev-tools")]
+    Dev {
+        op: String,
+        #[arg(value_name = "KEY=VALUE")]
+        args: Vec<String>,
+    },
     /// The session config (`mosura config set key=value`)
     Config {
         #[command(subcommand)]
@@ -343,6 +351,17 @@ fn main() {
 
 fn hex_of(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// `KEY=VALUE` arguments of `call` and `dev` (a leading `--` is tolerated).
+fn kv_pairs(args: &[String]) -> Res<Vec<(String, String)>> {
+    let mut pairs = Vec::new();
+    for a in args {
+        let a = a.trim_start_matches("--");
+        let (k, v) = a.split_once('=').ok_or_else(|| usage(format!("`{a}`: expected KEY=VALUE")))?;
+        pairs.push((k.trim().to_string(), v.trim().to_string()));
+    }
+    Ok(pairs)
 }
 
 fn run(cli: Cli) -> Res<()> {
@@ -562,12 +581,15 @@ fn run(cli: Cli) -> Res<()> {
             app.show(&t)
         }
         Cmd::Call { op, args } => {
-            let mut pairs: Vec<(String, String)> = Vec::new();
-            for a in &args {
-                let a = a.trim_start_matches("--");
-                let (k, v) = a.split_once('=').ok_or_else(|| usage(format!("`{a}`: expected KEY=VALUE")))?;
-                pairs.push((k.trim().to_string(), v.trim().to_string()));
-            }
+            let pairs = kv_pairs(&args)?;
+            let extra: Vec<(&str, &str)> = pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+            let t = app.call(&op, &extra)?;
+            app.show(&t)
+        }
+        #[cfg(feature = "dev-tools")]
+        Cmd::Dev { op, args } => {
+            let op = if op.starts_with("dev.") { op } else { format!("dev.{op}") };
+            let pairs = kv_pairs(&args)?;
             let extra: Vec<(&str, &str)> = pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
             let t = app.call(&op, &extra)?;
             app.show(&t)

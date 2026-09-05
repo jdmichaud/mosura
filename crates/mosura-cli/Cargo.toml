@@ -10,6 +10,10 @@ description = "mosura — the command line: porcelain over the mosura binding (t
 name = "mosura"
 path = "src/main.rs"
 
+[features]
+# the dev tier: `mosura dev <op>` and `ops --dev` rows; a release binary is built without it
+dev-tools = ["mosura/dev-tools"]
+
 [dependencies]
 mosura = { path = "../mosura" }
 clap = { version = "4.5", features = ["derive"] }

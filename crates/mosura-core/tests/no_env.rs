@@ -5,8 +5,9 @@
 //! field, every tool or input location a `dev-config.toml` key (`devcfg`), every spec or FID file
 //! a resource (`resources`, embedded with a `--data-dir` override). So no `.rs` under
 //! `crates/mosura-core/{src,examples,tests}`, `crates/xtask/src`, or the `src`/`tests` of the product
-//! crates `crates/mosura-api`, `crates/mosura-capi`, `crates/mosura` (the binding) and
-//! `crates/mosura-cli` may read the process environment, with the documented exceptions below,
+//! crates `crates/mosura-api`, `crates/mosura-capi`, `crates/mosura` (the binding),
+//! `crates/mosura-cli` and the dev tier `crates/mosura-dev-ops` may read the process environment,
+//! with the documented exceptions below,
 //! each pinned to the ONE variable it may read (a crate's `build.rs` is out of scope: it speaks
 //! cargo's build-script protocol — `OUT_DIR`, `CARGO_MANIFEST_DIR` — at build time, and nothing
 //! of it reaches the library):
@@ -88,7 +89,7 @@ fn rs_files(root: &Path, dirs: &[&str]) -> Vec<PathBuf> {
 #[test]
 fn nothing_reads_the_environment() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).expect("workspace root").to_path_buf();
-    let files = rs_files(&root, &["crates/mosura-core/src", "crates/mosura-core/examples", "crates/mosura-core/tests", "crates/xtask/src", "crates/mosura-api/src", "crates/mosura-api/tests", "crates/mosura-capi/src", "crates/mosura-capi/tests", "crates/mosura/src", "crates/mosura/tests", "crates/mosura-cli/src", "crates/mosura-cli/tests"]);
+    let files = rs_files(&root, &["crates/mosura-core/src", "crates/mosura-core/examples", "crates/mosura-core/tests", "crates/xtask/src", "crates/mosura-api/src", "crates/mosura-api/tests", "crates/mosura-capi/src", "crates/mosura-capi/tests", "crates/mosura/src", "crates/mosura/tests", "crates/mosura-cli/src", "crates/mosura-cli/tests", "crates/mosura-dev-ops/src", "crates/mosura-dev-ops/tests"]);
     assert!(files.len() > 100, "the scan found only {} files — wrong root?", files.len());
     let mut offenders: Vec<String> = Vec::new();
     let mut allowed_seen: Vec<&str> = Vec::new();

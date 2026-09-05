@@ -96,6 +96,31 @@ fn a_session_from_identify_to_decompile() {
     let _ = std::fs::remove_dir_all(&s);
 }
 
+/// A release build (no `dev-tools` feature): the dev tier is not built in — a `dev.*` operation
+/// says so (a library error, not "unknown"), `ops --dev` lists no dev row, and there is no `dev`
+/// subcommand.
+#[cfg(not(feature = "dev-tools"))]
+#[test]
+fn the_dev_tier_is_not_built_in() {
+    let s = scratch("nodev");
+    let o = run(&s, &["call", "dev.omf.dump"]);
+    assert_eq!(o.code, 3, "{}", o.stderr);
+    assert!(o.stderr.contains("not built in"), "{}", o.stderr);
+    // its option keys are not registered either — the registry refuses them before the op
+    let key = run(&s, &["call", "dev.omf.dump", "dev.path=x.obj"]);
+    assert_eq!(key.code, 3, "{}", key.stderr);
+    assert!(key.stderr.contains("unknown option key `dev.path`"), "{}", key.stderr);
+    let unknown = run(&s, &["call", "nope.zzz"]);
+    assert_eq!(unknown.code, 3, "{}", unknown.stderr);
+    assert!(unknown.stderr.contains("not found") || unknown.stderr.contains("operation `nope.zzz`"), "{}", unknown.stderr);
+    let ops = ok(&s, &["--format", "tsv", "ops", "--dev"]);
+    assert!(!ops.contains("\tdev\t"), "{ops}");
+    let sub = run(&s, &["dev", "omf.dump"]);
+    assert_ne!(sub.code, 0);
+    assert!(sub.stderr.contains("unrecognized subcommand"), "{}", sub.stderr);
+    let _ = std::fs::remove_dir_all(&s);
+}
+
 #[test]
 fn raw_decoding_registries_and_exit_codes() {
     let s = scratch("raw");

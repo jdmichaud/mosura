@@ -97,10 +97,17 @@ impl App {
     }
 
     /// The options `op` accepts, out of the merged set plus `extra` (a typed command's own keys).
+    /// An operation the registry does not list gets `extra` alone and the library's answer (not
+    /// found, or "not built in" for a `dev.*` name in a release build).
     pub fn params_for(&self, op: &str, extra: &[(&str, &str)]) -> Res<Options> {
-        let params = self.op_params.get(op).ok_or_else(|| usage(format!("unknown operation `{op}` (see `mosura ops`)")))?;
-        let emit_ok = params.iter().any(|p| p == "emit.*");
         let mut o = self.ctx.options()?;
+        let Some(params) = self.op_params.get(op) else {
+            for (k, v) in extra {
+                o.set(k, v)?;
+            }
+            return Ok(o);
+        };
+        let emit_ok = params.iter().any(|p| p == "emit.*");
         let reg = self.ctx.options_registry()?;
         for r in 0..reg.rows() {
             let k = reg.str(r, 0)?;

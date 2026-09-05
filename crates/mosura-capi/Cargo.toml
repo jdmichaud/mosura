@@ -10,9 +10,15 @@ description = "The mosura C API: extern \"C\" one-liners over mosura-api behind 
 name = "mosura_capi"
 crate-type = ["rlib", "cdylib", "staticlib"]
 
+[features]
+# The dev tier (`mosura-dev-ops`): registered into the operation registry when a context is
+# built. Off in a release library — `dev.*` then answers "not built in".
+dev-tools = ["dep:mosura-dev-ops"]
+
 [dependencies]
 mosura-api = { path = "../mosura-api" }
 mosura-core = { path = "../mosura-core" }
+mosura-dev-ops = { path = "../mosura-dev-ops", optional = true }
 
 [dev-dependencies]
 # the integration tests read the analysis corpus by workspace layout (the dev tier)

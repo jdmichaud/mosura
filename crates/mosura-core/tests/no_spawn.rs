@@ -2,7 +2,8 @@
 //! product crates' sources only in `recompile/toolchain/driver.rs` (the compiler driver — the one
 //! process a round runs, under a `CompilerSpec`) and in the dev-tier files compiled only under
 //! `feature = "dev"` (the oracle capture, the gcc ground truth, the MVE twin build). Everything
-//! else — the api, the C ABI, the binding, the CLI — is a library that computes.
+//! else — the api, the C ABI, the binding, the CLI, the dev operations crate — is a library
+//! that computes (a dev operation that needs a process calls into core's dev tier).
 
 use std::path::{Path, PathBuf};
 
@@ -35,7 +36,7 @@ fn rs_files(root: &Path, dirs: &[&str]) -> Vec<PathBuf> {
 #[test]
 fn only_the_toolchain_driver_and_the_dev_tier_spawn_processes() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).ancestors().nth(2).expect("workspace root").to_path_buf();
-    let files = rs_files(&root, &["crates/mosura-core/src", "crates/mosura-api/src", "crates/mosura-capi/src", "crates/mosura/src", "crates/mosura-cli/src"]);
+    let files = rs_files(&root, &["crates/mosura-core/src", "crates/mosura-api/src", "crates/mosura-capi/src", "crates/mosura/src", "crates/mosura-cli/src", "crates/mosura-dev-ops/src"]);
     assert!(files.len() > 100, "the scan found only {} files — wrong root?", files.len());
     let mut offenders = Vec::new();
     let mut seen = Vec::new();
