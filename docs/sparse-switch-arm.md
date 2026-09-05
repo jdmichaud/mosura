@@ -135,7 +135,7 @@ from `BRANCHIND`). Rules, each named by the 0x14620 fixture's diagnostics:
   specimen `x86_173b4`, 2026-08-27): `RuleStoreVarnode` fires 11× in Ghidra vs 6× in mosura — the
   five misses sit at the call pcs 0x1740e/0x17423/0x1742e/0x1743c/0x17448 — and Ghidra's
   `ActionDeadCode` touches 0x173e0 (the `xStack_14` store) where mosura's never does; mosura's kill
-  of that store between structure derivations comes from an untraced path (a MOSURA_TRACE gap to
+  of that store between structure derivations comes from an untraced path (an op-action trace gap to
   close first). Lead: the diff's only mosura-only ACTION is `dominantcopy [ActionDominantCopy]` (1×, Ghidra fires
   none on this specimen), and the value that reaches the final C is a fresh `u0x10048 = COPY
   [0x812d1]` at 0x173ed — the compare's pc — while both sides still hold the original

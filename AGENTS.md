@@ -172,9 +172,12 @@ record gotchas in memory.
 
 Committed test data includes vendor-produced fixtures and programs linking historical proprietary
 run-times; `docs/third-party-test-binaries.md` inventories every one with its provenance and the
-gate that needs it. **Do not add to it casually.** Compiler distributions, SDKs, manuals and game
-binaries are never committed — they are user-provided, located by an env var, and their gates skip
-when absent (`docs/dependencies.md`).
+gate that needs it. **Do not add to it casually.** Compiler distributions, SDKs, manuals and subject
+binaries are never committed — they are user-provided, located through `dev-config.toml`
+(`dev-config.example.toml` lists every key), and their gates skip when absent (`docs/dependencies.md`).
+Nothing in the library, the tests or the scripts reads an environment variable for a location or a
+knob: knobs are values (`switches::Knobs`, `--arms-off`), diagnostics are `--debug <spec>`, spec and
+FID data are embedded with a `--data-dir` override (`crate::resources`); `tests/no_env.rs` enforces it.
 
 ## Conventions
 

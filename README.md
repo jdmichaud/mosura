@@ -19,30 +19,32 @@ own C output.
 
 ## User quick start
 
-mosura reuses Ghidra's compiled SLEIGH tables and decompiler datatests, so it runs
-against a pinned Ghidra source checkout as its reference. One-time setup:
+mosura carries the data it needs: the pinned Ghidra processor tables (`third_party/ghidra/`,
+byte-identical to tag `Ghidra_12.0.3_build`), its own compiler specs and its FID databases are
+embedded into the library at build time, so a bare clone builds and runs with a Rust toolchain
+(rustup) alone — no Ghidra checkout, no environment variable:
 
 ```sh
-# 1. Install prerequisites (Debian/Ubuntu) — plus a Rust toolchain (rustup):
-sudo apt-get install -y build-essential bison flex binutils-dev libbfd-dev zlib1g-dev
-
-# 2. Fetch the pinned Ghidra source and compile the SLEIGH specs (one command):
-scripts/setup-ghidra.sh
-```
-
-`setup-ghidra.sh` shallow-clones the pinned Ghidra (tag `Ghidra_12.0.3_build`) beside this
-repo — `<workspace>/ghidra/`, override with `ghidra_src` in `dev-config.toml` — verifies it is the exact pinned
-commit, and compiles the `.sla` that `cargo test` loads (a fresh Ghidra clone ships none).
-After this, `cargo test` is self-contained. `scripts/setup-oracle.sh` additionally builds the
-Ghidra C++ oracle tools, which are needed only to *regenerate* the committed goldens, not to
-run the tests.
-
-Then decompile one of the bundled x86-64 fixtures:
-
-```sh
-cargo run -q --example dumpc -- modulo        # decompiled C
+cargo run -q --example dumpc -- modulo        # decompiled C of a bundled x86-64 fixture
 cargo run -q --example dump  -- modulo --ir   # disassembly + p-code IR
+cargo test                                    # self-contained
 ```
+
+An override directory is consulted first, file by file (`--data-dir <dir>` on every front-end);
+`cargo xtask data-export <dir>` writes the embedded data out to jump-start one.
+
+The pinned Ghidra *source* is the reference for porting and for regenerating goldens (the
+DEV-ORACLE tier), not for running:
+
+```sh
+sudo apt-get install -y build-essential bison flex binutils-dev libbfd-dev zlib1g-dev
+scripts/setup-ghidra.sh     # shallow-clone the pin beside this repo (<workspace>/ghidra/, or
+                            # `ghidra_src` in dev-config.toml), verify the commit, compile the .sla
+scripts/setup-oracle.sh     # additionally build the Ghidra C++ oracle tools
+```
+
+Machine-specific locations (the checkout, toolchains, user-provided binaries) live in the
+gitignored `dev-config.toml`; `dev-config.example.toml` lists every key with its default.
 
 mosura is early-stage: it currently decompiles the bundled Ghidra datatest fixtures
 rather than arbitrary binaries.

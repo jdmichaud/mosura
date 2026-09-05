@@ -15,14 +15,15 @@
 //!
 //! THE RULE: **a knob is registered here iff it can change a tree.** A knob that only changes what
 //! is PRINTED to stderr is a [`crate::debug`] topic; a knob that only widens a `--only` probe
-//! (`MOSURA_PROBE_FULL`, `MOSURA_CONS_PROBE`) never produces a tree and stays where it is.
+//! (the emit tool's `--probe-full`, `--cons-probe`) never produces a tree and stays where it is.
 //!
 //! Registering is the whole job: [`Switch::ALL`] gives the name to `--arms-off`, [`Knobs::on`]
 //! answers at the site, and [`Knobs::stamp_parts`] puts it in the stamp — so a registered knob
-//! cannot be silently unstamped, and `tests::every_emit_knob_is_registered` fails on ANY raw
-//! `env::var("MOSURA_..")` / `env::var_os("MOSURA_..")` read in the library or the examples (the
-//! diagnostics are a caller-configured [`crate::debug::Config`] since WP3, and the dev tier's
-//! locations come from `dev-config.toml` through [`crate::devcfg`] since WP4).
+//! cannot be silently unstamped. Nothing can bypass the table through the environment: the
+//! `tests/no_env.rs` guard fails on ANY environment read in the library, the examples, the tests
+//! or xtask (the diagnostics are a caller-configured [`crate::debug::Config`] since WP3, the dev
+//! tier's locations come from `dev-config.toml` through [`crate::devcfg`] since WP4, and the spec
+//! and FID data are resources since WP5).
 //!
 //! THE KNOBS ARE A VALUE, NOT A PROCESS STATE (2026-09-05, the environment-variable removal): a
 //! front-end builds one [`Knobs`] from its flags (`--arms-off`, `--cspec`, `--disable-analyzers`),
@@ -70,9 +71,9 @@ pub enum Switch {
     /// Callee-effects modelling in the analysis→decompiler bridge
     /// (`analysis::decompiler::record_callee_effects`): each direct call's recovered reads and
     /// writes, applied at the call. Review item of 2026-09-05: `MOSURA_CALLEE_EFFECTS=0` switched it
-    /// off — CHANGING THE TREE — while escaping `every_emit_knob_is_registered`, because the site
-    /// read it with `env::var_os` and the guard only matched `env::var(`. Registered here; the guard
-    /// now matches both spellings.
+    /// off — CHANGING THE TREE — while escaping the then guard, because the site read it with
+    /// `env::var_os` and the guard only matched `env::var(`. Registered here; the successor guard
+    /// (`tests/no_env.rs`) sees every spelling of a read and pins that eyesight with a test.
     CalleeEffects,
 }
 
@@ -186,28 +187,6 @@ impl Knobs {
     }
 }
 
-/// Every raw `MOSURA_*` environment read in `src`, as `(1-based line, variable name)`. Both
-/// spellings — `env::var("MOSURA_..")` and `env::var_os("MOSURA_..")` — because the guard that
-/// matched only the first let `MOSURA_CALLEE_EFFECTS` change trees unstamped (review, 2026-09-05).
-/// A function of the text so the guard's own eyesight is testable.
-pub fn raw_env_reads(src: &str) -> Vec<(usize, String)> {
-    let mut out = Vec::new();
-    for (i, line) in src.lines().enumerate() {
-        for needle in ["env::var(\"MOSURA_", "env::var_os(\"MOSURA_"] {
-            let mut rest = line;
-            while let Some(pos) = rest.find(needle) {
-                let after = &rest[pos + needle.len()..];
-                if let Some(name) = after.split('"').next() {
-                    out.push((i + 1, format!("MOSURA_{name}")));
-                }
-                rest = after;
-            }
-        }
-    }
-    out
-}
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,29 +208,6 @@ mod tests {
     /// how the tree was built. This is the guard that keeps the class from growing back: it scans
     /// the emit path for raw environment reads and fails on any that is not a known DIAGNOSTIC
     /// (a print, a trace, a watch — nothing that reaches the emitted text) or this file's own.
-    /// The guard's eyesight, pinned (review item, 2026-09-05): a read spelled `env::var_os` is a
-    /// read. Before this test the scanner matched `env::var("MOSURA_` only, and
-    /// `MOSURA_CALLEE_EFFECTS` — which changes the emitted tree — sat unregistered and unstamped
-    /// behind a `var_os`. Both spellings, several per line.
-    #[test]
-    fn the_scanner_sees_both_spellings() {
-        let src = "let a = std::env::var(\"MOSURA_FOO\");\n\
-                   let b = std::env::var_os(\"MOSURA_BAR\").is_some();\n\
-                   let c = 1;\n\
-                   env::var(\"MOSURA_X\"); env::var_os(\"MOSURA_Y\");\n";
-        let reads = raw_env_reads(src);
-        assert_eq!(
-            reads,
-            vec![
-                (1, "MOSURA_FOO".to_string()),
-                (2, "MOSURA_BAR".to_string()),
-                (4, "MOSURA_X".to_string()),
-                (4, "MOSURA_Y".to_string()),
-            ],
-            "the var_os read on line 2 is the one the old guard missed"
-        );
-    }
-
     /// The value semantics the knobs exist for: independent instances, `Default` = all on, the
     /// stamp spells every non-default part, and an unknown name is an error rather than a no-op.
     #[test]
@@ -271,43 +227,5 @@ mod tests {
             k.stamp_parts(),
             vec!["ret-split", "callee-effects", "cspec=watcom", "disabled-analyzers=Function Start Search"]
         );
-    }
-
-    /// A knob that changes a tree must be in the table, or the manifest's `arms:` line lies about
-    /// how the tree was built; a diagnostic is a `debug::Config` field the caller sets. So NO
-    /// `MOSURA_*` environment read may exist in the library or the examples: this guard scans them
-    /// and fails on any, naming file:line. (This file is exempt because its scanner test carries
-    /// the pattern as test data.)
-    #[test]
-    fn every_emit_knob_is_registered() {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        let mut files: Vec<std::path::PathBuf> = Vec::new();
-        let mut stack = vec![root.join("src"), root.join("examples")];
-        while let Some(d) = stack.pop() {
-            let Ok(rd) = std::fs::read_dir(&d) else { continue };
-            for e in rd.flatten() {
-                let p = e.path();
-                if p.is_dir() {
-                    stack.push(p);
-                } else if p.extension().is_some_and(|x| x == "rs") {
-                    files.push(p);
-                }
-            }
-        }
-        let mut unregistered: Vec<String> = Vec::new();
-        for p in files {
-            if p.file_name().is_some_and(|n| n == "switches.rs") {
-                continue;
-            }
-            let Ok(src) = std::fs::read_to_string(&p) else { continue };
-            for (line, full) in raw_env_reads(&src) {
-                unregistered.push(format!(
-                    "{}:{} reads {full} from the environment — a knob is a `Knobs` value, a diagnostic a `debug::Config` field",
-                    p.display(),
-                    line
-                ));
-            }
-        }
-        assert!(unregistered.is_empty(), "unregistered emit knobs:\n  {}", unregistered.join("\n  "));
     }
 }
