@@ -22,41 +22,7 @@ use mosura::decompile::space::Address;
 use mosura::switches::{Knobs, Switch};
 use mosura::recompile::tu::{aggregate_ram_globals, build_prelude, build_tu, contract_violations, with_contract};
 use mosura::recompile::pragma::{nondefault_parm_regs, own_contract, WatcomRegs};
-
-/// Whether a function is the subject's own code or the toolchain's.
-///
-/// A recompilation denominator must not count library code. `memset`, `printf` and the CRT
-/// startup are reproduced by LINKING the Watcom libraries, not by decompiling them, so counting
-/// them measures the toolchain rather than the port -- and their verdicts are not the port's to
-/// claim either way. Measured on the subject: 5 of 131 library functions are byte-exact (3.8%) against
-/// 534 of 2892 of the subject's own (18.5%), so excluding them RAISES the ratio -- they were
-/// dragging it down, not flattering it, which is the opposite of what was assumed here first.
-///
-/// The classification is the program's own: analysis names an unrecognised entry `FUN_<addr>`,
-/// and on a stripped image the only thing that replaces that placeholder is FID matching the
-/// function against a known library. So "was it identified" IS "is it library code" here, and it
-/// is asked through [`Function::name_is_default`] so this file does not carry a second copy of
-/// the placeholder format.
-fn kind_of(name: &str) -> &'static str {
-    if mosura::analysis::program::function::Function::name_is_default(name) {
-        "user"
-    } else {
-        "library"
-    }
-}
-
-/// The manifest `kind`, with the not-C classification: a default-named function whose
-/// ORIGINAL instructions carry hand-assembly signatures (`buildconfig::looks_hand_written`
-/// — calibrated: zero EXACT/SAME_SHAPE functions trip it) is `asm`, and the measurement
-/// excludes it exactly as it excludes `library` — un-recompilable from C by construction,
-/// so keeping it in the denominator misstates the C-recompilation target.
-fn kind_of_insns(name: &str, insns: &[mosura::recompile::insn::NormInsn]) -> &'static str {
-    let k = kind_of(name);
-    if k == "user" && mosura::recompile::buildconfig::looks_hand_written(insns) {
-        return "asm";
-    }
-    k
-}
+use mosura::recompile::manifest;
 
 /// The subject's language. the subject is a 32-bit protected-mode DOS image.
 const SURVEY_LANG: &str = "x86:LE:32:default";
@@ -1084,28 +1050,12 @@ fn main() {
     // says which tree produced it. Both consumers skipped exactly one line (compile.sh's
     // `tail -n +2`, compare.py's `header = next(fh)`), so they were changed to drop `#` lines
     // first — otherwise this line pushes the column header into the data.
-    writeln!(mf, "# corpus_emit emit @ {stamp}").unwrap();
-    // The arm set this tree was MEASURED with (the recovered emit's choices, every axis spelled
-    // out), so a tree or a copied manifest is self-describing about its arm set (code review
-    // 2026-08-27: measurement documents carry their arm set). `#` lines are skipped by every reader.
-    // The stamp is DERIVED, never assembled by hand: `Knobs::stamp_parts` reports every knob off
-    // its default (the switches `--arms-off` named, a `--cspec` declaration, a `--disable-analyzers`
-    // list — each changes the tree as surely as any arm), so a tree cannot differ from the baseline
-    // for a reason the manifest does not carry. The arm names come from the same `--arms-off` list.
-    let mut off_names: Vec<String> = arms_off
-        .iter()
-        .filter(|a| mosura::decompile::emit::arms::registry::Recovered::ARMS.contains(&a.as_str()))
-        .cloned()
-        .collect();
-    off_names.extend(knobs.stamp_parts());
-    let off_stamp = if off_names.is_empty() { String::new() } else { format!("; off: {}", off_names.join(",")) };
-    writeln!(mf, "# arms: {rec_arm}{off_stamp}").unwrap();
-    eprintln!("arms (recovered emit): {rec_arm}{off_stamp}");
-    writeln!(
-        mf,
-        "idx\tva\tname\tstatus\torig_len\tcov_lo\tcov_hi\tsmells\torig_hex\tir_calls\tblocks_cfg\tblocks_reached\tkind\tcontract"
-    )
-    .unwrap();
+    let off_names = manifest::off_names(&arms_off, &knobs);
+    let [stamp_line, arms_line] = manifest::stamp_lines(&stamp, &rec_arm, &off_names);
+    writeln!(mf, "{stamp_line}").unwrap();
+    writeln!(mf, "{arms_line}").unwrap();
+    eprintln!("arms (recovered emit): {rec_arm}{}", manifest::off_stamp(&off_names));
+    writeln!(mf, "{}", manifest::COLUMNS).unwrap();
     let mut contract_bad = 0usize;
     // va -> the function's own nondefault `parm [..]` list (None = default order). Filled by
     // the emit loop, consumed by the caller-side pragma post-pass below it.
@@ -2269,7 +2219,7 @@ fn main() {
             }
             .max(*va + 1)
                 - *va;
-            writeln!(mf, "{idx:05}\t{va:08x}\t{name}\tDECOMPILE_FAIL\t{flen}\t0\t0\t\t{head}\t0\t0\t0\t{}\t", kind_of(name)).unwrap();
+            writeln!(mf, "{}", manifest::ManifestRow::decompile_fail(idx, *va, name, flen, manifest::kind_of(name), &head).render()).unwrap();
             continue;
         };
         ok += 1;
@@ -2995,14 +2945,23 @@ fn main() {
         let norm_insns_for_kind =
             mosura::recompile::insn::normalize(SURVEY_LANG, &region, *va, &mosura::recompile::insn::NoReloc)
                 .unwrap_or_default();
-        writeln!(
-            mf,
-            "{idx:05}\t{va:08x}\t{name}\tOK\t{orig_len}\t{cov_lo:08x}\t{cov_hi:08x}\t{}\t{orig_hex}\t{ir_calls}\t{blocks_cfg}\t{blocks_reached}\t{}\t{}",
-            smells.join(","),
-            kind_of_insns(name, &norm_insns_for_kind),
-            if violations.is_empty() { "ok".to_string() } else { format!("wide:{}", violations.join("+")) },
-        )
-        .unwrap();
+        let row = manifest::ManifestRow {
+            idx,
+            va: *va,
+            name: name.to_string(),
+            status: manifest::Status::Ok,
+            orig_len: orig_len as u64,
+            cov_lo: cov_lo as u64,
+            cov_hi: cov_hi as u64,
+            smells: smells.clone(),
+            orig_hex,
+            ir_calls,
+            blocks_cfg,
+            blocks_reached,
+            kind: manifest::kind_of_insns(name, &norm_insns_for_kind),
+            contract: if violations.is_empty() { "ok".to_string() } else { format!("wide:{}", violations.join("+")) },
+        };
+        writeln!(mf, "{}", row.render()).unwrap();
 
         if idx % 200 == 0 {
             eprintln!("  {idx}/{} ok={ok} fail={fail} {:?}", entries.len(), t0.elapsed());
