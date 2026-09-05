@@ -149,6 +149,12 @@ pub struct Profile {
     pub name: String,
     pub base: Vec<String>,
     pub rules: Vec<Rule>,
+    /// The SLEIGH language the profile's evidence is read on.
+    pub lang: String,
+    /// The stack and frame pointer register NAMES [`detect`] reads (`ESP`/`EBP` for x86-32) —
+    /// declared here rather than assumed by every driver.
+    pub sp: String,
+    pub fp: String,
 }
 
 impl Profile {
@@ -156,6 +162,15 @@ impl Profile {
     /// evidence proves, in order.
     pub fn flags_for(&self, ev: &Evidence) -> Vec<String> {
         self.apply_rules(ev, self.base.clone())
+    }
+
+    /// The `(offset, size)` pairs of the profile's stack and frame pointers on its language, for
+    /// [`detect`]; `None` when the language tables are unavailable or a name is not a register.
+    pub fn stack_regs(&self) -> Option<((u64, u32), (u64, u32))> {
+        let (spec, _) = crate::lang::load_cached(&self.lang)?;
+        let sp = (spec.register_offset(&self.sp)?, spec.register_size(&self.sp)?);
+        let fp = (spec.register_offset(&self.fp)?, spec.register_size(&self.fp)?);
+        Some((sp, fp))
     }
 
     /// The rules applied on top of `flags` (the base, or a stated build): every rule whose
@@ -1726,6 +1741,9 @@ pub fn volatile_globals_from_evidence(insns: &[NormInsn]) -> std::collections::H
 pub fn watcom_10_0a() -> Profile {
     Profile {
         name: "watcom-10.0a".into(),
+        lang: "x86:LE:32:default".into(),
+        sp: "ESP".into(),
+        fp: "EBP".into(),
         base: ["-5r", "-fpi87", "-s", "-onatx"].iter().map(|s| s.to_string()).collect(),
         rules: vec![
             // Line-number debug information on the frame path (see the function doc).

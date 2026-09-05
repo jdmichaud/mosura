@@ -37,7 +37,20 @@ pub fn off_stamp(off_names: &[String]) -> String {
 /// review 2026-08-27: measurement documents carry their arm set). `#` lines are skipped by every
 /// reader.
 pub fn stamp_lines(stamp: &str, rec_arm: &EmitChoices, off_names: &[String]) -> [String; 2] {
-    [format!("# corpus_emit emit @ {stamp}"), format!("# arms: {rec_arm}{}", off_stamp(off_names))]
+    [format!("# corpus_emit emit @ {stamp}"), format!("# arms: {}", arms_stamp_with(rec_arm, off_names))]
+}
+
+/// The arms stamp — the text after `# arms: ` in a manifest: the recovered arm's choice vector,
+/// then `; off: a,b` when arms or switches are off. THE identity of an emission's rendering
+/// policy; a round records it, the identity gate compares it.
+pub fn arms_stamp_with(rec_arm: &EmitChoices, off_names: &[String]) -> String {
+    format!("{rec_arm}{}", off_stamp(off_names))
+}
+
+/// [`arms_stamp_with`] from the raw ingredients: the recovered arm, the `--arms-off` names (arms
+/// and switches in one name space) and the knobs.
+pub fn arms_stamp(rec_arm: &EmitChoices, arms_off: &[String], knobs: &Knobs) -> String {
+    arms_stamp_with(rec_arm, &off_names(arms_off, knobs))
 }
 
 /// Whether a function is the subject's own code or the toolchain's.

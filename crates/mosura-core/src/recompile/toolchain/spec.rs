@@ -231,3 +231,34 @@ pub fn gcc_native(cc: impl Into<String>, prelude: impl Into<String>) -> Compiler
         },
     }
 }
+
+/// The compiler specs the library knows, by name — data a caller can list and pick from
+/// (`mosura toolchain specs`). Each entry is `(name, host, doc)`; [`by_name`] builds the spec.
+pub static ALL: &[(&str, &str, &str)] = &[
+    ("watcom-10.0a-dos", "dos", "Watcom C/C++32 10.0a under dosemu2 (WCC386, the subject's toolchain); `install` = the WATCOM directory"),
+    ("open-watcom-2-native", "native", "Open Watcom 2 host compiler (wcc386); `install` = the compiler command"),
+    ("gcc-native", "native", "the host gcc, -m32 (the ground-truth family); `install` = the compiler command"),
+];
+
+/// Build a named spec with `prelude`. `install` is the DOS spec's WATCOM directory (the driver
+/// takes it separately, so it is unused here) or a native spec's compiler command.
+pub fn by_name(name: &str, install: &str, prelude: impl Into<String>) -> Option<CompilerSpec> {
+    Some(match name {
+        "watcom-10.0a-dos" => watcom_10_0a_dos(prelude),
+        "open-watcom-2-native" => open_watcom_2_native(install, prelude),
+        "gcc-native" => gcc_native(install, prelude),
+        _ => return None,
+    })
+}
+
+#[cfg(test)]
+mod name_tests {
+    #[test]
+    fn every_listed_spec_builds_and_carries_its_name() {
+        for (name, _, _) in super::ALL {
+            let s = super::by_name(name, "cc", "").expect("listed");
+            assert_eq!(s.id, *name);
+        }
+        assert!(super::by_name("nope", "cc", "").is_none());
+    }
+}
