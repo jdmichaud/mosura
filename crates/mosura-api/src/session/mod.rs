@@ -24,6 +24,7 @@ use crate::tbl;
 use lock::Lock;
 use mosura_core::analysis::program::Program;
 use mosura_core::recompile::round::EmitState;
+use mosura_core::recompile::toolchain::{Cached, CompilerDriver, Locked};
 
 /// The on-disk session format; a session written by another version is refused (D6).
 pub const FORMAT_VERSION: u32 = 1;
@@ -86,6 +87,19 @@ pub struct Session {
     pub last_program: Option<(Key, Arc<Program>)>,
     /// The emit state (P0's `EmitState`) built for one passes set under one options tag.
     pub emit_state: Option<(Key, String, EmitState)>,
+    /// The toolchains opened in this session, by name (`toolchain.open`).
+    pub toolchains: BTreeMap<String, OpenToolchain>,
+    mem_rounds: BTreeMap<String, TableSet>,
+}
+
+/// An opened toolchain: the cached, locked driver and how it was opened.
+pub struct OpenToolchain {
+    pub spec: String,
+    pub install: PathBuf,
+    pub cache: PathBuf,
+    pub lock: PathBuf,
+    pub id: String,
+    pub driver: Cached<Locked<CompilerDriver>>,
 }
 
 fn hex(d: &[u8; 32]) -> String {
@@ -95,7 +109,7 @@ fn hex(d: &[u8; 32]) -> String {
 impl Session {
     /// Open (creating when absent) the session at `dir`, or an in-memory session for `None`.
     pub fn open(dir: Option<&Path>) -> Result<Session> {
-        let mut s = Session { dir: dir.map(Path::to_path_buf), mem_sets: BTreeMap::new(), mem_inputs: BTreeMap::new(), inputs: Vec::new(), config: BTreeMap::new(), last_program: None, emit_state: None };
+        let mut s = Session { dir: dir.map(Path::to_path_buf), mem_sets: BTreeMap::new(), mem_inputs: BTreeMap::new(), inputs: Vec::new(), config: BTreeMap::new(), last_program: None, emit_state: None, toolchains: BTreeMap::new(), mem_rounds: BTreeMap::new() };
         let Some(dir) = dir else { return Ok(s) };
         for sub in ["", "program", "functions", "inputs"] {
             let d = dir.join(sub);
@@ -337,6 +351,75 @@ impl Session {
             }
         }
         Ok(b.finish(false))
+    }
+
+    // ── rounds (the one human-named tree) ──
+
+    fn rounds_dir(&self) -> Option<PathBuf> {
+        self.dir.as_ref().map(|d| d.join("rounds"))
+    }
+
+    /// Store a round under `name`; an existing name is refused (rounds are never overwritten).
+    pub fn write_round(&mut self, name: &str, set: &TableSet, manifest: &Table) -> Result<()> {
+        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') {
+            return Err(Error::InvalidArg(format!("round name `{name}`: letters, digits, `-`, `_`, `.`")));
+        }
+        match self.rounds_dir() {
+            Some(dir) => {
+                fs::create_dir_all(&dir).map_err(|e| Error::io(e, dir.clone()))?;
+                if dir.join(name).is_dir() {
+                    return Err(Error::InvalidArg(format!("round `{name}` exists (rounds are never overwritten; pick another name)")));
+                }
+                let _lock = Lock::acquire(self.dir.as_deref().expect("a directory session"), Duration::from_secs(5))?;
+                store::write_set_dir(&dir, name, set, manifest)
+            }
+            None => {
+                if self.mem_rounds.contains_key(name) {
+                    return Err(Error::InvalidArg(format!("round `{name}` exists")));
+                }
+                let mut with_manifest = set.clone();
+                with_manifest.insert("manifest", manifest.clone());
+                self.mem_rounds.insert(name.to_string(), with_manifest);
+                Ok(())
+            }
+        }
+    }
+
+    /// A round's tables (its `manifest` included, under that name).
+    pub fn read_round(&self, name: &str) -> Result<TableSet> {
+        match self.rounds_dir() {
+            Some(dir) => {
+                let d = dir.join(name);
+                if !d.is_dir() {
+                    return Err(Error::NotFound(format!("round `{name}`")));
+                }
+                let mut set = store::read_set_dir(&d)?;
+                set.insert("manifest", store::read_manifest(&d)?);
+                Ok(set)
+            }
+            None => self.mem_rounds.get(name).cloned().ok_or_else(|| Error::NotFound(format!("round `{name}`"))),
+        }
+    }
+
+    pub fn rounds(&self) -> Result<Vec<String>> {
+        match self.rounds_dir() {
+            Some(dir) if dir.is_dir() => {
+                let mut names: Vec<String> = fs::read_dir(&dir).map_err(|e| Error::io(e, dir.clone()))?.flatten().filter(|e| e.path().join("manifest.tbl").is_file()).map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+                names.sort();
+                Ok(names)
+            }
+            Some(_) => Ok(Vec::new()),
+            None => Ok(self.mem_rounds.keys().cloned().collect()),
+        }
+    }
+
+    /// A per-process work directory under the session (toolchain scripts and objects); an
+    /// in-memory session has none.
+    pub fn work_dir(&self) -> Result<PathBuf> {
+        let dir = self.dir.as_ref().ok_or_else(|| Error::Unsupported("a toolchain needs a session directory for its work files (open the session with a directory)".into()))?;
+        let w = dir.join("tmp").join(std::process::id().to_string());
+        fs::create_dir_all(&w).map_err(|e| Error::io(e, w.clone()))?;
+        Ok(w)
     }
 
     // ── config ──

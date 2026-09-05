@@ -12,6 +12,7 @@ pub mod program;
 pub mod schemas;
 pub mod session;
 pub mod sleigh;
+pub mod toolchain;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -81,6 +82,7 @@ pub static REGISTRY: &[&Op] = &[
     &identify::IDENTIFY,
     &program::ANALYZE,
     &program::DISASSEMBLE,
+    &emit::PROGRAM_EMIT,
     &program::LOAD,
     &emit::PASSES,
     &program::READ,
@@ -89,6 +91,10 @@ pub static REGISTRY: &[&Op] = &[
     &session::CONFIG_SET,
     &sleigh::DISASSEMBLE,
     &sleigh::LIFT,
+    &toolchain::CHECK_OP,
+    &toolchain::LIST,
+    &toolchain::OPEN,
+    &toolchain::SPECS,
 ];
 
 pub fn registry() -> &'static [&'static Op] {

@@ -28,7 +28,12 @@ pub static REGISTERS: Schema = Schema { name: "registers", version: 1, columns: 
 pub static EMIT_AXES: Schema = Schema { name: "emit_axes", version: 1, columns: &[C::new("name", T::Str), C::new("values", T::Str), C::new("default", T::Str), C::new("doc", T::Str)] };
 pub static EMIT_ARMS: Schema = Schema { name: "emit_arms", version: 1, columns: &[C::new("name", T::Str)] };
 
-pub static ALL: &[&Schema] = &[&OPS, &SCHEMA, &IDENTIFY, &PROGRAM_SUMMARY, &TABLES, &BYTES, &INSTRUCTIONS, &PCODE, &PROTOTYPE, &JUMPTABLES, &CALLS, &GLOBAL_WIDTHS, &EMIT_REPORT, &OPTION_REGISTRY, &FILES, &DATA, &LANGUAGES, &REGISTERS, &EMIT_AXES, &EMIT_ARMS];
+pub static TOOLCHAIN_SPECS: Schema = Schema { name: "toolchain_specs", version: 1, columns: &[C::new("name", T::Str), C::new("host", T::Str), C::new("doc", T::Str)] };
+pub static TOOLCHAINS: Schema = Schema { name: "toolchains", version: 1, columns: &[C::new("name", T::Str), C::new("spec", T::Str), C::new("id", T::Str), C::new("install", T::Str), C::new("cache", T::Str), C::new("lock", T::Str)] };
+pub static CHECK: Schema = Schema { name: "check", version: 1, columns: &[C::new("name", T::Str), C::new("ok", T::Bool), C::new("adjudicated", T::Bool), C::new("log", T::Str)] };
+pub static EMISSION: Schema = Schema { name: "emission", version: 1, columns: &[C::new("idx", T::U32), C::hex("va", T::U64), C::new("name", T::Str), C::new("status", T::Str), C::new("kind", T::Str), C::new("orig_len", T::U64), C::new("tu", T::Str), C::new("row", T::Str)] };
+
+pub static ALL: &[&Schema] = &[&OPS, &SCHEMA, &IDENTIFY, &PROGRAM_SUMMARY, &TABLES, &BYTES, &INSTRUCTIONS, &PCODE, &PROTOTYPE, &JUMPTABLES, &CALLS, &GLOBAL_WIDTHS, &EMIT_REPORT, &OPTION_REGISTRY, &FILES, &DATA, &LANGUAGES, &REGISTERS, &EMIT_AXES, &EMIT_ARMS, &TOOLCHAIN_SPECS, &TOOLCHAINS, &CHECK, &EMISSION];
 
 pub fn by_name(name: &str) -> Option<&'static Schema> {
     ALL.iter().copied().find(|s| s.name == name)

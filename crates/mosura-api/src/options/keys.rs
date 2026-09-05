@@ -21,7 +21,19 @@ pub const DEBUG_OPACTION: &str = "debug.opaction";
 pub const DEBUG_TRACE_FUNC: &str = "debug.trace-func";
 pub const DEBUG_FIXPOINT: &str = "debug.fixpoint";
 
+pub const TOOLCHAIN_SPEC: &str = "toolchain.spec";
+pub const TOOLCHAIN_INSTALL: &str = "toolchain.install";
+pub const COMPILE_CACHE: &str = "compile.cache";
+pub const VERIFY_TABLE_WINDOW: &str = "verify.table-window";
+pub const ROUND_SCOPE: &str = "round.scope";
+pub const ROUND_SCOPE_FILE: &str = "round.scope-file";
+pub const ROUND_BASELINE: &str = "round.baseline";
+pub const ROUND_EXPECT: &str = "round.expect";
+pub const ROUND_EXCLUDE_FOREIGN: &str = "round.exclude-foreign";
+pub const GATES_BASELINE: &str = "gates.baseline";
+
 pub const LOADERS: &[&str] = &["default", "native", "le", "x32", "com", "raw", "xml"];
+pub const ROUND_SCOPES: &[&str] = &["user", "all", "list"];
 pub const GLOBAL_SCOPES: &[&str] = &["application", "standalone"];
 
 const SINCE: &str = "0.1";
@@ -53,6 +65,26 @@ pub fn hand_written() -> Vec<OptionSpec> {
         spec!("base", OptType::Hex, "", Affects::Input, "the address of the first byte (the sleigh.* operations)"),
         spec!("ctx", OptType::Str, "", Affects::Input, "context register settings, `name=value;…` (the sleigh.* operations)"),
         spec!("format", OptType::Str, "", Affects::Input, "what to return: c, raw, or table:<name> (function.decompile)"),
+        spec!("toolchain", OptType::Str, "", Affects::Input, "the session toolchain an operation compiles with (toolchain.open's name)"),
+        spec!("object", OptType::Str, "", Affects::Input, "a session input holding a compiled object (function.verify)"),
+        spec!("round", OptType::Str, "", Affects::Input, "a round name (round.run, round.show, round.gates, round.export)"),
+        spec!("a", OptType::Str, "", Affects::Input, "the baseline round of a comparison (round.compare)"),
+        spec!("b", OptType::Str, "", Affects::Input, "the candidate round of a comparison (round.compare)"),
+        spec!("label", OptType::Str, "", Affects::Input, "free text recorded with a round"),
+        spec!("out", OptType::Str, "", Affects::Input, "an output file path (round.export: the verdict TSV)"),
+        spec!("divergences", OptType::Str, "", Affects::Input, "a divergence TSV path (round.export writes it, round.import reads it)"),
+        spec!("verdicts", OptType::Str, "", Affects::Input, "a verdict TSV path (round.import)"),
+        spec!("manifest", OptType::Str, "", Affects::Input, "an emit manifest path, for its `# arms:` line (round.import)"),
+        spec!(TOOLCHAIN_SPEC, OptType::Str, "", Affects::Result, "the compiler spec a toolchain is opened with (toolchain.specs lists them)"),
+        spec!(TOOLCHAIN_INSTALL, OptType::Str, "", Affects::Environment, "where the toolchain is installed on this machine (the WATCOM directory, or a native compiler command)"),
+        spec!(COMPILE_CACHE, OptType::Str, "", Affects::Environment, "the compile cache directory (default: <session>/compile); slots are keyed on toolchain id, flags and source"),
+        spec!(VERIFY_TABLE_WINDOW, OptType::Hex, "0x20000", Affects::Result, "how far around a function the jump-table correspondence search looks (bytes)"),
+        spec!(ROUND_SCOPE, OptType::Enum(ROUND_SCOPES), "user", Affects::Result, "which functions a round measures: user (not library/asm), all, or the list in round.scope-file"),
+        spec!(ROUND_SCOPE_FILE, OptType::Str, "", Affects::Input, "a TSV whose first two columns are idx and va: the functions of round.scope=list (a smoke set)"),
+        spec!(ROUND_BASELINE, OptType::Str, "", Affects::Input, "the previous round the verdict gates compare against (no EXACT lost, no new failure)"),
+        spec!(ROUND_EXPECT, OptType::Str, "", Affects::Input, "a TSV `idx va name expected_verdict`: the smoke-drift gate (every listed function must keep its verdict)"),
+        spec!(ROUND_EXCLUDE_FOREIGN, OptType::Str, "", Affects::Input, "a foreign-scope confirmation file: its foreign functions leave the denominator (a DIFFERENT series; stamped)"),
+        spec!(GATES_BASELINE, OptType::Str, "", Affects::Environment, "the corpus-gates.tsv of the subject profile (text gates 4-6, verdict gate 7)"),
         spec!("key", OptType::Str, "", Affects::Input, "a session config key (session.config.set)"),
         spec!("value", OptType::Str, "", Affects::Input, "a session config value; empty removes the key (session.config.set)"),
         // diagnostics

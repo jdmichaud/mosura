@@ -13,7 +13,7 @@ use crate::key::{key, no_annotations, Key};
 use crate::options::{keys, registry as optreg, Options};
 use crate::ops::function::{entry_of, EMIT_KEYS};
 use crate::ops::program::{program_key, program_of};
-use crate::ops::schemas::{EMIT_REPORT, GLOBAL_WIDTHS};
+use crate::ops::schemas::{EMISSION, EMIT_REPORT, GLOBAL_WIDTHS};
 use crate::ops::{Cache, Op, Progress, Tier};
 use crate::program::{freeze, thaw};
 use crate::render::text_table;
@@ -40,6 +40,17 @@ pub static PASSES: Op = Op {
     result: "program_summary",
     cache: Cache::Pure { stage: Stage::Decompile, set: SetKind::Program },
     run: passes,
+};
+
+pub static PROGRAM_EMIT: Op = Op {
+    name: "program.emit",
+    doc: "the whole recovered emission (every emit entry's TU, after the caller-side callee-pragma post-pass) as a program set — the survey's `recovered/` tree; decompile.global-scope defaults to standalone here",
+    since: "0.1",
+    tier: Tier::Product,
+    params: &["program", keys::KNOBS_OFF, keys::DECOMPILE_GLOBAL_SCOPE, keys::DECOMPILE_PROTO_SCOPE, keys::EMIT_ARMS_OFF, EMIT_KEYS],
+    result: "emission",
+    cache: Cache::Pure { stage: Stage::Emit, set: SetKind::Program },
+    run: program_emit,
 };
 
 pub static EMIT: Op = Op {
@@ -143,7 +154,18 @@ fn emit_state<'s>(s: &'s mut Session, o: &Options, pk: &Key) -> Result<&'s mut E
         let set = s.read_set(SetKind::Program, &passes_k)?;
         let knobs = o.knobs()?;
         let settings = o.decompile_settings()?;
-        let pp = thaw(&set, knobs.clone(), &settings)?;
+        let mut pp = thaw(&set, knobs.clone(), &settings)?;
+        // The contract cache (`Program::contract_cache`, an order-dependent memo: a cycle's
+        // InProgress fallback depends on which function was decompiled first) is not frozen. The
+        // survey emitted on the very program object that had run pass 1, cache warmed in pass-1
+        // order; re-running the pass on the thawed program warms it the same way (the recovered
+        // prototypes it recomputes equal the frozen ones — the P1 round-trip test), so the
+        // emission is the survey's byte for byte. Measured: without this one callee pragma's
+        // `modify` list differed on watcom_hello.exe.
+        if knobs.on(Switch::ProtoPass) {
+            let _ = mark_tail_return_writes(&mut pp, EMIT_LANG, &[]);
+            let _ = install_prototypes(&mut pp, None);
+        }
         let worlds = Worlds::split(pp);
         let entries = Entries::of(&worlds.landed);
         let regs = WatcomRegs::for_lang(EMIT_LANG);
@@ -253,4 +275,95 @@ fn pick(set: &TableSet, format: &str) -> Result<Table> {
         t if t.starts_with("table:") => set.table(&t["table:".len()..]).cloned(),
         other => Err(Error::InvalidArg(format!("`format` is tu, reference, c or table:<name>, not `{other}`"))),
     }
+}
+
+/// The options of a whole-program emission: the survey models Ghidra's STANDALONE global-scope
+/// context (the binary is the emitter's oracle; the application context's anchored forms cost
+/// EXACTs, measured) — the default here unless the caller says otherwise.
+pub fn emission_options(o: &Options) -> Result<Options> {
+    let mut e = o.clone();
+    if !o.is_set(keys::DECOMPILE_GLOBAL_SCOPE) {
+        e.set(keys::DECOMPILE_GLOBAL_SCOPE, "standalone")?;
+    }
+    Ok(e)
+}
+
+/// The key of a program's emission set under `o` (after [`emission_options`]).
+pub fn emission_key(passes_k: &Key, o: &Options) -> Key {
+    key(Stage::Emit, PROGRAM_EMIT.name, &[&passes_k.0], &o.tag(), &no_annotations())
+}
+
+/// Make (or serve) the passes set of the program under `o`; answers its key.
+pub fn ensure_passes(s: &mut Session, o: &Options, pk: &Key) -> Result<Key> {
+    let passes_k = passes_key(pk, o);
+    if !s.has_set(SetKind::Program, &passes_k) {
+        let (_, p) = program_of(s, o)?;
+        check_lang(&p)?;
+        let set = run_passes(&p, o)?;
+        s.write_set(SetKind::Program, &passes_k, &set, &Provenance { stage: Stage::Decompile, op: PASSES.name, inputs: &[pk.0], tag: &o.tag(), label: "passes" })?;
+    }
+    Ok(passes_k)
+}
+
+fn program_emit(s: &mut Session, o: &Options, prog: &mut dyn Progress) -> Result<Table> {
+    let o = emission_options(o)?;
+    let pk = program_key(s, &o)?;
+    let passes_k = ensure_passes(s, &o, &pk)?;
+    let k = emission_key(&passes_k, &o);
+    if s.has_set(SetKind::Program, &k) {
+        return s.read_set(SetKind::Program, &k)?.table("emission").cloned();
+    }
+    let st = emit_state(s, &o, &pk)?;
+    let entries: Vec<(u64, String)> = st.facts.entries.list.clone();
+    let total = entries.len() as u64;
+    // every entry, in the survey's order, under the survey's render flag
+    struct Row {
+        idx: usize,
+        va: u64,
+        name: String,
+        status: &'static str,
+        kind: String,
+        orig_len: u64,
+        tu: Option<String>,
+        row: String,
+    }
+    let mut rows: Vec<Row> = Vec::with_capacity(entries.len());
+    mosura_core::decompile::structure::set_force_loop_overflow(true);
+    for (idx, (va, name)) in entries.iter().enumerate() {
+        if idx % 100 == 0 && !prog.report(PROGRAM_EMIT.name, idx as u64, total) {
+            mosura_core::decompile::structure::set_force_loop_overflow(false);
+            return Err(Error::Cancelled);
+        }
+        match st.emit_function(idx, *va, name) {
+            Ok(e) => {
+                let tu = e.recovered_tu.clone().unwrap_or_else(|| e.reference_tu.clone());
+                rows.push(Row { idx, va: *va, name: name.clone(), status: "OK", kind: e.kind.to_string(), orig_len: e.row.orig_len, tu: Some(tu), row: e.row.render() });
+            }
+            Err(f) => {
+                let kind = mosura_core::recompile::manifest::kind_of(name);
+                let r = mosura_core::recompile::manifest::ManifestRow::decompile_fail(idx, *va, name, f.weight, kind, "");
+                rows.push(Row { idx, va: *va, name: name.clone(), status: "DECOMPILE_FAIL", kind: kind.to_string(), orig_len: f.weight, tu: None, row: r.render() });
+            }
+        }
+    }
+    mosura_core::decompile::structure::set_force_loop_overflow(false);
+    // the caller-side pragma post-pass: every TU externs its callees; their contracts exist only
+    // once every function has been emitted
+    for r in rows.iter_mut() {
+        if let Some(tu) = &r.tu {
+            if let Some(patched) = st.contracts.patch_caller(tu, Some(r.va)) {
+                r.tu = Some(patched);
+            }
+        }
+    }
+    let arms = mosura_core::recompile::manifest::arms_stamp(&st.opts.rec_arm, &st.opts.arms_off, &st.facts.knobs);
+    let mut b = TableBuilder::new(&EMISSION);
+    for r in &rows {
+        b.row().u32(r.idx as u32).u64(r.va).str(&r.name).str(r.status).str(&r.kind).u64(r.orig_len).str(r.tu.as_deref().unwrap_or("")).str(&r.row);
+    }
+    let mut set = TableSet::default();
+    set.insert("emission", b.finish(false));
+    set.insert("arms", text_table(&arms));
+    s.write_set(SetKind::Program, &k, &set, &Provenance { stage: Stage::Emit, op: PROGRAM_EMIT.name, inputs: &[passes_k.0], tag: &o.tag(), label: &arms })?;
+    set.table("emission").cloned()
 }
