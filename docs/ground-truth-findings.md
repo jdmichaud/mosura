@@ -519,3 +519,25 @@ structval its one plain-FAIL/arms-PASS line). Open beside it: `dot`'s struct-by-
 (right as rendered, `int4 __regparm2 dot(p1, p2, p3, p4)`), and the two regparm nits landed with
 this round (stackvars.rs reads the CALLED model's extrapop, coreaction.cc:264; `fold_in`'s doc
 names the absent internalstorage/inject ids).
+
+## Update (2026-09-05, closure of the productisation plan): gt-arms — one wrong-code-arm finding, pre-existing
+
+`cargo test -p mosura --test ground_truth_recompile_arms -- --ignored` at master `d4b9cda` (the
+closure of `docs/product/plan-2026-09-05.md`): 27 programs, plain-32 PASS 13, arm TUs 53/109
+functions — and ONE violation of the invariant "a program that PASSes plain must PASS arm-enabled":
+
+```
+gt-arms fixed: plain-32 PASS | arms-32 NOLINK (lerp.constprop.0.c:(.text+0x20): undefined reference to `aRam00020000') | arm TUs 2/7: lerp.constprop.0 _start
+```
+
+The arm-enabled rendering of `lerp.constprop.0` (program `fixed`, `oracle/ground-truth/src/fixed.c`)
+names a RAM aggregate `aRam00020000` that no TU defines, so the arm-enabled program does not link
+while the plain rendering links and runs correctly. Per this test's rule the finding is listed, not
+baselined and not fixed here. **Attribution:** the identical line (same symbol, same TU, same
+summary) appears on `6b504a5`, the base of the plan — so the finding predates the plan's eight work
+packages (which were all identity-gated at 0/3023 on the Watcom corpus) and comes from the arm work
+landed between the previous gt-arms run (2026-08-28: arms-32 14 / 0 / 13, no finding) and
+2026-09-05. Beside it, two `[recover] FIXPOINT VIOLATION … the third render introduces
+[port.widen_local_pcs]` warnings (`FUN_08049000`, `FUN_08049050`), also present on the base.
+Structval's plain-FAIL/arms-PASS line is unchanged. The rest of the 32-bit column is as on
+2026-08-28 (13 NOLINK on `func_0x…` callee names).
