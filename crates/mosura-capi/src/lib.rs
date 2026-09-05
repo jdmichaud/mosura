@@ -12,7 +12,9 @@ pub mod boundary;
 pub mod ctx;
 pub mod handle;
 pub mod mem;
+pub mod ops;
 pub mod options;
+pub mod session;
 pub mod status;
 pub mod table;
 
@@ -23,7 +25,9 @@ use std::sync::OnceLock;
 // whole ABI (the binding and the tests read it that way; cbindgen reads the modules)
 pub use ctx::*;
 pub use mem::*;
+pub use ops::*;
 pub use options::*;
+pub use session::*;
 pub use status::*;
 pub use table::*;
 

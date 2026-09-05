@@ -21,7 +21,6 @@ pub(crate) unsafe fn options_of<'a>(p: *const mosura_options) -> Result<&'a Opti
 }
 
 /// An optional options handle (NULL = empty options).
-#[allow(dead_code)] // the session and program entry points (next commits) take optional options
 pub(crate) unsafe fn options_or_default(p: *const mosura_options) -> Result<Options> {
     if p.is_null() { Ok(Options::new()) } else { options_of(p).cloned() }
 }
