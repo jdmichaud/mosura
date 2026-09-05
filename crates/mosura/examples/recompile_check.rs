@@ -31,6 +31,7 @@ use std::path::Path;
 fn main() {
     // `--debug <spec>` configures the diagnostics (`mosura::debug`); it is taken out of the list first.
     let a = mosura::debug::from_args(std::env::args().skip(1).collect()).unwrap_or_else(|e| panic!("--debug: {e}"));
+    let a = mosura::resources::from_args(a).unwrap_or_else(|e| panic!("{e}"));
     if a.len() < 5 {
         eprintln!(
             "usage: recompile_check <binary> <manifest> <src-dir> <flags-file> <watcom-dir> \

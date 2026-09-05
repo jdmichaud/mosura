@@ -1132,6 +1132,7 @@ fn main() {
     // `--debug <spec>` configures the diagnostics of this process (`mosura::debug`, grammar in its
     // module doc); nothing is read from the environment.
     let argv = mosura::debug::from_args(std::env::args().skip(1).collect()).unwrap_or_else(|e| panic!("--debug: {e}"));
+    let argv = mosura::resources::from_args(argv).unwrap_or_else(|e| panic!("{e}"));
     let mut args = argv.into_iter();
     let first = args.next().expect("usage: corpus_emit [--prelude-only] <subject.exe> <out_dir>");
     // `--prelude-only <out_dir>` rewrites <out>/prelude.h from PRELUDE and exits. It exists so a

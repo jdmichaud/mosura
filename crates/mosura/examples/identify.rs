@@ -21,7 +21,9 @@
 use mosura::analysis::loader;
 
 fn main() {
-    let mut args = std::env::args().skip(1);
+    // `--data-dir <dir>` layers an override directory over the embedded spec/FID data.
+    let argv = mosura::resources::from_args(std::env::args().skip(1).collect()).unwrap_or_else(|e| panic!("{e}"));
+    let mut args = argv.into_iter();
     let mut path: Option<std::path::PathBuf> = None;
     let mut native = false;
     let mut le = false;
@@ -34,7 +36,7 @@ fn main() {
             _ => path = Some(std::path::PathBuf::from(a)),
         }
     }
-    let path = path.expect("usage: identify <binary> [--native|--le] [--cspec <id>]");
+    let path = path.expect("usage: identify <binary> [--native|--le] [--cspec <id>] [--data-dir <dir>]");
     let data = std::fs::read(&path).expect("read the binary");
 
     println!("== {}  ({} bytes)", path.display(), data.len());

@@ -9,6 +9,7 @@ use std::time::Instant;
 
 fn main() {
     let argv = mosura::debug::from_args(std::env::args().collect()).unwrap_or_else(|e| panic!("--debug: {e}"));
+    let argv = mosura::resources::from_args(argv).unwrap_or_else(|e| panic!("{e}"));
     let only: Option<String> = argv.get(1).cloned();
     let sla = paths::language_dir("x86").join("x86-64.sla");
     let t0 = Instant::now();

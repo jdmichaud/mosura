@@ -7,6 +7,7 @@ use mosura::datatest;
 
 fn main() {
     let args = mosura::debug::from_args(std::env::args().collect()).unwrap_or_else(|e| panic!("--debug: {e}"));
+    let args = mosura::resources::from_args(args).unwrap_or_else(|e| panic!("{e}"));
     let stem = args.get(1).expect("fixture stem");
     let path = mosura::paths::datatests_dir().join(format!("{stem}.xml"));
     let dt = datatest::parse_file(&path).unwrap();

@@ -272,16 +272,67 @@ fn omf_uber() {
     );
 }
 
+/// `data-export <dir> [--overwrite] [--what all|specs|fid]` — write the data the library carries
+/// (the embedded spec tables, cspecs, pattern files and FID databases; whatever the process's
+/// provider resolves) into `<dir>` under the resource names, byte-identical, to jump-start an
+/// override directory for `--data-dir`. Existing files are refused unless `--overwrite`.
+fn data_export() {
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let mut dir: Option<PathBuf> = None;
+    let mut what = "all".to_string();
+    let mut overwrite = false;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--overwrite" => overwrite = true,
+            "--what" => {
+                i += 1;
+                what = args.get(i).cloned().unwrap_or_else(|| die("--what wants all|specs|fid"));
+            }
+            other if other.starts_with("--") => die(format!("unknown option {other}")),
+            _ => dir = Some(PathBuf::from(&args[i])),
+        }
+        i += 1;
+    }
+    let dir = dir.unwrap_or_else(|| die("usage: data-export <dir> [--overwrite] [--what all|specs|fid]"));
+    let res = mosura::resources::get();
+    match res.export(&dir, &what, overwrite) {
+        Ok(written) => println!("data-export: {} file(s) -> {}", written.len(), dir.display()),
+        Err(e) => die(format!("data-export: {e}")),
+    }
+}
+
+/// `data-list [--data-dir <dir>]...` — every resource name the provider resolves and where it
+/// comes from (`embedded`, or the directory that overrides it), one per line.
+fn data_list() {
+    let rest = mosura::resources::from_args(std::env::args().skip(2).collect()).unwrap_or_else(|e| die(e));
+    if !rest.is_empty() {
+        die(format!("data-list: unexpected argument {:?}", rest[0]));
+    }
+    for (name, source) in mosura::resources::get().in_effect() {
+        let from = match source {
+            mosura::resources::Source::Embedded => "embedded".to_string(),
+            mosura::resources::Source::Dir(d) => d.display().to_string(),
+        };
+        println!("{name}\t{from}");
+    }
+}
+
 fn main() {
     match std::env::args().nth(1).as_deref() {
         Some("baseline") => baseline(),
         Some("fid-build") => fid_build(),
         Some("omf-uber") => omf_uber(),
         Some("devcfg") => devcfg_cmd(),
+        Some("data-export") => data_export(),
+        Some("data-list") => data_list(),
         other => {
-            eprintln!("usage: cargo xtask <baseline|fid-build|omf-uber|devcfg>");
+            eprintln!("usage: cargo xtask <baseline|fid-build|omf-uber|devcfg|data-export|data-list>");
             eprintln!();
             eprintln!("  devcfg [<section.key> [<default>]]   print a dev-config.toml value (or every key)");
+            eprintln!("  data-export <dir> [--overwrite] [--what all|specs|fid]");
+            eprintln!("                                       write the library's embedded data into <dir> (an override dir for --data-dir)");
+            eprintln!("  data-list [--data-dir <dir>]...      every resource name in effect and where it comes from");
             eprintln!();
             eprintln!("  fid-build --family <name> --version <v> --variant <Release|Debug>");
             eprintln!("            [--common-symbols <file>] [--map <linker.map>] --out <db.mfid>");

@@ -47,7 +47,7 @@ struct Mount {
 }
 
 /// The provider. Cheap to clone the handle (`Arc`), immutable once built.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Resources {
     mounts: Vec<Mount>,
     index: BTreeMap<&'static str, &'static [u8]>,
@@ -248,17 +248,56 @@ pub fn set(r: Resources) {
     *CURRENT.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(r));
 }
 
-/// The process-wide provider: what [`set`] installed, else the default — the workspace's copies
-/// as overrides when the build machine's checkout exists, else the embedded table alone.
+/// The provider a process gets when nothing was [`set`]: the workspace's vendored copies as
+/// overrides when the build machine's checkout exists (so an edited `.cspec` or a rebuilt FID
+/// database is picked up without a rebuild), else the embedded table alone.
+pub fn default_for_process() -> Resources {
+    let ws = crate::paths::workspace_root();
+    if ws.join("third_party/ghidra/Processors").is_dir() {
+        Resources::workspace()
+    } else {
+        Resources::embedded_only()
+    }
+}
+
+/// The process-wide provider: what [`set`] installed, else [`default_for_process`].
 pub fn get() -> Arc<Resources> {
     if let Some(r) = CURRENT.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
         return Arc::clone(r);
     }
     static DEFAULT: OnceLock<Arc<Resources>> = OnceLock::new();
-    Arc::clone(DEFAULT.get_or_init(|| {
-        let ws = crate::paths::workspace_root();
-        Arc::new(if ws.join("third_party/ghidra/Processors").is_dir() { Resources::workspace() } else { Resources::embedded_only() })
-    }))
+    Arc::clone(DEFAULT.get_or_init(|| Arc::new(default_for_process())))
+}
+
+/// The front-end half: take every `--data-dir <dir>` (or `--data-dir=<dir>`) out of an argument
+/// list, install the default provider with those directories layered on top (the LAST one given
+/// is resolved first, then the earlier ones, then the default), and return the remaining
+/// arguments. One grammar for every example and, later, the CLI; nothing is read from the
+/// environment. Errors: a `--data-dir` without a value, or a directory that does not exist.
+pub fn from_args(args: Vec<String>) -> Result<Vec<String>, String> {
+    let mut rest = Vec::with_capacity(args.len());
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut it = args.into_iter();
+    while let Some(a) = it.next() {
+        if a == "--data-dir" {
+            dirs.push(PathBuf::from(it.next().ok_or_else(|| "`--data-dir` wants a directory".to_string())?));
+        } else if let Some(v) = a.strip_prefix("--data-dir=") {
+            dirs.push(PathBuf::from(v));
+        } else {
+            rest.push(a);
+        }
+    }
+    if !dirs.is_empty() {
+        let mut r = default_for_process();
+        for d in &dirs {
+            if !d.is_dir() {
+                return Err(format!("--data-dir {}: not a directory", d.display()));
+            }
+            r = r.with_override_first(d);
+        }
+        set(r);
+    }
+    Ok(rest)
 }
 
 #[cfg(test)]

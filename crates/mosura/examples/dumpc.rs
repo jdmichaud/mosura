@@ -9,6 +9,7 @@ use mosura::{datatest, paths};
 
 fn main() {
     let args = mosura::debug::from_args(std::env::args().collect()).unwrap_or_else(|e| panic!("--debug: {e}"));
+    let args = mosura::resources::from_args(args).unwrap_or_else(|e| panic!("{e}"));
     let stem = args.get(1).expect("fixture stem");
     // A bare stem resolves in the datatests dir; a path (contains '/' or ends .xml) is used
     // as-is, so ad-hoc fixtures (e.g. scratchpad extracts of corpus functions) dump too.
