@@ -25,7 +25,13 @@ fn the_pattern_sees_the_plain_words() {
 #[test]
 fn no_tracked_file_names_a_subject() {
     let root = mosura_core::paths::workspace_root();
-    let out = Command::new("git").args(["ls-files", "-z"]).current_dir(&root).output().expect("git ls-files");
+    // `git` through PATH, else by its usual absolute paths: the compiler-free gate
+    // (scripts/gate-compiler-free.sh) runs every test binary with PATH pointing nowhere, and git
+    // is the repository's own tool, not a toolchain the gate is entitled to hide.
+    let out = ["git", "/usr/bin/git", "/bin/git"]
+        .iter()
+        .find_map(|g| Command::new(g).args(["ls-files", "-z"]).current_dir(&root).output().ok())
+        .expect("git ls-files (no git found on PATH, /usr/bin or /bin)");
     assert!(out.status.success(), "git ls-files failed: {}", String::from_utf8_lossy(&out.stderr));
     let re = pattern();
     let mut hits = Vec::new();
