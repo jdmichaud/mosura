@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rank a subject oracle sweep (oracle_sweep sweep.tsv) joined with a recompile_check
+"""Rank a subject oracle sweep (oracle_sweep sweep.tsv) joined with a round's exported
 verdict table (for verdict + insn weight): usage: corpus-osweep-rank.py <sweep.tsv> <rec.tsv>. lowest scores, largest
 weighted divergence, and line-count ratios (dropped/duplicated code shows as a ratio)."""
 import sys, collections

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare two oracle-sweep runs (idx-joined): score deltas, insn-weighted by a recompile_check
+"""Compare two oracle-sweep runs (idx-joined): score deltas, insn-weighted by a round's exported
 verdict table: usage: corpus-osweep-cmp.py <old-sweep.tsv> <new-sweep.tsv> <rec.tsv>."""
 import sys
 A = sys.argv[1]; B = sys.argv[2]

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Mechanism census over a recompile_check run: WHERE the WGSS loss is (by similarity bucket,
+"""Mechanism census over a round (`mosura round export <round> --out rec.tsv --divergences div.tsv`): WHERE the WGSS loss is (by similarity bucket,
 function size, divergence class) and WHAT the divergent rows are (instruction shapes of the
 extra/missing/selection/operand-form rows), plus the semantic-vs-form coupling table that
 decides whether form divergence (regalloc/selection/operand-form) is independent of semantic
 divergence (missing/extra/branch-target) or a consequence of it.
 
-usage: corpus-mechanism-census.py <rec.tsv> <div.tsv>   (both from one recompile_check run:
+usage: corpus-mechanism-census.py <rec.tsv> <div.tsv>   (both exported from one round:
        `--out rec.tsv --divergences div.tsv`)
 """
 import sys, re, collections

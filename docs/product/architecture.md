@@ -600,19 +600,21 @@ feature flag is the smaller mechanism for the same result.
 
 ### 6.5 The corpus round through the CLI
 
-The round script today: smoke → the survey driver (emit) → `recompile_check` → the verdict-comparison script.
-Tomorrow:
+LANDED 2026-09-05 (phase 3). The round script of the 2026-08/09 series (smoke → the survey driver →
+`recompile_check` → the verdict-comparison script) is now:
 
 ```
-mosura -S subject.mos round run f9 --toolchain watcom-10.0a-dos --baseline f8   # emit, compile (cached), verify, gates
-mosura -S subject.mos round compare f8 f9                                        # the verdict table: EXACT, WGSS, ups, downs
+mosura -S /data/be2/session round run f9 --toolchain watcom --baseline f8 --gates <profile>/corpus-gates.tsv
+mosura -S /data/be2/session round compare f8 f9          # census ×2, flips, movers, ΔWGSS, membership drift
 ```
 
-with `functions/<key>/` and `compile/` making the second run of an unchanged function free, and
-`rounds/f9/manifest.tbl` recording the build id and options — the stamp the manifests carry
-today, structural. The run rule from the round runbook (repeat until stable, never
-two Watcom rounds concurrently) becomes a property of the toolchain driver (one dosemu session at
-a time per install directory, enforced by a lock on the install path).
+`program/<key>/` (the emission is a program set after the caller-side post-pass) and `compile/`
+(the content-addressed object cache, reusable in place) make the second run of an unchanged
+function free; `rounds/f9/manifest` records the build id, the stage fingerprints, the keys, the
+toolchain identity, the ARMS STAMP and the options tag — the stamps the manifests carried,
+structural. The run rules of the runbook are code: one dosemu session at a time per install
+directory (`toolchain::Locked`), never overwrite a round, join by address. Verdict-equivalence
+with the retired tools was the gate for their retirement (`docs/corpus-round-runbook.md`).
 
 ### 6.6 What "exercise the API" means here
 

@@ -12,10 +12,11 @@ idiom arms.
 
 
 *Re-measured from scratch on branch `be2`. Regenerate rather than quote these after any change:
-`corpus_emit <exe> <out>` then `recompile_check <exe> <out>/manifest.tsv <out>/src recover
-<WATCOM> --out <tsv> --divergences <tsv>`. Before ANY corpus round, run the ~3-minute
-`scripts/corpus-smoke.sh` gate — 15 pinned mechanism sentinels (expected verdicts in
-`scripts/smoke.expected.tsv (subject profile)`, baseline 734/8e3ad7b) that fail on drift in either
+`mosura -S <session> round run <name> --toolchain watcom --baseline <prev>` then `round compare
+<prev> <name>` (`docs/corpus-round-runbook.md`; the numbers up to 2026-09-05 came from the retired
+`corpus_emit` + `recompile_check` pair, verdict-equivalent). Before ANY corpus round, run the
+~3-minute smoke round — `round run smoke-N --scope list --scope-file <profile>/smoke.expected.tsv
+--expect <same>` — 15 pinned mechanism sentinels (baseline 734/8e3ad7b) that fail on drift in either
 direction; it exists because two full corpus rounds were burned on state corruption a
 probe would have caught in minutes (the sb99 retrospective).*
 

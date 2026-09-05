@@ -667,6 +667,12 @@ fn compare_op(s: &mut Session, o: &Options, _p: &mut dyn Progress) -> Result<Tab
     let (mut flips, mut moved, mut up, mut down) = (0usize, 0usize, 0usize, 0usize);
     let (mut net, mut wnet, mut w) = (0f64, 0f64, 0u64);
     let (mut only_a, mut only_b) = (0usize, 0usize);
+    // similarity moves are read at the series' precision — three decimals, what every verdict
+    // table has ever printed, through the SAME formatting (its tie-breaking included: a rounding
+    // of our own disagreed on 14 exact ties) — so an imported legacy round and a native one
+    // compare cleanly (measured: full-precision comparison of identical rounds reported 1,495
+    // "movers")
+    let r3 = |x: f64| format!("{x:.3}").parse::<f64>().unwrap_or(x);
     for (va, rb_) in &mb {
         let Some(ra_) = ma.get(va) else {
             t.row().str("only-b").u64(*va).str(&rb_.name).str("").str(rb_.outcome.as_str()).str("");
@@ -677,8 +683,8 @@ fn compare_op(s: &mut Session, o: &Options, _p: &mut dyn Progress) -> Result<Tab
             t.row().str("flip").u64(*va).str(&rb_.name).str(ra_.outcome.as_str()).str(rb_.outcome.as_str()).str(&format!("sim {:.3} -> {:.3}", ra_.sim, rb_.sim));
             flips += 1;
         }
-        if (ra_.sim - rb_.sim).abs() > 1e-9 {
-            let d = rb_.sim - ra_.sim;
+        if (r3(ra_.sim) - r3(rb_.sim)).abs() > 1e-9 {
+            let d = r3(rb_.sim) - r3(ra_.sim);
             net += d;
             wnet += d * rb_.orig_n as f64;
             moved += 1;

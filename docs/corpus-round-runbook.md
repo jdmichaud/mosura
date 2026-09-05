@@ -1,174 +1,117 @@
-# Running the subject recompile tooling
+# Running a corpus round
 
-How to drive the three in-repo tools that answer, per function: **does the C mosura emits, compiled
-by the original toolchain and relinked at the original's address, reproduce the original's bytes?**
+How to answer, per function of a subject binary: **does the C mosura emits, compiled by the
+original toolchain and relinked at the original's address, reproduce the original's bytes?**
 
-This is a usage reference. For what the current numbers are, what is broken and what to work on
-next, see [`byte-exact-status.md`](byte-exact-status.md); for why the pipeline is shaped this way,
-[`byte-exact-architecture.md`](byte-exact-architecture.md).
+This is a usage reference for the `mosura` command line (the product; `docs/product/architecture.md`).
+For what the current numbers are and what to work on next, see
+[`byte-exact-status.md`](byte-exact-status.md); for why the pipeline is shaped this way,
+[`byte-exact-architecture.md`](byte-exact-architecture.md). The rules for quoting a number are in
+[`measurement-rules.md`](measurement-rules.md) (§9 the one WGSS, §10 the identity gate).
 
 ## Prerequisites
 
-- `dosemu2` working (there is a `dosemu2` skill).
-- Watcom 10.0a at `/home/jd/projects/the RE tracker/tmp/watcom-experiments/watcom_10.0a/WATCOM`.
-- Build the tree you want to measure — the emit uses the current decompiler.
-- Put the build target on **local disk**; the project mount is sshfs and far slower:
-  `export CARGO_TARGET_DIR=/data/<you>-target`
+- `dosemu2` working (there is a `dosemu2` skill) and Watcom 10.0a installed (the `watcom.install`
+  key of `dev-config.toml` names the WATCOM directory on this machine).
+- Build the tree you want to measure — the emit uses the current decompiler:
+  `CARGO_TARGET_DIR=/data/<you>-target cargo build --release -p mosura-cli` (a local disk; the
+  project mount is sshfs and far slower). Every command below is `$M = $CARGO_TARGET_DIR/release/mosura`.
+- A session directory on local disk, never inside a worktree: `-S /data/be2/<session>` (~100 MB per
+  program plus ~40 MB per emission). `df -h /data` first — the floor is 4 GB.
 
-## The three tools
-
-```sh
-OUT=/data/be2/run1                       # local disk; never inside a worktree
-WAT=/home/jd/projects/the RE tracker/tmp/watcom-experiments/watcom_10.0a/WATCOM
-EX=$CARGO_TARGET_DIR/release/examples
-```
-
-### 1. `corpus_emit` — emit
+## One-time session setup
 
 ```sh
-$EX/corpus_emit <the subject.exe> <out_dir> [--arms '<θ>;<θ>...'] [--only <va>,...] [--force]
-$EX/corpus_emit /home/jd/the subject binary $OUT
+S=/data/be2/session
+$M -S $S add <subject.exe>                       # content-addressed input
+$M -S $S analyze --loader le                     # the native LE view; cached by content + options
+$M -S $S toolchain add watcom --spec watcom-10.0a-dos --install <WATCOM dir>
+$M -S $S config set compile.cache=/data/be2/cache # reuse the shared compile cache IN PLACE (never copy it)
+$M -S $S round import tb --verdicts /data/be2/tb-rec.tsv --divergences /data/be2/tb-div.tsv \
+        --manifest /data/be2/tb/manifest.tsv     # the baseline series as a round
 ```
 
-Decompiles every function and writes one standalone compilable `.c` each, plus `manifest.tsv`.
-Takes about a minute and a half. Artifacts are stamped with the commit that produced them
-(`src.<stamp>/`, `raw.<stamp>/`, `manifest.<stamp>.tsv`) with the bare names as symlinks; re-emitting
-at the same clean commit refuses unless `--force`.
+`toolchain add` records the CHOICE (the spec) in the session config and the LOCATION in the machine
+config (`~/.config/mosura/config.toml`, or `--config <file>`); the library never reads the machine
+file. `mosura toolchain specs` lists the specs; `mosura toolchain check watcom` compiles one unit
+through the compiler — the explicit liveness probe.
 
-- `--only <va>[,<va>...]` is a **read-only probe**: it prints the TU for those functions to stdout
-  and writes nothing, so it is safe while a real emit is running.
-- `--arms '<θ>;<θ>...'` emits several renderings in one pass — decompiling is θ-independent and is
-  essentially the whole cost, so extra arms are nearly free. Arm 0 goes to `src/`; each further arm
-  to `src-<tag>/`, where `<tag>` is the vector with `=` replaced by `-`. So
-  `--arms 'default;return-width=storage'` gives `src/` and `src-return-width-storage/`.
-  What may legitimately be an arm is defined in `decompile::emit::EmitChoices`.
-
-### 2. `recompile_check` — compile, relink, verify
+## The round
 
 ```sh
-$EX/recompile_check <binary> <manifest> <src-dir> <flags-file> <watcom-dir> \
-    [--only <idx|0xva>,...] [--cache <dir>] [--verbose] [--out <tsv>] [--divergences <tsv>] \
-    [--prev <previous --out tsv>] [--no-gates]
-
-$EX/recompile_check /home/jd/the subject binary $OUT/manifest.tsv $OUT/src recover $WAT \
-    --cache /data/be2/cache --out $OUT/verdicts.tsv --divergences $OUT/div.tsv
+$M -S $S round run f9 --toolchain watcom --baseline f8 \
+    --gates <subject-profile>/corpus-gates.tsv --label "what changed"
+$M -S $S round compare f8 f9
 ```
 
-Compiles each TU with Watcom under dosemu2, symbolically relinks the object to the original's
-address, aligns the two instruction streams and classifies every difference. About eight minutes
-cold; seconds once the cache is warm — the cache is keyed on source content, so it survives
-re-emits and is worth sharing across runs.
+`round run` is the whole measurement in one operation: the recovered emission (every function's
+translation unit, then the caller-side callee-pragma post-pass — `program.emit`, cached by the
+program's passes and the emit options), the text gates 1–6 over the TUs, one compile batch
+(cached on source content, so an unchanged function is free; locked per install directory, so
+two rounds can never share a dosemu session), the symbolic relink and instruction alignment of
+every candidate, the verdict rows, the verdict gates 7–8 against `--baseline` (no EXACT lost, no
+new failure verdict; every other down is listed under the WGSS delta) — all stored under
+`rounds/f9/` as `verdicts`, `divergences`, `gates` and `manifest` tables. The command exits 1 when
+a gate fails; the tables stay as the evidence. `round show f9` prints the manifest: the build id,
+the stage fingerprints, the program/passes/emission keys, the toolchain identity, the ARMS STAMP
+(the rendering policy — what `# arms:` was), the options tag, the census, WGSS structural and
+byte-strict, units compiled/cached/fresh.
 
-`recover` as `<flags-file>` means "read each function's build flags from its own prologue", which is
-the general path since another binary has no flags table. Pass a file instead to override.
+`round compare a b` joins the two rounds BY ADDRESS (never by row order): the census of each,
+every verdict flip, every similarity mover, the net and the insn-weighted delta (= ΔWGSS over the
+rows both rounds hold), membership drift. `round list` is the census of every round.
 
-`--only` takes a manifest index, a `0x`-prefixed VA, or a function name; with `--verbose` it prints
-the full aligned instruction diff for those functions, which is the fastest way to see what a single
-function is doing wrong.
+Repeat until stable (`round run f9b --baseline f9`): the second run must report every unit cached
+and `round compare f9 f9b` must show 0 flips and 0 movers. A round that crossed an ENOSPC is VOID.
 
-#### The corpus gates (review R4)
-
-Both tools end by running the corpus gates (`recompile::gates`, `<subject-profile>/corpus-gates.tsv`) over
-what they just wrote, and EXIT 1 on a violation — the invariants that decided the 2026-08-26/27
-landings are round failures, not a reviewer's greps. `corpus_emit` runs the text gates after the
-emit (1 declared symbols, 2 piece-on-field, 3 call-as-argument on any emit; 4 the string-ops bar,
-5 chains never switch, 6 switch labels only on a full emit — a `--only` probe skips them audibly);
-`recompile_check` runs the verdict gates after writing `--out` (7 the guard sets stay EXACT; 8
-against `--prev <previous --out tsv>`: no EXACT lost, no new failure verdict (COMPILE_FAIL, OBJ_ERROR,
-DECOMPILE_FAIL), every other down LISTED
-with old/new verdict and sim under the WGSS delta — their classification stays the human step).
-Without `--prev` gate 8 prints `SKIP`, never a silent pass. The bars and sets live in
-`<subject-profile>/corpus-gates.tsv`, each row with its rule (`>=` floor, `==` count, `no-switch`, `EXACT`)
-and the round it was set at: a landing that legitimately moves a bar edits that file in the same
-commit. The string-ops bar's scope is the manifest's `kind` column (`user`), the same scope as
-`recompile_check`'s default census. `--no-gates` is for diagnostics only. Re-run everything on an
-existing tree with
+### The smoke run (before a full round)
 
 ```sh
-$EX/corpus_gates $OUT [--rec $OUT/verdicts.tsv] [--prev <previous verdicts.tsv>] [--partial]
+$M -S $S round run smoke-1 --toolchain watcom --scope list \
+    --scope-file <subject-profile>/smoke.expected.tsv --expect <subject-profile>/smoke.expected.tsv
 ```
 
-### 3. `recompile_select` — pick the winning arm per function
+The pinned sentinels compile and every one must keep its expected verdict (gate 9, smoke drift);
+a partial round skips gates 4–6 audibly. Drift in either direction fails the run: diagnose before
+spending a full round.
+
+### One function
 
 ```sh
-$EX/recompile_select <tag>=<verdicts.tsv>:<srcdir> ... [--out <tsv>] [--out-src <dir>]
-
-# run stage 2 once per arm first, then:
-$EX/recompile_select \
-    recovered=$OUT/v-recovered.tsv:$OUT/src \
-    storage=$OUT/v-storage.tsv:$OUT/src-return-width-storage \
-    --out $OUT/selected.tsv --out-src $OUT/selected-src
+$M -S $S recompile 0x<va>|<name> --toolchain watcom [--verbose]   # emit → compile → verify; exit 1 unless EXACT
+$M -S $S emit 0x<va>                                               # the TU alone
+$M -S $S decompile 0x<va> [--as raw]                               # the C / the post-pipeline IR
+$M -S $S verify 0x<va> <object.obj>                                # an object you compiled yourself
 ```
 
-Only useful with `--arms`. Picks, per function, the first arm that reassembles **exactly**, and with
-`--out-src` materializes the winning sources as a directory you can actually recompile. Arms are
-tried left to right, so put the reference rendering first.
+`--verbose` prints the aligned instruction diff (`=` equal, `~` differs with its class, `-`
+missing, `+` extra). `recompile <fn>` uses the program's whole emission when the session holds one
+(the post-passed TU the round measured), else the function's own TU — the survey's `--only` probe.
 
-## The union (arms + per-function selection)
+## The identity gate (a change that must move nothing)
 
-**THE UNION IS RETIRED (2026-08-18).** The canonical measurement is the RECOVERED tree — one
-emission whose per-site choices are read from the original's own instructions by the target
-profile, the same emission a compilerless field run ships:
+```sh
+$M -S $S emit --all --out /data/be2/<cand>
+diff -rq /data/be2/<base>/recovered /data/be2/<cand> | wc -l     # must print 0
+$M -S $S round show <round> --format tsv | grep '^arms'           # the arms stamp, identical
+```
 
-    corpus_emit <exe> <out>
-    recompile_check <exe> <out>/manifest.tsv <out>/recovered recover <WATCOM> --cache <cache> --out <sbNN>-rec.tsv
-
-No flags: the survey always emits `src/` (the reference rendering) and `recovered/` (the
-canonical emission). `--arms` remains as an INVESTIGATION TOOL only — it validates several
-rendering hypotheses against the compiler in one run, which is how the recovered evidence
-rules get calibrated — and is not a product option; nothing in the canonical path selects
-among renderings.
-
-Retirement was measured, not assumed: the recovered tree DOMINATES the reference rendering
-(zero functions where `src/` is EXACT and `recovered/` is not, sb74), so selection between
-them adds nothing. The one still-searched arm (`local-width=storage`) holds only the four
-tail-merge butterflies — functions where blanket widening perturbs Watcom's epilogue merging;
-no evidence maps to that, and they are parked with the allocation policy. To re-measure that
-margin (a diagnostic, not the canonical number):
-
-    corpus_emit <exe> <out> --arms 'default;local-width=storage' --recovered <out>/recovered
-    # check all three, then recompile_select default/rec/lw as before
-
-**Arm 2 (compare-form + return-split + cond-form as a blanket per-function arm) is RETIRED
-(2026-08-18):** the recovered tree makes the same choices per site and took over its whole
-contribution but ONE function (`00097`), whose winning difference is a single comparison
-spelled `0 <= x` vs `-1 < x` against a register-computed value — no immediate exists in the
-original's compare, so the immediate-readout evidence rule correctly abstains. Revival path
-for that residual: extend `complement_compares_from_evidence` to read the original's `Jcc`
-mnemonic at no-immediate sites. The retirement drops 792 marginal TU compiles per cold
-remeasure. The AXES remain in `decompile::emit` — the recovered decisions render through
-them per site.
-
-The `--recovered` tree is the FIELD emission — per-site choices decided from the original's
-own instructions by the target profile (`buildconfig::*_from_evidence`), no compiler in the
-loop. It participates in the dev-time selection because per-site decisions win mixed-want
-functions no per-function arm can (sb66: +2 EXACT over the three-arm union), and standalone
-it IS what a field `mosura recompile` would ship (sb65: 643 EXACT / 0.3986 WGSS).
-
-The union verdict is taken from the MATERIALIZED tree's own recompile (the last step),
-never by joining verdict files. Trap (measured): `--out-src` must land INSIDE the survey
-tree (`<out>/union`) — `recompile_check` resolves `../prelude.h` from the source dir, and
-a union dir beside the tree compiles every unit against a missing prelude (2,622
-COMPILE_FAILs that look like a catastrophe and are a path bug).
+No compiler is involved (measurement rules §10). The files are named by the emit index
+(`NNNNN.c`) like the survey's `recovered/` tree, so an old tree diffs directly.
 
 ## Reading the output
 
-`--out` is one row per function: `idx va name verdict bytes primary sim equal orig_n cand_n
-classes`, where verdict is `EXACT` / `SAME_CODE` (same program, different encodings) /
-`SAME_SHAPE` (same computation, different registers or constants) / `MISMATCH` /
-`COMPILE_FAIL` / `EMIT_FAIL` (no source was emitted) / `OBJ_ERROR`. `equal`/`orig_n`/`cand_n`
-are the aligner's instruction counts; rows without a candidate (the last three verdicts)
-carry `0 / orig_n / 0` so the global similarity is recomputable from the file alone:
+`round show f9 --table verdicts` (or `round export f9 --out f9-rec.tsv`, the legacy 11-column
+TSV with the `SIM=structural` stamp): one row per function, `idx va name verdict bytes primary sim
+equal orig_n cand_n classes`, where verdict is `EXACT` / `SAME_CODE` (same program, different
+encodings) / `SAME_SHAPE` (same computation, different registers or constants) / `MISMATCH` /
+`COMPILE_FAIL` / `EMIT_FAIL` (no translation unit — the decompile failed) / `OBJ_ERROR`. Rows
+without a candidate carry `0 / orig_n / 0`, so the census is recomputable from the table alone:
 
-    global sim = Σ equal / Σ max(orig_n, cand_n)
+    WGSS = Σ orig_n·sim / Σ orig_n       (the one canonical census, measurement rules §9)
 
-the fraction of the corpus's instructions that recompile identically, instruction-weighted so
-a function weighs what it is worth in code. The run prints it under `=== global similarity ===`
-next to the unweighted per-function mean (more sensitive to small-function progress). Both are
-trend diagnostics between verdict transitions, not targets — the verdicts stay the ground
-truth.
-
-`--divergences` is one row per individual difference, and is what to work from:
+`round show f9 --table divergences` (or `round export f9 --divergences f9-div.tsv`) is one row per
+individual difference, and is what to work from:
 
 | col | field | col | field |
 | --- | --- | --- | --- |
@@ -185,49 +128,48 @@ Classes: `missing` (the candidate computes LESS — a wrong-code bug), `extra`, 
 **Filter `layout-shift` out of any census.** It is derived — the same instruction, moved because
 something upstream changed size — and it never indicates a cause.
 
-## Environment knobs
+The census scripts (`scripts/corpus-*.py`) read the exported legacy TSVs.
+
+## Knobs
+
+Every knob is an option key (`mosura ops`, `mosura schema option_registry`): `-o key=value` on any
+command, or the typed sugar. `emit --arms-off a,b` / `-o emit.arms-off=…` and `-o knobs.off=…`
+switch a render arm or a pipeline switch off (one name space on the command line: `--arms-off
+cmp-sign,proto-pass`); the arms stamp records it. `--debug <topics>` selects diagnostic topics
+(`debug.*` keys never enter a cache key). The emission models Ghidra's STANDALONE global-scope
+context unless `-o decompile.global-scope=application` says otherwise (the binary is the emitter's
+oracle; the application context's anchored forms cost EXACTs, measured).
 
 The suite has one plan-closure test: `arm_enabled_emit_passes_wherever_plain_passes_in_the_32bit_column`
 (tests/ground_truth_recompile_arms.rs, the gcc ground-truth oracle over the arm-enabled emit). It is
-`#[ignore]`d, so the per-commit iteration suite (`cargo test --release --no-fail-fast`) does not run it
-and its `ignored` count is the visible sign; the closure suite at the end of a plan -- the acceptance
-chain -- runs it alone with `cargo test --release --test ground_truth_recompile_arms -- --ignored`, as
+`#[ignore]`d, so the per-commit iteration suite does not run it; the closure suite at the end of a
+plan runs it alone with `cargo test --release --test ground_truth_recompile_arms -- --ignored`, as
 does any commit that changes what it tests: the gt oracle, the emit plan or an arm (JD, 2026-08-28).
-
-| variable | effect |
-| --- | --- |
-| the `proto-pass` switch (on by default; `--arms-off proto-pass` disables) | whole-program callee prototype recovery before the emit |
-| `MOSURA_ARG_DEBUG=1` | per-call argument trials, with the full CALL input list |
-| `--debug opaction[=<action>]` | rule/action trace; bare for every action, `=<action>` for one |
-| `MOSURA_RAW_IR=1` | post-pipeline IR alongside the C (with `--only`) |
-| `MOSURA_EFFECTS_DEBUG=1` | what prototype was propagated to each call |
-
-To find which action changed an op, `awk` for the nearest preceding `DEBUG n: <action>` header above
-the changed op in the op-action trace (`--debug opaction`).
 
 ## Gotchas that have cost real time
 
-- `--only` is read-only, but with the `proto-pass` switch on (the default) it still runs the whole-program prototype
-  pass first, so debug output covers **every** function. Filter on the call address.
-- **`git checkout` reverts the source and leaves the built binary.** Every measurement here runs
-  binaries by path (`$EX/corpus_emit`), not through `cargo run`, so nothing rebuilds them for you.
-  Revert a change, forget the rebuild, and the next emit silently carries the reverted behaviour.
-  This produced a 60-function error: three source-level checks — `git status`, `git grep HEAD`, a
-  full diff of every changed file — all agreed the tree was clean while the binary disagreed, which
-  is exactly the confidence that makes it dangerous. Compare `stat` on the binary against the source
-  before trusting a measurement, or rebuild unconditionally.
-- `pgrep -f recompile_check` matches your own wait-loop shell. Use `pgrep -x`.
-- Two runs' manifests may number functions differently. Join on the **VA** column, never on `idx`.
+- **`git checkout` reverts the source and leaves the built binary.** Every measurement runs the
+  release `mosura` by path; nothing rebuilds it for you. Rebuild unconditionally before measuring.
+- A round measures the emission its options select: a different `-o` set is a different emission
+  (and a different passes set). `round show` records the options tag and the arms stamp — read
+  them before comparing two rounds.
+- Join on the **VA**, never on `idx` (two emissions may number functions differently).
+  `round compare` does; the legacy TSVs sort by va before a `diff`.
 - A backgrounded `nohup ... &` inside a tool call can be killed at session teardown; use the
   harness's own background mode for anything long.
+- `rounds/<name>` is never overwritten: pick a new name for every run.
 
 ## Superseded
 
-Earlier revisions drove an out-of-repo harness in `/home/jd/projects/mosura/<subject-survey>/`
-(`compile.sh`, `compare.py`, `wardiff`, `postlink.py`) across three shell processes.
-`recompile_check` replaced it by doing compile, relink, align and score in one program, because
-splitting the stages let the emit, the objects and the manifest drift apart.
-
-`<subject-survey>/` remains the historical record and the store for `ghidra-all.txt` (Ghidra's own
-decompilation of the subject, used as an oracle). It is no longer the measurement path, and its
-`RELOC_EXACT` verdict no longer exists — relocations are resolved and verified, not masked.
+The 2026-08/09 series was driven by three examples (`corpus_emit`, `recompile_check`,
+`corpus_gates`) and three scripts (`corpus-round.sh`, `corpus-smoke.sh`, `corpus-verdicts.sh`),
+retired 2026-09-05 at verdict-equivalence: one CLI round reproduced the baseline table
+`/data/be2/tb-rec.tsv` row for row (`docs/product/plan-wp7-2026-09-05.md` §3 P3). Their
+functions live on as operations (`program.emit`, `round.run`, `round.compare`, `round.gates`);
+their output formats are the legacy export. Earlier still, an out-of-repo harness
+(`compile.sh`, `compare.py`, `wardiff`, `postlink.py`) across three shell processes was replaced
+by `recompile_check` because splitting the stages let the emit, the objects and the manifest drift
+apart — the reason the round is now ONE operation over ONE store. The union of arms and the
+per-function selection (`recompile_select`) were retired 2026-08-18: the recovered emission
+dominates the reference rendering (zero functions where the reference is EXACT and the recovered
+tree is not), so selection adds nothing; `--arms` stays an investigation tool in the emit axes.

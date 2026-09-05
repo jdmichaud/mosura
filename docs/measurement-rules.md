@@ -417,10 +417,12 @@ already defines it. One grep would have settled it before a build.
 
 ## 9. WGSS has ONE canonical computation
 
-**Canonical: `scripts/corpus-verdicts.sh`'s census** — over the recompile TSV's user rows,
-`WGSS = 1 − Σ orig_insns·(1 − sim) / Σ orig_insns` (columns 9 and 7 of the
-`recompile_check --out` contract). Every number in docs/byte-exact-status.md,
-docs/plan-to-0.8.md and the campaign memories is this computation; quote no other.
+**Canonical: the round's census** — `mosura round list` / `round show <round>` / `round compare a b`
+compute, over the round's verdict rows, `WGSS = Σ orig_n·sim / Σ orig_n` (= `1 − Σ orig_n·(1 − sim)
+/ Σ orig_n`; the `orig_n` and `sim` columns of the verdict table, columns 9 and 7 of the legacy
+`round export` TSV). This is the computation `scripts/corpus-verdicts.sh` made (retired 2026-09-05,
+verdict-equivalent); every number in docs/byte-exact-status.md, docs/plan-to-0.8.md and the
+campaign memories is this computation; quote no other.
 
 Non-canonical variant on record: the wc2src-reconciliation session's ad-hoc awk
 (`docs/wc2src-reconciliation.md` on the `wc2src-reconcile` branch, "WGSS 0.4687 by the
@@ -432,12 +434,12 @@ because ad-hoc column picks have burned rounds before; see its header).
 
 ### The denominator is part of the series — a foreign-excluded run is not comparable to a full one
 
-`recompile_check --exclude-foreign <file>` (foreign-module scope,
+`round run … --exclude-foreign <file>` (foreign-module scope,
 `docs/foreign-scope-plan.md`) drops the named third-party libraries from the denominator, so
 its WGSS/EXACT are a **different series** from a full run — the same trap as the ad-hoc-awk
 offset above, but silent, because the TSV looks identical. Two guards make it visible: the
-output TSV's header carries an `EXCLUDE-FOREIGN=<file>@<hash>` stamp, and `corpus-verdicts.sh`
-prints a `!! FOREIGN-EXCLUDED SERIES` line when it sees one. **The canonical the subject series is the
+round's manifest (and the exported TSV's header) carries an `EXCLUDE-FOREIGN=<file>@<hash>` stamp,
+so a comparison across the boundary is visibly a comparison of two series. **The canonical the subject series is the
 FULL denominator (no `--exclude-foreign`)** until JD decides otherwise; a foreign-excluded number
 is only ever reported *next to* the full one (both-numbers), never as the headline. Do not compare
 a stamped TSV against an unstamped one.
@@ -449,20 +451,23 @@ survey emits, and "it obviously can't" is not evidence (2026-09-05: a knob read 
 sat outside the switches table and changed trees unstamped for a day). The gate is cheap and
 mechanical, and it is the same measurement the switches commit (6b504a5) used to land:
 
-1. **Emit the baseline** once from the pre-change tree — the release `corpus_emit` binary built
-   at `CARGO_TARGET_DIR=/data/mosura-target`, run over the subject binary into a fresh directory
-   (a tree is ~38 MB; check `df -h /data` first — the floor is 4 GB). An existing tree emitted by
-   the same code state (e.g. the last round's) serves as the baseline.
-2. **Emit the candidate** the same way, from the changed tree.
+1. **Emit the baseline** once from the pre-change tree — the release `mosura` built at
+   `CARGO_TARGET_DIR=/data/mosura-target`, `mosura -S <session> emit --all --out <base>` over the
+   analyzed subject (a tree is ~38 MB; check `df -h /data` first — the floor is 4 GB). An existing
+   tree emitted by the same code state (e.g. the last round's `recovered/`, or `/data/be2/tb`)
+   serves as the baseline.
+2. **Emit the candidate** the same way, from the changed tree (a new session, or the same session:
+   the emission is keyed on the build's stage fingerprints, so a changed tree makes a new set).
 3. **Compare the canonical rendering and the stamp:**
 
    ```sh
-   diff -rq <base>/recovered <cand>/recovered | wc -l        # must print 0
-   grep '^# arms:' <base>/manifest.tsv <cand>/manifest.tsv   # must be identical
+   diff -rq <base>/recovered <cand> | wc -l                  # must print 0
+   mosura -S <session> emit --all --report --format tsv | head -1   # the emission; the arms stamp is
+   mosura -S <session> round show <round> --format tsv | grep '^arms'   #   recorded by every round
    ```
 
-4. For a switch that must still work, run a `--only` probe with `--arms-off <name>` and quote the
-   `arms (recovered emit): …; off: <name>` stderr line.
+4. For a switch that must still work, emit one function with `--arms-off <name>` and quote the
+   arms stamp `…; off: <name>` (`emit --all --report` after `-o emit.arms-off=…`).
 
 No compile step is involved (the emit alone decides identity), so the gate never conflicts with a
 running Watcom round. Report the two numbers — differing units and stamp equality — in the commit

@@ -556,7 +556,7 @@ CodeView/HLL marker — so this track needs its own corpus and does not perturb 
 
 ## Recompile-emitter generalization (deferred by JD, 2026-08-17 — not a priority yet)
 
-`corpus_emit`/`recompile_check` carry the subject binary inheritance that should become **per-target
+The recompile operations (`program.emit`, `round.run`; the retired `corpus_emit`/`recompile_check` before them) carry the subject binary inheritance that should become **per-target
 (32-bit Watcom), not per-binary**: the emit/manifest/TU-assembly layer, the representability
 contract (`build_prelude`'s closed vocabulary + `contract_violations` — widths are already a
 target property, not a subject one), the declaration safety net, and the standalone-scope
