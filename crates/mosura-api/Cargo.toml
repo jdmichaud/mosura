@@ -19,3 +19,7 @@ roxmltree.workspace = true
 
 [build-dependencies]
 blake3 = "1"
+
+[dev-dependencies]
+# the integration tests read the analysis corpus by workspace layout (the dev tier)
+mosura-core = { path = "../mosura-core", features = ["dev"] }

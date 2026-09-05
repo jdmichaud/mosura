@@ -377,6 +377,7 @@ version = "0.0.0"
 dependencies = [
  "cpp_demangle",
  "flate2",
+ "mosura-core",
  "object",
  "regex",
  "roxmltree",

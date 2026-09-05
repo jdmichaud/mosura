@@ -14,6 +14,10 @@ name = "mosura_core"
 # library. Off by default: in the workspace they are reached as an override directory; a shipped
 # libmosura carries only mosura's own databases unless built with this.
 fid-ghidra = []
+# The dev tier: the oracle captures, goldens, conformance harness, gcc ground truth, MVE twin build,
+# the workspace paths and dev-config. Off in a release library; on for the integration tests
+# (the self dev-dependency below) and for the dev operations crate.
+dev = []
 
 [dependencies]
 roxmltree.workspace = true
@@ -21,3 +25,6 @@ regex.workspace = true
 flate2.workspace = true
 object.workspace = true
 cpp_demangle.workspace = true
+
+[dev-dependencies]
+mosura-core = { path = ".", features = ["dev"] }

@@ -11,5 +11,5 @@ publish = false
 header = ["dep:cbindgen"]
 
 [dependencies]
-mosura-core = { path = "../mosura-core" }
+mosura-core = { path = "../mosura-core", features = ["dev"] }
 cbindgen = { version = "0.27", optional = true, default-features = false }

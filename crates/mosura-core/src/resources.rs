@@ -76,7 +76,8 @@ impl Resources {
 
     /// The dev tier's default: the workspace's own copies mounted as overrides (the vendored
     /// Processors tree, `specs/`, `data/fid/`, and Ghidra's `third_party/ghidra-data/FunctionID`),
-    /// each only if present, over the embedded table.
+    /// each only if present, over the embedded table. A developer build only (`dev` feature).
+    #[cfg(any(test, feature = "dev"))]
     pub fn workspace() -> Resources {
         let ws = crate::paths::workspace_root();
         let mut r = Resources::embedded_only();
@@ -248,9 +249,13 @@ pub fn set(r: Resources) {
     *CURRENT.write().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(r));
 }
 
-/// The provider a process gets when nothing was [`set`]: the workspace's vendored copies as
-/// overrides when the build machine's checkout exists (so an edited `.cspec` or a rebuilt FID
-/// database is picked up without a rebuild), else the embedded table alone.
+/// The provider a process gets when nothing was [`set`]. In a developer build (the `dev`
+/// feature — tests, examples, the dev operations): the workspace's vendored copies as overrides
+/// when the build machine's checkout exists (so an edited `.cspec` or a rebuilt FID database is
+/// picked up without a rebuild), else the embedded table alone. A release library is embedded-only
+/// plus the context's override directories — it never looks for a workspace, so no build machine's
+/// path is baked into `libmosura`.
+#[cfg(any(test, feature = "dev"))]
 pub fn default_for_process() -> Resources {
     let ws = crate::paths::workspace_root();
     if ws.join("third_party/ghidra/Processors").is_dir() {
@@ -258,6 +263,12 @@ pub fn default_for_process() -> Resources {
     } else {
         Resources::embedded_only()
     }
+}
+
+/// The release library's provider: the embedded data alone (see above).
+#[cfg(not(any(test, feature = "dev")))]
+pub fn default_for_process() -> Resources {
+    Resources::embedded_only()
 }
 
 /// The process-wide provider: what [`set`] installed, else [`default_for_process`].

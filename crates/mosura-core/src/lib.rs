@@ -13,20 +13,34 @@
 #[macro_use]
 pub mod debug;
 pub mod switches;
-pub mod devcfg;
 pub mod resources;
 pub mod analysis;
-pub mod ccompare;
-pub mod conformance;
 pub mod datatest;
 pub mod decompile;
-pub mod golden;
 pub mod lang;
-pub mod oraclecache;
-pub mod paths;
-pub mod speccache;
 pub mod recompile;
 pub mod sleigh;
+
+// THE DEV TIER (`docs/product/architecture.md` §6.4): the workspace paths, the developer config,
+// the oracle captures, the goldens, the conformance harness and the C-similarity scorer exist to
+// develop mosura against its oracles, not to use it. They read the filesystem by workspace layout
+// and spawn the oracle tools, so a release library (`cargo build --release -p mosura-capi`, no
+// `dev` feature) compiles none of them; tests and examples get them through the crate's own
+// dev-dependency (`mosura-core = { path = ".", features = ["dev"] }` in Cargo.toml).
+#[cfg(any(test, feature = "dev"))]
+pub mod ccompare;
+#[cfg(any(test, feature = "dev"))]
+pub mod conformance;
+#[cfg(any(test, feature = "dev"))]
+pub mod devcfg;
+#[cfg(any(test, feature = "dev"))]
+pub mod golden;
+#[cfg(any(test, feature = "dev"))]
+pub mod oraclecache;
+#[cfg(any(test, feature = "dev"))]
+pub mod paths;
+#[cfg(any(test, feature = "dev"))]
+pub mod speccache;
 
 /// Marker error for a pipeline stage that has not been ported yet.
 ///

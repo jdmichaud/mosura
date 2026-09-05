@@ -29,12 +29,14 @@
 //! "this was written in assembler" (not reachable from C at all). Those three need completely
 //! different responses, and until they are separated the population cannot be worked.
 pub mod align;
+#[cfg(any(test, feature = "dev"))]
 pub mod groundtruth;
 pub mod buildconfig;
 pub mod candidate;
 pub mod convention;
 pub mod gates;
 pub mod insn;
+#[cfg(any(test, feature = "dev"))]
 pub mod mve;
 pub mod outcome;
 pub mod recovery;
@@ -47,6 +49,7 @@ pub mod passes;
 pub mod pragma;
 pub mod tu;
 pub mod upgrade;
+#[cfg(any(test, feature = "dev"))]
 pub mod twin;
 pub mod verify;
 pub mod vocab;

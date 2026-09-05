@@ -13,3 +13,7 @@ crate-type = ["rlib", "cdylib", "staticlib"]
 [dependencies]
 mosura-api = { path = "../mosura-api" }
 mosura-core = { path = "../mosura-core" }
+
+[dev-dependencies]
+# the integration tests read the analysis corpus by workspace layout (the dev tier)
+mosura-core = { path = "../mosura-core", features = ["dev"] }
