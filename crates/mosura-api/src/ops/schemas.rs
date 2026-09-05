@@ -19,7 +19,11 @@ pub static CALLS: Schema = Schema { name: "calls", version: 1, columns: &[C::hex
 pub static GLOBAL_WIDTHS: Schema = Schema { name: "global_widths", version: 1, columns: &[C::hex("addr", T::U64), C::new("store_w", T::U32), C::new("read_w", T::U32)] };
 pub static EMIT_REPORT: Schema = Schema { name: "emit_report", version: 1, columns: &[C::new("key", T::Str), C::new("value", T::Str)] };
 
-pub static ALL: &[&Schema] = &[&OPS, &SCHEMA, &IDENTIFY, &PROGRAM_SUMMARY, &TABLES, &BYTES, &INSTRUCTIONS, &PCODE, &PROTOTYPE, &JUMPTABLES, &CALLS, &GLOBAL_WIDTHS, &EMIT_REPORT];
+pub static OPTION_REGISTRY: Schema = Schema { name: "option_registry", version: 1, columns: &[C::new("key", T::Str), C::new("type", T::Str), C::new("default", T::Str), C::new("doc", T::Str), C::new("since", T::Str), C::new("affects", T::Str)] };
+pub static FILES: Schema = Schema { name: "files", version: 1, columns: &[C::new("path", T::Str)] };
+pub static DATA: Schema = Schema { name: "data", version: 1, columns: &[C::new("name", T::Str), C::new("source", T::Str)] };
+
+pub static ALL: &[&Schema] = &[&OPS, &SCHEMA, &IDENTIFY, &PROGRAM_SUMMARY, &TABLES, &BYTES, &INSTRUCTIONS, &PCODE, &PROTOTYPE, &JUMPTABLES, &CALLS, &GLOBAL_WIDTHS, &EMIT_REPORT, &OPTION_REGISTRY, &FILES, &DATA];
 
 pub fn by_name(name: &str) -> Option<&'static Schema> {
     ALL.iter().copied().find(|s| s.name == name)

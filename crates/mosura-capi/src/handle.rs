@@ -156,7 +156,7 @@ pub fn live_count() -> usize {
 mod tests {
     use super::*;
 
-    struct Payload(Vec<u8>, std::sync::Arc<()>);
+    struct Payload(Vec<u8>, #[allow(dead_code)] std::sync::Arc<()>); // the Arc's count observes the drop
 
     #[test]
     fn handles_are_checked_before_their_memory_is_touched() {

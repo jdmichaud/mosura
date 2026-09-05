@@ -9,15 +9,23 @@
 #![allow(non_camel_case_types, clippy::missing_safety_doc)]
 
 pub mod boundary;
+pub mod ctx;
 pub mod handle;
 pub mod mem;
+pub mod options;
 pub mod status;
+pub mod table;
 
 use std::ffi::{c_char, CString};
 use std::sync::OnceLock;
 
-pub use mem::{mosura_bytes, mosura_view};
-pub use status::mosura_status;
+// every C-named type and every `extern "C"` function at the crate root: `use mosura_capi::*` is the
+// whole ABI (the binding and the tests read it that way; cbindgen reads the modules)
+pub use ctx::*;
+pub use mem::*;
+pub use options::*;
+pub use status::*;
+pub use table::*;
 
 /// The API version this library implements; a client checks the major first.
 pub const MOSURA_API_VERSION_MAJOR: u32 = 0;

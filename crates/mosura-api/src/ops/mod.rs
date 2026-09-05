@@ -119,13 +119,40 @@ pub fn schema_table(name: &str) -> Result<Table> {
     Ok(b.finish(false))
 }
 
+/// Write the embedded data into `dir` (`what` = specs | fid | all); the files written.
+pub fn export_data(ctx: &Context, dir: &std::path::Path, what: &str, overwrite: bool) -> Result<Table> {
+    let written = ctx.resources.export(dir, what, overwrite).map_err(|e| Error::io(e, dir.to_path_buf()))?;
+    let mut b = TableBuilder::new(&schemas::FILES);
+    for p in written {
+        b.row().str(&p.display().to_string());
+    }
+    Ok(b.finish(false))
+}
+
+/// Every resource in effect and where it comes from (`embedded`, or the overriding directory).
+pub fn data_list(ctx: &Context) -> Table {
+    let mut b = TableBuilder::new(&schemas::DATA);
+    for (name, source) in ctx.resources.in_effect() {
+        let from = match source {
+            mosura_core::resources::Source::Embedded => "embedded".to_string(),
+            mosura_core::resources::Source::Dir(d) => d.display().to_string(),
+        };
+        b.row().str(&name).str(&from);
+    }
+    b.finish(true)
+}
+
+/// Does `op` accept `key`? Its own parameters, the `emit.*` marker, and every Diagnostic key.
+pub fn accepts(op: &Op, key: &str) -> bool {
+    let diagnostic = optreg::lookup(key).is_some_and(|s| s.affects == Affects::Diagnostic);
+    let emit = op.params.contains(&function::EMIT_KEYS) && key.starts_with("emit.") && key != keys::EMIT_ARMS_OFF;
+    diagnostic || emit || op.params.contains(&key)
+}
+
 /// The parameters an op accepts: its own list, plus every Diagnostic key.
 fn validate_params(op: &Op, params: &Options) -> Result<()> {
-    let emit_keys = op.params.contains(&function::EMIT_KEYS);
     for (k, _) in params.explicit() {
-        let diagnostic = optreg::lookup(k).is_some_and(|s| s.affects == Affects::Diagnostic);
-        let emit = emit_keys && k.starts_with("emit.") && k != keys::EMIT_ARMS_OFF;
-        if !diagnostic && !emit && !op.params.contains(&k) {
+        if !accepts(op, k) {
             return Err(Error::InvalidArg(format!("`{k}` is not a parameter of `{}` (accepts: {})", op.name, op.params.join(", "))));
         }
     }

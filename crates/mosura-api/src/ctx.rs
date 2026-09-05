@@ -57,6 +57,11 @@ static INSTALLED: OnceLock<String> = OnceLock::new();
 
 impl Context {
     pub fn new(cfg: ContextConfig) -> Result<Context> {
+        for d in &cfg.data_dirs {
+            if !d.is_dir() {
+                return Err(Error::io(std::io::Error::new(std::io::ErrorKind::NotFound, "not a directory"), d));
+            }
+        }
         let id = cfg.identity();
         match INSTALLED.get() {
             Some(prev) if *prev != id => {
@@ -67,11 +72,6 @@ impl Context {
             }
             Some(_) => {}
             None => {
-                for d in &cfg.data_dirs {
-                    if !d.is_dir() {
-                        return Err(Error::io(std::io::Error::new(std::io::ErrorKind::NotFound, "not a directory"), d));
-                    }
-                }
                 let mut r = resources::default_for_process();
                 for d in &cfg.data_dirs {
                     r = r.with_override_first(d);

@@ -103,3 +103,12 @@ mod tests {
         assert!(lookup("emit").is_none());
     }
 }
+
+/// The registry as a table: key, type, default, doc, since, affects (`mosura options registry`).
+pub fn registry_table() -> crate::table::Table {
+    let mut b = crate::table::builder::TableBuilder::new(&crate::ops::schemas::OPTION_REGISTRY);
+    for s in registry() {
+        b.row().str(s.key).str(&s.ty.name()).str(s.default).str(s.doc).str(s.since).str(s.affects.name());
+    }
+    b.finish(true)
+}
