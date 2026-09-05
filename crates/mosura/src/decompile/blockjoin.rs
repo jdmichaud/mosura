@@ -494,7 +494,7 @@ impl Action for ActionReturnSplit {
         // MOSURA_RETSPLIT=0: measurement switch for the shared-return arm investigation
         // (renders the pre-41a1665 unsplit shape); NOT a doctrine change — the action stays
         // on by default.
-        if std::env::var("MOSURA_RETSPLIT").as_deref() == Ok("0") || SKIP_RETURN_SPLIT.with(|c| c.get()) {
+        if !crate::switches::on(crate::switches::Switch::RetSplit) || SKIP_RETURN_SPLIT.with(|c| c.get()) {
             return 0;
         }
         let Some(s) = data.structure.as_ref() else {

@@ -19,6 +19,7 @@ use mosura::decompile::opcode::OpCode;
 use mosura::decompile::emit::EmitChoices;
 use mosura::decompile::printc::{print_c, print_c_with};
 use mosura::decompile::space::Address;
+use mosura::switches::{self, Switch};
 
 // Sized-int / undefined typedefs a compilable-C emitter would prepend (Ghidra decompiler C).
 // Watcom 10.0a is C89: int/long/pointer are 32-bit and there is NO 64-bit integer type
@@ -1196,9 +1197,17 @@ fn main() {
         .and_then(|i| rest.get(i + 1))
         .map(|v| v.split(',').map(str::trim).filter(|t| !t.is_empty()).map(|t| t.replace('-', "_")).collect())
         .unwrap_or_default();
+    // ONE name space over two mechanisms: a render arm switches off by clearing its typed `Sites`
+    // in the registry, everything else by not running at all (`switches`). The lists are joined
+    // here and authored nowhere twice.
     for a in &arms_off {
-        if !mosura::decompile::emit::arms::registry::Recovered::ARMS.contains(&a.as_str()) {
-            panic!("--arms-off: unknown arm `{a}` (switchable: {})", mosura::decompile::emit::arms::registry::Recovered::ARMS.join(", "));
+        let is_arm = mosura::decompile::emit::arms::registry::Recovered::ARMS.contains(&a.as_str());
+        if !is_arm && mosura::switches::turn_off(a).is_err() {
+            panic!(
+                "--arms-off: unknown name `{a}` (arms: {}; switches: {})",
+                mosura::decompile::emit::arms::registry::Recovered::ARMS.join(", "),
+                mosura::switches::Switch::ALL.iter().map(|s| s.name()).collect::<Vec<_>>().join(", ")
+            );
         }
     }
     // Like the loop-overflow branch form below: this survey's output exists to be RECOMPILED,
@@ -1352,7 +1361,7 @@ fn main() {
     // the bare landed world): the whole-program prototype pass feeds per-TU upgrades that
     // the gate stack (scheduler fixed-point, allowed-set, collision, network, signature)
     // adopts only where the models prove the original's placements survive.
-    if std::env::var("MOSURA_PROTO_PASS").as_deref() != Ok("0") {
+    if switches::on(Switch::ProtoPass) {
         let t = std::time::Instant::now();
         // A `--only` probe restricts the pass to the probed functions' DIRECT STATIC CALLEES
         // (see `recover_prototypes_for`): scan each probed extent's original bytes for CALL
@@ -1542,7 +1551,24 @@ fn main() {
     // The arm set this tree was MEASURED with (the recovered emit's choices, every axis spelled
     // out), so a tree or a copied manifest is self-describing about its arm set (code review
     // 2026-08-27: measurement documents carry their arm set). `#` lines are skipped by every reader.
-    let off_stamp = if arms_off.is_empty() { String::new() } else { format!("; off: {}", arms_off.join(",")) };
+    // The stamp is DERIVED, never assembled by hand: `switches::non_default` reports every knob off
+    // its default however it was set (`--arms-off` or a legacy variable a round script exports), so
+    // a tree cannot differ from the baseline for a reason the manifest does not carry. The arm
+    // names come from the same `--arms-off` list; the analysis overrides say when a tree was built
+    // under a forced cspec or a disabled analyzer, which changes it as surely as any switch.
+    let mut off_names: Vec<String> = arms_off
+        .iter()
+        .filter(|a| mosura::decompile::emit::arms::registry::Recovered::ARMS.contains(&a.as_str()))
+        .cloned()
+        .collect();
+    off_names.extend(mosura::switches::non_default().into_iter().map(str::to_string));
+    if let Some(c) = mosura::analysis::overrides::x86_32_cspec() {
+        off_names.push(format!("cspec={c}"));
+    }
+    if let Some(d) = mosura::analysis::overrides::disabled_analyzers() {
+        off_names.push(format!("disabled-analyzers={d}"));
+    }
+    let off_stamp = if off_names.is_empty() { String::new() } else { format!("; off: {}", off_names.join(",")) };
     writeln!(mf, "# arms: {rec_arm}{off_stamp}").unwrap();
     eprintln!("arms (recovered emit): {rec_arm}{off_stamp}");
     writeln!(
@@ -1748,7 +1774,7 @@ fn main() {
     // are form with no verdict change, stable at two on byte-identical TSVs.
     // `MOSURA_GLOBAL_WIDTH=recovered` restores the narrowest-access declaration, the way
     // `MOSURA_KERNEL_NET=0` and `MOSURA_CONS_REACH=0` restore theirs.
-    let global_width_arm = std::env::var("MOSURA_GLOBAL_WIDTH").as_deref() != Ok("recovered");
+    let global_width_arm = switches::on(Switch::GlobalWidth);
     let (ram_store_w, ram_read_w) = if global_width_arm {
         let t = std::time::Instant::now();
         let mut sw: HashMap<u64, u32> = HashMap::new();
@@ -1966,7 +1992,7 @@ fn main() {
                 let mut consistency_forced = false;
                 // DEFAULT-ON since the round-2 landing (targeted 299: 121/121 EXACT held,
                 // +5, zero losses). MOSURA_KERNEL_NET=0 restores the refusal.
-                let net_kernel = std::env::var("MOSURA_KERNEL_NET").as_deref() != Ok("0");
+                let net_kernel = switches::on(Switch::KernelNet);
                 if other_ok && !alloc_ok {
                     // Allocator model phase 2, the ZERO-COST kernel (see `pass_through_only`):
                     // a collision/allocation refusal whose whole delta is appended
@@ -1986,7 +2012,7 @@ fn main() {
                         // bar (2026-08-22): the evidence-gated pool is 2 TUs, micro-round
                         // 36b30 sim 0.471→0.586, 6d680 unchanged, no verdict regressions.
                         // MOSURA_KERNEL_STACKAPP=0 restores the refusal.
-                        let stack_kernel = std::env::var("MOSURA_KERNEL_STACKAPP").as_deref() != Ok("0");
+                        let stack_kernel = switches::on(Switch::KernelStackApp);
                         let mut consts2: Vec<(u64, u32, u64)> = Vec::new();
                         let mut stacks: Vec<(u64, u32)> = Vec::new();
                         if (stack_kernel || mosura::debug::on(mosura::debug::Topic::Survey))
@@ -2190,14 +2216,14 @@ fn main() {
                 // CLASSIFIED in the round report (lottery vs bug), not vetoed.
                 // MOSURA_CONSISTENCY=0 restores the pure gate stack for A/B measurement.
                 let mut f_forced: Option<Funcdata> = None;
-                if !ok && std::env::var("MOSURA_CONSISTENCY").as_deref() != Ok("0") {
+                if !ok && switches::on(Switch::Consistency) {
                     // DEFAULT-ON since the Order Y round (878 EXACT / WGSS 0.56212 on base
                     // 38f1c72's 875 / 0.56115: +3, 4 flips up, 1 classified correct-code form
                     // down, stable at two on byte-identical TSVs). `MOSURA_CONS_REACH=0`
                     // restores the 12-instruction call-stopped witness and the flat shape
                     // rule, the way `MOSURA_KERNEL_NET=0` and `MOSURA_CONSISTENCY=0` restore
                     // theirs — the A/B every round on this gate has needed.
-                    let reach_mode = std::env::var("MOSURA_CONS_REACH").as_deref() != Ok("0");
+                    let reach_mode = switches::on(Switch::ConsReach);
                     // The callee's own entry block, for every direct callee of this function.
                     let mut evidence: HashMap<u64, Vec<Option<bool>>> = HashMap::new();
                     for op in fl.op_ids() {
@@ -2532,7 +2558,11 @@ fn main() {
                                 }
                             }
                         }
-                        let carry = carry_arg_sites(fl, &pp.recovered_protos, &evidence, &insns, &arg_reg_offs);
+                        let carry = if !switches::on(Switch::ArgumentCarry) {
+                            Vec::new()
+                        } else {
+                            carry_arg_sites(fl, &pp.recovered_protos, &evidence, &insns, &arg_reg_offs)
+                        };
                         match f3 {
                             Some(f3)
                                 if resolves_contradictions(&f3, &contradicted)
@@ -3267,7 +3297,11 @@ fn main() {
             // cannot show. Every callee of this TU with a clobber clause takes the register
             // (a caller's saves cannot say which callee); a TU with no clause at all gives
             // it to every callee. WAR2 FUN_0004f850: EXACT with `ebx` in its callee's clause.
-            let saved = mosura::recompile::buildconfig::saved_for_callees(&insns);
+            let saved = if !switches::on(Switch::CalleeClobbers) {
+                Vec::new()
+            } else {
+                mosura::recompile::buildconfig::saved_for_callees(&insns)
+            };
             let any_modify = merged.values().any(|(_, m)| m.is_some());
             let mut merged = merged;
             if !saved.is_empty() {
@@ -3346,7 +3380,7 @@ fn main() {
             // (1ea4c/462d0/463fc gained EXACT from it). Measured on the six trade members:
             // the rule separates 5 of 6; the sixth (4d0f8) is the recorded do-while
             // structuring gap. MOSURA_SHARED_RET=0 disables.
-            let rtu = if f.return_splits > 0 && std::env::var("MOSURA_SHARED_RET").as_deref() != Ok("0") {
+            let rtu = if f.return_splits > 0 && switches::on(Switch::SharedRet) {
                 mosura::decompile::blockjoin::set_skip_return_split(true);
                 let alt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     match (f_from_pp, prog_pp.as_ref()) {
@@ -4406,7 +4440,7 @@ fn aggregate_ram_globals(
     gsizes: &std::collections::HashMap<u64, u32>,
     volatiles: &HashSet<u64>,
 ) -> (String, Vec<(String, String)>) {
-    if std::env::var("MOSURA_AGG").as_deref() == Ok("0") {
+    if !switches::on(Switch::Agg) {
         return (c.to_string(), Vec::new());
     }
     // Ram identifiers in the text, with per-name exclusion when any occurrence is followed by
