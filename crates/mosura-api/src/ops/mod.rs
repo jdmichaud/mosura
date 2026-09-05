@@ -4,6 +4,7 @@
 //! parameters against the registry, runs the body under `catch_unwind` (unless the context says
 //! abort) and hands back one table. New capability = one more entry in `REGISTRY`.
 
+pub mod function;
 pub mod identify;
 pub mod program;
 pub mod schemas;
@@ -14,7 +15,7 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 use crate::ctx::Context;
 use crate::error::{Error, Result};
 use crate::fingerprint::Stage;
-use crate::options::{registry as optreg, Affects, Options};
+use crate::options::{keys, registry as optreg, Affects, Options};
 use crate::schema::Schema;
 use crate::session::{Session, SetKind};
 use crate::table::builder::TableBuilder;
@@ -72,6 +73,7 @@ impl Op {
 
 /// Every operation, sorted by name (a test pins order and uniqueness).
 pub static REGISTRY: &[&Op] = &[
+    &function::DECOMPILE,
     &identify::IDENTIFY,
     &program::ANALYZE,
     &program::DISASSEMBLE,
@@ -116,9 +118,11 @@ pub fn schema_table(name: &str) -> Result<Table> {
 
 /// The parameters an op accepts: its own list, plus every Diagnostic key.
 fn validate_params(op: &Op, params: &Options) -> Result<()> {
+    let emit_keys = op.params.contains(&function::EMIT_KEYS);
     for (k, _) in params.explicit() {
         let diagnostic = optreg::lookup(k).is_some_and(|s| s.affects == Affects::Diagnostic);
-        if !diagnostic && !op.params.contains(&k) {
+        let emit = emit_keys && k.starts_with("emit.") && k != keys::EMIT_ARMS_OFF;
+        if !diagnostic && !emit && !op.params.contains(&k) {
             return Err(Error::InvalidArg(format!("`{k}` is not a parameter of `{}` (accepts: {})", op.name, op.params.join(", "))));
         }
     }
@@ -155,7 +159,7 @@ mod tests {
         assert_eq!(names, sorted, "REGISTRY is sorted by name and unique");
         for op in REGISTRY {
             for p in op.params {
-                assert!(optreg::lookup(p).is_some(), "{}: param `{p}` is not a registered option key", op.name);
+                assert!(*p == function::EMIT_KEYS || optreg::lookup(p).is_some(), "{}: param `{p}` is not a registered option key", op.name);
             }
             assert!(schema(op.result).is_some(), "{}: result schema `{}` unknown", op.name, op.result);
         }
