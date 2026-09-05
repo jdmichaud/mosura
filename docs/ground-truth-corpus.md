@@ -28,7 +28,7 @@ an **exact, Ghidra-independent** ground truth, and it directly serves the projec
   `tests/ground_truth_recompile.rs` gates against a PER-MACHINE baseline
   (`build/gt-recompile/baseline.tsv`: first run writes it; later runs fail on a verdict
   regression or a WGSS drop over 0.01; `MOSURA_GT_BASELINE=update` accepts a change).
-  `cargo run --release --example gt_recompile [prog…]` prints the per-function table and
+  `mosura dev groundtruth.recompile [dev.programs=<stem,…>]` (a `--features dev-tools` build) prints the per-function table and
   writes `build/gt-recompile/report.tsv`; the TUs and objects stay in `build/gt-recompile/<prog>/`
   for the three-way read (source / our C / divergence).
   **First measurement (2026-08-22, gcc 14, -O2): 20 programs, 70 functions, 1,412 instructions,
@@ -41,7 +41,7 @@ an **exact, Ghidra-independent** ground truth, and it directly serves the projec
   feature. The compiler is the objective judge (it ignores
   names/structure); closeness (byte-identical → functionally-equivalent) is the quality metric.
   This is precisely where mosura can beat Ghidra, whose C usually won't even recompile. Measured
-  (not yet gated) by `examples/gt_recompile_probe.rs`; see [Decompiler level](#decompiler-level).
+  (not yet gated) by the recompilation-equivalence loop; see [Decompiler level](#decompiler-level).
 
 ## Layout
 
@@ -180,8 +180,8 @@ can tighten once `.comment`-based detection lands.
 
 ## Decompiler level (recompilation equivalence — measured, not gated)
 
-`examples/gt_recompile_probe.rs` decompiles functions from a ground-truth binary (read-only via
-the decompiler's public API — it does **not** modify the decompiler) and tries to compile the C.
+An early probe (since retired) decompiled functions from a ground-truth binary (read-only, without
+modifying the decompiler) and tried to compile the C.
 Phase-1 measurement (x86-64 gcc):
 
 - **Simple leaf functions already recompile** with only a sized-int prelude: `square`/`op_add`
@@ -214,4 +214,5 @@ the decompiler-quality metric. The probe already scaffolds the single-function m
 4. **Open follow-ons (not this task):**
    - clang / MSVC columns once those toolchains are installed.
    - Decompiler track (separate, handoff): compilable-emission mode → wire the recompilation-
-     equivalence loop (`examples/gt_recompile_probe.rs`) into a scored gate.
+     equivalence loop into a scored gate — the recovered-emission pipeline now provides it, and
+     `dev.groundtruth.recompile` is the ground-truth arm.

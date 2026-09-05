@@ -19,7 +19,7 @@
 # usage: scripts/make-oracle-root.sh [<root-dir>]     (default: <workspace>/build/oracle-root)
 #        PROCESSORS=<dir>  override the Processors tree (default: third_party/ghidra/Processors)
 #
-# Then: GHIDRA_SRC=<root-dir> (oracle/capture, oracle_sweep) or SLEIGHHOME=<root-dir> (decomp_dbg).
+# Then: GHIDRA_SRC=<root-dir> (oracle/capture, dev.oracle.sweep) or SLEIGHHOME=<root-dir> (decomp_dbg).
 #
 # CALIBRATION, which callers must still perform (a root can be right and the CACHE wrong): a watcom
 # capture prints NO convention keyword on a default-model function. `__fastcall` or `__regparm3`

@@ -1,7 +1,7 @@
 # An absolute measure of over-decode (spec for §6)
 
-**Status:** ✅ USED AND VINDICATED, 2026-08-06 — it closed §6. Part A implemented in
-`crates/mosura-core/examples/over_decode.rs`; Part B deliberately never built (its precondition,
+**Status:** ✅ USED AND VINDICATED, 2026-08-06 — it closed §6. Part A is the operation
+`dev.census.over-decode` (was `examples/over_decode.rs`); Part B deliberately never built (its precondition,
 "A1 shows something to attribute", came out false). Result on the subject: **A1 = 0, A2 = 0**, so the
 "7,322 extra starts" differential was measuring Ghidra's under-decode, not mosura's over-decode.
 

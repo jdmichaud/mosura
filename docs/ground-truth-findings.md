@@ -1,7 +1,7 @@
 # Ground-truth recompile — findings (branch `gt-recompile`)
 
 *What decompiling our own binaries shows, read against the source. Instrument:
-`recompile::groundtruth` (`cargo run --release --example gt_recompile`), per-function three-way
+`recompile::groundtruth` (`mosura dev groundtruth.recompile`, a `--features dev-tools` build), per-function three-way
 files under `build/gt-recompile/<program>/<function>.3way.txt` — original source, our C, aligned
 instructions. Numbers from the 2026-08-23 run: host gcc 14, `-O2`, 20 programs, 70 functions,
 937 original instructions, **WGSS 0.288**, 17 EXACT.*

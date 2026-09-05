@@ -54,7 +54,7 @@ corpus (8.0s → 0.46s).
 
 - `--debug perf` — per-action / per-rule / per-print-substep wall-clock accounting
   (`decompile::action::perf`), dumped by `examples/perf_corpus`.
-- `cargo run -q --example perf_corpus [stem]` — per-fixture build/decompile/print timing
+- `mosura dev bench [dev.only=<stem>]` (a `--features dev-tools` build) — per-fixture build/decompile/print timing
   over the x86-64 datatests, worst first; no oracle spawns.
 - `build/oracle-cache/` — oracle stdout cache (self-invalidating; `rm -rf` to clear).
 - `mosura::speccache::get(path)` — per-process parsed-`.sla` cache for tests.

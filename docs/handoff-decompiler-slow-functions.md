@@ -79,7 +79,7 @@ in `HighVariable` membership.
 Reproduce with:
 
 ```
-cargo build --release --example over_decode
+mosura dev census.over-decode   # a --features dev-tools build
 MOSURA_ANALYSIS_TRACE=1 ./target/release/examples/over_decode ~/the subject binary --le
 ```
 

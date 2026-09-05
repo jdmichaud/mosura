@@ -4,21 +4,20 @@
 This document fixes the design and the staged plan so the work does not drift.
 
 **Implementation:** `crates/mosura-core/src/analysis/foreign.rs` (engine + 10 unit tests),
-`crates/mosura-core/examples/foreign_propose.rs` (band proposer, Phase 1), and the opt-in `--exclude-foreign <file>`
-flag on `recompile_check` (denominator wiring, Phase 4). The per-binary confirmation file (Phase 2)
+the dev operations `dev.foreign.facts` / `dev.foreign.propose` / `dev.foreign.report` (band proposer, Phase 1;
+was `examples/foreign_propose.rs`), and the opt-in `round.exclude-foreign=<file>` option on a round (denominator wiring, Phase 4). The per-binary confirmation file (Phase 2)
 is **reverse-engineering data about a proprietary binary — it lives with that binary's own artifacts,
 not in the repo.** Default-safe: with no confirmation the classification is exactly today's
 FID/loader set (verified on the subject: 130 foreign, 0 held). Usage (`<foreign-file>` is the out-of-repo
 confirmation file):
 
 ```text
-# propose bands for review (read-only):
-cargo run --release --example foreign_propose -- <binary> [--native]
-# preview the denominator with confirmed bands:
-cargo run --release --example foreign_propose -- <binary> --confirm <foreign-file>
-# audit a classification band by band (the band report, §5 Phase 1):
-cargo run --release --example foreign_propose -- <binary> --report [--confirm <foreign-file>] \
-    [--rec <rec.tsv>] [--memo-cut <va>]
+# propose bands for review (read-only), on a session whose program is loaded and analyzed:
+mosura dev foreign.propose
+# the engine's per-function facts:
+mosura dev foreign.facts
+# audit a classification band by band (the band report, §5 Phase 1), a round joined for weights:
+mosura dev foreign.report [dev.confirm=<foreign-file>] [round=<name>] [dev.memo-cut=<va>]
 # score with foreign excluded (compare against a run without --exclude-foreign = both numbers):
 recompile_check <binary> <manifest> <src> recover <watcom> --exclude-foreign <foreign-file>
 ```
@@ -140,7 +139,7 @@ A **generic engine** consuming **binary-specific data behind a boundary**.
 
 - **Phase 0 — Instrumentation.** *(DONE)* `foreign_propose --facts` (the kept fact dump) + an
   ad-hoc reducer prove the signals across three binaries. Findings in §3.
-- **Phase 1 — Band proposer (read-only).** *(DONE)* `examples/foreign_propose.rs` emits the
+- **Phase 1 — Band proposer (read-only).** *(DONE)* `dev.foreign.propose`/`dev.foreign.report` emit the
   human-facing band report per binary (range, #funcs, anchor class, example, fingerprint
   agreement) and a classification preview. Changes no denominator.
   **`--report` (2026-08-31)** is the auditable form of the same pass, so §4.3.5 can actually be

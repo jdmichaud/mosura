@@ -366,8 +366,9 @@ already defines it. One grep would have settled it before a build.
 - **"The metric is indecisive" must never be asserted from an aggregate.** Establish it at the
   granularity of the goal, or you are declaring a tie in a race you did not run.
 - **Check set MEMBERSHIP, not totals.** Which functions, not how many.
-- **Prove both sides of an A/B were built from the state you think.** `cargo build --release` does
-  **not** rebuild `examples/` — use `cargo run --release --example …`. Validate a baseline file by
+- **Prove both sides of an A/B were built from the state you think.** Rebuild the front-end you
+  measure through (`cargo build --release -p mosura-cli`, or `--features dev-tools` for a `dev.*`
+  operation) before each side. Validate a baseline file by
   confirming the functions whose output did *not* change show **zero** status disagreements.
 - **Key survey files by the `FUN_xxxxxxxx` in each `.c`, never by manifest index** — the EMIT
   regenerates `manifest.tsv` and the index→VA mapping shifts when functions are discovered.

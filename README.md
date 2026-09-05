@@ -67,7 +67,15 @@ After the setup above, the test harness runs the whole port against the oracle:
 ```sh
 cargo test                            # SLEIGH conformance + decompiler corpus vs Ghidra
 cargo xtask baseline                  # regenerate disasm/p-code goldens from the oracle
-cargo run -q --example perf_corpus    # per-fixture timing, worst first
+cargo run -q -p mosura-cli --features dev-tools -- -S - dev bench   # per-fixture timing, worst first
+```
+
+The dev tier (oracle sweeps, censuses, ground truth, fixtures, probes) is a set of `dev.*`
+operations behind the `dev-tools` feature; `mosura dev <op>` runs one, `mosura ops --dev` lists
+them. A release build has none of them.
+
+```sh
+cargo run -q -p mosura-cli --features dev-tools -- -S - dev groundtruth.recompile   # source→gcc→decompile→gcc verdicts
 ```
 
 - Source lives in `crates/mosura-core/src/`: `sleigh::` (the `.sla` loader, engine, and

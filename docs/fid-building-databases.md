@@ -125,8 +125,8 @@ a `.fidb` — so a database for another architecture is never decoded; before 20
 database was decoded first and filtered after, about 2.9 s per program in the developer tree
 whatever its architecture. What remains for a `.fidb` that does not match is reading and inflating
 its container to reach that table (about 1.3 s for the 80 MB of vendored Ghidra databases); a
-release without that data pack pays nothing. The dev-tool `fidnames` takes an explicit database
-directory as its last argument.
+release without that data pack pays nothing. The product operation `fid identify` takes an explicit database directory with `--db`
+(`fid.db`) instead of every database the resource provider holds.
 
 ---
 
