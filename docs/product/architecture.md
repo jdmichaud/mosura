@@ -696,12 +696,19 @@ provider → WP6 closure), which also carries the decisions taken in discussion.
 Each phase lands green with the corpus unchanged where it touches emission; the phases are
 ordered so that every one delivers something usable.
 
-**Phase 0 — seams in core (no behaviour change).**
-Resource provider (embedded vendored specs + our `specs/` + FID databases, override directory
-first; `paths.rs` becomes dev-only). `Options` object threaded to every env-var read site
-(§7.2); `debug!` gains a sink. Promote the TU synthesis and the program passes out of
-the survey driver into core (`recompile::tu`, `analysis::interface`), gated on a byte-identical
-emitted tree. This phase is where most of the risk is retired, and it is all internal.
+**Phase 0 — seams in core (no behaviour change).** LANDED 2026-09-05 (`plan-2026-09-05.md`
+WP2–WP6/WP8, then `plan-wp7-2026-09-05.md` P0). Resource provider (embedded vendored specs + our
+`specs/` + FID databases, override directory first; `paths.rs` is dev-only); knobs a value
+(`switches::Knobs`), diagnostics a caller-set `debug::Config` with a sink; the corpus emit driver's
+domain logic promoted into core, gated on a byte-identical emitted tree: `recompile::tu` (the
+translation-unit synthesis, the prelude, the representability contract), `recompile::pragma`
+(the own and caller-side `#pragma aux` vocabulary, the contract table), `recompile::manifest`
+(the row record and header lines), `recompile::passes` + `analysis::interface` marks (the
+whole-program pre-passes and world order), `recompile::upgrade` (the zap checker),
+`recompile::function` (extent, marks, metrics, widths, own contract), and `recompile::round`
+(`EmitState::emit_function`, the emit stage of a round as one library call; `render_recovered`).
+The driver is a thin front (arguments, the stamped tree, writes and prints). This phase is where
+most of the risk was retired, and it was all internal.
 
 **Phase 1 — `mosura-api`.** Options registry, tables + schemas + `.tbl`, operation registry,
 session store with `Program::freeze/thaw`, and the first operations: `identify`, `program.load`,
