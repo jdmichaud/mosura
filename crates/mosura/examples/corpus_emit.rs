@@ -12,19 +12,14 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Mutex;
 
-use mosura::analysis::{self, decompiler::decompile_function};
-use mosura::decompile::funcdata::Funcdata;
+use mosura::analysis;
 use mosura::decompile::emit::EmitChoices;
-use mosura::decompile::printc::print_c_with;
-use mosura::decompile::space::Address;
 use mosura::switches::{Knobs, Switch};
-use mosura::recompile::tu::{aggregate_ram_globals, build_prelude, build_tu, contract_violations, with_contract};
-use mosura::recompile::function;
-use mosura::recompile::pragma::{self, WatcomRegs};
+use mosura::recompile::tu::build_prelude;
+use mosura::recompile::pragma::WatcomRegs;
 use mosura::recompile::manifest;
 use mosura::recompile::passes;
 use mosura::recompile::round;
-use mosura::recompile::upgrade;
 
 /// The subject's language. the subject is a 32-bit protected-mode DOS image.
 const SURVEY_LANG: &str = "x86:LE:32:default";
@@ -298,7 +293,6 @@ fn main() {
     let regs = WatcomRegs::for_lang(SURVEY_LANG);
     // Functions whose own returns disagree about the pop — a region-boundary symptom, counted so
     // it cannot be silent. Zero is the expected reading; a nonzero one is a finding to chase.
-    let mut cleanup_undecided = 0usize;
 
     eprintln!("loading the subject via analyze_le_file ...");
     let mut prog = analysis::analyze_le_file_with(std::path::Path::new(&bin), &knobs).expect("analyze_le_file");
@@ -370,8 +364,7 @@ fn main() {
     // scheduler model keeps every call-bearing window of the original a fixed point under
     // the candidate declarations, and (b) the function's OWN parameter signature is
     // unchanged (its definition-side row stays the landed one).
-    let passes::Worlds { landed: prog, pp: prog_pp, cons: mut prog_cons } = passes::Worlds::split(prog);
-    let ram = prog.default_space;
+    let passes::Worlds { landed: prog, pp: prog_pp, cons: prog_cons } = passes::Worlds::split(prog);
     eprintln!("{} functions", prog.function_manager.function_count());
 
     // Capture the last panic message+location per function (decompile_function catches internally
@@ -392,7 +385,6 @@ fn main() {
 
     let ents = passes::Entries::of(&prog);
     let entries: Vec<(u64, String)> = ents.list.clone();
-    let extent_bounds = |va: u64| -> (u64, Option<u64>) { ents.extent_bounds(&prog, va) };
 
     let mut mf: std::io::BufWriter<Box<dyn std::io::Write>> = std::io::BufWriter::new(if probing {
         Box::new(std::io::sink())
@@ -412,7 +404,6 @@ fn main() {
     let mut contract_bad = 0usize;
     // va -> the function's own nondefault `parm [..]` list (None = default order). Filled by
     // the emit loop, consumed by the caller-side pragma post-pass below it.
-    let mut contracts = pragma::ContractTable::default();
     // caller idx -> (callee va -> argument count at the caller's call sites, None on
     // disagreement between sites). The post-pass applies a callee's pragma only where the
     // caller's arity matches the pragma's parameter count: the callee's rendered params are
@@ -481,7 +472,6 @@ fn main() {
             }
         }
     };
-    let order_networked = orders.networked.clone();
 
     // GLOBAL WIDTHS FROM THE ORIGINAL'S OWN INSTRUCTIONS (the `global-width` switch, on by default).
     //
@@ -524,243 +514,76 @@ fn main() {
     let (mut ok, mut fail) = (0usize, 0usize);
     // Sorted-entry extents for the zap checker's ORIGINAL-instruction windows (the gap to
     // the next entry, the pre-pass's own fallback extent).
-    let next_entry: HashMap<u64, u64> = ents.next.clone();
     // Memoized landed-world answer to "does this callee declare NONDEFAULT parameter
     // storage?" — the definition-side network the caller-side parm post-pass keys on. An
     // upgraded arg list at such a callee can flip that post-pass's arity/width gates
     // (0x3925c's `parm [edx] [eax]` callee), so upgrades refuse those TUs precisely.
-    let mut caches = upgrade::UpgradeCaches::default();
     // Per-callee entry-block byte testimony, computed once per callee ([`callee_input_evidence`]).
+    let mut st = round::EmitState::new(
+        round::ProgramFacts {
+            lang: SURVEY_LANG,
+            knobs: knobs.clone(),
+            worlds: passes::Worlds { landed: prog, pp: prog_pp, cons: prog_cons },
+            entries: ents,
+            regs,
+            orders,
+            widths,
+        },
+        round::EmitOpts { arms: arms.clone(), rec_arm, arms_off: arms_off.clone(), recovered: recovered_dir.is_some(), cons_probe },
+    );
     for (idx, (va, name)) in entries.iter().enumerate() {
         if !only.is_empty() && !only.contains(va) {
             continue;
         }
         *panic_msg.lock().unwrap() = None;
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            decompile_function(&prog, Address::new(ram, *va))
-        }));
-        // which world produced the final `f`: the landed program, or the prototype-injected
-        // probe program (`prog_pp`) after a kernel adoption — the shared-return arm re-decompiles
-        // the SAME world.
-        let mut f_from_pp = false;
-        let mut f: Option<Funcdata> = match outcome {
-            Ok(Some(f)) => Some(f),
-            _ => None,
+        let e = match st.emit_function(idx, *va, name) {
+            Ok(e) => e,
+            Err(failed) => {
+                fail += 1;
+                let head = panic_msg.lock().unwrap().clone().unwrap_or_else(|| "returned None".into());
+                let head = head.replace(['\t', '\n'], " ");
+                let head: String = head.chars().take(120).collect();
+                writeln!(mf, "{}", manifest::ManifestRow::decompile_fail(idx, *va, name, failed.weight, manifest::kind_of(name), &head).render()).unwrap();
+                continue;
+            }
         };
-        // PER-TU UPGRADE under the zap checker (see `prog_pp` above): try the
-        // prototype-informed decompile; adopt it only if the scheduler model accepts the
-        // candidate call effects AND the function's own parameter signature is unchanged.
-        if let (Some(fl), Some(pp)) = (f.as_ref(), prog_pp.as_ref()) {
-            let mut ctx = upgrade::UpgradeCtx {
-                landed: &prog,
-                pp,
-                cons: &mut prog_cons,
-                lang: SURVEY_LANG,
-                next_entry: &next_entry,
-                regs: &regs,
-                order_networked: &order_networked,
-                knobs: &knobs,
-                cons_probe,
-            };
-            let mut notes = Vec::new();
-            let upgraded = upgrade::upgrade(&mut ctx, &mut caches, fl, *va, name, &mut notes);
-            for n in &notes {
-                eprintln!("{n}");
-            }
-            if let Some(f2) = upgraded {
-                f = Some(f2);
-                f_from_pp = true;
-            }
+        for n in &e.notes {
+            eprintln!("{n}");
         }
-        let Some(f) = f else {
-            fail += 1;
-            let head = panic_msg.lock().unwrap().clone().unwrap_or_else(|| "returned None".into());
-            let head = head.replace(['\t', '\n'], " ");
-            let head: String = head.chars().take(120).collect();
-            // Extent from the decompiler-independent bounds alone -- no coverage to clamp
-            // with and no padding trim. This is the row's WEIGHT downstream, not a diff
-            // extent: there is no candidate to diff against.
-            let (next, body_end) = extent_bounds(*va);
-            let flen = match body_end {
-                Some(b) => next.min(b),
-                None => next,
-            }
-            .max(*va + 1)
-                - *va;
-            writeln!(mf, "{}", manifest::ManifestRow::decompile_fail(idx, *va, name, flen, manifest::kind_of(name), &head).render()).unwrap();
-            continue;
-        };
         ok += 1;
-
-        let function::Extent { cov_lo, cov_hi, end_untrimmed, body_end, region, .. } = function::extent(&prog, &ents, &f, *va);
-        // INSTRUMENT (`MOSURA_EXTENT=1`): the three candidate answers to "where does this
-        // function end" -- the next-entry heuristic actually used, mosura's own recorded body, and
-        // the decompiler's instruction coverage -- so the choice between them is a measurement.
+        // INSTRUMENT (`--debug survey`): the three candidate answers to "where does this function
+        // end" -- the next-entry heuristic actually used, mosura's own recorded body, and the
+        // decompiler's instruction coverage -- so the choice between them is a measurement.
         if mosura::debug::on(mosura::debug::Topic::Survey) {
             println!(
                 "EXTENT\t{:08x}\t{}\t{}\t{}",
                 *va,
-                end_untrimmed - *va,
-                body_end.map(|b| b.saturating_sub(*va) as i64).unwrap_or(-1),
-                cov_hi.saturating_sub(*va)
+                e.extent.end_untrimmed - *va,
+                e.extent.body_end.map(|b| b.saturating_sub(*va) as i64).unwrap_or(-1),
+                e.extent.cov_hi.saturating_sub(*va)
             );
         }
-        let orig_len = region.len();
-        // DROPPED PARAMETERS (a convention fact from the function's own saves, applied by the
-        // port as the `dropped_params` mark): a register this function pushes at entry and pops
-        // before its returns is not an argument register — the last parameter the decompiler
-        // recovered in it, when it only flows into callees, is the caller's preserved value
-        // (`buildconfig::phantom_params_from_evidence`).
-        let f = {
-            let mut f = f;
-            let insns = mosura::recompile::insn::normalize(SURVEY_LANG, &region, *va, &mosura::recompile::insn::NoReloc).unwrap_or_default();
-            function::apply_marks(&mut f, &insns);
-            f
-        };
-
-        // CALLS PRESENT IN THE FINAL IR. The absolute call gauge counts calls in the RENDER, which
-        // cannot distinguish "the decompiler never recovered it" from "the decompiler recovered it and
-        // the emitter lost it". Those are different defects in different layers, and the gauge — our
-        // BLOCKING gate — has been charging the second to the first: FUN_00077dcb's missing call is
-        // LIVE in its final IR at 0x77e0a, sitting in a basic block `structure()` never places. So the
-        // manifest carries the IR count too, and a deficit row classifies itself:
-        //     ir_calls == rendered  -> the shortfall is upstream of the emitter (decompiler)
-        //     ir_calls >  rendered  -> the emitter lost a recovered call
-        // Counted the same way the gauge counts: live CALL/CALLIND ops only.
-
-        // Decompiling is θ-independent and dominates the cost, so every rendering the caller asked
-        // for is printed from this one Funcdata. That is what makes a multi-arm emit cost a print
-        // per arm instead of a whole second analysis.
-        let c = print_c_with(&f, &arms[0]);
         if !probing {
-            std::fs::write(raw_dir.join(format!("{va:08x}.c")), &c).unwrap();
+            std::fs::write(raw_dir.join(format!("{va:08x}.c")), &e.reference_c).unwrap();
         }
-
-        // Synthesize a standalone TU and detect decompiler-artifact "smells".
-        let function::Metrics { ir_calls, blocks_cfg, blocks_reached, thunk } = function::metrics(&f, &region);
-        // GLOBAL WIDTHS, from the decompiler rather than from the name. The emitter used to pick a
-        // Ram global's C type from its name prefix alone, which carries kind but not SIZE, so every
-        // scalar global came out `int`. A one-byte global then compiles to a 4-byte store:
-        // FUN_0003ca48's original is `mov [0x95435],al` (`a2`), and `int xRam00095435;` turns that
-        // into a dword store — wrong opcode, wrong length. 3083 globals are declared `int` today.
-        // The decompiled function knows each varnode's width, so ask it.
-        let gsizes = function::global_widths(&f, SURVEY_LANG, &region, *va, &widths, global_width_arm);
-        // STACK-BASED CONVENTION. A function whose recovered parameters all live on the STACK is
-        // not using default __watcall — Watcom spells that `#pragma aux <name> parm []`, and
-        // the RE tracker's proven sources use exactly that form. Without the declaration the emitted
-        // C is compiled as a register-convention function: the argument arrives in EAX instead of
-        // at [ebp+8] and the body ends `ret` instead of `ret 4`. Measured on FUN_00030da8, whose
-        // original is
-        //     55 89e5 8b4508 e8...... 5d c2 0400
-        //     push ebp ; mov ebp,esp ; mov eax,[ebp+8] ; call ; pop ebp ; ret 4
-        // Recovering the parameter WITHOUT declaring the convention is inert, which is exactly
-        // what an earlier measurement of the recovery half alone showed.
-        //
-        // `parm []` and not `parm caller []`: the caller-pop form leaves a bare `ret`, and the
-        // callee-pop default is what produces the `ret N` these functions carry.
-        let oc = function::own_contract(&f, &region, *va, SURVEY_LANG, &regs);
-        if oc.own == mosura::recompile::OwnPopContract::Undecided {
-            cleanup_undecided += 1;
-        }
-        let function::OwnContract { proto, contract, stack_decl, .. } = oc;
-        // CALLER-SIDE REGISTER CONTRACTS, definition-side truth. The `parm [..]` pragma
-        // below tells Watcom the callee's true argument registers — but only in the callee's
-        // own TU; a caller compiles against a bare `extern int func_0xNNN();` and Watcom
-        // binds the argument list POSITIONALLY to the default order, inverting every call to
-        // a callee whose recovered storage is nonstandard (measured: FUN_0003925c passed its
-        // table index in EAX where the original — and the callee's own pragma,
-        // FUN_00038828 `parm [edx] [eax]` — take it in EDX; 155 callees carry a nondefault
-        // order). The pragma each caller needs is EXACTLY the one the callee's own TU
-        // declares, so it is collected here per function and PREPENDED to every TU that
-        // externs the callee in a post-pass after the loop, when the map is complete —
-        // deriving it caller-side from `CallSpec::reads` was measured wrong (reads is the
-        // read-before-write evidence SET, not slot-ordered parameter storage: sb48's first
-        // cut broke 8 EXACT callers whose callees' own recovery says default order).
-        // A STACK-CONVENTION callee (`parm []`, every recovered parameter on the stack) needs the
-        // same clause in every caller: without it the caller compiles the call under the register
-        // convention and passes in EAX what the original PUSHes (measured: FUN_00030dc8's
-        // `func_0x00060ad0(0)` — `XOR EAX,EAX ; CALL` for the original's `PUSH 0 ; CALL`). The
-        // callee's own clause is `parm []` or `parm caller []` by its pop contract; the caller's
-        // `parm caller []` comes from its own call spec (`cs.caller_cleans`), so only the
-        // callee-pops form is propagated here — the existing-clause rule in the post-pass keeps a
-        // caller-cleaned line as it is.
-        contracts.record(*va, &f, &regs, stack_decl);
-
         // Arms past the first: same function, same declarations, a different rendering of the body.
-        for (ai, theta) in arms.iter().enumerate().skip(1) {
-            let ac = print_c_with(&f, theta);
-            let (atu, _) = build_tu(&ac, *va, false, &gsizes, &Default::default(), &Default::default(), &[]);
-            let atu = with_contract(name, contract.as_deref(), atu);
+        for (ai, atu) in e.arm_tus.iter().enumerate() {
             if only.is_empty() {
-                std::fs::write(arm_dirs[ai].join(format!("{idx:05}.c")), &atu).unwrap();
+                std::fs::write(arm_dirs[ai + 1].join(format!("{idx:05}.c")), atu).unwrap();
             }
         }
-        // RECOVERED emission (`--recovered <dir>`): the field path — per-site choices decided
-        // from evidence in the ORIGINAL's own instructions by the target profile, with no
-        // compiler and no search. Emitted alongside the searched arms only so the two can be
-        // compared; in the field this is the single emission.
-        if let Some(dir) = &recovered_dir {
-            // The whole recovered rendering, as a function of the Funcdata, so the shared-return
-            // arm below can render an alternative decompile of the same world under identical
-            // per-site decisions and choose between the two texts.
-            let inputs = round::RenderInputs {
-                lang: SURVEY_LANG,
-                region: &region,
-                va: *va,
-                name,
-                choices: &arms[0],
-                rec_arm: &rec_arm,
-                arms_off: &arms_off,
-                orders: &orders,
-                regs: &regs,
-                knobs: &knobs,
-                gsizes: &gsizes,
-                contract: contract.as_deref(),
-            };
-            let render = |f: &Funcdata| -> String { round::render_recovered(f, &inputs) };
-            let rtu = render(&f);
-            // SHARED-RETURN ARM (allocator thread; re-earns the ActionReturnSplit doctrine
-            // trade): where Ghidra's split fired, render the same world WITHOUT the split and
-            // keep that rendering iff it is fully structured (no goto, no label). The split is
-            // Ghidra's goto elimination — where the unsplit form already has no goto the split
-            // only deforms structure (do-while -> while(true)+returns; 3e038/6fd88 lost EXACT/
-            // SAME_SHAPE to it), and where the unsplit form needs gotos the split repairs it
-            // (1ea4c/462d0/463fc gained EXACT from it). Measured on the six trade members:
-            // the rule separates 5 of 6; the sixth (4d0f8) is the recorded do-while
-            // structuring gap. `--arms-off shared-ret` disables.
-            let rtu = if f.return_splits > 0 && knobs.on(Switch::SharedRet) {
-                mosura::decompile::blockjoin::set_skip_return_split(true);
-                let alt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    match (f_from_pp, prog_pp.as_ref()) {
-                        (true, Some(pp)) => decompile_function(pp, Address::new(ram, *va)),
-                        _ => decompile_function(&prog, Address::new(ram, *va)),
-                    }
-                }));
-                mosura::decompile::blockjoin::set_skip_return_split(false);
-                match alt {
-                    Ok(Some(fa)) => {
-                        let t = render(&fa);
-                        let structured = !t.contains("goto ") && !t.contains("LAB_");
-                        mosura::debug!(mosura::debug::Topic::Survey, "sharedret {name}: splits={} unsplit structured={structured} -> {}", f.return_splits, if structured { "UNSPLIT" } else { "split" });
-                        if structured { t } else { rtu }
-                    }
-                    _ => rtu,
-                }
-            } else {
-                rtu
-            };
+        // RECOVERED emission (`--recovered <dir>`): written, or printed under `--only`.
+        if let (Some(dir), Some(rtu)) = (&recovered_dir, &e.recovered_tu) {
             if only.is_empty() {
-                std::fs::write(dir.join(format!("{idx:05}.c")), &rtu).unwrap();
+                std::fs::write(dir.join(format!("{idx:05}.c")), rtu).unwrap();
             } else {
                 println!("/* ===== RECOVERED (no-compiler field path) ===== */");
                 println!("{rtu}");
             }
         }
-        let (tu, mut smells) = build_tu(&c, *va, false, &gsizes, &Default::default(), &Default::default(), &[]);
-        let tu = with_contract(name, contract.as_deref(), tu);
-        if thunk {
-            smells.push("thunk".into());
-        }
+        let f = &e.f;
+        let tu = &e.reference_tu;
+        let orig_len = e.extent.region.len();
         if !only.is_empty() {
             // The post-pipeline IR, on request. A question about what the C says is often really a
             // question about what the op graph holds — here, whether a value the original widens is
@@ -771,7 +594,7 @@ fn main() {
             }
             // The recovered parameter STORAGE alongside the C, so a signature question ("why is
             // this argument in the wrong register?") is answered by the same one-function run.
-            let slots = mosura::decompile::printc::rendered_param_slots(&f);
+            let slots = mosura::decompile::printc::rendered_param_slots(f);
             let store: Vec<String> = slots
                 .iter()
                 .map(|s| {
@@ -795,7 +618,8 @@ fn main() {
                 }
             }
             println!("   inputs:       {}", ins.join(" "));
-            let raw: Vec<String> = proto
+            let raw: Vec<String> = e
+                .proto
                 .params
                 .iter()
                 .map(|s| format!("{}+{:#x}/{}", f.spaces.get(s.addr.space).name, s.addr.offset, s.size))
@@ -807,38 +631,16 @@ fn main() {
             );
             continue;
         }
-        std::fs::write(src_dir.join(format!("{idx:05}.c")), &tu).unwrap();
+        std::fs::write(src_dir.join(format!("{idx:05}.c")), tu).unwrap();
 
-        let violations = contract_violations(&tu);
-        if !violations.is_empty() {
-            contract_hist.entry(violations.join(",")).or_insert(0usize);
-            for v in &violations {
+        if !e.violations.is_empty() {
+            contract_hist.entry(e.violations.join(",")).or_insert(0usize);
+            for v in &e.violations {
                 *contract_counts.entry(v.clone()).or_insert(0usize) += 1;
             }
             contract_bad += 1;
         }
-        let orig_hex: String = region.iter().map(|b| format!("{b:02x}")).collect();
-        // the not-C classification reads the original's decoded instructions (see kind_of_insns)
-        let norm_insns_for_kind =
-            mosura::recompile::insn::normalize(SURVEY_LANG, &region, *va, &mosura::recompile::insn::NoReloc)
-                .unwrap_or_default();
-        let row = manifest::ManifestRow {
-            idx,
-            va: *va,
-            name: name.to_string(),
-            status: manifest::Status::Ok,
-            orig_len: orig_len as u64,
-            cov_lo: cov_lo as u64,
-            cov_hi: cov_hi as u64,
-            smells: smells.clone(),
-            orig_hex,
-            ir_calls,
-            blocks_cfg,
-            blocks_reached,
-            kind: manifest::kind_of_insns(name, &norm_insns_for_kind),
-            contract: if violations.is_empty() { "ok".to_string() } else { format!("wide:{}", violations.join("+")) },
-        };
-        writeln!(mf, "{}", row.render()).unwrap();
+        writeln!(mf, "{}", e.row.render()).unwrap();
 
         if idx % 200 == 0 {
             eprintln!("  {idx}/{} ok={ok} fail={fail} {:?}", entries.len(), t0.elapsed());
@@ -875,7 +677,7 @@ fn main() {
                     .and_then(|st| st.to_str())
                     .and_then(|st| idx_va.get(st))
                     .copied();
-                if let Some(out) = contracts.patch_caller(&src, caller_va) {
+                if let Some(out) = st.contracts.patch_caller(&src, caller_va) {
                     std::fs::write(&path, out).unwrap();
                     patched += 1;
                 }
@@ -884,6 +686,7 @@ fn main() {
         eprintln!("caller-side parm pragmas: {patched} TU(s) patched");
     }
     eprintln!("EMIT done: ok={ok} fail={fail} in {:?}", t0.elapsed());
+    let cleanup_undecided = st.cleanup_undecided;
     if cleanup_undecided > 0 {
         eprintln!(
             "stack-cleanup UNDECIDED: {cleanup_undecided} function(s) whose own returns disagree \

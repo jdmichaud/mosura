@@ -1,5 +1,6 @@
 //! The EMIT stage of a corpus round, function by function — moved out of the corpus emit driver
-//! (plan WP7 P0 c8/c9, 2026-09-05). This file holds the RECOVERED rendering: the field path, where
+//! (plan WP7 P0 c8/c9, 2026-09-05): [`EmitState::emit_function`] orchestrates one function from the
+//! landed decompile to its manifest row, and [`render_recovered`] is the RECOVERED rendering: the field path, where
 //! every per-site choice is decided from evidence in the ORIGINAL's own instructions by the target
 //! profile, with no compiler and no search. The compile/verify/verdict stages join in P3.
 
@@ -7,9 +8,16 @@ use std::collections::HashMap;
 
 use crate::decompile::emit::EmitChoices;
 use crate::decompile::funcdata::Funcdata;
-use crate::recompile::passes::ParamOrders;
-use crate::recompile::pragma::{self, WatcomRegs};
-use crate::recompile::tu::{aggregate_ram_globals, build_tu, with_contract};
+use crate::analysis::decompiler::decompile_function;
+use crate::decompile::fspec::FuncProto;
+use crate::decompile::printc::print_c_with;
+use crate::decompile::space::Address;
+use crate::recompile::function::{self, Extent, Metrics, OwnContract};
+use crate::recompile::manifest::{self, ManifestRow, Status};
+use crate::recompile::passes::{Entries, GlobalWidths, ParamOrders, Worlds};
+use crate::recompile::pragma::{self, ContractTable, WatcomRegs};
+use crate::recompile::tu::{aggregate_ram_globals, build_tu, contract_violations, with_contract};
+use crate::recompile::upgrade::{upgrade, UpgradeCaches, UpgradeCtx};
 use crate::switches::{Knobs, Switch};
 
 /// Everything one recovered rendering reads besides the `Funcdata`: the ORIGINAL bytes of the
@@ -97,6 +105,245 @@ pub fn render_recovered(f: &Funcdata, inp: &RenderInputs<'_>) -> String {
     // are one decision, emitted together (see call_arg_orders above).
     // order_parms are folded into the per-callee pragma inside build_tu now.
     rtu
+}
+
+/// The whole-program facts an emit runs over — built once by the front-end from the pre-passes
+/// ([`crate::recompile::passes`]) and immutable afterwards, except the consistency world, which the
+/// zap checker scopes per forced function.
+pub struct ProgramFacts {
+    pub lang: &'static str,
+    pub knobs: Knobs,
+    pub worlds: Worlds,
+    pub entries: Entries,
+    pub regs: WatcomRegs,
+    pub orders: ParamOrders,
+    pub widths: GlobalWidths,
+}
+
+/// What the front-end asked for: the rendering arms (arm 0 = the reference), the recovered pass's
+/// choices (`rec_arm`), the arms switched off by name, whether the recovered emission is wanted, and
+/// the `--cons-probe` census.
+pub struct EmitOpts {
+    pub arms: Vec<EmitChoices>,
+    pub rec_arm: EmitChoices,
+    pub arms_off: Vec<String>,
+    pub recovered: bool,
+    pub cons_probe: bool,
+}
+
+/// The emit stage's state across functions: the facts, the options, the definition-side contract
+/// table the caller-side post-pass reads, the zap checker's memo tables, and the count of
+/// functions whose own returns disagree about the pop (a region-boundary symptom, counted so it
+/// cannot be silent).
+pub struct EmitState {
+    pub facts: ProgramFacts,
+    pub opts: EmitOpts,
+    pub contracts: ContractTable,
+    pub caches: UpgradeCaches,
+    pub cleanup_undecided: usize,
+}
+
+/// Everything one function's emit produced; the front-end writes, prints or counts what it wants.
+pub struct Emitted {
+    /// The decompile the renderings came from (landed, or the adopted prototype-world upgrade).
+    pub f: Funcdata,
+    pub from_pp: bool,
+    pub proto: FuncProto,
+    pub extent: Extent,
+    pub metrics: Metrics,
+    pub gsizes: HashMap<u64, u32>,
+    /// The function's own `#pragma aux` declaration.
+    pub contract: Option<String>,
+    /// The reference rendering under arm 0, bare (`raw/`).
+    pub reference_c: String,
+    /// The reference rendering as a translation unit (`src/`).
+    pub reference_tu: String,
+    /// The extra arms' units (`arms[1..]`), in order.
+    pub arm_tus: Vec<String>,
+    /// The recovered unit (`recovered/`), when asked for.
+    pub recovered_tu: Option<String>,
+    pub smells: Vec<String>,
+    pub violations: Vec<String>,
+    pub kind: &'static str,
+    pub row: ManifestRow,
+    /// The zap checker's diagnostics (today's `[consistency]`/`[cons-*]` lines).
+    pub notes: Vec<String>,
+}
+
+/// The landed decompile failed (a panic or `None`): the row's WEIGHT downstream is the
+/// decompiler-independent extent, with no coverage to clamp with and no padding trim — there is
+/// no candidate to diff against. The failure's text is the front-end's (its panic hook).
+pub struct Failed {
+    pub weight: u64,
+}
+
+impl EmitState {
+    pub fn new(facts: ProgramFacts, opts: EmitOpts) -> EmitState {
+        EmitState { facts, opts, contracts: ContractTable::default(), caches: UpgradeCaches::default(), cleanup_undecided: 0 }
+    }
+
+    /// Emit one function: the landed decompile under `catch_unwind`, the zap checker's upgrade,
+    /// the extent, the marks, the metrics, the reference rendering, the global widths, the own
+    /// contract (recorded for the caller-side post-pass), the extra arms' units, the recovered unit
+    /// (with the shared-return arm re-decompiling the SAME world), the reference unit with its
+    /// smells, the contract violations, the kind and the manifest row — in the driver's order.
+    pub fn emit_function(&mut self, idx: usize, va: u64, name: &str) -> Result<Emitted, Failed> {
+        let lang = self.facts.lang;
+        let prog = &self.facts.worlds.landed;
+        let ram = prog.default_space;
+        let mut notes: Vec<String> = Vec::new();
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            decompile_function(prog, Address::new(ram, va))
+        }));
+        // which world produced the final `f`: the landed program, or the prototype-injected
+        // probe program (`pp`) after a kernel adoption — the shared-return arm re-decompiles
+        // the SAME world.
+        let mut f_from_pp = false;
+        let mut f: Option<Funcdata> = match outcome {
+            Ok(Some(f)) => Some(f),
+            _ => None,
+        };
+        // PER-TU UPGRADE under the zap checker: try the prototype-informed decompile; adopt it
+        // only if the scheduler model accepts the candidate call effects AND the function's own
+        // parameter signature is unchanged.
+        if let (Some(fl), Some(pp)) = (f.as_ref(), self.facts.worlds.pp.as_ref()) {
+            let mut ctx = UpgradeCtx {
+                landed: prog,
+                pp,
+                cons: &mut self.facts.worlds.cons,
+                lang,
+                next_entry: &self.facts.entries.next,
+                regs: &self.facts.regs,
+                order_networked: &self.facts.orders.networked,
+                knobs: &self.facts.knobs,
+                cons_probe: self.opts.cons_probe,
+            };
+            let upgraded = upgrade(&mut ctx, &mut self.caches, fl, va, name, &mut notes);
+            if let Some(f2) = upgraded {
+                f = Some(f2);
+                f_from_pp = true;
+            }
+        }
+        let Some(f) = f else {
+            let (next, body_end) = self.facts.entries.extent_bounds(prog, va);
+            let flen = match body_end {
+                Some(b) => next.min(b),
+                None => next,
+            }
+            .max(va + 1)
+                - va;
+            return Err(Failed { weight: flen });
+        };
+
+        let extent = function::extent(prog, &self.facts.entries, &f, va);
+        let orig_len = extent.region.len();
+        // The convention marks from the function's own instructions, before any rendering.
+        let f = {
+            let mut f = f;
+            let insns = crate::recompile::insn::normalize(lang, &extent.region, va, &crate::recompile::insn::NoReloc).unwrap_or_default();
+            function::apply_marks(&mut f, &insns);
+            f
+        };
+        // Decompiling is θ-independent and dominates the cost, so every rendering the caller asked
+        // for is printed from this one Funcdata.
+        let reference_c = print_c_with(&f, &self.opts.arms[0]);
+        let metrics = function::metrics(&f, &extent.region);
+        let global_width_arm = self.facts.knobs.on(Switch::GlobalWidth);
+        let gsizes = function::global_widths(&f, lang, &extent.region, va, &self.facts.widths, global_width_arm);
+        let oc = function::own_contract(&f, &extent.region, va, lang, &self.facts.regs);
+        if oc.own == crate::recompile::OwnPopContract::Undecided {
+            self.cleanup_undecided += 1;
+        }
+        let OwnContract { proto, contract, stack_decl, .. } = oc;
+        self.contracts.record(va, &f, &self.facts.regs, stack_decl);
+
+        // Arms past the first: same function, same declarations, a different rendering of the body.
+        let mut arm_tus: Vec<String> = Vec::new();
+        for theta in self.opts.arms.iter().skip(1) {
+            let ac = print_c_with(&f, theta);
+            let (atu, _) = build_tu(&ac, va, false, &gsizes, &Default::default(), &Default::default(), &[]);
+            arm_tus.push(with_contract(name, contract.as_deref(), atu));
+        }
+        // RECOVERED emission: the field path — per-site choices decided from evidence in the
+        // ORIGINAL's own instructions by the target profile, with no compiler and no search.
+        let recovered_tu = if self.opts.recovered {
+            let inputs = RenderInputs {
+                lang,
+                region: &extent.region,
+                va,
+                name,
+                choices: &self.opts.arms[0],
+                rec_arm: &self.opts.rec_arm,
+                arms_off: &self.opts.arms_off,
+                orders: &self.facts.orders,
+                regs: &self.facts.regs,
+                knobs: &self.facts.knobs,
+                gsizes: &gsizes,
+                contract: contract.as_deref(),
+            };
+            let render = |f: &Funcdata| -> String { render_recovered(f, &inputs) };
+            let rtu = render(&f);
+            // SHARED-RETURN ARM (allocator thread; re-earns the ActionReturnSplit doctrine trade):
+            // where Ghidra's split fired, render the same world WITHOUT the split and keep that
+            // rendering iff it is fully structured (no goto, no label). The split is Ghidra's goto
+            // elimination — where the unsplit form already has no goto the split only deforms
+            // structure, and where the unsplit form needs gotos the split repairs it. Measured on the
+            // six trade members: the rule separates 5 of 6. `--arms-off shared-ret` disables.
+            let rtu = if f.return_splits > 0 && self.facts.knobs.on(Switch::SharedRet) {
+                crate::decompile::blockjoin::set_skip_return_split(true);
+                let alt = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    match (f_from_pp, self.facts.worlds.pp.as_ref()) {
+                        (true, Some(pp)) => decompile_function(pp, Address::new(ram, va)),
+                        _ => decompile_function(prog, Address::new(ram, va)),
+                    }
+                }));
+                crate::decompile::blockjoin::set_skip_return_split(false);
+                match alt {
+                    Ok(Some(fa)) => {
+                        let t = render(&fa);
+                        let structured = !t.contains("goto ") && !t.contains("LAB_");
+                        crate::debug!(crate::debug::Topic::Survey, "sharedret {name}: splits={} unsplit structured={structured} -> {}", f.return_splits, if structured { "UNSPLIT" } else { "split" });
+                        if structured { t } else { rtu }
+                    }
+                    _ => rtu,
+                }
+            } else {
+                rtu
+            };
+            Some(rtu)
+        } else {
+            None
+        };
+        // The reference unit and the decompiler-artifact smells.
+        let (tu, mut smells) = build_tu(&reference_c, va, false, &gsizes, &Default::default(), &Default::default(), &[]);
+        let reference_tu = with_contract(name, contract.as_deref(), tu);
+        if metrics.thunk {
+            smells.push("thunk".into());
+        }
+        let violations = contract_violations(&reference_tu);
+        let orig_hex: String = extent.region.iter().map(|b| format!("{b:02x}")).collect();
+        // the not-C classification reads the original's decoded instructions (see kind_of_insns)
+        let norm_insns_for_kind =
+            crate::recompile::insn::normalize(lang, &extent.region, va, &crate::recompile::insn::NoReloc).unwrap_or_default();
+        let kind = manifest::kind_of_insns(name, &norm_insns_for_kind);
+        let row = ManifestRow {
+            idx,
+            va,
+            name: name.to_string(),
+            status: Status::Ok,
+            orig_len: orig_len as u64,
+            cov_lo: extent.cov_lo,
+            cov_hi: extent.cov_hi,
+            smells: smells.clone(),
+            orig_hex,
+            ir_calls: metrics.ir_calls,
+            blocks_cfg: metrics.blocks_cfg,
+            blocks_reached: metrics.blocks_reached,
+            kind,
+            contract: if violations.is_empty() { "ok".to_string() } else { format!("wide:{}", violations.join("+")) },
+        };
+        Ok(Emitted { f, from_pp: f_from_pp, proto, extent, metrics, gsizes, contract, reference_c, reference_tu, arm_tus, recovered_tu, smells, violations, kind, row, notes })
+    }
 }
 
 #[cfg(test)]
