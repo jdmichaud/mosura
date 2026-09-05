@@ -17,7 +17,6 @@ use mosura_api::key::Key;
 use mosura_api::{Error, Options, Result};
 
 /// One decompiled function (opaque).
-#[repr(C)]
 pub struct mosura_function {
     _private: [u8; 0],
 }

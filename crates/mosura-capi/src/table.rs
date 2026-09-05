@@ -11,7 +11,6 @@ use crate::status::{self, mosura_status};
 use mosura_api::{ColType, Error, Format, Result, Table};
 
 /// An immutable result table with a schema (opaque).
-#[repr(C)]
 pub struct mosura_table {
     _private: [u8; 0],
 }
@@ -131,22 +130,38 @@ pub unsafe extern "C" fn mosura_table_rows(t: *const mosura_table) -> u64 {
     }
 }
 
-macro_rules! cell {
-    ($name:ident, $ty:ty, $get:ident) => {
-        #[no_mangle]
-        pub unsafe extern "C" fn $name(t: *const mosura_table, row: u64, col: u32, out: *mut $ty) -> mosura_status {
-            guard(|| {
-                let t = table_of(t)?;
-                let out = out_ptr(out, "out")?;
-                *out = t.$get(row, col)?;
-                Ok(())
-            })
-        }
-    };
+/// A U64 cell (any unsigned integer column widens: U8, U16, U32, U64).
+#[no_mangle]
+pub unsafe extern "C" fn mosura_table_u64(t: *const mosura_table, row: u64, col: u32, out: *mut u64) -> mosura_status {
+    guard(|| {
+        let t = table_of(t)?;
+        let out = out_ptr(out, "out")?;
+        *out = t.u64(row, col)?;
+        Ok(())
+    })
 }
-cell!(mosura_table_u64, u64, u64);
-cell!(mosura_table_i64, i64, i64);
-cell!(mosura_table_f64, f64, f64);
+
+/// An I64 cell.
+#[no_mangle]
+pub unsafe extern "C" fn mosura_table_i64(t: *const mosura_table, row: u64, col: u32, out: *mut i64) -> mosura_status {
+    guard(|| {
+        let t = table_of(t)?;
+        let out = out_ptr(out, "out")?;
+        *out = t.i64(row, col)?;
+        Ok(())
+    })
+}
+
+/// An F64 cell.
+#[no_mangle]
+pub unsafe extern "C" fn mosura_table_f64(t: *const mosura_table, row: u64, col: u32, out: *mut f64) -> mosura_status {
+    guard(|| {
+        let t = table_of(t)?;
+        let out = out_ptr(out, "out")?;
+        *out = t.f64(row, col)?;
+        Ok(())
+    })
+}
 
 /// A Bool cell (0/1).
 #[no_mangle]

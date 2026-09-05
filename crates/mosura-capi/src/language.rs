@@ -14,7 +14,6 @@ use crate::table::{mosura_table, new_table};
 use mosura_api::{Error, Options, Result, Session};
 
 /// A SLEIGH language: tables + default context (opaque).
-#[repr(C)]
 pub struct mosura_language {
     _private: [u8; 0],
 }

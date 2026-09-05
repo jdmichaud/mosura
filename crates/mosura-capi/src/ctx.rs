@@ -16,7 +16,6 @@ use mosura_api::{Context, ContextConfig, Error, Result};
 use mosura_core::debug::{Config, Level};
 
 /// The library: spec registry, caches, log sink (opaque).
-#[repr(C)]
 pub struct mosura_ctx {
     _private: [u8; 0],
 }

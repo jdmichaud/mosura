@@ -15,7 +15,6 @@ use mosura_api::key::Key;
 use mosura_api::{Context, Error, Result, Session, SetKind};
 
 /// A session store: a directory or memory (opaque).
-#[repr(C)]
 pub struct mosura_session {
     _private: [u8; 0],
 }

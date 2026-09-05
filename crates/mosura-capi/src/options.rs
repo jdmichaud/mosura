@@ -11,7 +11,6 @@ use crate::table::{mosura_table, new_table};
 use mosura_api::{Options, Result};
 
 /// A validated key/value option set (opaque).
-#[repr(C)]
 pub struct mosura_options {
     _private: [u8; 0],
 }

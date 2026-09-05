@@ -16,7 +16,6 @@ use mosura_api::key::Key;
 use mosura_api::{Error, Options, Result, Session};
 
 /// A loaded (and possibly analyzed) binary (opaque).
-#[repr(C)]
 pub struct mosura_program {
     _private: [u8; 0],
 }
