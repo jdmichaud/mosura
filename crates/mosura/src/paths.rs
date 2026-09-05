@@ -1,8 +1,11 @@
-//! Path resolution for the reference corpora and oracle.
+//! Path resolution for the reference corpora and oracle — the DEV/TEST tier.
 //!
-//! Honors the `GHIDRA_SRC` environment variable (the same override the setup
-//! script uses); otherwise derives every path from the workspace location, so
-//! nothing is hard-coded to a home directory.
+//! Every path derives from the workspace location (the build-time `CARGO_MANIFEST_DIR`) or
+//! from `dev-config.toml` ([`crate::devcfg`]); nothing is read from the environment and nothing
+//! is hard-coded to a home directory. **The library itself reads none of this**: its spec tables,
+//! compiler specs, pattern files and FID databases come through [`crate::resources`] (embedded
+//! at build time, an override directory first). What is here serves tests, examples, xtask and
+//! the oracle tooling — goldens, fixtures, corpora, the Ghidra checkout, user-provided binaries.
 
 use std::path::PathBuf;
 
@@ -35,9 +38,10 @@ fn vendored_ghidra() -> PathBuf {
     workspace_root().join("third_party/ghidra")
 }
 
-/// The `Processors` tree the SLEIGH loader reads (`.ldefs`/`.sla`/`.pspec`/`.cspec`).
-/// Resolution: `GHIDRA_SRC` env → the sibling checkout → the vendored in-repo copy, so a
-/// developer's checkout wins when present and a bare clone still works.
+/// The `Processors` tree on disk (`.ldefs`/`.sla`/`.pspec`/`.cspec`) — for tests and dev tools
+/// that want an absolute path; the library resolves languages through [`crate::resources`]
+/// (the embedded copy of the vendored tree). Resolution: the configured checkout
+/// (`ghidra_src`) when it has a `Ghidra/Processors` → the vendored in-repo copy.
 pub fn processors_dir() -> PathBuf {
     let checkout = ghidra_src().join("Ghidra/Processors");
     if checkout.is_dir() {
@@ -67,8 +71,10 @@ pub fn goldens_dir() -> PathBuf {
     workspace_root().join("goldens")
 }
 
-/// Mosura-authored (beyond-Ghidra) compiler specs — e.g. the Watcom `watcall` cspec that no
-/// Ghidra processor ships. Resolved by [`crate::lang::resolve_cspec`] ahead of the Ghidra tree.
+/// Mosura-authored (beyond-Ghidra) compiler specs and pattern files — e.g. the Watcom `watcall`
+/// cspec that no Ghidra processor ships. The library reads them as the `specs/` resources
+/// ([`crate::lang::resolve_cspec`] tries `specs/<file>` ahead of the Ghidra tree); this is the
+/// on-disk directory for tests and tooling.
 pub fn specs_dir() -> PathBuf {
     workspace_root().join("specs")
 }
@@ -108,14 +114,18 @@ pub fn oracle_fixtures_dir() -> PathBuf {
 }
 
 /// Ghidra's shipped **FID signature databases** — the packed `.fidb` vendored verbatim from
-/// `NationalSecurityAgency/ghidra-data` (`third_party/ghidra-data/README.md`). External data
-/// read at runtime, not compiled in. With no database present the FID analyzer is simply inert.
-/// (An override directory arrives with the resource provider, plan WP5.)
+/// `NationalSecurityAgency/ghidra-data` (`third_party/ghidra-data/README.md`). For the tests
+/// that read them directly. The analyzer sees them through [`crate::resources`] as `fid/<file>`:
+/// mounted from the workspace in a developer build, embedded only with the `fid-ghidra` feature
+/// (76 MB), or placed in a `--data-dir` override directory.
 pub fn fid_db_dir() -> PathBuf {
     workspace_root().join("third_party/ghidra-data/FunctionID")
 }
 
-/// Every directory the FID analyzer searches for signature databases.
+/// Every on-disk directory holding signature databases — for tests and dev tools that load from
+/// a directory ([`crate::analysis::fid::query::FidQueryService::load_matching_all`]). The
+/// analyzer itself enumerates the provider's `fid/` (`load_matching_resources`), which the
+/// workspace mount populates from both of these.
 ///
 /// Two, because the databases come from two places and **both are shipped data**: Ghidra's
 /// vendored `.fidb` (Visual Studio 1998-2019) in `third_party/`, and the databases mosura builds

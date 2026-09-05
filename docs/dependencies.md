@@ -46,18 +46,25 @@ Locator column reads `dev-config key → default` where the default is `$REPO`- 
 | Dependency | Locator (env → default) | Pin / version | Source |
 | --- | --- | --- | --- |
 | Rust + Cargo toolchain | `n/a` (PATH / rustup) | edition per `Cargo.toml`; stable | rustup / distro |
-| **Ghidra processor data** (`.slaspec`/`.pspec`/`.cspec`/`.ldefs`/`.opinion`) | `ghidra_src → $REPO/../ghidra` | tag `Ghidra_12.0.3_build`, commit `09f14c92d3da6e5d5f6b7dea115409719db3cce1` | git `github.com/NationalSecurityAgency/ghidra` |
-| Compiled `.sla` (what mosura's engine loads) | under `<ghidra_src>/Ghidra/Processors/*/data/languages/` | built from the pinned `.slaspec` | produced once by `sleigh_opt` (see below) |
+| **Ghidra processor data** (`.slaspec`/`.pspec`/`.cspec`/`.ldefs`/`.opinion`) | vendored at `third_party/ghidra/` and **embedded into the library at build time** (`crates/mosura/build.rs` → `crate::resources`); `--data-dir <dir>` overrides file by file; the checkout `ghidra_src → $REPO/../ghidra` is the DEV-ORACLE tier | tag `Ghidra_12.0.3_build`, commit `09f14c92d3da6e5d5f6b7dea115409719db3cce1` | git `github.com/NationalSecurityAgency/ghidra` |
+| Compiled `.sla` (what mosura's engine loads) | embedded from `third_party/ghidra/Processors/*/data/languages/` (same provider) | built from the pinned `.slaspec` | produced once by `sleigh_opt` (see below), then vendored |
 | `sleigh_opt` (compiles `.slaspec → .sla`, one-time) | built in-place in `<ghidra_src>` by `scripts/setup-oracle.sh` | from the pinned Ghidra cpp source | Ghidra source + g++/bison/flex/libbfd |
 | In-repo committed test data (goldens + fixtures + corpus + repo cspec) | in `$REPO` (committed) | tracked in git | this repo — see [In-repo test data](#in-repo-test-data-committed-not-external) |
 
 Notes on the Ghidra BUILD/TEST dependency:
-- **Vendored in-repo fallback — `cargo test` is self-contained from a bare clone.** The exact
-  subset the tests read (the used processors' `data/languages` incl. compiled `.sla`, and the
-  decompiler datatests) is committed at `third_party/ghidra/` (~9.5 MB, Apache-2.0 with Ghidra's
-  LICENSE/NOTICE alongside; provenance in its README). Resolution order (`paths.rs`):
-  `ghidra_src` (dev-config) → the sibling checkout → the vendored copy, so a developer's checkout wins
-  when present and a bare clone needs **no fetch and no sleigh compile**.
+- **Vendored in-repo copy, embedded — the library and `cargo test` are self-contained from a bare
+  clone.** The exact subset mosura reads (the used processors' `data/languages` incl. compiled
+  `.sla`, their `data/patterns`, and the decompiler datatests) is committed at `third_party/ghidra/`
+  (~9.5 MB, Apache-2.0 with Ghidra's LICENSE/NOTICE alongside; provenance in its README).
+  `crates/mosura/build.rs` embeds the `.ldefs`/`.sla`/`.pspec`/`.cspec`/`.opinion` and pattern files,
+  our `specs/`, and our FID databases (`data/fid/`) into the library (`crate::resources`), so a
+  built binary needs **no Ghidra tree, no environment variable and no working directory**; an
+  override directory (`--data-dir <dir>` on every front-end) is resolved first, file by file, and
+  `cargo xtask data-export <dir>` writes the embedded data out byte-identical to jump-start one
+  (`cargo xtask data-list` shows what is in effect). In a developer build the workspace's own
+  copies are mounted over the embedded table, so an edited `.cspec` is picked up without a rebuild.
+  The tests' absolute paths (`paths.rs`) still prefer a configured checkout that has
+  `Ghidra/Processors`, then the vendored copy — a bare clone needs **no fetch and no sleigh compile**.
   `scripts/verify-vendored-ghidra.sh` proves the vendored copy byte-identical to the pin
   (`--refresh` re-copies after a pin bump), and the `sleigh_canary` test **fails loudly** —
   where other suites skip — if language tables/datatests stop resolving (added after a deleted

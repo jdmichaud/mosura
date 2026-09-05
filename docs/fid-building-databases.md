@@ -106,16 +106,21 @@ list, rebuild.
 
 ## Attaching the database
 
-`.mfid.gz` / `.mfid` files are read from the FID database directory, alongside Ghidra's
-`.fidb`:
+The analyzer reads its databases through the resource provider (`crate::resources`), under the
+`fid/` resource prefix: the `.mfid.gz` in `data/fid/` are **embedded in the library at build time**
+(`crates/mosura/build.rs`), Ghidra's `.fidb` in `third_party/ghidra-data/FunctionID/` are mounted
+from the workspace in a developer build and embedded only with `--features fid-ghidra` (76 MB),
+and an override directory laid out as `<dir>/fid/<name>.mfid.gz` is resolved first:
 
 ```sh
-# default: third_party/ghidra-data/FunctionID
-export MOSURA_FID_DIR=/path/to/databases
+cargo run --example identify -- <binary> --data-dir /path/to/override   # any front-end takes --data-dir
+cargo xtask data-export /path/to/override --what fid                     # jump-start it with the embedded databases
+cargo xtask data-list --data-dir /path/to/override                       # what is in effect, and from where
 ```
 
 A database is attached to a program only when its `language` and `compilerspec` match, so
-several columns can live in one directory without interfering.
+several columns can live in one directory without interfering. The dev-tool `fidnames` takes an
+explicit database directory as its last argument.
 
 ---
 

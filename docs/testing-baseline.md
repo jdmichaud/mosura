@@ -217,7 +217,7 @@ planned in [`decompiler-plan.md`](decompiler-plan.md).
 
 The offline baseline is **self-contained and scripted** — see `README.md` and `scripts/setup-oracle.sh`. Given a C++ toolchain + libbfd and the pinned `ghidra/` checkout, one command builds the standalone tools, compiles all `.sla` from source, and verifies **599/599** — with **no dependency on any external Ghidra install**. Specifics:
 
-- Paths derive from the script's own location (override the Ghidra tree with `GHIDRA_SRC`); nothing is hard-coded to a home directory.
+- Paths derive from the script's own location (override the Ghidra tree with `ghidra_src` in `dev-config.toml`); nothing is hard-coded to a home directory.
 - The script enforces the pinned tag, builds `sleigh_opt`/`decomp_dbg`/`decomp_test_dbg`, runs `sleigh_opt -a` to compile every processor spec, then runs the datatest suite as a gate.
 - It writes `build/oracle.env` (exported tool paths) for the capture harness to source.
 - All artifacts — `*.sla`, the tool binaries, object dirs, `build/` — are regenerated and git-ignored; the reference checkout stays clean (the script adds local excludes for the few binaries Ghidra's `.gitignore` misses).

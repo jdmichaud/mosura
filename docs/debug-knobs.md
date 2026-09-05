@@ -5,8 +5,10 @@
 > `--disable-analyzers <list>`), carried on the `Program` and every `Funcdata`; the rows below are
 > the R6-era inventory with each retirement noted. The diagnostics followed the same day (WP3):
 > `debug::Config`, set by the caller from `--debug <spec>` (topics, `watch-call`, `merge-watch`,
-> `aou-pc`, `gt-raw`, `opaction`, `trace-func`, `fixpoint`); the tree locations come last (WP4/WP5).
-> The plan is `docs/product/plan-2026-09-05.md`.
+> `aou-pc`, `gt-raw`, `opaction`, `trace-func`, `fixpoint`). The tool and input locations moved to
+> `dev-config.toml` (WP4, `crate::devcfg`), and the spec/FID data the library reads is embedded at
+> build time with a `--data-dir` override (WP5, `crate::resources`) — the library reads no
+> environment variable. The plan is `docs/product/plan-2026-09-05.md`.
 
 *The inventory at a531553 (before R6): 81 names, 208 `eprintln!` in crates/mosura/src, 141 `std::env::var` reads outside paths.rs. Four kinds: a DEBUG PRINT gate (read at the print site — migrated to `crate::debug`, `--debug topic,..`), a BEHAVIOUR KNOB (changes what the decompiler, the survey or an oracle does — decided one by one: an axis/option with a doc, or deleted with its branch), a PATH (configuration, paths.rs, untouched), a TEST HOOK / INSTRUMENT (kept, documented). The emit-layer decisions are executed in R6; the others are listed for the ledger. Evidence: the read sites at a531553.*
 
