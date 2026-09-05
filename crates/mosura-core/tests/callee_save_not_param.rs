@@ -1,6 +1,6 @@
 //! A Watcom callee-save PUSH is not a parameter (wc2src-reconciliation D1).
 //!
-//! The fixture is SELF-COMPILED (examples/watcom_mve_fixtures.rs: wcc386 10.0a in-house, the profile's own
+//! The fixture is SELF-COMPILED (dev.mve.fixtures: wcc386 10.0a in-house, the profile's own
 //! flags with `-d1+` for the subject's frame path; source embedded in the fixture) — no game bytes.
 //! It reproduces `maphdr_TYPE`'s exact opening, `52 55 89e5 83ec10`: PUSH EDX — the callee
 //! preserving a register it is about to clobber — before the frame. mosura recovered that save

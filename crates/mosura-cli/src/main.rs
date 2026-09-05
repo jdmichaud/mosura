@@ -592,7 +592,15 @@ fn run(cli: Cli) -> Res<()> {
             let pairs = kv_pairs(&args)?;
             let extra: Vec<(&str, &str)> = pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
             let t = app.call(&op, &extra)?;
-            app.show(&t)
+            app.show(&t)?;
+            // a dev table with an `ok` column reports per-row success: any false row fails the run
+            if let Ok(c) = t.column_index("ok") {
+                let bad = (0..t.rows()).filter(|&r| t.bool(r, c).map(|b| !b).unwrap_or(false)).count();
+                if bad > 0 {
+                    return Err(Fail { code: 1, message: format!("{op}: {bad} row(s) not ok") });
+                }
+            }
+            Ok(())
         }
         Cmd::Config { sub } => match sub {
             None => {

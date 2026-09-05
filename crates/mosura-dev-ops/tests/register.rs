@@ -29,7 +29,8 @@ fn the_dev_tier_registers_once_and_its_operations_are_valid() {
         assert_eq!(op.tier, Tier::Dev, "{}", op.name);
         assert!(!op.doc.is_empty(), "{} has a doc line", op.name);
         for p in op.params {
-            assert!(optreg::lookup(p).is_some(), "{}: param `{p}` is not a registered option key", op.name);
+            // `emit.*` is the api's marker for "every emit axis", not a key
+            assert!(*p == "emit.*" || optreg::lookup(p).is_some(), "{}: param `{p}` is not a registered option key", op.name);
         }
         assert!(ops::schema(op.result).is_some(), "{}: result schema `{}` unknown", op.name, op.result);
         assert!(ops::lookup(op.name).is_some(), "{} is registered", op.name);

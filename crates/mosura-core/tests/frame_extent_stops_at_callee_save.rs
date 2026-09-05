@@ -1,6 +1,6 @@
 //! An open stack range stops at the scope's ownership hole (wc2src-reconciliation-2 A2i).
 //!
-//! SELF-COMPILED fixture (examples/watcom_mve_fixtures.rs; source embedded): sfile_make_name's
+//! SELF-COMPILED fixture (dev.mve.fixtures; source embedded): sfile_make_name's
 //! frame shape byte-for-byte — `53 51 52 55 89e5 83ec0c`, three killed-register saves above
 //! the EBP frame and a 12-byte buffer whose address escapes. `ActionRestrictLocal` carves the
 //! saved-EBP slot out of the local window; Ghidra's `ScopeLocal::adjustFit` (`longestFit`)

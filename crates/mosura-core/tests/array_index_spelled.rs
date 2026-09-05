@@ -2,7 +2,7 @@
 //! base is spelled `((T *)base)[i]` ONLY where the original addresses it with a scaled-index
 //! operand (wc2src-reconciliation-3 N3, the witness-first form).
 //!
-//! SELF-COMPILED fixture (examples/watcom_mve_fixtures.rs; source embedded): `gtbl[i]++` — a
+//! SELF-COMPILED fixture (dev.mve.fixtures; source embedded): `gtbl[i]++` — a
 //! global table incremented in place, which Watcom compiles to `INC dword ptr [EAX*4 + &gtbl]`
 //! (a scaled-index operand). The reference is `piVar = (int *)(i*4 + &gtbl); *piVar = *piVar + 1`;
 //! the axis inlines the temp and spells `((int *)&gtbl)[i]` at each deref — but only because the

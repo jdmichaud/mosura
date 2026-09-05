@@ -1,7 +1,7 @@
 //! The `struct-locals=coalesce` axis declares a half-written 4-byte stack local once
 //! (wc2src-reconciliation-2 A2ii).
 //!
-//! SELF-COMPILED fixture (examples/watcom_mve_fixtures.rs; source embedded): check_attack's
+//! SELF-COMPILED fixture (dev.mve.fixtures; source embedded): check_attack's
 //! and unit_set_target's shape — a two-short GPOINT returned in EAX, kept as a local and read
 //! by field. Ghidra's restructure (the reference rendering) keeps a 2-byte slot for the high
 //! half (`iStack_e = (int2)(uVar1 >> 0x10)`) — faithful C the source never wrote. The axis

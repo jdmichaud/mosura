@@ -12,15 +12,16 @@
 //! the suite stays third-party-free on machines without it.
 //!
 //! The generator is the source of truth for its products: before landing anything that touches a
-//! fixture, run `cargo run --release --example watcom_mve_fixtures -- --check <WATCOM-dir>` (the
-//! in-house wcc386 under dosemu2; it regenerates into a temp dir and exits 1 on any difference).
+//! fixture, run `mosura dev mve.fixtures dev.check=true toolchain.install=<WATCOM-dir>` (a
+//! `--features dev-tools` build; the in-house wcc386 under dosemu2; it regenerates into a temp dir
+//! and exits 1 on any difference).
 use std::collections::HashSet;
 
 /// The longest run a hand-assembled fixture may share with the text.
 const WINDOW: usize = 32;
 /// The longest run a generator product may share with the text (a template coincidence).
 const GENERATED_WINDOW: usize = 64;
-/// The header line `examples/watcom_mve_fixtures.rs` writes.
+/// The header line the generator (`dev.mve.fixtures`, crates/mosura-dev-ops) writes.
 const GENERATED_MARKER: &str = "<!-- SELF-COMPILED fixture: wcc386";
 /// Pre-existing specimens (already pushed), allow-listed until their MVEs exist — the fixture-policy
 /// follow-up on the ledger (fable-b's R1 review, 2026-08-27).
@@ -121,7 +122,7 @@ fn no_fixture_carries_a_window_of_a_subject_text() {
         assert!(checked > 0, "no fixtures found under {}", dir.display());
         assert!(
             offenders.is_empty(),
-            "fixtures carrying verbatim bytes of subject {} (replace with self-compiled MVEs via examples/watcom_mve_fixtures.rs): {offenders:?}",
+            "fixtures carrying verbatim bytes of subject {} (replace with self-compiled MVEs via dev.mve.fixtures): {offenders:?}",
             s.id
         );
     }

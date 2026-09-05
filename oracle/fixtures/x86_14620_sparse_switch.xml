@@ -1,5 +1,5 @@
 <!-- SELF-COMPILED fixture: wcc386 10.0a (in-house), flags -5r -fpi87 -s -onatx -d1+ -zq. No third-party
-     bytes — the source is this comment; regenerate with examples/watcom_mve_fixtures.rs.
+     bytes — the source is this comment; regenerate with `mosura dev mve.fixtures`.
      Externs: code from 0x171000 (one RET stub per callee, 0x10 apart), data from 0x172000 (0x100 apart).
      externs: f4=0x171000 fc=0x171010 ff=0x171020 f11=0x171030 f12=0x171040 f13=0x171050 f14=0x171060 f15=0x171070 f19=0x171080 tbl=0x172000 g11=0x172100 g13=0x172200
   extern void f4(unsigned char *p);

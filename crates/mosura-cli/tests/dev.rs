@@ -44,3 +44,18 @@ fn the_dev_tier_is_built_in() {
     let (code, _, err) = run(&["dev", "omf.dump", "dev.path"]);
     assert_eq!(code, 2, "{err}");
 }
+
+/// `dev bench` over one x86-64 datatest: per-fixture rows worst first, then the two summary rows.
+#[test]
+fn bench_runs_over_one_fixture() {
+    // the vendored datatests (what `paths::datatests_dir()` falls back to without a Ghidra checkout)
+    let dir = workspace().join("third_party/ghidra/datatests");
+    let stem = std::fs::read_dir(&dir).expect("datatests").filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "xml") && std::fs::read_to_string(p).unwrap_or_default().contains("x86:LE:64")).map(|p| p.file_stem().unwrap().to_string_lossy().into_owned()).min().expect("an x86-64 datatest");
+    let (code, out, err) = run(&["--format", "tsv", "dev", "bench", &format!("dev.only={stem}")]);
+    assert_eq!(code, 0, "{err}");
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines[0], "fixture\ttotal_ms\tbuild_ms\tdecompile_ms\tprint_ms", "{out}");
+    assert!(lines[1].starts_with(&format!("{stem}\t")), "{out}");
+    assert!(lines[2].starts_with("*total*\t") && lines[3].starts_with("*spec-load*\t"), "{out}");
+    assert_eq!(lines.len(), 4);
+}

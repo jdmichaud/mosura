@@ -1,7 +1,7 @@
 //! The `arm-order=address` axis prints a two-arm if/else in the ORIGINAL's layout order
 //! (wc2src-reconciliation-2 A1).
 //!
-//! SELF-COMPILED fixture (examples/watcom_mve_fixtures.rs; source embedded): attack_can_hit's
+//! SELF-COMPILED fixture (dev.mve.fixtures; source embedded): attack_can_hit's
 //! shape — a guard clause `if (flags & 4) return tbl[t] & 2;` written FIRST, then the general
 //! case. The structurer's canonical order (the reference rendering, unchanged under the default
 //! axis value) prints the guard as the trailing `else`; the compiler laid the guard's arm right

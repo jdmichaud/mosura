@@ -1,8 +1,8 @@
 //! THE MVEs — the minimal Watcom-compiled examples behind the self-compiled oracle fixtures, in
 //! one place (review R5, commit d): each MVE's C source, the fixture it produces, the base it is
 //! placed at, and (part 2) the input set its twin-build driver feeds. Two consumers: the fixture
-//! generator (`examples/watcom_mve_fixtures.rs`, which compiles the source with the in-house
-//! wcc386 and writes the fixture) and the twin-build oracle (`recompile::twin`, which builds the
+//! generator (`dev.mve.fixtures` in crates/mosura-dev-ops, which compiles the source with the
+//! in-house wcc386 and writes the fixture) and the twin-build oracle (`recompile::twin`, which builds the
 //! source and mosura's decompilation of the fixture with gcc -m32 and compares their traces), so
 //! "what the MVE is" cannot drift between them. The sources are verbatim from the generator.
 

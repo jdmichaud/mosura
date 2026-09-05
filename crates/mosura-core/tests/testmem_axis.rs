@@ -7,7 +7,7 @@
 //! deref tokens of the canonical tree could be neither turned off nor priced. This pins both
 //! halves of that repair.
 //!
-//! SELF-COMPILED fixture (examples/watcom_mve_fixtures.rs): `x86_watcom_guard_order`, whose body
+//! SELF-COMPILED fixture (dev.mve.fixtures): `x86_watcom_guard_order`, whose body
 //! masks a byte global and tests it against zero — the arm's exact shape.
 use mosura_core::decompile::emit::{EmitChoices, TestMem};
 use mosura_core::decompile::funcdata::Funcdata;

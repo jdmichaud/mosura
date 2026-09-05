@@ -11,7 +11,7 @@
 //! These pin both halves of the repair: the default rendering is Ghidra's again, and the arm
 //! reproduces the old behaviour when it is asked for.
 //!
-//! SELF-COMPILED fixture (examples/watcom_mve_fixtures.rs): `x86_watcom_dowhile_or`, whose body
+//! SELF-COMPILED fixture (dev.mve.fixtures): `x86_watcom_dowhile_or`, whose body
 //! scales a byte global into a table address — `(uint4)uRam00097510 * 10 + 0x87e92`, the
 //! int-width value-insensitive shape the hide was built for (an INT_MULT consumer).
 use mosura_core::decompile::emit::EmitChoices;

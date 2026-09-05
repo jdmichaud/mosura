@@ -1,7 +1,7 @@
 //! The `narrow-tests=rewiden` axis rewrites a shifted byte-of-word zero test to the operand's
 //! own width (wc2src-reconciliation-2 A5).
 //!
-//! SELF-COMPILED fixture (examples/watcom_mve_fixtures.rs; source embedded): `*p & 0x200` on a
+//! SELF-COMPILED fixture (dev.mve.fixtures; source embedded): `*p & 0x200` on a
 //! 16-bit field. The lifter recovers the predicate as `(*p >> 8 & 2) != 0` — the reference
 //! rendering, which Watcom compiles with an extra shift; the axis prints `(*p & 0x200) != 0`,
 //! value-identical and the form the compiler turns back into the original's sub-register test.

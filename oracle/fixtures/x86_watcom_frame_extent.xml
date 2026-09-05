@@ -1,5 +1,5 @@
 <!-- SELF-COMPILED fixture: wcc386 10.0a (in-house), flags -5r -fpi87 -s -onatx -d1+ -zq. No third-party
-     bytes — the source is this comment; regenerate with examples/watcom_mve_fixtures.rs.
+     bytes — the source is this comment; regenerate with `mosura dev mve.fixtures`.
      Externs: code from 0x121000 (one RET stub per callee, 0x10 apart), data from 0x122000 (0x100 apart).
      externs: fmt4=0x121000 use=0x121010
   extern int fmt4(char *dst, unsigned a, unsigned b, unsigned c);
