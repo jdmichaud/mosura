@@ -710,10 +710,25 @@ whole-program pre-passes and world order), `recompile::upgrade` (the zap checker
 The driver is a thin front (arguments, the stamped tree, writes and prints). This phase is where
 most of the risk was retired, and it was all internal.
 
-**Phase 1 — `mosura-api`.** Options registry, tables + schemas + `.tbl`, operation registry,
-session store with `Program::freeze/thaw`, and the first operations: `identify`, `program.load`,
-`program.analyze`, the program tables, `sleigh.disassemble/lift`, `function.decompile`,
-`function.emit`. `Snapshot` v1 becomes the TEXT rendering (gate: `analysis_parity` unchanged).
+**Phase 1 — `mosura-api`.** LANDED 2026-09-05 (`plan-wp7-2026-09-05.md` §3 P1), crate
+`crates/mosura-api` (lib `mosura_api`, internal): `schema`/`table`/`tbl` (the `.tbl` file of §5.3,
+mapped reads, digest, sorted find), `render` (TEXT/TSV/JSON; the one-column `text` schema prints
+bare), `options` (registry assembled from the hand-written keys + the core's emit axes, switches,
+arms and debug topics; `tag()` = the Result keys), `fingerprint`/`key` (the four stage
+fingerprints from `build.rs`, blake3 keys, content-derived `build_id`), `ctx` (one `Context` per
+process installs the two process-wide seams), `program` (`freeze`/`thaw` over every `Program`
+collection, models and types interned, `snapshot_text` = thaw + the core's render), `session`
+(content-addressed sets, inputs, config, lock), `ops` (the registry + dispatcher and the first
+operations: `identify`, `program.load/analyze/passes/tables/read/disassemble`,
+`sleigh.disassemble/lift`, `function.decompile/emit`). Deviations from the text above, all
+recorded in the plan: `Affects` has a fourth variant `Input`; freeze/thaw are api functions, not
+`Program` methods (core gained only `SpaceManager::from_spaces`, `analysis::load_bytes_with` with
+the `raw`/`xml` loaders, and `Spec::context_var_names`); the run-time `emit.<axis>` keys reach an
+operation through an `emit.*` marker in its parameter list; `entry` is an address (the front-end
+resolves names); `program` defaults to the session's last, else its only program; the survey's
+caller-side pragma post-pass and its `standalone` global scope are the round's (phase 3), not
+`function.emit`'s. Gates: `analysis_parity`'s assertions re-run from the tables (`snapshot_parity`),
+thawed decompile and emit identical to live, identity emit 0/3023 on the series' last commit.
 
 **Phase 2 — `mosura-capi`, the `mosura` binding, and `mosura-cli`, in that order.** The C
 header generated; the binding; the command tree of §6.2 for the phase-1 operations, written
