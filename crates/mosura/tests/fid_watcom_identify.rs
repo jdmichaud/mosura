@@ -129,7 +129,7 @@ fn watcom_crt_functions_are_identified() {
         // the language/cspec pairing is broken, which is worth failing on.
         panic!(
             "no signature database attaches for {}/{} — the Watcom column is committed under \
-             oracle/fid/db but unreachable from the analyzer",
+             data/fid but unreachable from the analyzer",
             program.language_id, program.compiler_spec_id
         );
     }

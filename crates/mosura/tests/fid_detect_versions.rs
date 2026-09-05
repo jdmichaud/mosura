@@ -23,7 +23,7 @@ use mosura::analysis::fid::store;
 use mosura::paths;
 
 fn db_dir() -> std::path::PathBuf {
-    paths::workspace_root().join("oracle/fid/db")
+    paths::workspace_root().join("data/fid")
 }
 
 /// Every database must rank first on its own signatures.

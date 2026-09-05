@@ -215,7 +215,7 @@ fn analyze_applies_library_names_end_to_end() {
 ///
 /// This is the gap that made the whole Watcom/Borland/sdcc column invisible in practice: the
 /// analyzer searched only `third_party/ghidra-data/FunctionID` (Visual Studio), so a Watcom
-/// program matched zero databases while 6 Watcom databases sat in `oracle/fid/db`. Measured on
+/// program matched zero databases while 6 Watcom databases sat in `data/fid`. Measured on
 /// a real Watcom binary at the time: 3021 functions, 1 name — its entry point — and 121 names
 /// once this directory was searched.
 ///
@@ -225,7 +225,7 @@ fn analyze_applies_library_names_end_to_end() {
 #[test]
 fn default_search_path_includes_mosura_built_databases() {
     let dirs = paths::fid_db_dirs();
-    let own = paths::workspace_root().join("oracle/fid/db");
+    let own = paths::workspace_root().join("data/fid");
     if !own.exists() {
         return;
     }
@@ -237,7 +237,7 @@ fn default_search_path_includes_mosura_built_databases() {
     assert!(
         !svc.is_empty(),
         "no signature database attaches for x86:LE:32:default/watcom — the Watcom column is \
-         present in oracle/fid/db but unreachable from the analyzer"
+         present in data/fid but unreachable from the analyzer"
     );
 }
 

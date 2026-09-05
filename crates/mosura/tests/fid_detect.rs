@@ -49,7 +49,7 @@ fn a_vc6_binary_is_dated_to_visual_studio_1998() {
 #[test]
 fn detection_does_not_cross_architectures() {
     let binary = paths::workspace_root().join("oracle/fid/binaries/crtprobe.msvc6-x86-32.exe");
-    let dir = paths::workspace_root().join("oracle/fid/db");
+    let dir = paths::workspace_root().join("data/fid");
     if !binary.exists() || !dir.exists() {
         return;
     }
@@ -69,7 +69,7 @@ fn detection_does_not_cross_architectures() {
 /// must therefore be able to answer the *family* question, not just the version.
 #[test]
 fn the_vote_answers_the_family_question() {
-    let dir = paths::workspace_root().join("oracle/fid/db");
+    let dir = paths::workspace_root().join("data/fid");
     if !dir.exists() {
         return;
     }
@@ -122,7 +122,7 @@ fn signature_detection_refines_without_overriding() {
 #[test]
 fn signature_detection_is_silent_when_unsure() {
     let binary = paths::ground_truth_dir().join("arith.gcc-aarch64");
-    let dir = paths::workspace_root().join("oracle/fid/db");
+    let dir = paths::workspace_root().join("data/fid");
     if !binary.exists() || !dir.exists() {
         return;
     }

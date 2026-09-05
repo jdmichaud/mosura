@@ -59,7 +59,7 @@ paragraph above is the maintainers' rationale rather than legal advice.
 
 Worth distinguishing, because it is easy to assume otherwise:
 
-- **`oracle/fid/db/*.mfid.gz` (96 databases) contain no vendor code.** Each record is a size, two
+- **`data/fid/*.mfid.gz` (96 databases) contain no vendor code.** Each record is a size, two
   hashes and a function *name* — the same nature as Ghidra's own shipped `.fidb`. They are built
   from vendor libraries but contain none of their instructions.
 - **`oracle/codegen-probes/watcom/*.obj`** (430–689 bytes each) are *our* probe source compiled by

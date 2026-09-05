@@ -40,7 +40,7 @@ document decides the shape; the numbered phases at the end are the order to buil
 | --- | --- | --- | --- |
 | SLEIGH engine | `sleigh/` | `.sla` tables → disassembly, raw p-code, emulation, FID fingerprints | a parsed `Spec` per language (0.5–1 s to parse in a debug build; `speccache` leaks it as `&'static`) |
 | language registry | `lang.rs`, `paths.rs` | language id → `.sla`/`.pspec`/`.cspec`, Ghidra tree or vendored copy | paths derived from `CARGO_MANIFEST_DIR` and `GHIDRA_SRC` |
-| loaders + identification | `analysis/loader/`, `codegen_fingerprint`, `fid/` | bytes → `Program`; compiler evidence; library-function identification | FID databases live under `oracle/fid/db` |
+| loaders + identification | `analysis/loader/`, `codegen_fingerprint`, `fid/` | bytes → `Program`; compiler evidence; library-function identification | FID databases live under `data/fid` |
 | auto-analysis | `analysis/` | `Program` → converged `Program` (listing, functions, references, jump tables, prototypes, foreign scope) | tens of seconds on the subject binary; the whole-program prototype pass ~2 min (3023 functions, 117.7 s in one round) |
 | decompiler | `decompile/` | `Program` + entry → `Funcdata` (SSA graph, types, structure) → C | 0.05–0.5 s per function; the graph is arena-indexed (`VarnodeId`/`OpId`/`BlockId` are `u32`) |
 | emit | `decompile/emit/` | `Funcdata × θ × witnesses → C`; the arms registry; report pass | `EmitChoices` is already reflective (`axes()`, `set(name, value)`) |

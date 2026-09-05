@@ -4,6 +4,13 @@ version = "0.0.0"
 description = "A Rust reimplementation of Ghidra's logic (CLI). Early-stage; SLEIGH engine first."
 edition.workspace = true
 license.workspace = true
+build = "build.rs"
+
+[features]
+# Embed Ghidra's vendored FID databases (third_party/ghidra-data/FunctionID, ~76 MB) into the
+# library. Off by default: in the workspace they are reached as an override directory; a shipped
+# libmosura carries only mosura's own databases unless built with this.
+fid-ghidra = []
 
 [dependencies]
 roxmltree.workspace = true

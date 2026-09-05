@@ -33,7 +33,7 @@ use mosura::analysis::fid::build::{build_from_files, BuildSpec};
 /// and machine-specific: the alternative is copying vendor runtimes into the repo, and the point
 /// of this gate is to check the *committed* databases, not a fixture that stands in for them.
 struct Source {
-    /// File name under `oracle/fid/db/`.
+    /// File name under `data/fid/`.
     database: &'static str,
     /// EVERY library the database is ingested from, in build order. This is the recipe, and
     /// listing it here is what makes the gate catch a recipe change as well as a hasher change —
@@ -195,7 +195,7 @@ const SOURCES: &[Source] = &[
 ];
 
 fn db_dir() -> PathBuf {
-    mosura::paths::workspace_root().join("oracle/fid/db")
+    mosura::paths::workspace_root().join("data/fid")
 }
 
 /// Decompressed text of a committed database.

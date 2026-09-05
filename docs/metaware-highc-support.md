@@ -7,7 +7,7 @@
 | --- | --- | --- | --- |
 | 1 | `loader/metaware.rs` — compiler + version detection | code | ✅ 3 markers, 6 unit gates incl. no-false-positive |
 | 2 | `specs/x86-32-highc.cspec` — the calling convention | **data** | ✅ derived from `oracle/probes/hcabi.c`'s object |
-| 3 | `oracle/fid/db/highc-*.mfid.gz` — library signatures | **data** | ✅ 7 databases, 544–266 records |
+| 3 | `data/fid/highc-*.mfid.gz` — library signatures | **data** | ✅ 7 databases, 544–266 records |
 
 Wiring: `lang::resolve_cspec` maps the `highc` spec id to the new cspec; `loader/omf.rs` selects
 it when a module carries a MetaWare marker; `watcom::compiler_spec_id` (the single x86-32 spec
@@ -366,7 +366,7 @@ install, at the honest banner granularity `watcom.rs` documents.
 ## 3. FID databases
 
 Per [`fid-building-databases.md`](fid-building-databases.md) §"Versions: one database per toolchain
-build", into `oracle/fid/db/` (already searched by `paths::fid_db_dirs`), built by
+build", into `data/fid/` (already searched by `paths::fid_db_dirs`), built by
 `scripts/rebuild-fid-db.sh highc`.
 
 **Seven columns for four releases** — a C run-time column per release, plus a C++ run-time column

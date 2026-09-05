@@ -22,7 +22,7 @@ cd "$(dirname "$0")/.."
 REPO="$PWD"
 
 DRY=0
-OUT="$REPO/oracle/fid/db"
+OUT="$REPO/data/fid"
 PATTERN=""
 while [ $# -gt 0 ]; do
 	case "$1" in

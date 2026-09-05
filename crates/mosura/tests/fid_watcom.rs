@@ -11,7 +11,7 @@ use mosura::analysis::fid::store;
 use mosura::paths;
 
 fn db_dir() -> std::path::PathBuf {
-    paths::workspace_root().join("oracle/fid/db")
+    paths::workspace_root().join("data/fid")
 }
 
 /// Every Watcom version we hold is shipped, and each database is internally coherent.

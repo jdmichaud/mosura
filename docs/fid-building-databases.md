@@ -37,7 +37,7 @@ cargo xtask fid-build \
     --version "10.0a" \
     --variant "Release" \
     --common-symbols oracle/fid/common-symbols/watcom.txt \
-    --out     oracle/fid/db/watcom-10.0a-x86-32.mfid.gz \
+    --out     data/fid/watcom-10.0a-x86-32.mfid.gz \
     --dir     /path/to/extracted/clib3r-objects
 ```
 
@@ -53,7 +53,7 @@ cargo xtask fid-build \
 It prints what it did:
 
 ```
-fid-build: 214 input file(s) -> oracle/fid/db/watcom-10.0a-x86-32.mfid.gz
+fid-build: 214 input file(s) -> data/fid/watcom-10.0a-x86-32.mfid.gz
   ingested  1893
   relations 4102
   excluded  310    Duplicate
@@ -306,7 +306,7 @@ wlib -x -b "$WATCOM/lib386/dos/clib3r.lib"
 
 # 2. build
 cargo xtask fid-build --family "Open Watcom" --version 10.0a --variant Release \
-    --out oracle/fid/db/watcom-10.0a-x86-32.mfid --dir /tmp/clib3r
+    --out data/fid/watcom-10.0a-x86-32.mfid --dir /tmp/clib3r
 ```
 
 ⚠️ Watcom decorates its symbols (`strlen_`, `_strcpy_`); the names in the database are the
@@ -325,7 +325,7 @@ mkdir -p /tmp/libc && cd /tmp/libc
 ar x /usr/lib/x86_64-linux-gnu/libc.a          # or the cross toolchain's libc.a
 
 cargo xtask fid-build --family glibc --version "$(ldd --version | head -1)" --variant Release \
-    --out oracle/fid/db/glibc-x86-64.mfid --dir /tmp/libc
+    --out data/fid/glibc-x86-64.mfid --dir /tmp/libc
 ```
 
 Every column is now measured against Ghidra's own hasher (`tests/fid_hash_parity.rs`, 308/320
@@ -340,7 +340,7 @@ Built from the source tree rather than a shipped release:
 
 ```sh
 cargo xtask fid-build --family Watcom --version ow2 --variant Release \
-    --out oracle/fid/db/watcom-ow2-x86-32.mfid.gz \
+    --out data/fid/watcom-ow2-x86-32.mfid.gz \
     /data/open-watcom-v2/bld/clib/library/msdos.386/ms_r/clib3r.lib
 ```
 
@@ -356,7 +356,7 @@ trusting it.
 
 ```sh
 cargo xtask fid-build --family sdcc --version 4.5.0 --variant z80 \
-    --out oracle/fid/db/sdcc-4.5.0-z80.mfid.gz /usr/share/sdcc/lib/z80/z80.lib
+    --out data/fid/sdcc-4.5.0-z80.mfid.gz /usr/share/sdcc/lib/z80/z80.lib
 ```
 
 Point it straight at the library: `z80.lib` is a Unix `ar` archive of SDCC `.rel` objects — an

@@ -119,7 +119,7 @@ pub fn fid_db_dir() -> PathBuf {
 ///
 /// Two, because the databases come from two places and **both are shipped data**: Ghidra's
 /// vendored `.fidb` (Visual Studio 1998-2019) in `third_party/`, and the databases mosura builds
-/// itself in `oracle/fid/db` (Borland, Watcom, sdcc — `docs/fid-building-databases.md`).
+/// itself in `data/fid` (Borland, Watcom, sdcc — `docs/fid-building-databases.md`).
 ///
 /// ⚠️ Searching only the first is why FID identified **nothing** in a Watcom binary while the
 /// Watcom databases sat in the tree: the subject binary analysed to 3021 functions with 1 name (its entry
@@ -129,7 +129,7 @@ pub fn fid_db_dir() -> PathBuf {
 pub fn fid_db_dirs() -> Vec<PathBuf> {
     vec![
         workspace_root().join("third_party/ghidra-data/FunctionID"),
-        workspace_root().join("oracle/fid/db"),
+        workspace_root().join("data/fid"),
     ]
 }
 

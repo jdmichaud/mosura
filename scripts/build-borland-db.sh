@@ -23,7 +23,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 REPO="$PWD"
-OUT="$REPO/oracle/fid/db"
+OUT="$REPO/data/fid"
 mkdir -p "$OUT"
 
 MODE="${1:?usage: build-borland-db.sh <objects|linked> ...}"

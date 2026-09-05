@@ -294,7 +294,7 @@ pub fn build_from_files(
 }
 
 /// Build and write, printing a short report. The path is the caller's choice; by convention
-/// databases live in `oracle/fid/db/<family>-<version>-<arch>.mfid`.
+/// databases live in `data/fid/<family>-<version>-<arch>.mfid`.
 pub fn build_to_file(
     files: &[std::path::PathBuf],
     spec: &BuildSpec,

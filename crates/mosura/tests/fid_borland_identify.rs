@@ -102,7 +102,7 @@ fn check(model: &str, exe: &str, map: &str, required: &[&str]) {
     assert!(
         !service.is_empty(),
         "no signature database attaches for {}/{} — the Borland column is committed under \
-         oracle/fid/db but unreachable from the analyzer",
+         data/fid but unreachable from the analyzer",
         program.language_id,
         program.compiler_spec_id
     );
