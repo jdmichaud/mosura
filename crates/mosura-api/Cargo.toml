@@ -1,0 +1,20 @@
+[package]
+name = "mosura-api"
+version = "0.0.0"
+description = "mosura api: sessions, operations, options, tables and the flat session store over mosura-core. INTERNAL — the public surface is mosura-capi."
+edition.workspace = true
+license.workspace = true
+publish = false
+build = "build.rs"
+
+[lib]
+name = "mosura_api"
+
+[dependencies]
+mosura-core = { path = "../mosura-core" }
+blake3 = "1"
+memmap2 = "0.9"
+serde_json = "1"
+
+[build-dependencies]
+blake3 = "1"
