@@ -43,6 +43,7 @@ pub mod manifest;
 pub mod passes;
 pub mod pragma;
 pub mod tu;
+pub mod upgrade;
 pub mod twin;
 pub mod verify;
 pub mod vocab;
