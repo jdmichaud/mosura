@@ -21,11 +21,13 @@
 //! [`CompilerSpec`] describing the compiler, driven by the one [`CompilerDriver`]. There is no
 //! per-compiler driver type any more.
 
+pub mod locked;
 pub mod cache;
 pub mod driver;
 pub mod spec;
 
 pub use cache::Cached;
+pub use locked::{Holder, Locked};
 pub use driver::{CompilerDriver, DriverRole};
 pub use spec::{CompilerSpec, Invocation, ObjectFormat};
 
