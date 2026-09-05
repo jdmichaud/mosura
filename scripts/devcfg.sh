@@ -3,7 +3,7 @@
 #
 #   devcfg <section.key> [<default>]        e.g.  GHIDRA_SRC="$(devcfg ghidra_src "$WORKSPACE/ghidra")"
 #
-# Reads the same TOML subset `crates/mosura/src/devcfg.rs` reads (`[section]`, `key = "string"`,
+# Reads the same TOML subset `crates/mosura-core/src/devcfg.rs` reads (`[section]`, `key = "string"`,
 # `key = true|false`, `#` comments; `[[subject]]` blocks are skipped — use `cargo xtask devcfg` for
 # those), expands a leading `~/` to $HOME, and prints the default when the file or the key is absent.
 # It replaces the `${GHIDRA_SRC:-…}` / `${MOSURA_*_EXE:-…}` environment parameters the scripts used

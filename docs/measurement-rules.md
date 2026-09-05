@@ -126,7 +126,7 @@ struct-typed input, and every `TypeStruct::*` port would be inert.
 ⇒ "Does the variant exist?" is the wrong question. Ask **"does anything CONSTRUCT one?"**
 
 ```sh
-grep -rn "Datatype::Struct(" crates/mosura/src/decompile/   # a constructor, or only consumers?
+grep -rn "Datatype::Struct(" crates/mosura-core/src/decompile/   # a constructor, or only consumers?
 ```
 
 Note the shape of that mistake, because it is the tempting one: **the correction was *more*

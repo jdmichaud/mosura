@@ -12,7 +12,7 @@ metadata:
 caches. They are **not** an optimisation. `functionBeforeSrc` is re-queried only once the
 ascending walk has passed `functionAfterSrc`; while frozen it holds the function-before of an
 EARLIER address, always ≤ a fresh query, so `destAddr < functionBeforeSrc` fails where a fresh
-query would pass. Ported verbatim in `crates/mosura/src/analysis/analyzers/shared_return.rs`
+query would pass. Ported verbatim in `crates/mosura-core/src/analysis/analyzers/shared_return.rs`
 (commit `c86a78e`, 2026-08-05).
 
 **Why:** re-querying freshly each time invented the subject functions at three shared epilogues

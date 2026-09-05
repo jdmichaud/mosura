@@ -1,7 +1,7 @@
 # X-32 (FlashTek 32-bit DOS extender) loader — design notes
 
-**Status: implemented.** `crates/mosura/src/analysis/loader/x32.rs`, gated by
-`crates/mosura/tests/x32_loader.rs` (8 tests, 7 of which need no user-provided binary).
+**Status: implemented.** `crates/mosura-core/src/analysis/loader/x32.rs`, gated by
+`crates/mosura-core/tests/x32_loader.rs` (8 tests, 7 of which need no user-provided binary).
 Compiler-side work (detection, cspec, FID) is a separate track:
 [`metaware-highc-support.md`](metaware-highc-support.md).
 

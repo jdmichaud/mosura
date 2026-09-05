@@ -78,7 +78,7 @@ Still reproduces on `analysis-port` @ `a8081f7` (after `b43d068`). The panic lin
 
 ```
 cargo run -q --example gt_recompile_probe -- oracle/analysis-corpus/basic.elf 401080
-  -> thread 'main' panicked at crates/mosura/src/decompile/funcdata.rs:244:21:
+  -> thread 'main' panicked at crates/mosura-core/src/decompile/funcdata.rs:244:21:
      index out of bounds: the len is 1 but the index is 2   (was funcdata.rs:225)
 ```
 

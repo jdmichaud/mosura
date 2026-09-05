@@ -108,7 +108,7 @@ list, rebuild.
 
 The analyzer reads its databases through the resource provider (`crate::resources`), under the
 `fid/` resource prefix: the `.mfid.gz` in `data/fid/` are **embedded in the library at build time**
-(`crates/mosura/build.rs`), Ghidra's `.fidb` in `third_party/ghidra-data/FunctionID/` are mounted
+(`crates/mosura-core/build.rs`), Ghidra's `.fidb` in `third_party/ghidra-data/FunctionID/` are mounted
 from the workspace in a developer build and embedded only with `--features fid-ghidra` (76 MB),
 and an override directory laid out as `<dir>/fid/<name>.mfid.gz` is resolved first:
 
@@ -305,7 +305,7 @@ Visual Studio 1998 through 2019. Rebuild the probe and run the gate:
 
 ```sh
 ./scripts/build-fid-probes.sh msvc6
-cargo test --release -p mosura --test fid_identify
+cargo test --release -p mosura-core --test fid_identify
 ```
 
 ### Open Watcom (x86-32 LE / x86-16 MZ)

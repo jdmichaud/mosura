@@ -19,7 +19,7 @@ disappear."* Also 2026-08-05: **no mentions of the copyrighted binary in the mos
 survey tooling gets its own repo in `<subject-survey>/` instead.
 
 **How to apply:** the subject defect → minimal self-compiled program in `oracle/ground-truth/src/` →
-gate in `crates/mosura/tests/ground_truth_parity.rs` → fix THAT. the subject stays as corroboration,
+gate in `crates/mosura-core/tests/ground_truth_parity.rs` → fix THAT. the subject stays as corroboration,
 never as the gate. Two conditions make the MVE worth having:
 
 1. **Prove it FAILS pre-fix and passes post-fix.** A gate that never caught the bug is

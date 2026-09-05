@@ -210,12 +210,12 @@ transfer to the 10.0a binary. Confirm each against the binary before trusting it
   then latest source id (ties preserve source order). `InsStallable` (inssched.c:101) weights
   operands by class: `N_INDEXED +3, N_REGISTER +2, N_MEMORY +1`. The per-CPU operand-stall
   values are in `bld/cg/intel/386/c/386funit.c`.
-- **We already have a faithful MODEL of this:** `crates/mosura/src/recompile/watsched.rs`,
+- **We already have a faithful MODEL of this:** `crates/mosura-core/src/recompile/watsched.rs`,
   documented against these exact source lines. It PREDICTS 10.0a's schedule and reproduces it
   on most functions; it disagrees with the subject's order on a small set of holdouts (e.g. the arg-setup
   6th site, FUN_00019344, FUN_00073328). **Those holdouts are your Dial-B specimens** — they are
   where the subject's scheduler priority differs from 10.0a's. `dumpsched` (gitignored, in
-  `crates/mosura/examples/`) prints model-prediction vs original per window; use it to see the
+  `crates/mosura-core/examples/`) prints model-prediction vs original per window; use it to see the
   disagreement before patching.
 - **In the binary:** the priority comparison in `ScheduleIns` and the `InsStallable` operand
   weights. The operand weights (2/1/3) are the most likely single-dial difference — if the subject
@@ -385,7 +385,7 @@ does not become the build.
 - The allocator and scheduler are both already modeled in Rust (`watsched.rs`, and the OW-source
   trace in `allocator-model-thread.md` memory) — you do not need to re-derive how they work,
   only find them in the binary and change them.
-- `dumpwc`, `dumpraw`, `dumpdis`, `dumpsched`, `dumpobj` (all in `crates/mosura/examples/`,
+- `dumpwc`, `dumpraw`, `dumpdis`, `dumpsched`, `dumpobj` (all in `crates/mosura-core/examples/`,
   gitignored `dump*` family) are the instruments: compile-a-snippet, disassemble-raw-bytes,
   disassemble-a-manifest-function, scheduler-model-vs-original, disassemble-an-OMF-public.
 - The single highest-leverage habit from this whole campaign: **instrument first, hypothesize

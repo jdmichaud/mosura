@@ -53,7 +53,7 @@ instruction, an `InstructionFingerprint { instruction_mask, operands[{value_mask
 is_scalar, is_address}], is_call }` — faithful ports of Ghidra's `getInstructionMask`,
 `getOperandValueMask`, `getOpObjects`, `getOperandType`, `getFlowType().isCall()`. Purely
 additive (0 deletions), so the decompiler is provably unperturbed. Spike:
-`crates/mosura/tests/sleigh_fingerprint.rs`, 7/7.
+`crates/mosura-core/tests/sleigh_fingerprint.rs`, 7/7.
 
 **Four residuals** recorded at Stage 0, all expected hash-neutral for x86, all of which the Stage 3
 byte-equality gate will confirm or refute: (1) branch/call targets surface as `Scalar{addr}` rather
@@ -179,7 +179,7 @@ The ten packed `.fidb` are **committed** at `third_party/ghidra-data/FunctionID/
 analyzer is inert (Stage 5), so a consumer who strips them loses identification and nothing else.
 
 Consequences to keep in view:
-- **Path resolution** follows the existing `crates/mosura/src/paths.rs` shape (env override → repo
+- **Path resolution** follows the existing `crates/mosura-core/src/paths.rs` shape (env override → repo
   tree), so a user can point at their own DB directory.
 - **Clone weight.** 76 MB of binary blobs in git history. They are write-once (pinned to a Ghidra
   release), so there is no churn — but a pin bump rewrites all ten. If that becomes painful,
@@ -303,7 +303,7 @@ Each lands independently and gated on `fid-port`. Ghidra paths below are under
 See §2.
 
 ### Stage 1 — the hasher `FidHashQuad` ✅ LANDED
-`crates/mosura/src/analysis/fid/{mod,hash}.rs` + `tests/fid_hash_vectors.rs` (13/13). Additive:
+`crates/mosura-core/src/analysis/fid/{mod,hash}.rs` + `tests/fid_hash_vectors.rs` (13/13). Additive:
 a new module plus one `pub mod` line, so nothing else in the tree changes (lib suite 545/545,
 clippy clean, decompile_corpus 7/7 with 62/62 datatests).
 
@@ -316,7 +316,7 @@ measured nothing; it now asserts the special case explicitly.
 The port, as landed:
 Port `hash/MessageDigestFidHasher.java` + `hash/FunctionBodyFunctionExtentGenerator.java` +
 `Framework/Generic/…/generic/hash/FNV1a64MessageDigest.java` + the x86 skipper
-(`Processors/x86/…/X86InstructionSkipper.java`) → new module `crates/mosura/src/analysis/fid/hash.rs`.
+(`Processors/x86/…/X86InstructionSkipper.java`) → new module `crates/mosura-core/src/analysis/fid/hash.rs`.
 
 - **Digest**: FNV-1a 64 — basis `0xcbf29ce484222325`, prime `0x100000001b3`, `wrapping_mul` on
   `u64`. Ints/longs fed **big-endian, MSB first**. `digestLong` returns the raw state (no

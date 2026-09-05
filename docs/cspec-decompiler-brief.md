@@ -1,23 +1,23 @@
 # Brief — wire the decompiler's prototype recovery to the cspec-loaded ParamList
 
-> For the **decompiler-track agent** (works on `crates/mosura/src/decompile/` on
+> For the **decompiler-track agent** (works on `crates/mosura-core/src/decompile/` on
 > `master`). The analysis track ported the cspec → `ParamList` loader but must NOT edit
 > `decompile/fspec.rs`, so this last wiring step is handed off here. Status: **DEFERRED**.
 
 ## What already exists (analysis track, branch `analysis-port`)
 
-- `crates/mosura/src/lang.rs::resolve_cspec(language_id, compiler_spec_id) -> PathBuf`
+- `crates/mosura-core/src/lang.rs::resolve_cspec(language_id, compiler_spec_id) -> PathBuf`
   — locates the `.cspec` file from the processor `.ldefs` `<language>/<compiler>` entries.
-- `crates/mosura/src/sleigh/engine.rs::Spec::register_offset(name) -> Option<u64>`
+- `crates/mosura-core/src/sleigh/engine.rs::Spec::register_offset(name) -> Option<u64>`
   — read-only: resolves a register name (`RDI`) to its register-space offset (`0x38`).
-- `crates/mosura/src/analysis/cspec.rs` — **C0/C1**:
+- `crates/mosura-core/src/analysis/cspec.rs` — **C0/C1**:
   - `default_input_paramlist(spec, language_id, compiler_spec_id, spaces) -> Option<fspec::ParamList>`
     — a faithful port of `ParamListStandard::decode` (`fspec.cc:1451`): walks the
     `<default_proto><prototype><input>` `<pentry>`/`<group>` resources, assigning group ids
     exactly as `parsePentry`/`parseGroup` do, and builds a `fspec::ParamList` (the existing
     public type — constructed, not redefined).
   - `integer_arg_registers(list, reg_space)` — the analysis slice of `assignMap`.
-- `crates/mosura/src/analysis/symbolic.rs::integer_arg_registers` now loads the convention
+- `crates/mosura-core/src/analysis/symbolic.rs::integer_arg_registers` now loads the convention
   from the cspec for **any** compiler spec (the `compiler_spec_id == "gcc"` gate is gone).
 
 Validation (analysis side): `cspec` unit tests assert the cspec-loaded SysV input equals

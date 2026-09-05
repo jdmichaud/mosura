@@ -1,7 +1,7 @@
-diff --git a/crates/mosura/src/analysis/analyzers/address_table.rs b/crates/mosura/src/analysis/analyzers/address_table.rs
+diff --git a/crates/mosura-core/src/analysis/analyzers/address_table.rs b/crates/mosura-core/src/analysis/analyzers/address_table.rs
 index 79f26b1..20f9fb4 100644
---- a/crates/mosura/src/analysis/analyzers/address_table.rs
-+++ b/crates/mosura/src/analysis/analyzers/address_table.rs
+--- a/crates/mosura-core/src/analysis/analyzers/address_table.rs
++++ b/crates/mosura-core/src/analysis/analyzers/address_table.rs
 @@ -818,9 +818,10 @@ impl Analyzer for AddressTableAnalyzer {
              sched.block_added(&left);
          }
@@ -15,10 +15,10 @@ index 79f26b1..20f9fb4 100644
          }
          true
      }
-diff --git a/crates/mosura/src/analysis/analyzers/function_start.rs b/crates/mosura/src/analysis/analyzers/function_start.rs
+diff --git a/crates/mosura-core/src/analysis/analyzers/function_start.rs b/crates/mosura-core/src/analysis/analyzers/function_start.rs
 index 30e933d..fec900b 100644
---- a/crates/mosura/src/analysis/analyzers/function_start.rs
-+++ b/crates/mosura/src/analysis/analyzers/function_start.rs
+--- a/crates/mosura-core/src/analysis/analyzers/function_start.rs
++++ b/crates/mosura-core/src/analysis/analyzers/function_start.rs
 @@ -478,29 +478,19 @@ impl Analyzer for FunctionStartAnalyzer {
              }
          });
@@ -117,10 +117,10 @@ index 30e933d..fec900b 100644
  }
  
  /// Bring every function's body up to date before asking `getFunctionContaining`.
-diff --git a/crates/mosura/src/analysis/analyzers/mod.rs b/crates/mosura/src/analysis/analyzers/mod.rs
+diff --git a/crates/mosura-core/src/analysis/analyzers/mod.rs b/crates/mosura-core/src/analysis/analyzers/mod.rs
 index 8d8254d..5fd89eb 100644
---- a/crates/mosura/src/analysis/analyzers/mod.rs
-+++ b/crates/mosura/src/analysis/analyzers/mod.rs
+--- a/crates/mosura-core/src/analysis/analyzers/mod.rs
++++ b/crates/mosura-core/src/analysis/analyzers/mod.rs
 @@ -149,15 +149,56 @@ impl Analyzer for Disassembler {
          "Disassembly"
      }
@@ -250,10 +250,10 @@ index 8d8254d..5fd89eb 100644
          true
      }
  }
-diff --git a/crates/mosura/src/analysis/analyzers/relocation_seed.rs b/crates/mosura/src/analysis/analyzers/relocation_seed.rs
+diff --git a/crates/mosura-core/src/analysis/analyzers/relocation_seed.rs b/crates/mosura-core/src/analysis/analyzers/relocation_seed.rs
 index 565e9ba..f9630d1 100644
---- a/crates/mosura/src/analysis/analyzers/relocation_seed.rs
-+++ b/crates/mosura/src/analysis/analyzers/relocation_seed.rs
+--- a/crates/mosura-core/src/analysis/analyzers/relocation_seed.rs
++++ b/crates/mosura-core/src/analysis/analyzers/relocation_seed.rs
 @@ -151,7 +151,7 @@ impl Analyzer for RelocationSeedAnalyzer {
              seeds.add_range(t.space, t.offset, t.offset);
          }
@@ -263,10 +263,10 @@ index 565e9ba..f9630d1 100644
          }
          true
      }
-diff --git a/crates/mosura/src/analysis/analyzers/switch.rs b/crates/mosura/src/analysis/analyzers/switch.rs
+diff --git a/crates/mosura-core/src/analysis/analyzers/switch.rs b/crates/mosura-core/src/analysis/analyzers/switch.rs
 index e8e89a6..014dc89 100644
---- a/crates/mosura/src/analysis/analyzers/switch.rs
-+++ b/crates/mosura/src/analysis/analyzers/switch.rs
+--- a/crates/mosura-core/src/analysis/analyzers/switch.rs
++++ b/crates/mosura-core/src/analysis/analyzers/switch.rs
 @@ -64,7 +64,7 @@ impl Analyzer for DecompilerSwitchAnalyzer {
          }
          // The case targets are reachable code (only through the table) — disassemble them.
@@ -276,10 +276,10 @@ index e8e89a6..014dc89 100644
          }
          true
      }
-diff --git a/crates/mosura/src/analysis/manager.rs b/crates/mosura/src/analysis/manager.rs
+diff --git a/crates/mosura-core/src/analysis/manager.rs b/crates/mosura-core/src/analysis/manager.rs
 index ea9967d..439e17c 100644
---- a/crates/mosura/src/analysis/manager.rs
-+++ b/crates/mosura/src/analysis/manager.rs
+--- a/crates/mosura-core/src/analysis/manager.rs
++++ b/crates/mosura-core/src/analysis/manager.rs
 @@ -16,6 +16,13 @@
  use crate::analysis::analyzer::{Analyzer, AnalyzerType};
  use crate::analysis::program::{AddressSet, Program};
@@ -338,10 +338,10 @@ index ea9967d..439e17c 100644
      /// Hand a set directly to one named analyzer (Ghidra
      /// `AutoAnalysisManager.scheduleOneTimeAnalysis(analyzer, set)`, AutoAnalysisManager.java:226)
      /// — the route for an analyzer that subscribes to no change channel. A no-op when that
-diff --git a/crates/mosura/src/analysis/mod.rs b/crates/mosura/src/analysis/mod.rs
+diff --git a/crates/mosura-core/src/analysis/mod.rs b/crates/mosura-core/src/analysis/mod.rs
 index 5999491..674ea1b 100644
---- a/crates/mosura/src/analysis/mod.rs
-+++ b/crates/mosura/src/analysis/mod.rs
+--- a/crates/mosura-core/src/analysis/mod.rs
++++ b/crates/mosura-core/src/analysis/mod.rs
 @@ -180,6 +180,12 @@ pub fn analyze(program: &mut Program) {
              seed.add_range(e.space, e.offset, e.offset);
          }

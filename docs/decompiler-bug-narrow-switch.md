@@ -13,7 +13,7 @@
 > (see the table below). `tests/ground_truth_parity.rs::narrow_switch_recovery_gap` now asserts
 > full recovery for both functions. The rest of this document is kept as the diagnosis record.
 
-**Owner: decompiler track** (jump-table / JumpBasic recovery — `crates/mosura/src/decompile/`).
+**Owner: decompiler track** (jump-table / JumpBasic recovery — `crates/mosura-core/src/decompile/`).
 Surfaced by the subject binary native-LE analysis (`analysis_parity::le_subjects_analysis`) and reduced to a
 self-compiled Open Watcom ground-truth per the `issues-become-source-tests (subject-profile note)` standing rule.
 Classified **MIS-PORT / GAP**: mosura recovers a `switch(int)` jump table but NOT the same switch

@@ -73,6 +73,6 @@ mosura_stamp > "$OUT/mosura.trace"
 
 python3 "$SCRIPT_DIR/trace-diff.py" "$OUT/ghidra.trace" "$OUT/mosura.trace" \
   --ghidra-cpp "$GHIDRA_SRC/Ghidra/Features/Decompiler/src/decompile/cpp" \
-  --mosura-src "$MOSURA_DIR/crates/mosura/src"
+  --mosura-src "$MOSURA_DIR/crates/mosura-core/src"
 [ -n "${KEEP:-}" ] && echo -e "\ntraces kept: $OUT/ghidra.trace  $OUT/mosura.trace"
 exit 0

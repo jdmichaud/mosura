@@ -44,7 +44,7 @@ from exact scores the same as an unrelated function. That is not a hypothetical 
 comparison, 2074 of 2552 the subject mismatches scored under 25%, and 96% of them were attributed to
 "unclassified". There was no gradient and no diagnosis.
 
-`crates/mosura/src/recompile/` supplies both. Both sides are lifted with mosura's own SLEIGH
+`crates/mosura-core/src/recompile/` supplies both. Both sides are lifted with mosura's own SLEIGH
 engine, the candidate object is **symbolically relinked** to the original's addresses (rather
 than masking relocated bytes, which would also pass a candidate calling the wrong function),
 the two instruction streams are aligned, and every divergence is named:

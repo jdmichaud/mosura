@@ -607,7 +607,7 @@ from the processor spec through every builder; Ghidra's central primitive
 with the `forceleft` escape hatch); `ParamEntry::justified_contain_with` carrying Ghidra's
 `isLeftJustified` and BOTH big-endian arms (aligned fspec.cc:277-281 and unaligned :252);
 `Funcdata::adjust_inputs` converted off inlined LE arithmetic; and
-`crates/mosura/tests/big_endian.rs` — a PowerPC function that decompiles end-to-end plus a
+`crates/mosura-core/tests/big_endian.rs` — a PowerPC function that decompiles end-to-end plus a
 justified-contain flip test, so the big-endian arms have something that executes them (no
 other test in the tree decompiles a BE target).
 

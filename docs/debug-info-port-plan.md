@@ -377,7 +377,7 @@ provide what we need" is the whole risk and it must be checked before a phase de
    MSF streams, the stream directory, TPI *and* IPI, DBI module info, global/public symbol streams,
    C13 line sections, and section contributions. Anything on that list the crate does not expose is
    a gap recorded in the phase, not discovered mid-implementation.
-2. **`unsafe` posture and fuzzing.** mosura has **zero `unsafe`** in `crates/mosura/src/` (§3a.5);
+2. **`unsafe` posture and fuzzing.** mosura has **zero `unsafe`** in `crates/mosura-core/src/` (§3a.5);
    a crate that parses hostile input on our behalf should forbid `unsafe` and be continuously
    fuzzed. `gimli` is the reference case — it is the DWARF reader behind `addr2line` and rustc's
    backtraces, so it is exercised far harder than a fresh port could be. **Verify at adoption**
@@ -466,7 +466,7 @@ every step. Requirements, not aspirations:
 
 **Threat model, stated plainly.** Debug sections are attacker-controlled bytes inside the file under
 analysis — the one input class a reverse-engineering tool is *guaranteed* to be fed hostile samples
-of. mosura has **zero `unsafe`** in `crates/mosura/src/`, so the realistic harms are **denial of
+of. mosura has **zero `unsafe`** in `crates/mosura-core/src/`, so the realistic harms are **denial of
 service** (hang, OOM, process abort) and **wrong output**, not memory-safety compromise.
 
 The offload policy is the single largest security decision in this plan: **67,136 lines of parsing of
@@ -518,7 +518,7 @@ same category as `.cspec` and `.sla`, copied the same way:
 
 Ship `x86.dwarf` and `x86-64.dwarf` under `specs/` beside the cspecs, parsed into
 `DWARFRegisterMappings`, resolved by language id exactly as `resolve_cspec` does today
-(`crates/mosura/src/lang.rs`); add the other 17 as the multi-arch track reaches them. The files also
+(`crates/mosura-core/src/lang.rs`); add the other 17 as the multi-arch track reaches them. The files also
 carry `call_frame_cfa` and `stack_frame` static values that `DW_AT_frame_base`/`DW_OP_fbreg`
 resolution needs (`useStaticStackFrameRegisterValue` consumes them). A missing mapping must degrade
 to a warning, never a failure — that is what Ghidra does, and it is what lets architectures land
@@ -572,7 +572,7 @@ and whether a comment lands in the C text — which is exactly what `printc.cc`'
 
 For `dwarf.sections`–`pef` the Java-side oracle is the vehicle, and it already exists:
 `oracle/ghidra_scripts/DumpAnalysisSnapshot.java` driven by `analyzeHeadless`, producing
-`goldens/analysis/*.snapshot` parsed by `crates/mosura/src/analysis/snapshot.rs` — the harness in
+`goldens/analysis/*.snapshot` parsed by `crates/mosura-core/src/analysis/snapshot.rs` — the harness in
 [`oracle/analysis-capture.md`](../oracle/analysis-capture.md). `DWARFAnalyzer` and
 `PdbUniversalAnalyzer` are default-enabled in headless analysis, so a snapshot of a `-g` or
 PDB-bearing binary captures their effects for free. What is missing is snapshot *vocabulary*.

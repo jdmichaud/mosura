@@ -12,7 +12,7 @@ processor tree, the same way `specs/` is appended for mosura-authored compiler s
 
 | Thing | Status |
 | --- | --- |
-| `ghidra.util.bytesearch` engine (`crates/mosura/src/analysis/bytesearch/`) | faithful port |
+| `ghidra.util.bytesearch` engine (`crates/mosura-core/src/analysis/bytesearch/`) | faithful port |
 | `FunctionStartAnalyzer` + its three siblings | faithful port |
 | the `(language, compiler) -> patternfile` lookup | faithful port |
 | **the `watcom` mapping entry** (`patternconstraints.xml` here) | **mosura's** |

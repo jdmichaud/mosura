@@ -18,7 +18,7 @@ fn workspace_root() -> PathBuf {
 
 /// The pinned checkout: `ghidra_src` in `dev-config.toml`, else `<workspace>/../ghidra`.
 fn ghidra_src(_ws: &Path) -> PathBuf {
-    mosura::devcfg::ghidra_src()
+    mosura_core::devcfg::ghidra_src()
 }
 
 /// `cargo xtask devcfg <section.key> [<default>]` — print one developer-config value (scripts that
@@ -26,7 +26,7 @@ fn ghidra_src(_ws: &Path) -> PathBuf {
 /// `cargo xtask devcfg` alone lists every key the file sets.
 fn devcfg_cmd() {
     let args: Vec<String> = std::env::args().skip(2).collect();
-    let cfg = mosura::devcfg::get();
+    let cfg = mosura_core::devcfg::get();
     match args.first().map(String::as_str) {
         None => {
             for (k, v) in cfg.entries() {
@@ -38,13 +38,13 @@ fn devcfg_cmd() {
         }
         Some(key) => {
             let resolved = match key {
-                "ghidra_src" => Some(mosura::devcfg::ghidra_src().display().to_string()),
-                "oracle.ghidra_root" => Some(mosura::devcfg::oracle_root().display().to_string()),
-                "oracle.ghidra_dist" => Some(mosura::devcfg::oracle_dist().display().to_string()),
-                "watcom.install" => Some(mosura::devcfg::watcom_install().display().to_string()),
-                "watcom.wcc386" => Some(mosura::devcfg::watcom_wcc386().display().to_string()),
-                "recompile.cache" => Some(mosura::devcfg::recompile_cache().display().to_string()),
-                k if k.starts_with("binaries.") => mosura::devcfg::binary(&k["binaries.".len()..]).map(|p| p.display().to_string()),
+                "ghidra_src" => Some(mosura_core::devcfg::ghidra_src().display().to_string()),
+                "oracle.ghidra_root" => Some(mosura_core::devcfg::oracle_root().display().to_string()),
+                "oracle.ghidra_dist" => Some(mosura_core::devcfg::oracle_dist().display().to_string()),
+                "watcom.install" => Some(mosura_core::devcfg::watcom_install().display().to_string()),
+                "watcom.wcc386" => Some(mosura_core::devcfg::watcom_wcc386().display().to_string()),
+                "recompile.cache" => Some(mosura_core::devcfg::recompile_cache().display().to_string()),
+                k if k.starts_with("binaries.") => mosura_core::devcfg::binary(&k["binaries.".len()..]).map(|p| p.display().to_string()),
                 k => cfg.str(k).map(str::to_string),
             };
             match resolved.or_else(|| args.get(1).cloned()) {
@@ -143,13 +143,13 @@ fn fid_build() {
                 let path = take(&mut i);
                 let text = std::fs::read_to_string(&path)
                     .unwrap_or_else(|e| die(format!("{path}: {e}")));
-                common = mosura::analysis::fid::build::parse_common_symbols(&text);
+                common = mosura_core::analysis::fid::build::parse_common_symbols(&text);
             }
             "--map" => {
                 let path = take(&mut i);
                 let text = std::fs::read_to_string(&path)
                     .unwrap_or_else(|e| die(format!("{path}: {e}")));
-                symbol_map = mosura::analysis::fid::build::parse_linker_map(&text);
+                symbol_map = mosura_core::analysis::fid::build::parse_linker_map(&text);
                 println!("  linker map: {} named addresses", symbol_map.len());
             }
             "--dir" => {
@@ -175,7 +175,7 @@ fn fid_build() {
     }
 
     println!("fid-build: {} input file(s) -> {}", inputs.len(), out.display());
-    let spec = mosura::analysis::fid::build::BuildSpec {
+    let spec = mosura_core::analysis::fid::build::BuildSpec {
         family,
         version,
         variant,
@@ -184,7 +184,7 @@ fn fid_build() {
         compiler_spec,
         symbol_map,
     };
-    match mosura::analysis::fid::build::build_to_file(&inputs, &spec, &out) {
+    match mosura_core::analysis::fid::build::build_to_file(&inputs, &spec, &out) {
         Ok(result) => {
             println!("  ingested  {}", result.ingested);
             println!("  relations {}", result.relations);
@@ -214,10 +214,10 @@ fn omf_uber() {
     let out = std::env::args().nth(3).unwrap_or_else(|| die("usage: omf-uber <lib> <out.c>"));
     let data = std::fs::read(&lib).unwrap_or_else(|e| die(format!("{lib}: {e}")));
 
-    let members = mosura::analysis::loader::omf::split_library(&data);
+    let members = mosura_core::analysis::loader::omf::split_library(&data);
     let mut names: Vec<String> = Vec::new();
     for m in &members {
-        let module = mosura::analysis::loader::omf::parse_module(m);
+        let module = mosura_core::analysis::loader::omf::parse_module(m);
         for (name, seg, _) in &module.publics {
             // Only code-segment publics: a data symbol pulls its module in just as well, but
             // referencing it as a function is what keeps the generated C uniform.
@@ -295,7 +295,7 @@ fn data_export() {
         i += 1;
     }
     let dir = dir.unwrap_or_else(|| die("usage: data-export <dir> [--overwrite] [--what all|specs|fid]"));
-    let res = mosura::resources::get();
+    let res = mosura_core::resources::get();
     match res.export(&dir, &what, overwrite) {
         Ok(written) => println!("data-export: {} file(s) -> {}", written.len(), dir.display()),
         Err(e) => die(format!("data-export: {e}")),
@@ -305,14 +305,14 @@ fn data_export() {
 /// `data-list [--data-dir <dir>]...` — every resource name the provider resolves and where it
 /// comes from (`embedded`, or the directory that overrides it), one per line.
 fn data_list() {
-    let rest = mosura::resources::from_args(std::env::args().skip(2).collect()).unwrap_or_else(|e| die(e));
+    let rest = mosura_core::resources::from_args(std::env::args().skip(2).collect()).unwrap_or_else(|e| die(e));
     if !rest.is_empty() {
         die(format!("data-list: unexpected argument {:?}", rest[0]));
     }
-    for (name, source) in mosura::resources::get().in_effect() {
+    for (name, source) in mosura_core::resources::get().in_effect() {
         let from = match source {
-            mosura::resources::Source::Embedded => "embedded".to_string(),
-            mosura::resources::Source::Dir(d) => d.display().to_string(),
+            mosura_core::resources::Source::Embedded => "embedded".to_string(),
+            mosura_core::resources::Source::Dir(d) => d.display().to_string(),
         };
         println!("{name}\t{from}");
     }

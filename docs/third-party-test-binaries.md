@@ -12,7 +12,7 @@ Two categories, kept apart because their situations are not the same.
 | --- | --- | --- |
 | Ghidra — the language definitions and decompiler datatests mosura is a port of | `third_party/ghidra/` | Apache 2.0; `LICENSE`, `NOTICE` and `README.md` alongside, pinned to `Ghidra_12.0.3_build` (`09f14c92`) |
 | Ghidra's shipped Function ID databases | `third_party/ghidra-data/FunctionID/*.fidb` (79 MB) | Apache 2.0, from `NationalSecurityAgency/ghidra-data` tag `Ghidra_12.0.3`; provenance in that directory's `README.md` |
-| `6502.sla` | `crates/mosura/tests/fixtures/sla/` | compiled from Ghidra's own `6502.slaspec` (Apache 2.0) |
+| `6502.sla` | `crates/mosura-core/tests/fixtures/sla/` | compiled from Ghidra's own `6502.slaspec` (Apache 2.0) |
 
 Nothing in this category needs any further justification: it is redistributed as its upstream
 licence allows, with the licence text and the pin recorded next to it.

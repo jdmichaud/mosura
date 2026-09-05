@@ -70,6 +70,6 @@ corpus (8.0s → 0.46s).
   function — inherent to the current design; it rides all pipeline wins.
 - A fast linker (mold/lld, needs install) would cut the 11.6s rebuild further — link is
   ~80% of it.
-- If the loop only needs the decompile-track tests, `cargo test -p mosura --test
+- If the loop only needs the decompile-track tests, `cargo test -p mosura-core --test
   decompile_corpus --test ir_parity --test disasm_golden` avoids relinking/running the
   other 13 binaries.

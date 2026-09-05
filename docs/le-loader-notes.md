@@ -1,6 +1,6 @@
 # LE (Linear Executable) loader — design notes
 
-**Status: loader implemented** (`crates/mosura/src/analysis/loader/le.rs`), validated
+**Status: loader implemented** (`crates/mosura-core/src/analysis/loader/le.rs`), validated
 against the ground truth below by `le_subjects_objects` in `tests/analysis_parity.rs` (the two
 objects + the entry, parsed from the real file bytes). Ghidra has no LE/LX loader, so there
 is no Ghidra oracle — this is the first loader mosura builds **beyond** Ghidra, done

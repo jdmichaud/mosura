@@ -26,7 +26,7 @@ hypotheses died inside §6 alone before anyone questioned its premise.
 
 **How to apply.** Before hunting a defect that is stated as a differential, build an **absolute**
 measure — one that references only the binary and our own output — and **give it a positive
-control**. `docs/over-decode-measure.md` + `crates/mosura/examples/over_decode.rs` are that
+control**. `docs/over-decode-measure.md` + `crates/mosura-core/examples/over_decode.rs` are that
 measure and are reusable: A1 non-executable decode, A2 offcut starts, A3 flow into
 mid-instruction, A4 fixup target mid-instruction, A5 unreachable starts. Every corpus fixture
 reports zero on all of them, so **a zero is indistinguishable from a broken tool** — hence

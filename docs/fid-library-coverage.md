@@ -189,7 +189,7 @@ was *supposed* to be built from and check it.
 
 Two other places describe the same thing and must agree with it:
 `docs/fid-building-databases.md` (prose, and *why* each column is built its way) and
-`crates/mosura/tests/fid_database_drift.rs` (a sampled subset — it re-ingests and byte-compares,
+`crates/mosura-core/tests/fid_database_drift.rs` (a sampled subset — it re-ingests and byte-compares,
 so it goes red when the recipe or the hasher changes, and is what proves a regeneration
 reproduced the committed file).
 

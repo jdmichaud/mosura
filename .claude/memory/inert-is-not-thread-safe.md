@@ -26,7 +26,7 @@ afterwards cannot help: the race is *inside* the window.
 
 ## The fix, and why the obvious one is wrong
 
-`crates/mosura/src/analysis/overrides.rs` — **thread-locals**, env vars kept as fallback. An
+`crates/mosura-core/src/analysis/overrides.rs` — **thread-locals**, env vars kept as fallback. An
 analysis runs entirely on its caller's thread, so an override is private to it.
 
 A `Mutex` is the reflex answer and it is quietly useless here: it would have to be taken by

@@ -36,7 +36,7 @@ mosura/scripts/build-ghidra-dist.sh        # -> <ghidra>/build/dist/ghidra_*_DEV
 mosura/scripts/capture-analysis.sh         # -> goldens/analysis/*.snapshot
 
 # 4. Gate.
-cargo test -p mosura --test analysis_parity
+cargo test -p mosura-core --test analysis_parity
 ```
 
 Order note: step 1 drops un-headered oracle binaries into Ghidra's `src/decompile/cpp/`,
@@ -76,6 +76,6 @@ The headless and MCP captures have been verified **identical** for the current c
 
 ## Harness
 
-`crates/mosura/tests/analysis_parity.rs` parses each golden, runs `analysis::analyze_binary`
+`crates/mosura-core/tests/analysis_parity.rs` parses each golden, runs `analysis::analyze_binary`
 (Unimplemented today), and ratchets `EXPECTED_ANALYSIS_PASS` (0 now) toward full corpus
 parity as A1–A4 land.

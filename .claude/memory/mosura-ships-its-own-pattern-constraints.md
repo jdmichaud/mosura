@@ -6,7 +6,7 @@ metadata:
   type: feedback
 ---
 
-`pattern_dirs()` (`crates/mosura/src/analysis/analyzers/function_start.rs:286`) returns the SLEIGH
+`pattern_dirs()` (`crates/mosura-core/src/analysis/analyzers/function_start.rs:286`) returns the SLEIGH
 processor tree **plus** `specs/patterns`, mirroring `Patterns.java:42-55`, which merges the
 `patternconstraints.xml` of every module into one decision tree. mosura's own
 `specs/patterns/patternconstraints.xml` contributes exactly one node:

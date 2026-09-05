@@ -6,7 +6,7 @@ document decides the shape; the numbered phases at the end are the order to buil
 
 ## 0. What this document decides
 
-1. **Five crates, one public surface.** `mosura-core` (today's `crates/mosura`, the
+1. **Five crates, one public surface.** `mosura-core` (today's `crates/mosura-core`, the
    Ghidra-shaped internals, free to keep moving), `mosura-api` (internal: sessions, operations,
    options, tables — Rust-testable, not a promised surface), `mosura-capi` (the **one public
    surface**: `extern "C"` one-liners over `mosura-api`, shipped as `libmosura` + `mosura.h`),

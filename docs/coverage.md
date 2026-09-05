@@ -485,7 +485,7 @@ mosura `printc.rs`. The common emitters are covered; the gaps are P8 (Task #6).
 ## Summary (rule pools — the exact core)
 
 Counts verified at mosura `f728a00` against the `pub struct Rule*` set in
-`crates/mosura/src/decompile/` and the `.with(...)` wiring in `pipeline.rs`. Ghidra's
+`crates/mosura-core/src/decompile/` and the `.with(...)` wiring in `pipeline.rs`. Ghidra's
 `universalAction` registers **154** *active* rules across the three pools (`coreaction.cc:5511`
 oppool1 = 134, `:5662` oppool2 = 5, `:5694` cleanup = 15). Commented-out registrations are excluded
 — `RuleIndirectConcat` is the only one, and it is not a gap (§3).

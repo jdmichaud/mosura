@@ -68,7 +68,7 @@ and decodes to the EAX/EDX/EBX/ECX arg order, and the LE loader assigns `compile
 five args as `mov eax,a; mov edx,b; mov ebx,c; mov ecx,d; push e` and the callee returns in EAX
 with `ret 4` (callee stack cleanup) — exactly the convention the cspec declares. The **decompiler-side** consumption (recovering the subject function
 prototypes with watcall and validating them against the the RE tracker recovered signatures) is
-the decompiler's job — that lives in `crates/mosura/src/decompile/` and is task #9's main-agent
+the decompiler's job — that lives in `crates/mosura-core/src/decompile/` and is task #9's main-agent
 handoff; the cspec is written and ready for it. The 16-bit MZ watcall variant is a follow-up.
 
 ## Coverage — measured across the 10.0–11.0 lineage

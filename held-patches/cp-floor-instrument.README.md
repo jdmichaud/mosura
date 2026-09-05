@@ -8,7 +8,7 @@ Applies cleanly to `46cccf5` and compiles (both verified).
 git apply held-patches/cp-floor-instrument.patch
 cargo build --release
 MOSURA_ANALYSIS_TRACE=1 <your the subject LE run> > /tmp/subject-fc.log 2>&1
-git checkout -- crates/mosura/src/analysis/symbolic.rs crates/mosura/src/analysis/analyzers/mod.rs
+git checkout -- crates/mosura-core/src/analysis/symbolic.rs crates/mosura-core/src/analysis/analyzers/mod.rs
 ```
 
 No new knob — it rides the `MOSURA_ANALYSIS_TRACE` you already set. The env var is read once per

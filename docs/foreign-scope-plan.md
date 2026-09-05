@@ -3,8 +3,8 @@
 **Status:** hypotheses validated 2026-08-25 (POC); **engine implemented 2026-08-25** (Phases 1–5).
 This document fixes the design and the staged plan so the work does not drift.
 
-**Implementation:** `crates/mosura/src/analysis/foreign.rs` (engine + 10 unit tests),
-`crates/mosura/examples/foreign_propose.rs` (band proposer, Phase 1), and the opt-in `--exclude-foreign <file>`
+**Implementation:** `crates/mosura-core/src/analysis/foreign.rs` (engine + 10 unit tests),
+`crates/mosura-core/examples/foreign_propose.rs` (band proposer, Phase 1), and the opt-in `--exclude-foreign <file>`
 flag on `recompile_check` (denominator wiring, Phase 4). The per-binary confirmation file (Phase 2)
 is **reverse-engineering data about a proprietary binary — it lives with that binary's own artifacts,
 not in the repo.** Default-safe: with no confirmation the classification is exactly today's

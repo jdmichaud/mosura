@@ -222,7 +222,7 @@ arches), clang, dosemu2, native Open Watcom. Go dropped (user). Disk: build cach
 - **X2 — vendored-ghidra fallback for decompile-lane paths (handoff).** `third_party/ghidra/`
   now vendors the used language files + datatests; `paths::processors_dir()`/`language_dir()`/
   `datatests_dir()` resolve checkout-first → vendored. Analysis-lane + all shared test files
-  are repointed, but `crates/mosura/src/decompile/{build,printc,directwrite,pipeline}.rs`
+  are repointed, but `crates/mosura-core/src/decompile/{build,printc,directwrite,pipeline}.rs`
   still hardcode `ghidra_src().join("Ghidra/Processors/...")` (decompiler lane — not touched).
   Switching those to `paths::language_dir("x86")` gives the decompile tests the same
   no-checkout fallback. Mechanical, zero behavior change with a checkout present.

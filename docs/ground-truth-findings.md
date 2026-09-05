@@ -522,7 +522,7 @@ names the absent internalstorage/inject ids).
 
 ## Update (2026-09-05, closure of the productisation plan): gt-arms — one wrong-code-arm finding, pre-existing
 
-`cargo test -p mosura --test ground_truth_recompile_arms -- --ignored` at master `d4b9cda` (the
+`cargo test -p mosura-core --test ground_truth_recompile_arms -- --ignored` at master `d4b9cda` (the
 closure of `docs/product/plan-2026-09-05.md`): 27 programs, plain-32 PASS 13, arm TUs 53/109
 functions — and ONE violation of the invariant "a program that PASSes plain must PASS arm-enabled":
 

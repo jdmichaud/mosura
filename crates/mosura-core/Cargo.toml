@@ -1,0 +1,23 @@
+[package]
+name = "mosura-core"
+version = "0.0.0"
+description = "mosura core: a Rust reimplementation of Ghidra's logic (SLEIGH engine, p-code, decompiler, recompile). The port; the product surface is the C API crate."
+edition.workspace = true
+license.workspace = true
+build = "build.rs"
+
+[lib]
+name = "mosura_core"
+
+[features]
+# Embed Ghidra's vendored FID databases (third_party/ghidra-data/FunctionID, ~76 MB) into the
+# library. Off by default: in the workspace they are reached as an override directory; a shipped
+# libmosura carries only mosura's own databases unless built with this.
+fid-ghidra = []
+
+[dependencies]
+roxmltree.workspace = true
+regex.workspace = true
+flate2.workspace = true
+object.workspace = true
+cpp_demangle.workspace = true

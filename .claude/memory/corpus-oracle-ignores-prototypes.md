@@ -24,7 +24,7 @@ pointer/array output as a regression. With the fix, capture's C is byte-identica
 decomp_dbg's for divopt/modulo/indproto/pointerrel (only external-symbol *names* differ — e.g.
 `puts` vs `func_0x1005e0` because capture doesn't `readLoaderSymbols` — which ccompare erases).
 
-**New trustworthy corpus baseline** (`cargo test -q -p mosura --test decompile_corpus --
+**New trustworthy corpus baseline** (`cargo test -q -p mosura-core --test decompile_corpus --
 --nocapture`): avg **0.7792, >=0.70: 45/60** (was 0.7665 / 43). divopt **0.614 → 0.940**;
 modulo unchanged. Full mosura suite stays **119 green** (no Rust source touched). See also
 [[direction-faithful-port]]. The earlier "make divopt xunknown8" framing (Task #10) was

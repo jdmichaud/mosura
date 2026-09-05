@@ -1,7 +1,7 @@
-diff --git a/crates/mosura/src/analysis/analyzers/mod.rs b/crates/mosura/src/analysis/analyzers/mod.rs
+diff --git a/crates/mosura-core/src/analysis/analyzers/mod.rs b/crates/mosura-core/src/analysis/analyzers/mod.rs
 index 7376fca..33d3680 100644
---- a/crates/mosura/src/analysis/analyzers/mod.rs
-+++ b/crates/mosura/src/analysis/analyzers/mod.rs
+--- a/crates/mosura-core/src/analysis/analyzers/mod.rs
++++ b/crates/mosura-core/src/analysis/analyzers/mod.rs
 @@ -825,9 +825,24 @@ impl Analyzer for ConstantPropagationAnalyzer {
          // drops entries: an `AddressSet` coalesces adjacent ranges, so functions at consecutive
          // entries collapse into one range and only the first was ever propagated
@@ -46,10 +46,10 @@ index 7376fca..33d3680 100644
          if !new_funcs.is_empty() {
              sched.function_defined(&new_funcs);
          }
-diff --git a/crates/mosura/src/analysis/symbolic.rs b/crates/mosura/src/analysis/symbolic.rs
+diff --git a/crates/mosura-core/src/analysis/symbolic.rs b/crates/mosura-core/src/analysis/symbolic.rs
 index 63e8502..d6b75ef 100644
---- a/crates/mosura/src/analysis/symbolic.rs
-+++ b/crates/mosura/src/analysis/symbolic.rs
+--- a/crates/mosura-core/src/analysis/symbolic.rs
++++ b/crates/mosura-core/src/analysis/symbolic.rs
 @@ -461,11 +461,23 @@ pub fn flow_constants(
      // NO parameter references for calls without a known signature. Model that by clearing the
      // arg-register set there, so [`add_param_references`] no-ops. (`isHarvard` — default space

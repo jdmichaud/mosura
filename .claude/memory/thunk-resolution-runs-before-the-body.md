@@ -25,7 +25,7 @@ the target as already owned. Port it *after* the body walk and every thunk vetoe
 the veto looks like a faithful guard firing, and the whole mechanism silently produces nothing.
 Hence `thunk::resolve_thunks` runs at the **top** of `compute_function_bodies` (mosura's
 whole-program stand-in for `fixupFunctionBody`). Landed `69cf941`, gate `55531a3`, module
-`crates/mosura/src/analysis/analyzers/thunk.rs`.
+`crates/mosura-core/src/analysis/analyzers/thunk.rs`.
 
 **Why:** the subject's entry `0x601f8` is `EB 76` — a short jump over the inline Watcom copyright banner
 (`analysis/loader/watcom.rs`) — and `0x601f8 + 2 + 0x76 = 0x60270` exactly. Ghidra creates

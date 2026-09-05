@@ -162,10 +162,10 @@ Every golden file header records: language id, compiler spec, **oracle Ghidra ve
 ## 8. First milestone — status
 
 Goal: a live, localized baseline for the **SLEIGH engine (1a+1b)**. Implemented in
-`crates/mosura` (the harness) + `oracle/` (the offline capture tool); `cargo test`
+`crates/mosura-core` (the harness) + `oracle/` (the offline capture tool); `cargo test`
 is green and the ratchets sit at their red baseline.
 
-- ✅ **Harness skeleton** — `crates/mosura`: `datatest` (reader), `conformance`
+- ✅ **Harness skeleton** — `crates/mosura-core`: `datatest` (reader), `conformance`
   (exact / `stringmatch` / Tally modes), `golden` (disasm/p-code parser), `sleigh`
   (stub engine returning `Unimplemented`). Unit-tested.
 - ✅ **Datatest baseline** — `tests/conformance_datatests.rs` ingests all **79**

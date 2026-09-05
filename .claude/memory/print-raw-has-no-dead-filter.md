@@ -10,7 +10,7 @@ metadata:
 
 # `print_raw` shows dead ops — a bare opcode is a corpse, not a survivor
 
-`Funcdata::print_raw` (`crates/mosura/src/decompile/funcdata.rs:1118`) iterates `self.op_ids()`
+`Funcdata::print_raw` (`crates/mosura-core/src/decompile/funcdata.rs:1118`) iterates `self.op_ids()`
 with **no dead filter**. `op_destroy` clears the op's `inrefs` and `output`, so a destroyed op still
 appears in the dump — as a bare opcode with no operands:
 

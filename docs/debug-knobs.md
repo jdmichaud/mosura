@@ -10,7 +10,7 @@
 > build time with a `--data-dir` override (WP5, `crate::resources`) — the library reads no
 > environment variable. The plan is `docs/product/plan-2026-09-05.md`.
 
-*The inventory at a531553 (before R6): 81 names, 208 `eprintln!` in crates/mosura/src, 141 `std::env::var` reads outside paths.rs. Four kinds: a DEBUG PRINT gate (read at the print site — migrated to `crate::debug`, `--debug topic,..`), a BEHAVIOUR KNOB (changes what the decompiler, the survey or an oracle does — decided one by one: an axis/option with a doc, or deleted with its branch), a PATH (configuration, paths.rs, untouched), a TEST HOOK / INSTRUMENT (kept, documented). The emit-layer decisions are executed in R6; the others are listed for the ledger. Evidence: the read sites at a531553.*
+*The inventory at a531553 (before R6): 81 names, 208 `eprintln!` in crates/mosura-core/src, 141 `std::env::var` reads outside paths.rs. Four kinds: a DEBUG PRINT gate (read at the print site — migrated to `crate::debug`, `--debug topic,..`), a BEHAVIOUR KNOB (changes what the decompiler, the survey or an oracle does — decided one by one: an axis/option with a doc, or deleted with its branch), a PATH (configuration, paths.rs, untouched), a TEST HOOK / INSTRUMENT (kept, documented). The emit-layer decisions are executed in R6; the others are listed for the ledger. Evidence: the read sites at a531553.*
 
 | name | kind | sites (file:line at a531553) | decision |
 |---|---|---|---|
@@ -111,7 +111,7 @@ documented hook or a DECIDE-later knob): `MOSURA_AOU_PC` (decompile/recover.rs);
 `MOSURA_*` name at all: `WATCOM_WCC386` (analysis/loader/le.rs), the Watcom compiler's path for the LE loader's
 probe -- a toolchain location like the ones paths.rs holds, not a knob; it stays where it is.
 
-`eprintln!` left in crates/mosura/src: 34 inside `#[cfg(test)]` modules (the tests' own:
+`eprintln!` left in crates/mosura-core/src: 34 inside `#[cfg(test)]` modules (the tests' own:
 `skip: ..` notices when a fixture or the Ghidra tree is absent, and the test-local dumps), and
 8 elsewhere (analysis/fid/build.rs x2, debug.rs x2, analysis/analyzers/function_start.rs x1, analysis/decompiler.rs x1, analysis/fid/query.rs x1, decompile/action.rs x1), each classified: analysis/analyzers/function_start.rs x1: `mosura: pattern file error (<file>): <err>` -- a WARNING (a pattern file that failed to load), stays plain; analysis/decompiler.rs x1: `decompile_function: pipeline failed for FUN_.. -- skipping` -- a WARNING (classified in commit 4a), stays plain; analysis/fid/build.rs x2: the FID database builder's progress notices (`skip <file>: <err>`, `skipped N module(s): language ..`) -- a tool's output, WARNING-class, stays plain; analysis/fid/query.rs x1: `fid: skipping <path>: <err>` -- a WARNING (an unreadable FID file), stays plain; debug.rs x2: the facility's own -- the `debug!` macro's print and the unknown-topic WARNING at startup; decompile/action.rs x1: the perf table's rows -- plain output under the one `on(Topic::Perf)` gate (a table is output, commit 4f); its header is the `debug!` line. None of them was ever env-gated; a
 print that was never a debug gate is a WARNING (it keeps speaking) or an always-on DIAGNOSTIC, and R6

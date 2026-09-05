@@ -16,7 +16,7 @@ sibling checkout is absent (SLEIGH-gated tests used to `return` early without ta
   Search** byte patterns — Z80 and 6502 ship none), and `datatests/` (the decompiler conformance
   fixtures). `LICENSE`/`NOTICE` are Ghidra's own (Apache-2.0) — this subset is redistributed
   under that license, unmodified.
-- **Resolution order** (`crates/mosura/src/paths.rs`): `GHIDRA_SRC` env → the sibling checkout
+- **Resolution order** (`crates/mosura-core/src/paths.rs`): `GHIDRA_SRC` env → the sibling checkout
   (`<workspace>/../ghidra`) → this vendored copy. A developer with a checkout sees the checkout;
   a bare clone falls back here.
 - **Verify / refresh**: `scripts/verify-vendored-ghidra.sh` diffs this copy against the pinned

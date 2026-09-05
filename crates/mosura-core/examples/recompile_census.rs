@@ -1,0 +1,297 @@
+//! Attribute every recompiled function's difference from the original, and census the causes.
+//!
+//! This is the instrument the byte-exact work runs on. It replaces "what percentage of bytes
+//! agree" — a number that cannot distinguish a one-register miss from hand-written assembler —
+//! with "which named thing differs, and how often across the population".
+//!
+//! Usage:
+//!   recompile_census <binary> <manifest.tsv> <obj-dir> [--lang <id>] [--detail <idx>] [--limit n]
+//!
+//! The manifest supplies function identity (index, address, name, extent); the object directory
+//! holds one compiled translation unit per function, named `<idx>.OBJ`. Both sides are decoded
+//! with mosura's own SLEIGH engine, so nothing here is x86-specific.
+use mosura_core::analysis;
+use mosura_core::decompile::space::Address;
+use mosura_core::recompile::insn::NormInsn;
+use mosura_core::recompile::{emitted_symbol_address, verify, DivergenceClass, Subject, Vocabulary};
+use std::collections::BTreeMap;
+use std::path::Path;
+
+struct Row {
+    idx: String,
+    va: u64,
+    name: String,
+    len: usize,
+}
+
+fn main() {
+    let mut args = std::env::args().skip(1);
+    let bin = args.next().expect("usage: recompile_census <binary> <manifest> <objdir>");
+    let manifest = args.next().expect("manifest");
+    let objdir = args.next().expect("objdir");
+    let mut lang = "x86:LE:32:default".to_string();
+    let mut detail: Option<String> = None;
+    let mut limit = usize::MAX;
+    let mut out_path: Option<String> = None;
+    let mut foreign_out: Option<String> = None;
+    while let Some(a) = args.next() {
+        match a.as_str() {
+            "--lang" => lang = args.next().expect("--lang <id>"),
+            "--detail" => detail = Some(args.next().expect("--detail <idx>")),
+            "--limit" => limit = args.next().expect("--limit n").parse().expect("n"),
+            "--out" => out_path = Some(args.next().expect("--out <path>")),
+            "--foreign-out" => foreign_out = Some(args.next().expect("--foreign-out <path>")),
+            other => panic!("unknown argument {other}"),
+        }
+    }
+
+    let rows = read_manifest(&manifest);
+    // The LOADER, not the analyzer: this tool needs the fixup-applied image bytes and nothing
+    // else, and the full auto-analysis pipeline costs a minute per run — which would put a
+    // 60-second floor under an instrument meant to be run constantly.
+    let data = std::fs::read(Path::new(&bin)).expect("read binary");
+    let prog = analysis::loader::load_le(&data).expect("load binary");
+    let space = prog.default_space;
+
+    let resolver = emitted_symbol_address;
+
+    // PASS 1 — learn what this toolchain emits, from everything it just produced. A function
+    // whose ORIGINAL uses a spelling the compiler never once emits across three thousand
+    // translation units was not built by this compiler, and counting it as a decompiler failure
+    // would make the score a measure of how much foreign code the binary links in.
+    let mut vocab = Vocabulary::new();
+    let mut prepared: Vec<(usize, mosura_core::recompile::Checked)> = Vec::new();
+    let mut census: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut primary_census: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut class_totals: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut sim_sum = 0.0;
+    let mut scored = 0usize;
+    let mut out = String::from(
+        "idx\tva\tname\tverdict\tprimary\tsim\torig_insns\tcand_insns\tequal\tforeign\tclasses\n",
+    );
+
+    for (ri, row) in rows.iter().take(limit).enumerate() {
+        if let Some(d) = &detail {
+            if &row.idx != d {
+                continue;
+            }
+        }
+        let objp = format!("{objdir}/{}.OBJ", row.idx);
+        let Ok(data) = std::fs::read(&objp) else {
+            *census.entry("NO_OBJECT").or_default() += 1;
+            out.push_str(&format!("{}\t{:08x}\t{}\tNO_OBJECT\t\t\t\t\t\t\n", row.idx, row.va, row.name));
+            continue;
+        };
+        let mut obytes = Vec::with_capacity(row.len);
+        for i in 0..row.len {
+            match prog.memory.byte_at(Address::new(space, row.va + i as u64)) {
+                Some(b) => obytes.push(b),
+                None => break,
+            }
+        }
+        let subject = Subject { name: row.name.clone(), va: row.va, len: row.len };
+        let checked = match verify(&lang, &obytes, &subject, &data, &resolver) {
+            Ok(c) => c,
+            Err(e) => {
+                *census.entry("OBJ_ERROR").or_default() += 1;
+                out.push_str(&format!("{}\t{:08x}\t{}\tOBJ_ERROR\t{e}\t\t\t\t\t\n", row.idx, row.va, row.name));
+                continue;
+            }
+        };
+
+        vocab.observe(&checked.candidate);
+        prepared.push((ri, checked));
+    }
+
+    // PASS 2 — compare, now that "reachable by this toolchain" can be decided.
+    eprintln!(
+        "toolchain vocabulary: {} (shape, encoding) pairs over {} instructions",
+        vocab.len(),
+        vocab.instructions_seen
+    );
+    let mut foreign_census: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut foreign_lines = String::from("va\tmnemonic\ttext\tform\n");
+    for (ri, checked) in &prepared {
+        let row = &rows[*ri];
+        let (orig, cnorm, cand) = (checked.original.as_slice(), checked.candidate.as_slice(), &checked.relinked);
+        // Only the strong signal counts: an encoding this compiler uses for nothing at all.
+        let foreign = vocab.foreign_forms(orig);
+        let is_foreign = !foreign.is_empty();
+        if foreign_out.is_some() {
+            for f in &foreign {
+                foreign_lines.push_str(&format!(
+                    "{:08x}\t{}\t{}\t{}\n",
+                    f.addr,
+                    f.mnemonic,
+                    f.text,
+                    f.form.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                ));
+            }
+        }
+        let diff = &checked.diff;
+        if is_foreign {
+            *foreign_census.entry(diff.verdict.as_str()).or_default() += 1;
+        }
+        *census.entry(diff.verdict.as_str()).or_default() += 1;
+        if let Some(p) = diff.primary {
+            *primary_census.entry(p.as_str()).or_default() += 1;
+        }
+        for (c, n) in &diff.class_counts {
+            if *c != DivergenceClass::Equal {
+                *class_totals.entry(c.as_str()).or_default() += n;
+            }
+        }
+        sim_sum += diff.similarity;
+        scored += 1;
+
+        let classes = diff
+            .class_counts
+            .iter()
+            .filter(|(c, _)| **c != DivergenceClass::Equal)
+            .map(|(c, n)| format!("{}={}", c.as_str(), n))
+            .collect::<Vec<_>>()
+            .join(",");
+        out.push_str(&format!(
+            "{}\t{:08x}\t{}\t{}\t{}\t{:.3}\t{}\t{}\t{}\t{}\t{}\n",
+            row.idx,
+            row.va,
+            row.name,
+            diff.verdict.as_str(),
+            diff.primary.map(|p| p.as_str()).unwrap_or(""),
+            diff.similarity,
+            diff.orig_insns,
+            diff.cand_insns,
+            diff.equal_insns,
+            foreign.len(),
+            classes
+        ));
+
+        if detail.is_some() {
+            if is_foreign {
+                println!(
+                    "-- {} instruction(s) use an encoding this toolchain never emits (foreign):",
+                    foreign.len()
+                );
+                for f in foreign.iter().take(8) {
+                    println!("     {:08x}  {}", f.addr, f.text);
+                }
+            }
+            print_detail(&row.name, orig, cnorm, diff, cand);
+        }
+    }
+
+    if detail.is_none() {
+        eprintln!("\n=== verdicts ({scored} scored) ===");
+        for (k, v) in census.iter() {
+            eprintln!("{v:6}  {k}");
+        }
+        eprintln!("\n=== dominant cause per function ===");
+        let mut p: Vec<_> = primary_census.iter().collect();
+        p.sort_by_key(|(_, n)| std::cmp::Reverse(**n));
+        for (k, v) in p {
+            eprintln!("{v:6}  {k}");
+        }
+        eprintln!("\n=== total divergences by class ===");
+        let mut c: Vec<_> = class_totals.iter().collect();
+        c.sort_by_key(|(_, n)| std::cmp::Reverse(**n));
+        for (k, v) in c {
+            eprintln!("{v:8}  {k}");
+        }
+        eprintln!("\n=== functions whose ORIGINAL uses an encoding this toolchain never emits ===");
+        let total_foreign: usize = foreign_census.values().sum();
+        eprintln!("{total_foreign:6}  total (not reachable from C with this compiler)");
+        for (k, v) in foreign_census.iter() {
+            eprintln!("{v:6}    of which verdict {k}");
+        }
+        eprintln!("\nmean instruction similarity: {:.4}", sim_sum / scored.max(1) as f64);
+    }
+    if let Some(p) = foreign_out {
+        std::fs::write(&p, foreign_lines).expect("write");
+        eprintln!("foreign instructions written to {p}");
+    }
+    if let Some(p) = out_path {
+        std::fs::write(&p, out).expect("write");
+        eprintln!("rows written to {p}");
+    }
+}
+
+/// Drop the alignment padding a linker leaves between functions.
+///
+/// The extent a function is recorded with runs to the next function's entry, which includes any
+/// padding. At byte level that has to be pattern-matched and guessed at; at instruction level it
+/// is simply the run of no-ops after the last control transfer, which is exactly what padding is.
+fn print_detail(
+    name: &str,
+    orig: &[NormInsn],
+    cand: &[NormInsn],
+    diff: &mosura_core::recompile::FnDiff,
+    c: &mosura_core::recompile::Candidate,
+) {
+    println!("=== {name} : {} ===", diff.verdict.as_str());
+    println!(
+        "orig {} insns / {} bytes    cand {} insns / {} bytes    similarity {:.3}",
+        diff.orig_insns, diff.orig_bytes, diff.cand_insns, diff.cand_bytes, diff.similarity
+    );
+    if !c.fixups.is_empty() {
+        println!("-- relocations resolved --");
+        for f in &c.fixups {
+            println!(
+                "   +{:#05x} {:>2}b {}{} -> {}",
+                f.offset,
+                f.width,
+                f.symbol.clone().unwrap_or_else(|| "<segment>".into()),
+                if f.self_relative { " (rel)" } else { "" },
+                f.resolved.map(|a| format!("{a:#x}")).unwrap_or_else(|| "UNRESOLVED".into())
+            );
+        }
+    }
+    if !c.unresolved.is_empty() {
+        println!("-- UNRESOLVED symbols: {:?}", c.unresolved);
+    }
+    println!("-- alignment --");
+    for op in &diff.ops {
+        match op {
+            mosura_core::recompile::AlignOp::Pair { oi, ci, class } => {
+                let mark = if *class == DivergenceClass::Equal { " " } else { "~" };
+                println!(
+                    "{mark} {:08x}  {:<38} | {:<38} {}",
+                    orig[*oi].addr,
+                    orig[*oi].text,
+                    cand[*ci].text,
+                    if *class == DivergenceClass::Equal { "".into() } else { format!("[{}]", class.as_str()) }
+                );
+            }
+            mosura_core::recompile::AlignOp::OrigOnly { oi } => {
+                println!("- {:08x}  {:<38} | {:<38} [missing]", orig[*oi].addr, orig[*oi].text, "");
+            }
+            mosura_core::recompile::AlignOp::CandOnly { ci } => {
+                println!("+ {:08x}  {:<38} | {:<38} [extra]", cand[*ci].addr, "", cand[*ci].text);
+            }
+        }
+    }
+    if !diff.reg_subst.is_empty() {
+        println!(
+            "-- register substitution ({}): {:?}",
+            if diff.reg_subst_consistent { "consistent" } else { "INCONSISTENT" },
+            diff.reg_subst
+        );
+    }
+}
+
+fn read_manifest(path: &str) -> Vec<Row> {
+    let text = std::fs::read_to_string(path).expect("manifest");
+    let mut rows = Vec::new();
+    for line in text.lines() {
+        if line.starts_with('#') {
+            continue;
+        }
+        let f: Vec<&str> = line.split('\t').collect();
+        if f.len() < 5 || f[0] == "idx" {
+            continue;
+        }
+        let Ok(va) = u64::from_str_radix(f[1], 16) else { continue };
+        let Ok(len) = f[4].parse::<usize>() else { continue };
+        rows.push(Row { idx: f[0].to_string(), va, name: f[2].to_string(), len });
+    }
+    rows
+}

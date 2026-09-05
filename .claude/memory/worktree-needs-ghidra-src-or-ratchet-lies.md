@@ -10,7 +10,7 @@ metadata:
 
 **Always run a scratch git worktree with `GHIDRA_SRC=/home/jd/projects/mosura/ghidra`.**
 
-`paths::ghidra_src()` (`crates/mosura/src/paths.rs:21`) resolves in order: **`GHIDRA_SRC` env → the
+`paths::ghidra_src()` (`crates/mosura-core/src/paths.rs:21`) resolves in order: **`GHIDRA_SRC` env → the
 sibling checkout `<workspace>/../ghidra` → the vendored in-repo copy**. A worktree created under
 `/tmp/...` has no sibling `ghidra`, so it silently drops to the vendored `third_party/ghidra` — only
 **15** `.sla` languages, missing ARM / MIPS / PowerPC.

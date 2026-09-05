@@ -1,6 +1,6 @@
 # dev-config.toml — the DEVELOPER config: where the tests, xtask, the examples and the scripts find
 # this machine's things. Copy to `dev-config.toml` (gitignored) and set what differs. An absent file
-# or key means the default shown. Read by `crates/mosura/src/devcfg.rs` (Rust) and
+# or key means the default shown. Read by `crates/mosura-core/src/devcfg.rs` (Rust) and
 # `scripts/devcfg.sh` (shell); the product library never reads it.
 #
 # Format: a TOML subset — `[section]`, `[[subject]]`, `key = "string"`, `key = true|false`, `#`.

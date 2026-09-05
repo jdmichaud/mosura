@@ -59,7 +59,7 @@ cargo xtask baseline                  # regenerate disasm/p-code goldens from th
 cargo run -q --example perf_corpus    # per-fixture timing, worst first
 ```
 
-- Source lives in `crates/mosura/src/`: `sleigh::` (the `.sla` loader, engine, and
+- Source lives in `crates/mosura-core/src/`: `sleigh::` (the `.sla` loader, engine, and
   emulator) and `decompile::` (the Varnode graph, the `Action`/`Rule` pipeline, and
   the C printer).
 - `tests/decompile_corpus.rs` scores mosura's C against Ghidra's (via

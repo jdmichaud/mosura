@@ -108,11 +108,11 @@ and read the IR.**
   mosura/   this project
 ```
 
-- `crates/mosura/src/sleigh/` — SLEIGH engine (`sla` loader, `engine`, `emu`) + p-code IR.
+- `crates/mosura-core/src/sleigh/` — SLEIGH engine (`sla` loader, `engine`, `emu`) + p-code IR.
   **Done, keep, never regress.**
-- `crates/mosura/src/decompile/` — **the faithful port (new work)**: Ghidra's data model
+- `crates/mosura-core/src/decompile/` — **the faithful port (new work)**: Ghidra's data model
   + `Action`/`Rule` pipeline, mirroring `decompile/cpp` file/class names. See `port-plan.md`.
-- `crates/mosura/src/ccompare.rs` — structural C-similarity comparator (string in, score
+- `crates/mosura-core/src/ccompare.rs` — structural C-similarity comparator (string in, score
   out), used by `decompile_corpus`.
 - `oracle/capture.cc` — offline oracle tool, built by `scripts/setup-oracle.sh`.
 - `goldens/` — committed disasm / p-code goldens.

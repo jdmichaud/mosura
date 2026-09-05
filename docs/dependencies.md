@@ -7,13 +7,13 @@ dependency-hardening line (#15).
 **Portability rule (hard constraint).** This manifest contains **no absolute paths** — nothing
 machine-specific like `/home/<user>/…`. Every dependency is located through a **key in
 `dev-config.toml`** (gitignored; every key and default in `dev-config.example.toml`, read by
-`crates/mosura/src/devcfg.rs` and `scripts/devcfg.sh`) with a sensible **relative default**, so a
+`crates/mosura-core/src/devcfg.rs` and `scripts/devcfg.sh`) with a sensible **relative default**, so a
 reader can place a dependency anywhere and name it there. No environment variable is read
 (2026-09-05). The two anchors used below:
 
 - **`$REPO`** — the mosura repo/worktree root (the directory containing `crates/`, `oracle/`,
   `goldens/`, `specs/`, `scripts/`, `docs/`). The code derives it automatically from
-  `CARGO_MANIFEST_DIR` (`crates/mosura/src/paths.rs::workspace_root`); it is never hard-coded.
+  `CARGO_MANIFEST_DIR` (`crates/mosura-core/src/paths.rs::workspace_root`); it is never hard-coded.
 - **`$HOME`** — the user's home directory. Used only for dependencies that live outside the
   repo tree and have no in-tree default.
 
@@ -46,7 +46,7 @@ Locator column reads `dev-config key → default` where the default is `$REPO`- 
 | Dependency | Locator (env → default) | Pin / version | Source |
 | --- | --- | --- | --- |
 | Rust + Cargo toolchain | `n/a` (PATH / rustup) | edition per `Cargo.toml`; stable | rustup / distro |
-| **Ghidra processor data** (`.slaspec`/`.pspec`/`.cspec`/`.ldefs`/`.opinion`) | vendored at `third_party/ghidra/` and **embedded into the library at build time** (`crates/mosura/build.rs` → `crate::resources`); `--data-dir <dir>` overrides file by file; the checkout `ghidra_src → $REPO/../ghidra` is the DEV-ORACLE tier | tag `Ghidra_12.0.3_build`, commit `09f14c92d3da6e5d5f6b7dea115409719db3cce1` | git `github.com/NationalSecurityAgency/ghidra` |
+| **Ghidra processor data** (`.slaspec`/`.pspec`/`.cspec`/`.ldefs`/`.opinion`) | vendored at `third_party/ghidra/` and **embedded into the library at build time** (`crates/mosura-core/build.rs` → `crate::resources`); `--data-dir <dir>` overrides file by file; the checkout `ghidra_src → $REPO/../ghidra` is the DEV-ORACLE tier | tag `Ghidra_12.0.3_build`, commit `09f14c92d3da6e5d5f6b7dea115409719db3cce1` | git `github.com/NationalSecurityAgency/ghidra` |
 | Compiled `.sla` (what mosura's engine loads) | embedded from `third_party/ghidra/Processors/*/data/languages/` (same provider) | built from the pinned `.slaspec` | produced once by `sleigh_opt` (see below), then vendored |
 | `sleigh_opt` (compiles `.slaspec → .sla`, one-time) | built in-place in `<ghidra_src>` by `scripts/setup-oracle.sh` | from the pinned Ghidra cpp source | Ghidra source + g++/bison/flex/libbfd |
 | In-repo committed test data (goldens + fixtures + corpus + repo cspec) | in `$REPO` (committed) | tracked in git | this repo — see [In-repo test data](#in-repo-test-data-committed-not-external) |
@@ -56,7 +56,7 @@ Notes on the Ghidra BUILD/TEST dependency:
   clone.** The exact subset mosura reads (the used processors' `data/languages` incl. compiled
   `.sla`, their `data/patterns`, and the decompiler datatests) is committed at `third_party/ghidra/`
   (~9.5 MB, Apache-2.0 with Ghidra's LICENSE/NOTICE alongside; provenance in its README).
-  `crates/mosura/build.rs` embeds the `.ldefs`/`.sla`/`.pspec`/`.cspec`/`.opinion` and pattern files,
+  `crates/mosura-core/build.rs` embeds the `.ldefs`/`.sla`/`.pspec`/`.cspec`/`.opinion` and pattern files,
   our `specs/`, and our FID databases (`data/fid/`) into the library (`crate::resources`), so a
   built binary needs **no Ghidra tree, no environment variable and no working directory**; an
   override directory (`--data-dir <dir>` on every front-end) is resolved first, file by file, and
@@ -79,7 +79,7 @@ Notes on the Ghidra BUILD/TEST dependency:
   a `--verify-only` mode (assert the pin without fetching — for CI). A **fetch script, not a git
   submodule**: the checkout is a sibling *outside* `$REPO`, Ghidra's full history would bloat
   every clone, and a fresh source clone needs the post-fetch sleigh compile a submodule can't do.
-- **Data, not the whole clone.** `crates/mosura/src/lang.rs` reads the processor `.ldefs`
+- **Data, not the whole clone.** `crates/mosura-core/src/lang.rs` reads the processor `.ldefs`
   (for the `slafile`/`processorspec`/`cspec` names), then loads the compiled **`.sla`** plus
   the `.pspec`/`.cspec`. Those are the only Ghidra files `cargo test` touches.
 - **The `.sla` is a build artifact, not shipped.** A fresh Ghidra clone does **not** contain
@@ -144,7 +144,7 @@ against.
 | `comcom32.exe` (DJGPP MZ) | `binaries.comcom32 → $HOME/.local/share/comcom32/comcom32.exe` | `e079ab24ef15a2855fde282c4a2fc020b09fc720487e67b82ec2f2f0c98cea56` / 219648 B | `watcom_detection` | Watcom no-false-positive (non-Watcom MZ → `unknown`) |
 
 > **Implemented (task #6).** These three env vars are live, resolved by
-> `crates/mosura/src/paths.rs::{ cnv_exe, comcom32_exe}` (env override, else the
+> `crates/mosura-core/src/paths.rs::{ cnv_exe, comcom32_exe}` (env override, else the
 > `$HOME`-relative default above — the same convention as `ghidra_src`). The
 > tests (`analysis_parity.rs`, `analysis/loader/{pe,mz}.rs`, `analysis/mod.rs`) and
 > `scripts/capture-analysis.sh` + `scripts/ci-clean-clone.sh` all honor them; no absolute path
@@ -169,7 +169,7 @@ so the full test surface is auditable. All under `$REPO`:
 | Capture fixtures | `oracle/fixtures/*.xml` | 31 | hand-authored / extracted |
 | Analysis corpus | `oracle/analysis-corpus/*.elf` (7) + `z80.com` + `watcom_hello.exe` | 9 | `oracle/analysis-corpus/build.sh` (needs the cross-toolchains + Watcom 10.0a) |
 | Ground-truth corpus | `oracle/ground-truth/*.<cc>-<arch>` (stripped) + `*.truth` | 2 (phase-1) | `oracle/ground-truth/build.sh` (needs the toolchains; truth derived by nm+objdump) — source-owned oracle, not Ghidra ([`ground-truth-corpus.md`](ground-truth-corpus.md)) |
-| SLEIGH decode fixture | `crates/mosura/tests/fixtures/sla/6502.sla` | 1 | committed |
+| SLEIGH decode fixture | `crates/mosura-core/tests/fixtures/sla/6502.sla` | 1 | committed |
 | Repo-owned cspec (beyond-Ghidra) | `specs/x86-32-watcom.cspec` | 1 | hand-authored (Open Watcom source) |
 
 Corpus binary checksums (committed, for reference): `watcom_hello.exe`
@@ -260,7 +260,7 @@ package.
   `--hermetic` hides a dev machine's local oracle tools + user binaries (restored on exit) to
   reproduce CI's absence locally. Run in CI by `.github/workflows/ci.yml` (portable; the script
   is the authority).
-- Test surface: `cargo test -p mosura` (needs only the BUILD/TEST tier).
+- Test surface: `cargo test -p mosura-core` (needs only the BUILD/TEST tier).
 - Regenerate disasm goldens: `scripts/setup-oracle.sh` then `cargo xtask baseline`.
 - Regenerate analysis goldens: `scripts/build-ghidra-dist.sh` then `scripts/capture-analysis.sh`.
 - Regenerate the corpus: `oracle/analysis-corpus/build.sh` (cross-toolchains + Watcom 10.0a).

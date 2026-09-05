@@ -72,7 +72,7 @@ The verdict above was over-extended into "these functions must stay COMPILE_FAIL
 follow, and it caused 47 functions to be parked twice.
 
 "Do not fix" binds the **decompiler**. `prelude.h` is not the decompiler — it is *our* compile-support
-header, written by `crates/mosura/examples/corpus_emit.rs`'s `PRELUDE` constant, and it exists
+header, written by `crates/mosura-core/examples/corpus_emit.rs`'s `PRELUDE` constant, and it exists
 precisely to make Ghidra-shaped C compilable under Watcom C89. It declared `typedef void (*code)();`,
 so the faithful text `iVar9 = (*(code *)p)();` was rejected as E1052. Declaring `typedef int
 (*code)();` compiles the identical, unchanged decompiler output. The decompiler's untyped-return

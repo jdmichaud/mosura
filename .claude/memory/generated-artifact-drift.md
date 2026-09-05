@@ -9,7 +9,7 @@ metadata:
 ---
 
 `<subject-survey>/prelude.h` is generated from the `PRELUDE` constant in
-`crates/mosura/examples/corpus_emit.rs`, and every EMIT overwrites it. A `code`-typedef fix was
+`crates/mosura-core/examples/corpus_emit.rs`, and every EMIT overwrites it. A `code`-typedef fix was
 hand-applied to the generated FILE, measured (COMPILE_FAIL 75 → 29, E1052 47 → 0), and written up in
 commit `26db108` as though it were the state of the tree — while the constant still said `void`. The
 next EMIT silently restored `void`, 47 E1052 failures came back, and they were then re-adjudicated
