@@ -158,11 +158,20 @@ fn emit_state<'s>(s: &'s mut Session, o: &Options, pk: &Key) -> Result<&'s mut E
         // The contract cache (`Program::contract_cache`, an order-dependent memo: a cycle's
         // InProgress fallback depends on which function was decompiled first) is not frozen. The
         // survey emitted on the very program object that had run pass 1, cache warmed in pass-1
-        // order; re-running the pass on the thawed program warms it the same way (the recovered
-        // prototypes it recomputes equal the frozen ones — the P1 round-trip test), so the
-        // emission is the survey's byte for byte. Measured: without this one callee pragma's
-        // `modify` list differed on watcom_hello.exe.
+        // order; re-running the pass on the thawed program warms it the same way, so the emission
+        // is the survey's byte for byte. Measured: without this one callee pragma's `modify` list
+        // differed on watcom_hello.exe.
+        //
+        // The re-run must start from the PROTO-LESS program, as the survey's pass did: with the
+        // frozen prototypes left in place the pass sees them and recovers second-order
+        // prototypes (measured on the subject: 131 of 3,023 TUs changed call-site arities —
+        // `f(x)` became `f(x, 0)` — and 43 EXACTs were lost). So the pass-1 outputs are cleared
+        // first and recomputed; they equal the frozen ones (the P1 round-trip test).
         if knobs.on(Switch::ProtoPass) {
+            pp.recovered_protos.clear();
+            pp.recovered_sret.clear();
+            pp.sret_callers.clear();
+            pp.tail_return_writes.clear();
             let _ = mark_tail_return_writes(&mut pp, EMIT_LANG, &[]);
             let _ = install_prototypes(&mut pp, None);
         }
