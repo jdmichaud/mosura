@@ -8,8 +8,10 @@ pub mod error;
 pub mod fingerprint;
 pub mod key;
 pub mod options;
+pub mod program;
 pub mod render;
 pub mod schema;
+pub mod set;
 pub mod table;
 pub mod tbl;
 
@@ -19,5 +21,6 @@ pub use fingerprint::Stage;
 pub use key::Key;
 pub use options::{Affects, OptType, OptionSpec, Options};
 pub use render::{render, Format};
+pub use set::TableSet;
 pub use schema::{ColHint, ColType, Column, Schema, SchemaRef};
 pub use table::{builder::TableBuilder, Table};

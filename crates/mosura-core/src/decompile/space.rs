@@ -316,6 +316,19 @@ impl SpaceManager {
     /// `spacebaselist`, populated from the compiler spec). `reg`/`size` describe the register.
     /// Install a delayed dead-code pass for a space (Ghidra's `Override::deadcodedelay` read back
     /// through `AddrSpace::getDeadcodeDelay`).
+    /// Rebuild a manager from its spaces in id order — the inverse of reading every [`Space`] back
+    /// (a frozen program's `spaces` table). `by_name` is replayed in insertion order, so a name
+    /// registered twice (the loaders add a sized `ram` over the standard one) resolves to the later
+    /// space exactly as the original sequence of [`Self::add`] calls left it.
+    pub fn from_spaces(spaces: Vec<Space>) -> SpaceManager {
+        let mut by_name = HashMap::new();
+        for (i, s) in spaces.iter().enumerate() {
+            debug_assert_eq!(s.id.0 as usize, i, "space ids are dense and in order");
+            by_name.insert(s.name.clone(), s.id);
+        }
+        SpaceManager { spaces, by_name }
+    }
+
     pub fn set_deadcode_delay(&mut self, space: SpaceId, delay: i32) {
         self.spaces[space.0 as usize].deadcodedelay = delay;
     }
