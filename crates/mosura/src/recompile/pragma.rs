@@ -5,6 +5,11 @@
 //! (per-callee pragmas, the caller-side post-pass) follows in c6. Text and register offsets in,
 //! text out; nothing here reads a file or a program beyond the language tables.
 
+use std::collections::HashMap;
+
+use crate::decompile::op::flags;
+use crate::decompile::opcode::OpCode;
+
 /// The register facts every pragma is spelled from, for one language: the Watcom name table
 /// (`(sleigh offset, size, name)`), the watcall argument registers in convention order, and the
 /// stack pointer's register-space offset — the three values the driver used to compute at three
@@ -216,6 +221,379 @@ pub fn own_contract(
     (!parts.is_empty()).then(|| parts.join(" "))
 }
 
+/// ARGUMENT-ORDER RECOVERY for one function's recovered emit: apply each call site's own recovered
+/// declaration order. The rendered argument list permutes and the TU declares the matching
+/// `parm [..]` pragma. The pragma rebinds EVERY call to that callee in the TU, so all of a
+/// callee's sites here must derive the SAME order and every one must qualify (its own evidence
+/// present, arity matching, every argument reorder-safe) — one failing site vetoes the callee for
+/// the whole TU. Returns the per-site permutations (for `recovery::recover`) and the per-callee
+/// `parm [..]` clauses, merged into ONE `#pragma aux` per callee by [`callee_pragmas`]: Watcom treats
+/// a second `#pragma aux` for the same symbol as a REPLACEMENT, so split emission would silently
+/// drop whichever clause came first.
+pub fn call_arg_orders(
+    report: &crate::decompile::printc::EmitReport,
+    self_va: u64,
+    orders: &crate::recompile::passes::ParamOrders,
+    regs: &WatcomRegs,
+) -> (std::collections::HashMap<u64, Vec<usize>>, std::collections::BTreeMap<u64, String>) {
+    let mut order_parms: std::collections::BTreeMap<u64, String> = Default::default();
+    // ARGUMENT-ORDER RECOVERY: apply each site's own recovered declaration order.
+    // The rendered argument list permutes and the TU declares the matching
+    // `parm [..]` pragma. The pragma rebinds EVERY call to that callee in the TU,
+    // so all of a callee's sites here must derive the SAME order and every one
+    // must qualify (its own evidence present, arity matching, every argument
+    // reorder-safe) — one failing site vetoes the callee for the whole TU.
+    let mut call_arg_orders: std::collections::HashMap<u64, Vec<usize>> = Default::default();
+    // Per-callee `parm [..]` clauses from param-order recovery — merged below with the
+    // caller-pops and modify clauses into ONE `#pragma aux` per callee: Watcom treats a
+    // second `#pragma aux` for the same symbol as a REPLACEMENT, so split emission
+    // would silently drop whichever clause came first.
+    {
+        let mut by_callee: std::collections::BTreeMap<u64, Vec<(u64, &Vec<bool>)>> =
+            Default::default();
+        for (addr, callee, safe) in &report.port.call_order_candidates {
+            by_callee.entry(*callee).or_default().push((*addr, safe));
+        }
+        for (callee, csites) in by_callee {
+            if callee == self_va || orders.excluded.contains(&callee) {
+                continue;
+            }
+            let mut tu_p: Option<&Vec<u64>> = None;
+            let ok = csites.iter().all(|(addr, safe)| {
+                let Some(p) = orders.site_orders.get(addr) else { return false };
+                let n = p.len();
+                if n > regs.arg_reg_offs.len() || safe.len() != n || !safe.iter().all(|&s| s) {
+                    return false;
+                }
+                let mut sp: Vec<u64> = p.clone();
+                sp.sort_unstable();
+                let mut sd: Vec<u64> = regs.arg_reg_offs[..n].to_vec();
+                sd.sort_unstable();
+                if sp != sd {
+                    return false;
+                }
+                match tu_p {
+                    None => {
+                        tu_p = Some(p);
+                        true
+                    }
+                    Some(q) => q == p,
+                }
+            });
+            let Some(p) = tu_p else { continue };
+            if !ok {
+                continue;
+            }
+            let n = p.len();
+            let default = &regs.arg_reg_offs[..n];
+            let perm: Vec<usize> =
+                p.iter().map(|r| default.iter().position(|d| d == r).unwrap()).collect();
+            for (addr, _) in &csites {
+                call_arg_orders.insert(*addr, perm.clone());
+            }
+            let names: Vec<&str> = p
+                .iter()
+                .filter_map(|r| {
+                    regs.table.iter().find(|&&(o, sz, _)| o == *r && sz == 4).map(|t| t.2)
+                })
+                .collect();
+            if names.len() == n {
+                order_parms.insert(callee, format!("parm [{}]", names.join("] [")));
+            }
+        }
+    }
+    (call_arg_orders, order_parms)
+}
+
+/// VARARG CALLEES: targets of calls the decompiler recovered as caller-cleaned
+/// (`CallSpec::caller_cleans` — evidence: the callee's RET pops nothing AND the
+/// original fallthrough is `ADD ESP,n`), each with its own recovered modify set
+/// (`CallSpec::cdecl_modify`). The pragma is pre-rendered here because the register
+/// NAMES come from the same spec-built table as every other contract
+/// (`own_contract`'s); a blanket kill set was measured wrong in BOTH directions —
+/// without `modify` Watcom assumes preserves-all and drops the 191b8 family's
+/// prologue saves; with a uniform `modify [eax ebx ecx edx]` it invents saves the
+/// 0x31c60 family's originals do not have (6 EXACT lost). Per-callee evidence is the
+/// only shape that fits both.
+/// ONE `#pragma aux` spec per callee, merging every recovered contract clause:
+///   parm [..]        — param-order recovery (order_parms above), register callees;
+///   parm caller []   — caller-cleaned (cdecl/vararg) callees;
+///   modify [..]      — the callee's own recovered clobber set, EVERY callee that
+///                      has one (`CallSpec::cdecl_modify`): a bare extern under
+///                      Watcom's default (save = HW_FULL) claims preserves-all, and
+///                      the recompiler hoists argument setups across calls the
+///                      original could not (FUN_00011b9c / callee 0x1f734).
+pub fn callee_pragmas(
+    f: &crate::decompile::funcdata::Funcdata,
+    insns: &[crate::recompile::insn::NormInsn],
+    regs: &WatcomRegs,
+    callee_clobbers: bool,
+    order_parms: &std::collections::BTreeMap<u64, String>,
+) -> std::collections::HashMap<u64, String> {
+    let mut callee_aux: HashMap<u64, (Option<String>, Option<String>)> = HashMap::new();
+    // EXACTNESS (contract-design Increment 2): recovered in the analysis
+    // (CallSpec::cdecl_exact — an argument register surviving its own call on the
+    // raw CFG, arity from the whole-program prototype recovery). One site's
+    // testimony covers the TU's single declaration.
+    let exact_callees: std::collections::HashSet<u64> = f
+        .call_specs
+        .iter()
+        .filter(|(_, cs)| cs.cdecl_exact)
+        .filter_map(|(&op, _)| {
+            let t = f.op(op).input(0)?;
+            let va = f.vn(t).loc.offset;
+            (va != 0).then_some(va)
+        })
+        .collect();
+    // DETERMINISTIC per-callee merge. `f.call_specs` is a HashMap, and the old
+    // last-writer-wins fold made the TU's single pragma a RANDOM DRAW whenever two
+    // sites of one callee carried different recovered specs (caller 0x3342c's
+    // 0x63be5: one site caller_cleans+6-reg blanket, one site 5-reg transitive —
+    // emitted `modify exact [eax]` or `[eax ecx]` depending on hash order; the
+    // standing few-function jitter between byte-identical rounds). Merge instead:
+    // sites in sorted op order, caller_cleans from ANY site that has it (cdecl
+    // evidence anywhere is cdecl everywhere), modify = UNION of the sites' sets —
+    // the one declaration must be sound for every site it covers.
+    let mut merged: HashMap<u64, (bool, Option<std::collections::BTreeSet<u64>>)> =
+        HashMap::new();
+    let mut sites: Vec<u32> = f.call_specs.keys().map(|op| op.0).collect();
+    sites.sort_unstable();
+    for opi in sites {
+        let op = crate::decompile::op::OpId(opi);
+        let cs = &f.call_specs[&op];
+        let Some(t) = f.op(op).input(0) else { continue };
+        let va = f.vn(t).loc.offset;
+        if va == 0 {
+            continue;
+        }
+        crate::debug!(crate::debug::Topic::Survey, "callee {va:#x} caller_cleans={:?} cdecl_modify={:?}", cs.caller_cleans, cs.cdecl_modify.as_ref().map(|m| m.len()));
+        let e = merged.entry(va).or_default();
+        e.0 |= cs.caller_cleans.unwrap_or(0) > 0;
+        if let Some(m) = cs.cdecl_modify.as_ref() {
+            e.1.get_or_insert_with(Default::default).extend(m.iter().copied());
+        }
+    }
+    // CALLER-SIDE CLOBBER WITNESS (`buildconfig::saved_for_callees`): a register this
+    // function saves in its prologue and restores before its returns without ever
+    // touching it was preserved for a callee DECLARED to clobber it — the declaration
+    // the original compiled against, which the callee's own recovered clobber set
+    // cannot show. Every callee of this TU with a clobber clause takes the register
+    // (a caller's saves cannot say which callee); a TU with no clause at all gives
+    // it to every callee. the subject's FUN_0004f850: EXACT with `ebx` in its callee's clause.
+    let saved = if !callee_clobbers {
+        Vec::new()
+    } else {
+        crate::recompile::buildconfig::saved_for_callees(&insns)
+    };
+    let any_modify = merged.values().any(|(_, m)| m.is_some());
+    let mut merged = merged;
+    if !saved.is_empty() {
+        for (_, modify) in merged.values_mut() {
+            if modify.is_some() || !any_modify {
+                modify.get_or_insert_with(Default::default).extend(saved.iter().copied());
+            }
+        }
+    }
+    for (va, (cleans, modify)) in merged {
+        let e = callee_aux.entry(va).or_default();
+        if cleans {
+            e.0 = Some("parm caller []".to_string());
+        }
+        if let Some(m) = modify {
+            let mut regs: Vec<&str> = m
+                .iter()
+                .filter_map(|off| {
+                    regs.table.iter().find(|&&(o, sz, _)| o == *off && sz == 4).map(|t| t.2)
+                })
+                .filter(|r| *r != "ebp" && *r != "esp")
+                .collect();
+            // EAX is the return register — always in the contract even for a callee
+            // whose body the walk saw writing nothing else.
+            if !regs.contains(&"eax") {
+                regs.push("eax");
+            }
+            regs.sort();
+            regs.dedup();
+            let kw = if exact_callees.contains(&va) { "modify exact" } else { "modify" };
+            e.1 = Some(format!("{kw} [{}]", regs.join(" ")));
+        }
+    }
+    // A callee can carry a recovered param order without any CallSpec entry (the
+    // contract walks all failed) — its pragma must still be emitted.
+    let mut callee_aux = callee_aux;
+    for &va in order_parms.keys() {
+        callee_aux.entry(va).or_default();
+    }
+    let vararg_callees: HashMap<u64, String> = callee_aux
+        .into_iter()
+        .filter_map(|(va, (cleans, modify))| {
+            let parm = cleans.or_else(|| order_parms.get(&va).cloned());
+            let spec = match (parm, modify) {
+                (Some(p), Some(m)) => format!("{p} {m}"),
+                (Some(p), None) => p,
+                (None, Some(m)) => m,
+                (None, None) => return None,
+            };
+            Some((va, spec))
+        })
+        .collect();
+    vararg_callees
+}
+
+/// The definition-side contract table the caller-side post-pass reads: each function's own
+/// nondefault `parm [..]` declaration with its parameter widths (`None` = default order), and each
+/// caller's per-callee argument widths at its call sites (`None` on disagreement between sites).
+/// CALLER-SIDE REGISTER CONTRACTS, definition-side truth: the `parm [..]` pragma tells Watcom the
+/// callee's true argument registers — but only in the callee's own TU; a caller compiles against a
+/// bare `extern int func_0xNNN();` and Watcom binds the argument list POSITIONALLY to the default
+/// order, inverting every call to a callee whose recovered storage is nonstandard (measured:
+/// FUN_0003925c passed its table index in EAX where the original — and the callee's own pragma,
+/// FUN_00038828 `parm [edx] [eax]` — take it in EDX). The pragma each caller needs is EXACTLY the
+/// one the callee's own TU declares, so it is recorded per function and applied to every TU that
+/// externs the callee in a post-pass after the loop, when the table is complete. A STACK-CONVENTION
+/// callee (`parm []`) needs the same clause in every caller; only the callee-pops form is
+/// propagated (the caller's `parm caller []` comes from its own call spec).
+#[derive(Debug, Default, Clone)]
+pub struct ContractTable {
+    pub parm_map: std::collections::BTreeMap<u64, Option<(String, Vec<u32>)>>,
+    pub caller_calls: std::collections::BTreeMap<u64, std::collections::BTreeMap<u64, Option<Vec<u32>>>>,
+}
+
+impl ContractTable {
+    /// Record one emitted function: its own declaration (`stack_decl` = `Some("[]")` for a
+    /// callee-pops stack-convention function) and the argument widths at each of its call sites.
+    pub fn record(&mut self, va: u64, f: &crate::decompile::funcdata::Funcdata, regs: &WatcomRegs, stack_decl: Option<String>) {
+    self.parm_map.insert(
+        va,
+        nondefault_parm_regs(&f, &regs.table).or(stack_decl).map(|decl| {
+            let sizes = crate::decompile::printc::rendered_param_slots(&f)
+                .iter()
+                .map(|sl| sl.size)
+                .collect();
+            (decl, sizes)
+        }),
+    );
+    {
+        let m = self.caller_calls.entry(va).or_default();
+        for opid in f.op_ids() {
+            let op = f.op(opid);
+            if op.code() != OpCode::Call || op.flags & (flags::DEAD | flags::MARKER) != 0 {
+                continue;
+            }
+            let Some(t) = op.input(0) else { continue };
+            let callee = f.vn(t).loc.offset;
+            let sizes: Vec<u32> =
+                (1..op.num_inputs()).filter_map(|i| op.input(i)).map(|v| f.vn(v).size).collect();
+            match m.entry(callee) {
+                std::collections::btree_map::Entry::Occupied(mut e) => {
+                    if e.get().as_ref() != Some(&sizes) {
+                        e.insert(None);
+                    }
+                }
+                std::collections::btree_map::Entry::Vacant(v_) => {
+                    v_.insert(Some(sizes));
+                }
+            }
+        }
+    }
+    }
+
+    /// The caller-side post-pass for one TU: prepend the pragma for every nonstandard callee it
+    /// externs, or MERGE the `parm` clause into an existing `#pragma aux` line for that callee
+    /// (Watcom treats a second pragma for one symbol as a REPLACEMENT; an existing line that already
+    /// carries a `parm` clause wins outright). Gated per callee on arity AND width: every call site
+    /// in this TU must pass exactly the pragma's parameter count, each argument no wider than the
+    /// parameter's register (a stack-convention `[]` callee gates on arity only). `None` = nothing
+    /// to patch; `caller_va` = the TU's function (its call-arity map), `None` when unknown.
+    pub fn patch_caller(&self, src: &str, caller_va: Option<u64>) -> Option<String> {
+    // A TU may ALREADY declare `#pragma aux` for this callee (build_tu's
+    // recovered contract clauses: `parm caller []` and/or `modify [..]`). Watcom
+    // treats a SECOND `#pragma aux` for the same symbol as a REPLACEMENT, so the
+    // parm clause must be MERGED INTO the existing line, never prepended beside
+    // it — the prepended form silently destroyed the order recovery of every
+    // modify-annotated callee (measured: the nine-sibling 0x392xx family lost
+    // EXACT, FUN_0003925c's `parm [edx] [eax]` replaced by `modify [eax edx]`).
+    // An existing line that already carries a `parm` clause wins outright (the
+    // per-site order recovery and the caller-cleaned contract both outrank the
+    // definition-side default order).
+    let mut prepend = String::new();
+    let mut merges: Vec<(String, String)> = Vec::new();
+    for cva in externed_callees(src) {
+        let Some((decl, psizes)) = self.parm_map.get(&cva).and_then(|d| d.as_ref())
+        else {
+            continue;
+        };
+        // arity AND width gate: every call site in this TU must pass exactly
+        // the pragma's parameter count, each argument at the parameter's own
+        // width. A width mismatch is as fatal as an arity one — a 16-bit
+        // `parm [bx]` meeting a 4-byte argument overflows it to the STACK
+        // (measured: FUN_0002c8xx's `PUSH 0xc` where the original loads EBX).
+        let Some(asizes) = caller_va
+            .and_then(|va| self.caller_calls.get(&va))
+            .and_then(|m| m.get(&cva))
+            .cloned()
+            .flatten()
+        else {
+            continue;
+        };
+        // Per slot the pragma register must be AT LEAST the argument's width:
+        // a narrower argument binds the register's low part (measured EXACT —
+        // the byte index into `parm [edx]`), while a narrower REGISTER
+        // overflows the argument to the stack (the `parm [bx]` failure above).
+        // A STACK-convention callee (`parm []`) takes every argument in a
+        // 4-byte slot: the caller pushes the promoted value and the callee reads
+        // its own width off the slot, so a `char` parameter meeting a 4-byte
+        // argument is the normal case, not an overflow (FUN_00030dc8's `PUSH 0`
+        // for FUN_00060ad0's byte parameter, one row from EXACT without the
+        // clause) — arity gates, width does not.
+        let stack_slots = decl == "[]";
+        if !(asizes.len() == psizes.len()
+            && (stack_slots || asizes.iter().zip(psizes).all(|(a, p)| a <= p)))
+        {
+            continue;
+        }
+        let tag = format!("#pragma aux func_0x{cva:08x} ");
+        match src.lines().find(|l| l.starts_with(&tag)) {
+            Some(l) if l.contains(" parm ") => {}
+            Some(l) => merges.push((
+                l.to_string(),
+                format!("{tag}parm {decl} {}", &l[tag.len()..]),
+            )),
+            None => {
+                prepend.push_str(&format!("#pragma aux func_0x{cva:08x} parm {decl};\n"))
+            }
+        }
+    }
+    if prepend.is_empty() && merges.is_empty() {
+        return None;
+    }
+    let mut out = src.to_string();
+    for (from, to) in &merges {
+        out = out.replacen(from.as_str(), to.as_str(), 1);
+    }
+    Some(format!("{prepend}{out}"))
+}
+}
+
+/// The callees a TU externs (`extern int func_0x<va>();` lines), by VA.
+fn externed_callees(src: &str) -> Vec<u64> {
+    let mut out = Vec::new();
+    for line in src.lines() {
+        if let Some(rest) = line.strip_prefix("extern ") {
+            if let Some(pos) = rest.find("func_0x") {
+                if let Ok(va) = u64::from_str_radix(
+                    rest[pos + 7..].split(|c: char| !c.is_ascii_hexdigit()).next().unwrap_or(""),
+                    16,
+                ) {
+                    out.push(va);
+                }
+            }
+        }
+    }
+    out
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,5 +657,101 @@ mod tests {
         f.far_return = false;
         f.own_modify = Some(vec![ebp]);
         assert_eq!(own_contract(&f, &r.table, false, None), None, "a modify list of only EBP is nothing");
+    }
+
+    fn table() -> ContractTable {
+        let mut c = ContractTable::default();
+        c.parm_map.insert(0x2000, Some(("[edx] [eax]".to_string(), vec![4, 4])));
+        c.parm_map.insert(0x3000, Some(("[]".to_string(), vec![1])));
+        c.parm_map.insert(0x4000, None); // default order: nothing to declare
+        let mut m = std::collections::BTreeMap::new();
+        m.insert(0x2000, Some(vec![4u32, 4]));
+        m.insert(0x3000, Some(vec![4u32]));
+        m.insert(0x4000, Some(vec![4u32]));
+        c.caller_calls.insert(0x1000, m);
+        c
+    }
+
+    /// The caller-side post-pass on text: a callee's pragma is prepended where the TU has none,
+    /// MERGED into an existing `modify` line, left alone when the line already carries `parm`;
+    /// gated on arity (every site) and width (a narrower register overflows to the stack), the
+    /// stack-convention `[]` gating on arity only; nothing without the caller's arity map.
+    #[test]
+    fn patch_caller_prepends_or_merges_under_the_arity_and_width_gates() {
+        let c = table();
+        let src = "extern int func_0x00002000();
+extern int func_0x00004000();
+int4 FUN_00001000(void)
+{
+  func_0x00002000(1, 2);
+  return func_0x00004000(3);
+}
+";
+        assert_eq!(c.patch_caller(src, Some(0x1000)), Some(format!("#pragma aux func_0x00002000 parm [edx] [eax];\n{src}")), "prepended for the nondefault callee only");
+        assert_eq!(c.patch_caller(src, None), None, "no arity map, no patch");
+        let with_modify = format!("#pragma aux func_0x00002000 modify [eax];\n{src}");
+        assert_eq!(c.patch_caller(&with_modify, Some(0x1000)), Some(with_modify.replace("#pragma aux func_0x00002000 modify [eax];", "#pragma aux func_0x00002000 parm [edx] [eax] modify [eax];")), "merged into the existing line");
+        let with_parm = format!("#pragma aux func_0x00002000 parm caller [] modify [eax];\n{src}");
+        assert_eq!(c.patch_caller(&with_parm, Some(0x1000)), None, "an existing parm clause wins");
+        // arity gate: the caller passes one argument where the pragma has two
+        let mut c2 = table();
+        c2.caller_calls.get_mut(&0x1000).unwrap().insert(0x2000, Some(vec![4]));
+        assert_eq!(c2.patch_caller(src, Some(0x1000)), None);
+        // width gate: a 2-byte register parameter meeting a 4-byte argument overflows
+        let mut c3 = table();
+        c3.parm_map.insert(0x2000, Some(("[dx] [eax]".to_string(), vec![2, 4])));
+        assert_eq!(c3.patch_caller(src, Some(0x1000)), None);
+        // a narrower ARGUMENT is fine
+        c3.caller_calls.get_mut(&0x1000).unwrap().insert(0x2000, Some(vec![1, 4]));
+        assert!(c3.patch_caller(src, Some(0x1000)).is_some());
+        // the stack-convention callee gates on arity only: a byte parameter takes a 4-byte argument
+        let src3 = "extern int func_0x00003000();
+int4 FUN_00001000(void)
+{
+  return func_0x00003000(3);
+}
+";
+        assert_eq!(c.patch_caller(src3, Some(0x1000)), Some(format!("#pragma aux func_0x00003000 parm [];\n{src3}")));
+        // disagreeing sites (None) block the callee
+        let mut c4 = table();
+        c4.caller_calls.get_mut(&0x1000).unwrap().insert(0x2000, None);
+        assert_eq!(c4.patch_caller(src, Some(0x1000)), None);
+        assert_eq!(externed_callees(src), vec![0x2000, 0x4000]);
+    }
+
+    /// Argument-order recovery per TU: every site of a callee must carry the same recovered
+    /// order, be reorder-safe and use the argument registers; the result is the per-site
+    /// permutation and the callee's `parm [..]` clause; an excluded callee, the function itself,
+    /// an unsafe site or disagreeing sites give nothing.
+    #[test]
+    fn call_arg_orders_permute_only_unanimous_safe_sites() {
+        let r = regs();
+        let (eax, edx, ebx) = (off(&r.table, "eax"), off(&r.table, "edx"), off(&r.table, "ebx"));
+        let mut report = crate::decompile::printc::EmitReport::default();
+        report.port.call_order_candidates = vec![(0x1010, 0x2000, vec![true, true]), (0x1020, 0x2000, vec![true, true]), (0x1030, 0x5000, vec![true, false]), (0x1040, 0x1000, vec![true])];
+        let mut orders = crate::recompile::passes::ParamOrders::default();
+        orders.site_orders.insert(0x1010, vec![edx, eax]);
+        orders.site_orders.insert(0x1020, vec![edx, eax]);
+        orders.site_orders.insert(0x1030, vec![edx, eax]);
+        orders.site_orders.insert(0x1040, vec![eax]);
+        let (perms, parms) = call_arg_orders(&report, 0x1000, &orders, &r);
+        assert_eq!(perms.get(&0x1010), Some(&vec![1usize, 0]));
+        assert_eq!(perms.get(&0x1020), Some(&vec![1usize, 0]));
+        assert_eq!(perms.get(&0x1030), None, "an unsafe argument vetoes the site");
+        assert_eq!(perms.get(&0x1040), None, "the function itself is never permuted");
+        assert_eq!(parms.get(&0x2000).map(String::as_str), Some("parm [edx] [eax]"));
+        assert_eq!(parms.len(), 1);
+        // two sites of one callee disagreeing → nothing for that callee
+        orders.site_orders.insert(0x1020, vec![eax, edx]);
+        let (perms, parms) = call_arg_orders(&report, 0x1000, &orders, &r);
+        assert!(perms.is_empty() && parms.is_empty());
+        // an excluded callee → nothing; a register outside the argument set → nothing
+        orders.site_orders.insert(0x1020, vec![edx, eax]);
+        orders.excluded.insert(0x2000);
+        assert!(call_arg_orders(&report, 0x1000, &orders, &r).1.is_empty());
+        orders.excluded.clear();
+        orders.site_orders.insert(0x1010, vec![ebx, eax]);
+        orders.site_orders.insert(0x1020, vec![ebx, eax]);
+        assert!(call_arg_orders(&report, 0x1000, &orders, &r).1.is_empty(), "EBX is not where a 2-arg default puts anything");
     }
 }

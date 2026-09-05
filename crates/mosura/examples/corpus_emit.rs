@@ -21,7 +21,7 @@ use mosura::decompile::printc::print_c_with;
 use mosura::decompile::space::Address;
 use mosura::switches::{Knobs, Switch};
 use mosura::recompile::tu::{aggregate_ram_globals, build_prelude, build_tu, contract_violations, with_contract};
-use mosura::recompile::pragma::{nondefault_parm_regs, own_contract, WatcomRegs};
+use mosura::recompile::pragma::{self, own_contract, WatcomRegs};
 use mosura::recompile::manifest;
 use mosura::recompile::passes;
 use mosura::recompile::upgrade;
@@ -413,7 +413,7 @@ fn main() {
     let mut contract_bad = 0usize;
     // va -> the function's own nondefault `parm [..]` list (None = default order). Filled by
     // the emit loop, consumed by the caller-side pragma post-pass below it.
-    let mut parm_map: std::collections::BTreeMap<u64, Option<(String, Vec<u32>)>> = Default::default();
+    let mut contracts = pragma::ContractTable::default();
     // caller idx -> (callee va -> argument count at the caller's call sites, None on
     // disagreement between sites). The post-pass applies a callee's pragma only where the
     // caller's arity matches the pragma's parameter count: the callee's rendered params are
@@ -421,8 +421,6 @@ fn main() {
     // Watcom overflow the extra arguments to the stack (measured: FUN_000345f4 passes
     // three args to a callee whose only USED param is BX — `parm [bx]` turned two
     // register moves into three PUSHes).
-    let mut caller_calls: std::collections::BTreeMap<u64, std::collections::BTreeMap<u64, Option<Vec<u32>>>> =
-        Default::default();
     let mut contract_counts: std::collections::BTreeMap<String, usize> = Default::default();
     let mut contract_hist: std::collections::BTreeMap<String, usize> = Default::default();
     let _ = &contract_hist;
@@ -453,7 +451,6 @@ fn main() {
     // contract pragma from the post-pass below, one pragma per callee per TU, and the two
     // mechanisms must not both claim it. The exclusion needs each such callee's decompile,
     // which its own emit will repeat — a few seconds of duplicate work over ~a hundred callees.
-    let arg_reg_offs: Vec<u64> = regs.arg_reg_offs.clone();
     // The evidence is a pure function of the ORIGINAL binary and the code that reads it, so
     // it is cached beside the manifest keyed by the emit stamp. The exclusion set costs a
     // mini-decompile of every claimed callee (~170 on the subject — minutes), which a full emit
@@ -486,7 +483,7 @@ fn main() {
             }
         }
     };
-    let passes::ParamOrders { site_orders, excluded: order_excluded, networked: order_networked } = orders;
+    let order_networked = orders.networked.clone();
 
     // GLOBAL WIDTHS FROM THE ORIGINAL'S OWN INSTRUCTIONS (the `global-width` switch, on by default).
     //
@@ -524,7 +521,6 @@ fn main() {
     } else {
         (HashMap::new(), HashMap::new())
     };
-    let order_excluded = order_excluded;
 
     let t0 = std::time::Instant::now();
     let (mut ok, mut fail) = (0usize, 0usize);
@@ -918,39 +914,7 @@ fn main() {
         // callee-pops form is propagated here — the existing-clause rule in the post-pass keeps a
         // caller-cleaned line as it is.
         let stack_decl = (stack_convention && !matches!(cleanup, Some(0))).then(|| "[]".to_string());
-        parm_map.insert(
-            *va,
-            nondefault_parm_regs(&f, &watreg).or(stack_decl).map(|decl| {
-                let sizes = mosura::decompile::printc::rendered_param_slots(&f)
-                    .iter()
-                    .map(|sl| sl.size)
-                    .collect();
-                (decl, sizes)
-            }),
-        );
-        {
-            let m = caller_calls.entry(*va).or_default();
-            for opid in f.op_ids() {
-                let op = f.op(opid);
-                if op.code() != OpCode::Call || op.flags & (flags::DEAD | flags::MARKER) != 0 {
-                    continue;
-                }
-                let Some(t) = op.input(0) else { continue };
-                let callee = f.vn(t).loc.offset;
-                let sizes: Vec<u32> =
-                    (1..op.num_inputs()).filter_map(|i| op.input(i)).map(|v| f.vn(v).size).collect();
-                match m.entry(callee) {
-                    std::collections::btree_map::Entry::Occupied(mut e) => {
-                        if e.get().as_ref() != Some(&sizes) {
-                            e.insert(None);
-                        }
-                    }
-                    std::collections::btree_map::Entry::Vacant(v_) => {
-                        v_.insert(Some(sizes));
-                    }
-                }
-            }
-        }
+        contracts.record(*va, &f, &regs, stack_decl);
 
         // Arms past the first: same function, same declarations, a different rendering of the body.
         for (ai, theta) in arms.iter().enumerate().skip(1) {
@@ -977,79 +941,16 @@ fn main() {
                 &mosura::recompile::insn::NoReloc,
             )
             .unwrap_or_default();
-            let mut order_parms: std::collections::BTreeMap<u64, String> = Default::default();
             // PER-FUNCTION RECOVERY (recompile::recovery, review R5 commit a): the report pass, the
             // `*_from_evidence` witnesses over this function's instructions and the second evidence
             // round, one library fn shared with the gcc ground-truth oracle. The argument-order
             // derivation stays here as the closure: it reads the survey's cross-function tables
             // (site_orders, order_excluded, arg_reg_offs, watreg) and fills `order_parms`.
+            let mut order_parms: std::collections::BTreeMap<u64, String> = Default::default();
             let recovered = mosura::recompile::recovery::recover(&f, &insns, &arms[0], &rec_arm, |report| {
-                // ARGUMENT-ORDER RECOVERY: apply each site's own recovered declaration order.
-                // The rendered argument list permutes and the TU declares the matching
-                // `parm [..]` pragma. The pragma rebinds EVERY call to that callee in the TU,
-                // so all of a callee's sites here must derive the SAME order and every one
-                // must qualify (its own evidence present, arity matching, every argument
-                // reorder-safe) — one failing site vetoes the callee for the whole TU.
-                let mut call_arg_orders: std::collections::HashMap<u64, Vec<usize>> = Default::default();
-                // Per-callee `parm [..]` clauses from param-order recovery — merged below with the
-                // caller-pops and modify clauses into ONE `#pragma aux` per callee: Watcom treats a
-                // second `#pragma aux` for the same symbol as a REPLACEMENT, so split emission
-                // would silently drop whichever clause came first.
-                {
-                    let mut by_callee: std::collections::BTreeMap<u64, Vec<(u64, &Vec<bool>)>> =
-                        Default::default();
-                    for (addr, callee, safe) in &report.port.call_order_candidates {
-                        by_callee.entry(*callee).or_default().push((*addr, safe));
-                    }
-                    for (callee, csites) in by_callee {
-                        if callee == *va || order_excluded.contains(&callee) {
-                            continue;
-                        }
-                        let mut tu_p: Option<&Vec<u64>> = None;
-                        let ok = csites.iter().all(|(addr, safe)| {
-                            let Some(p) = site_orders.get(addr) else { return false };
-                            let n = p.len();
-                            if n > arg_reg_offs.len() || safe.len() != n || !safe.iter().all(|&s| s) {
-                                return false;
-                            }
-                            let mut sp: Vec<u64> = p.clone();
-                            sp.sort_unstable();
-                            let mut sd: Vec<u64> = arg_reg_offs[..n].to_vec();
-                            sd.sort_unstable();
-                            if sp != sd {
-                                return false;
-                            }
-                            match tu_p {
-                                None => {
-                                    tu_p = Some(p);
-                                    true
-                                }
-                                Some(q) => q == p,
-                            }
-                        });
-                        let Some(p) = tu_p else { continue };
-                        if !ok {
-                            continue;
-                        }
-                        let n = p.len();
-                        let default = &arg_reg_offs[..n];
-                        let perm: Vec<usize> =
-                            p.iter().map(|r| default.iter().position(|d| d == r).unwrap()).collect();
-                        for (addr, _) in &csites {
-                            call_arg_orders.insert(*addr, perm.clone());
-                        }
-                        let names: Vec<&str> = p
-                            .iter()
-                            .filter_map(|r| {
-                                watreg.iter().find(|&&(o, sz, _)| o == *r && sz == 4).map(|t| t.2)
-                            })
-                            .collect();
-                        if names.len() == n {
-                            order_parms.insert(callee, format!("parm [{}]", names.join("] [")));
-                        }
-                    }
-                }
-                call_arg_orders
+                let (perms, parms) = pragma::call_arg_orders(report, *va, &orders, &regs);
+                order_parms = parms;
+                perms
             });
             let recovered = {
                 let mut r = recovered;
@@ -1077,131 +978,7 @@ fn main() {
             // (see buildconfig::volatile_globals_from_evidence) declare volatile in this TU.
             let volatiles =
                 mosura::recompile::buildconfig::volatile_globals_from_evidence(&insns);
-            // VARARG CALLEES: targets of calls the decompiler recovered as caller-cleaned
-            // (`CallSpec::caller_cleans` — evidence: the callee's RET pops nothing AND the
-            // original fallthrough is `ADD ESP,n`), each with its own recovered modify set
-            // (`CallSpec::cdecl_modify`). The pragma is pre-rendered here because the register
-            // NAMES come from the same spec-built table as every other contract
-            // (`own_contract`'s); a blanket kill set was measured wrong in BOTH directions —
-            // without `modify` Watcom assumes preserves-all and drops the 191b8 family's
-            // prologue saves; with a uniform `modify [eax ebx ecx edx]` it invents saves the
-            // 0x31c60 family's originals do not have (6 EXACT lost). Per-callee evidence is the
-            // only shape that fits both.
-            // ONE `#pragma aux` spec per callee, merging every recovered contract clause:
-            //   parm [..]        — param-order recovery (order_parms above), register callees;
-            //   parm caller []   — caller-cleaned (cdecl/vararg) callees;
-            //   modify [..]      — the callee's own recovered clobber set, EVERY callee that
-            //                      has one (`CallSpec::cdecl_modify`): a bare extern under
-            //                      Watcom's default (save = HW_FULL) claims preserves-all, and
-            //                      the recompiler hoists argument setups across calls the
-            //                      original could not (FUN_00011b9c / callee 0x1f734).
-            let mut callee_aux: HashMap<u64, (Option<String>, Option<String>)> = HashMap::new();
-            // EXACTNESS (contract-design Increment 2): recovered in the analysis
-            // (CallSpec::cdecl_exact — an argument register surviving its own call on the
-            // raw CFG, arity from the whole-program prototype recovery). One site's
-            // testimony covers the TU's single declaration.
-            let exact_callees: std::collections::HashSet<u64> = f
-                .call_specs
-                .iter()
-                .filter(|(_, cs)| cs.cdecl_exact)
-                .filter_map(|(&op, _)| {
-                    let t = f.op(op).input(0)?;
-                    let va = f.vn(t).loc.offset;
-                    (va != 0).then_some(va)
-                })
-                .collect();
-            // DETERMINISTIC per-callee merge. `f.call_specs` is a HashMap, and the old
-            // last-writer-wins fold made the TU's single pragma a RANDOM DRAW whenever two
-            // sites of one callee carried different recovered specs (caller 0x3342c's
-            // 0x63be5: one site caller_cleans+6-reg blanket, one site 5-reg transitive —
-            // emitted `modify exact [eax]` or `[eax ecx]` depending on hash order; the
-            // standing few-function jitter between byte-identical rounds). Merge instead:
-            // sites in sorted op order, caller_cleans from ANY site that has it (cdecl
-            // evidence anywhere is cdecl everywhere), modify = UNION of the sites' sets —
-            // the one declaration must be sound for every site it covers.
-            let mut merged: HashMap<u64, (bool, Option<std::collections::BTreeSet<u64>>)> =
-                HashMap::new();
-            let mut sites: Vec<u32> = f.call_specs.keys().map(|op| op.0).collect();
-            sites.sort_unstable();
-            for opi in sites {
-                let op = mosura::decompile::op::OpId(opi);
-                let cs = &f.call_specs[&op];
-                let Some(t) = f.op(op).input(0) else { continue };
-                let va = f.vn(t).loc.offset;
-                if va == 0 {
-                    continue;
-                }
-                mosura::debug!(mosura::debug::Topic::Survey, "callee {va:#x} caller_cleans={:?} cdecl_modify={:?}", cs.caller_cleans, cs.cdecl_modify.as_ref().map(|m| m.len()));
-                let e = merged.entry(va).or_default();
-                e.0 |= cs.caller_cleans.unwrap_or(0) > 0;
-                if let Some(m) = cs.cdecl_modify.as_ref() {
-                    e.1.get_or_insert_with(Default::default).extend(m.iter().copied());
-                }
-            }
-            // CALLER-SIDE CLOBBER WITNESS (`buildconfig::saved_for_callees`): a register this
-            // function saves in its prologue and restores before its returns without ever
-            // touching it was preserved for a callee DECLARED to clobber it — the declaration
-            // the original compiled against, which the callee's own recovered clobber set
-            // cannot show. Every callee of this TU with a clobber clause takes the register
-            // (a caller's saves cannot say which callee); a TU with no clause at all gives
-            // it to every callee. the subject's FUN_0004f850: EXACT with `ebx` in its callee's clause.
-            let saved = if !knobs.on(Switch::CalleeClobbers) {
-                Vec::new()
-            } else {
-                mosura::recompile::buildconfig::saved_for_callees(&insns)
-            };
-            let any_modify = merged.values().any(|(_, m)| m.is_some());
-            let mut merged = merged;
-            if !saved.is_empty() {
-                for (_, modify) in merged.values_mut() {
-                    if modify.is_some() || !any_modify {
-                        modify.get_or_insert_with(Default::default).extend(saved.iter().copied());
-                    }
-                }
-            }
-            for (va, (cleans, modify)) in merged {
-                let e = callee_aux.entry(va).or_default();
-                if cleans {
-                    e.0 = Some("parm caller []".to_string());
-                }
-                if let Some(m) = modify {
-                    let mut regs: Vec<&str> = m
-                        .iter()
-                        .filter_map(|off| {
-                            watreg.iter().find(|&&(o, sz, _)| o == *off && sz == 4).map(|t| t.2)
-                        })
-                        .filter(|r| *r != "ebp" && *r != "esp")
-                        .collect();
-                    // EAX is the return register — always in the contract even for a callee
-                    // whose body the walk saw writing nothing else.
-                    if !regs.contains(&"eax") {
-                        regs.push("eax");
-                    }
-                    regs.sort();
-                    regs.dedup();
-                    let kw = if exact_callees.contains(&va) { "modify exact" } else { "modify" };
-                    e.1 = Some(format!("{kw} [{}]", regs.join(" ")));
-                }
-            }
-            // A callee can carry a recovered param order without any CallSpec entry (the
-            // contract walks all failed) — its pragma must still be emitted.
-            let mut callee_aux = callee_aux;
-            for &va in order_parms.keys() {
-                callee_aux.entry(va).or_default();
-            }
-            let vararg_callees: HashMap<u64, String> = callee_aux
-                .into_iter()
-                .filter_map(|(va, (cleans, modify))| {
-                    let parm = cleans.or_else(|| order_parms.get(&va).cloned());
-                    let spec = match (parm, modify) {
-                        (Some(p), Some(m)) => format!("{p} {m}"),
-                        (Some(p), None) => p,
-                        (None, Some(m)) => m,
-                        (None, None) => return None,
-                    };
-                    Some((va, spec))
-                })
-                .collect();
+            let vararg_callees = pragma::callee_pragmas(&f, &insns, &regs, knobs.on(Switch::CalleeClobbers), &order_parms);
             let (rc, aggregates) = aggregate_ram_globals(&rc, &insns, &gsizes, &volatiles, knobs.on(Switch::Agg));
             if mosura::debug::on(mosura::debug::Topic::Survey) && !aggregates.is_empty() {
                 for (_, d) in &aggregates {
@@ -1351,22 +1128,6 @@ fn main() {
         // idx (the file stem) -> va, to find each TU's own call-arity map.
         let idx_va: std::collections::HashMap<String, u64> =
             entries.iter().enumerate().map(|(i, (va, _))| (format!("{i:05}"), *va)).collect();
-        let ext_re = |src: &str| -> Vec<u64> {
-            let mut out = Vec::new();
-            for line in src.lines() {
-                if let Some(rest) = line.strip_prefix("extern ") {
-                    if let Some(pos) = rest.find("func_0x") {
-                        if let Ok(va) = u64::from_str_radix(
-                            rest[pos + 7..].split(|c: char| !c.is_ascii_hexdigit()).next().unwrap_or(""),
-                            16,
-                        ) {
-                            out.push(va);
-                        }
-                    }
-                }
-            }
-            out
-        };
         let mut patched = 0usize;
         // the recovered tree externs the same callees and needs the same contracts — its
         // omission cost EXACT verdicts that looked like evidence-rule failures (the sb71
@@ -1386,71 +1147,10 @@ fn main() {
                 let caller_va = path
                     .file_stem()
                     .and_then(|st| st.to_str())
-                    .and_then(|st| idx_va.get(st));
-                // A TU may ALREADY declare `#pragma aux` for this callee (build_tu's
-                // recovered contract clauses: `parm caller []` and/or `modify [..]`). Watcom
-                // treats a SECOND `#pragma aux` for the same symbol as a REPLACEMENT, so the
-                // parm clause must be MERGED INTO the existing line, never prepended beside
-                // it — the prepended form silently destroyed the order recovery of every
-                // modify-annotated callee (measured: the nine-sibling 0x392xx family lost
-                // EXACT, FUN_0003925c's `parm [edx] [eax]` replaced by `modify [eax edx]`).
-                // An existing line that already carries a `parm` clause wins outright (the
-                // per-site order recovery and the caller-cleaned contract both outrank the
-                // definition-side default order).
-                let mut prepend = String::new();
-                let mut merges: Vec<(String, String)> = Vec::new();
-                for cva in ext_re(&src) {
-                    let Some((decl, psizes)) = parm_map.get(&cva).and_then(|d| d.as_ref())
-                    else {
-                        continue;
-                    };
-                    // arity AND width gate: every call site in this TU must pass exactly
-                    // the pragma's parameter count, each argument at the parameter's own
-                    // width. A width mismatch is as fatal as an arity one — a 16-bit
-                    // `parm [bx]` meeting a 4-byte argument overflows it to the STACK
-                    // (measured: FUN_0002c8xx's `PUSH 0xc` where the original loads EBX).
-                    let Some(asizes) = caller_va
-                        .and_then(|va| caller_calls.get(va))
-                        .and_then(|m| m.get(&cva))
-                        .cloned()
-                        .flatten()
-                    else {
-                        continue;
-                    };
-                    // Per slot the pragma register must be AT LEAST the argument's width:
-                    // a narrower argument binds the register's low part (measured EXACT —
-                    // the byte index into `parm [edx]`), while a narrower REGISTER
-                    // overflows the argument to the stack (the `parm [bx]` failure above).
-                    // A STACK-convention callee (`parm []`) takes every argument in a
-                    // 4-byte slot: the caller pushes the promoted value and the callee reads
-                    // its own width off the slot, so a `char` parameter meeting a 4-byte
-                    // argument is the normal case, not an overflow (FUN_00030dc8's `PUSH 0`
-                    // for FUN_00060ad0's byte parameter, one row from EXACT without the
-                    // clause) — arity gates, width does not.
-                    let stack_slots = decl == "[]";
-                    if !(asizes.len() == psizes.len()
-                        && (stack_slots || asizes.iter().zip(psizes).all(|(a, p)| a <= p)))
-                    {
-                        continue;
-                    }
-                    let tag = format!("#pragma aux func_0x{cva:08x} ");
-                    match src.lines().find(|l| l.starts_with(&tag)) {
-                        Some(l) if l.contains(" parm ") => {}
-                        Some(l) => merges.push((
-                            l.to_string(),
-                            format!("{tag}parm {decl} {}", &l[tag.len()..]),
-                        )),
-                        None => {
-                            prepend.push_str(&format!("#pragma aux func_0x{cva:08x} parm {decl};\n"))
-                        }
-                    }
-                }
-                if !prepend.is_empty() || !merges.is_empty() {
-                    let mut out = src.clone();
-                    for (from, to) in &merges {
-                        out = out.replacen(from.as_str(), to.as_str(), 1);
-                    }
-                    std::fs::write(&path, format!("{prepend}{out}")).unwrap();
+                    .and_then(|st| idx_va.get(st))
+                    .copied();
+                if let Some(out) = contracts.patch_caller(&src, caller_va) {
+                    std::fs::write(&path, out).unwrap();
                     patched += 1;
                 }
             }
