@@ -31,7 +31,7 @@ pub fn recover(
 ) -> RecoveredChoices {
     let (_, report) = crate::decompile::printc::print_c_report(f, choices);
     let call_arg_orders = call_arg_orders(&report);
-    let recovered = derive(&report, insns, call_arg_orders.clone());
+    let recovered = derive(&report, insns, call_arg_orders.clone(), &|a| f.is_loaded(a));
     // SECOND EVIDENCE ROUND (see print_c_recovered_report): decisions interact — a
     // tier-2 materialization creates the statement-carrying clause cond-form nests —
     // so re-assess candidacy on the rendering the first round produces and merge.
@@ -54,7 +54,7 @@ pub fn recover(
     // 2026-09-04). Observation only: the returned decisions are the second round's either way.
     if cfg!(debug_assertions) || crate::debug::recover_fixpoint() {
         let (_, report3) = crate::decompile::printc::print_c_recovered_report(f, rec_choices, &recovered);
-        let mut again = derive(&report3, insns, call_arg_orders);
+        let mut again = derive(&report3, insns, call_arg_orders, &|a| f.is_loaded(a));
         again.nested_conds.sites.extend(crate::recompile::buildconfig::nested_conds_from_evidence(&report3.nested_conds.candidates, insns));
         let grown = again.grown_over(&recovered);
         if !grown.is_empty() {
@@ -74,7 +74,12 @@ pub fn recover(
 /// The witness derivation: every per-site decision judged against the original's
 /// instructions, from one report pass. Called on the report pass and, for the fixpoint check
 /// below, on a render under the decisions it produced.
-fn derive(report: &EmitReport, insns: &[NormInsn], call_arg_orders: HashMap<u64, Vec<usize>>) -> RecoveredChoices {
+fn derive(
+    report: &EmitReport,
+    insns: &[NormInsn],
+    call_arg_orders: HashMap<u64, Vec<usize>>,
+    is_loaded: &dyn Fn(u64) -> bool,
+) -> RecoveredChoices {
     let widen = crate::recompile::buildconfig::widened_sites_from_evidence(
         &report.port.local_width_candidates,
         &report.port.tier2_candidates,
@@ -263,6 +268,7 @@ fn derive(report: &EmitReport, insns: &[NormInsn], call_arg_orders: HashMap<u64,
             sites: crate::recompile::buildconfig::table_bases_from_evidence(
                 &report.table_base.candidates,
                 insns,
+                is_loaded,
             ),
         },
         testmem: crate::decompile::emit::arms::testmem::Sites {

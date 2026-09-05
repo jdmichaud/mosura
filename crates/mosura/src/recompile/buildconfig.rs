@@ -1962,6 +1962,23 @@ mod tests {
         normalize("x86:LE:32:default", &bytes, 0x1000, &NoReloc).expect("language tables")
     }
 
+    /// `table-base`: the witnessed base must be an address the original's image maps. The same
+    /// `ADD EAX,0x20000` is a table base when 0x20000 is in the image and a plain constant when it
+    /// is not (the gt program `fixed`: `a + FIX(2)` in 16.16 fixed point, 2026-09-05 — the arm
+    /// printed an `aRam00020000` symbol no TU defines and the program did not link). Both
+    /// directions, and the in-element case (the constant lies within 0x100 above the base).
+    #[test]
+    fn table_base_witness_requires_a_mapped_base() {
+        let insns = lift("0500000200"); // ADD EAX,0x20000
+        let cands = [(0x1000u64, 0x20000u64)];
+        assert!(table_bases_from_evidence(&cands, &insns, &|_| false).is_empty(), "an unmapped constant is arithmetic, not a base");
+        assert_eq!(table_bases_from_evidence(&cands, &insns, &|a| a == 0x20000).get(&0x1000), Some(&0x20000), "the mapped immediate is the base");
+        let insns = lift("ba70f00800"); // MOV EDX,0x8f070
+        let cands = [(0x1000u64, 0x8f094u64)]; // the constant names a field 0x24 above the base
+        assert_eq!(table_bases_from_evidence(&cands, &insns, &|a| (0x8f000..0x90000).contains(&a)).get(&0x1000), Some(&0x8f070));
+        assert!(table_bases_from_evidence(&cands, &insns, &|_| false).is_empty());
+    }
+
     /// `cmp-order`: the original `CMP EDX,EAX ; SETGE AL` names the port's RIGHT operand (EDX)
     /// first — the source wrote `edx >= eax`; the same bytes with the port's operands the other
     /// way round are the source's order already; no register on either side decides nothing.
@@ -2715,7 +2732,11 @@ pub fn signed_loads_from_evidence(
 /// whose displacement is the folded form) anywhere in the function with `imm` equal to the
 /// constant or within 0x100 below it (a field of the element). Candidates are `(sum address,
 /// constant)`; returns `sum address → base` with the closest such immediate.
-pub fn table_bases_from_evidence(cands: &[(u64, u64)], insns: &[NormInsn]) -> std::collections::HashMap<u64, u64> {
+pub fn table_bases_from_evidence(
+    cands: &[(u64, u64)],
+    insns: &[NormInsn],
+    is_loaded: &dyn Fn(u64) -> bool,
+) -> std::collections::HashMap<u64, u64> {
     let mut out = std::collections::HashMap::new();
     let imms: Vec<u64> = insns
         .iter()
@@ -2729,7 +2750,12 @@ pub fn table_bases_from_evidence(cands: &[(u64, u64)], insns: &[NormInsn]) -> st
         })
         .collect();
     for &(pc, k) in cands {
-        let best = imms.iter().copied().filter(|&imm| imm <= k && k - imm < 0x100).max();
+        // The base is an ADDRESS: the original's image must map it. An immediate that merely
+        // equals the constant is any additive constant — `ADD EAX,0x20000` in a fixed-point
+        // `a + 2.0` (gt program `fixed`, `lerp.constprop.0`, 2026-09-05) matched here and the
+        // arm printed `aRam00020000 + iVar1`, a symbol no TU defines: the arm-enabled program
+        // did not link where the plain one PASSed. A table lives in the image; 0x20000 does not.
+        let best = imms.iter().copied().filter(|&imm| imm <= k && k - imm < 0x100 && is_loaded(imm)).max();
         if let Some(base) = best {
             out.insert(pc, base);
         }

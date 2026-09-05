@@ -11,7 +11,11 @@
 //! the constant's excess over the base prints as a trailing field offset. The witness
 //! (`recovered.table_base.sites`, from `buildconfig::table_bases_from_evidence` over this arm's
 //! candidates): a `MOV r32,imm` / `ADD r32,imm` in the original whose immediate is the constant
-//! or lies within an element below it — the base. A target-informed emit choice, NOT Ghidra.
+//! or lies within an element below it — the base — AND an address the original's image maps
+//! (`Funcdata::is_loaded`): an immediate alone is any additive constant (the gt program `fixed`
+//! added 2.0 in 16.16 fixed point, `ADD EAX,0x20000`, and the arm named an `aRam00020000` that
+//! no TU defines — the arm-enabled program did not link; 2026-09-05). A target-informed emit
+//! choice, NOT Ghidra.
 //!
 //! The arm answers at `ValueSite::Sum` after `sum-order`; `None` = the port's own rendering.
 use crate::decompile::op::OpId;
