@@ -1,0 +1,13 @@
+[package]
+name = "mosura"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "mosura — the safe Rust binding over the mosura C ABI (libmosura): handles with Drop, statuses as Result, views as slices"
+
+[lib]
+name = "mosura"
+
+[dependencies]
+mosura-capi = { path = "../mosura-capi" }

@@ -230,12 +230,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "mosura"
+version = "0.1.0"
+dependencies = [
+ "mosura-capi",
+]
+
+[[package]]
 name = "mosura-api"
 version = "0.0.0"
 dependencies = [
  "blake3",
  "memmap2",
  "mosura-core",
+ "roxmltree",
  "serde_json",
 ]
 
