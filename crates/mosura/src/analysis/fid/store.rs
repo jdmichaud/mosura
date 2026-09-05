@@ -215,6 +215,42 @@ pub fn read_file(path: &std::path::Path) -> Result<FidStore, StoreError> {
 }
 
 /// Decode a database's bytes: inflate when gzip-framed, otherwise interpret as UTF-8 text.
+/// The `language` and `compilerspec` a store declares, read from its HEADER ALONE: the lines
+/// before the first record (`f`/`s`/`i`), so a gzip stream is inflated no further than that and
+/// the records — the bulk of the file — are never parsed. This is what decides whether a database
+/// is for the program at hand ([`super::query::FidQueryService::load_matching_resources`]); the
+/// full decode used to run first and the match second, so every database on disk was decoded on
+/// every start whatever the program's architecture (2026-09-05). `None` when the header does not
+/// carry both fields before the records begin (a hand-edited file): the caller decodes in full
+/// and lets `matches_program` decide.
+pub fn header_targets(raw: &[u8]) -> Option<(String, String)> {
+    use std::io::BufRead;
+    let reader: Box<dyn std::io::Read + '_> = if raw.len() >= 2 && raw[..2] == GZIP_MAGIC {
+        Box::new(flate2::read::GzDecoder::new(raw))
+    } else {
+        Box::new(raw)
+    };
+    let (mut language, mut compiler_spec) = (None, None);
+    for line in std::io::BufReader::new(reader).lines() {
+        let line = line.ok()?;
+        let line = line.trim_end();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (tag, rest) = line.split_once(' ').unwrap_or((line, ""));
+        match tag {
+            "mosura-fid" | "library" => {}
+            "language" => language = Some(rest.trim().to_string()),
+            "compilerspec" => compiler_spec = Some(rest.trim().to_string()),
+            _ => break, // the records begin
+        }
+        if language.is_some() && compiler_spec.is_some() {
+            break;
+        }
+    }
+    Some((language?, compiler_spec?))
+}
+
 pub fn decompress(raw: &[u8]) -> Result<String, String> {
     if raw.len() >= 2 && raw[..2] == GZIP_MAGIC {
         use std::io::Read;

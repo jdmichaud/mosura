@@ -261,9 +261,9 @@ impl FidQueryService {
                 continue;
             }
             let Some(data) = res.read(&name) else { continue };
-            match decode_database(&name, &data) {
-                Ok(db) if db.matches_program(language_id, compiler_spec_id) => service.attach(db),
-                Ok(_) => {}
+            match load_if_matching(&name, &data, language_id, compiler_spec_id) {
+                Ok(Some(db)) => service.attach(db),
+                Ok(None) => {}
                 Err(e) => warn!("fid: skipping {name}: {e}"),
             }
         }
@@ -292,9 +292,9 @@ impl FidQueryService {
 
         for path in paths {
             let Ok(data) = std::fs::read(&path) else { continue };
-            match decode_database(&path.to_string_lossy(), &data) {
-                Ok(db) if db.matches_program(language_id, compiler_spec_id) => service.attach(db),
-                Ok(_) => {}
+            match load_if_matching(&path.to_string_lossy(), &data, language_id, compiler_spec_id) {
+                Ok(Some(db)) => service.attach(db),
+                Ok(None) => {}
                 Err(e) => warn!("fid: skipping {}: {e}", path.display()),
             }
         }
@@ -302,19 +302,128 @@ impl FidQueryService {
     }
 }
 
-/// Decode one database file from its bytes: Ghidra's packed `.fidb` (a Java ObjectStream
-/// header, first byte `0xac`) or mosura's `.mfid`/`.mfid.gz` text store. The database is named
-/// by the file's stem (`x86watcom` for `x86watcom.mfid.gz`), whatever directory or resource
-/// name it came from.
-fn decode_database(file: &str, data: &[u8]) -> Result<FidDatabase, String> {
+/// A database file opened but not yet decoded: Ghidra's packed `.fidb` (a Java ObjectStream
+/// header, first byte `0xac`) as its table directory, or mosura's `.mfid`/`.mfid.gz` text store
+/// as its raw bytes. Opening is cheap next to decoding: the records (hundreds of thousands of
+/// rows in a `.fidb`) are read by [`finish`] only.
+enum Opened<'a> {
+    Packed(Database),
+    Text(&'a [u8]),
+}
+
+fn open_container(data: &[u8]) -> Result<Opened<'_>, String> {
+    if data.first() == Some(&0xac) {
+        db::open_packed(data).map(Opened::Packed).map_err(|e| e.0)
+    } else {
+        Ok(Opened::Text(data))
+    }
+}
+
+/// The `(language, compiler spec)` pairs an opened database declares — its HEADER, without the
+/// records: the Libraries Table alone for a `.fidb` (a handful of rows; the Functions Table is
+/// not touched), the header lines for a store ([`super::store::header_targets`]). `None` when
+/// the container does not say, and the caller decodes in full.
+fn declared_targets(opened: &Opened<'_>) -> Option<Vec<(String, String)>> {
+    match opened {
+        Opened::Packed(database) => {
+            let table = database.table("Libraries Table")?;
+            let rows = database.records(table).ok()?;
+            Some(
+                rows.iter()
+                    .map(|r| (r.str_at(4).unwrap_or_default().to_string(), r.str_at(7).unwrap_or_default().to_string()))
+                    .collect(),
+            )
+        }
+        Opened::Text(data) => super::store::header_targets(data).map(|pair| vec![pair]),
+    }
+}
+
+/// Decode an opened database. It is named by the file's stem (`x86watcom` for
+/// `x86watcom.mfid.gz`), whatever directory or resource name it came from.
+fn finish(opened: Opened<'_>, file: &str) -> Result<FidDatabase, String> {
     let stem = file.rsplit('/').next().unwrap_or(file);
     let name = stem.trim_end_matches(".gz").trim_end_matches(".mfid").trim_end_matches(".fidb");
-    if data.first() == Some(&0xac) {
-        FidDatabase::open_packed(name, data).map_err(|e| e.0)
-    } else {
-        super::store::decompress(data)
+    match opened {
+        Opened::Packed(database) => FidDatabase::from_database(name, database).map_err(|e| e.0),
+        Opened::Text(data) => super::store::decompress(data)
             .and_then(|text| super::store::FidStore::from_text(&text).map_err(|e| e.0))
-            .map(|store| store.into_database(name))
+            .map(|store| store.into_database(name)),
+    }
+}
+
+/// One database file for one program: `Ok(Some)` when it describes the program's language and
+/// compiler spec, decoded; `Ok(None)` when it does not — decided from the HEADER, so a database
+/// for another architecture is never decoded (before 2026-09-05 every database on disk was
+/// decoded on every start and filtered afterwards: 2.9 s per program in the developer tree,
+/// the same for a program nothing matches). The decoded database is still checked with
+/// [`FidDatabase::matches_program`]: the header is a shortcut, not a second rule.
+fn load_if_matching(
+    file: &str,
+    data: &[u8],
+    language_id: &str,
+    compiler_spec_id: &str,
+) -> Result<Option<FidDatabase>, String> {
+    let opened = open_container(data)?;
+    if let Some(targets) = declared_targets(&opened) {
+        if !targets.iter().any(|(l, c)| l == language_id && c == compiler_spec_id) {
+            return Ok(None);
+        }
+    }
+    let db = finish(opened, file)?;
+    Ok(db.matches_program(language_id, compiler_spec_id).then_some(db))
+}
+
+#[cfg(test)]
+mod header_tests {
+    use super::*;
+
+    fn shipped(name: &str) -> Vec<u8> {
+        std::fs::read(crate::paths::workspace_root().join("data/fid").join(name)).expect("a shipped database")
+    }
+
+    /// The header decides, from a PREFIX of the file: the first 512 compressed bytes of a shipped
+    /// `.mfid.gz` (hundreds of KB) name its language and compiler spec — proof the reader stops at
+    /// the header and never needs the records.
+    #[test]
+    fn a_store_header_is_read_from_a_prefix_of_the_file() {
+        let data = shipped("watcom-10.0a-x86-32.mfid.gz");
+        assert!(data.len() > 20_000, "a real database (tens of KB compressed), not a stub");
+        let whole = super::super::store::header_targets(&data);
+        assert_eq!(whole, Some(("x86:LE:32:default".to_string(), "watcom".to_string())));
+        assert_eq!(super::super::store::header_targets(&data[..512]), whole, "the header alone decides");
+    }
+
+    /// A database for another program is never decoded: a store whose header names another
+    /// architecture and whose records are garbage loads as `Ok(None)` — decode-first would have
+    /// tripped on the garbage (`Err`). The same garbage IS reached when the header matches.
+    #[test]
+    fn a_non_matching_database_is_not_decoded() {
+        let text = "mosura-fid 1\nlanguage x86:LE:64:default\ncompilerspec gcc\nlibrary glibc|2.3|Release\nf this is not a record\n";
+        assert_eq!(super::super::store::header_targets(text.as_bytes()), Some(("x86:LE:64:default".into(), "gcc".into())));
+        match load_if_matching("garbage.mfid", text.as_bytes(), "x86:LE:32:default", "watcom") {
+            Ok(None) => {}
+            other => panic!("a non-matching header must skip without decoding, got {:?}", other.map(|o| o.is_some())),
+        }
+        assert!(load_if_matching("garbage.mfid", text.as_bytes(), "x86:LE:64:default", "gcc").is_err(), "the matching header decodes and meets the garbage");
+        // a header without both fields does not decide: the full decode does (and here fails)
+        assert_eq!(super::super::store::header_targets(b"mosura-fid 1\nf x\n"), None);
+    }
+
+    /// Ghidra's packed database: the Libraries Table read alone names the same targets the full
+    /// decode does (gated on the vendored `.fidb` being present).
+    #[test]
+    fn a_packed_database_declares_its_libraries_without_the_functions_table() {
+        let path = crate::paths::fid_db_dir().join("vs2012_x86.fidb");
+        let Ok(data) = std::fs::read(&path) else { eprintln!("skip: {} absent", path.display()); return };
+        let opened = open_container(&data).expect("a packed database");
+        let declared = declared_targets(&opened).expect("a Libraries Table");
+        assert!(declared.iter().any(|(l, c)| l == "x86:LE:32:default" && c == "windows"), "{declared:?}");
+        let full = finish(opened, "vs2012_x86.fidb").expect("decodes");
+        let mut from_full: Vec<(String, String)> = full.libraries.iter().map(|l| (l.language_id.clone(), l.compiler_spec_id.clone())).collect();
+        let mut declared = declared;
+        from_full.sort();
+        declared.sort();
+        assert_eq!(declared, from_full);
     }
 }
 

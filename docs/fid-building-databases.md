@@ -119,8 +119,14 @@ cargo xtask data-list --data-dir /path/to/override                       # what 
 ```
 
 A database is attached to a program only when its `language` and `compilerspec` match, so
-several columns can live in one directory without interfering. The dev-tool `fidnames` takes an
-explicit database directory as its last argument.
+several columns can live in one directory without interfering. The match is decided from the
+HEADER — the first lines of a store (a `.gz` is inflated no further), the Libraries Table alone of
+a `.fidb` — so a database for another architecture is never decoded; before 2026-09-05 every
+database was decoded first and filtered after, about 2.9 s per program in the developer tree
+whatever its architecture. What remains for a `.fidb` that does not match is reading and inflating
+its container to reach that table (about 1.3 s for the 80 MB of vendored Ghidra databases); a
+release without that data pack pays nothing. The dev-tool `fidnames` takes an explicit database
+directory as its last argument.
 
 ---
 
