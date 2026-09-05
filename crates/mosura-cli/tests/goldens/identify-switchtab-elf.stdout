@@ -1,0 +1,27 @@
+key	value	evidence
+input	input	9224 bytes
+input.digest	31afd556363fba35a160f37db20218aeaaa7ff0acc50cec287c664f5937d57dd	blake3
+container	ELF	
+native.loader	none	the default dispatch owns this file
+compiler.version	gcc:14.2.0	Exact: GCC: (Debian 14.2.0-19) 14.2.0
+load	default	loaded, not analyzed
+language	x86:LE:64:default	
+cspec	gcc	resolved
+compiler.opinion	unknown	Ghidra CompilerOpinion label
+compiler.detected	gcc:14.2.0	the version marker as the loader recorded it
+base	0x400000	64 bits
+endian	little	
+block	segment_0.1	0x00400000..0x0040018f r--
+block	.note.gnu.build-id	0x00400190..0x004001b3 r--
+block	.text	0x00401000..0x0040109b r-x
+block	.rodata	0x00402000..0x0040201b r--
+block	.data	0x0040301c..0x00403023 rw-
+entry	0x401080	
+entry	0x40301c	
+entry	0x403020	
+entry	0x403024	
+entry	0x403028	
+functions	3	loader-stage
+symbols	8	loader-stage
+relocations	0	
+fid.records	0	no database matches this language and spec

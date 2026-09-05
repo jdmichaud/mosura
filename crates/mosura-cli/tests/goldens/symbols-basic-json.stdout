@@ -1,0 +1,354 @@
+[
+  {
+    "addr": 4210184,
+    "external": false,
+    "name": "_DYNAMIC",
+    "primary": false,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4198400,
+    "external": false,
+    "name": "__DT_INIT",
+    "primary": false,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4198828,
+    "external": false,
+    "name": "__DT_FINI",
+    "primary": false,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4210168,
+    "external": false,
+    "name": "__DT_INIT_ARRAY",
+    "primary": false,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4210176,
+    "external": false,
+    "name": "__DT_FINI_ARRAY",
+    "primary": false,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4195248,
+    "external": false,
+    "name": "__DT_GNU_HASH",
+    "primary": false,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4195376,
+    "external": false,
+    "name": "__DT_STRTAB",
+    "primary": false,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4195280,
+    "external": false,
+    "name": "__DT_SYMTAB",
+    "primary": false,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4210664,
+    "external": false,
+    "name": "__DT_PLTGOT",
+    "primary": false,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4195560,
+    "external": false,
+    "name": "__DT_JMPREL",
+    "primary": false,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4195512,
+    "external": false,
+    "name": "__DT_RELA",
+    "primary": false,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4195464,
+    "external": false,
+    "name": "__DT_VERNEED",
+    "primary": false,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4195450,
+    "external": false,
+    "name": "__DT_VERSYM",
+    "primary": false,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4214784,
+    "external": false,
+    "name": "__libc_start_main",
+    "primary": true,
+    "space": 1,
+    "type": 1
+  },
+  {
+    "addr": 4214792,
+    "external": false,
+    "name": "printf",
+    "primary": true,
+    "space": 1,
+    "type": 1
+  },
+  {
+    "addr": 4214800,
+    "external": false,
+    "name": "__gmon_start__",
+    "primary": true,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4202796,
+    "external": false,
+    "name": "__abi_tag",
+    "primary": true,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4198528,
+    "external": false,
+    "name": "deregister_tm_clones",
+    "primary": true,
+    "space": 1,
+    "type": 1
+  },
+  {
+    "addr": 4198576,
+    "external": false,
+    "name": "register_tm_clones",
+    "primary": true,
+    "space": 1,
+    "type": 1
+  },
+  {
+    "addr": 4198640,
+    "external": false,
+    "name": "__do_global_dtors_aux",
+    "primary": true,
+    "space": 1,
+    "type": 1
+  },
+  {
+    "addr": 4210712,
+    "external": false,
+    "name": "completed.0",
+    "primary": true,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4210176,
+    "external": false,
+    "name": "__do_global_dtors_aux_fini_array_entry",
+    "primary": true,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4198688,
+    "external": false,
+    "name": "frame_dummy",
+    "primary": true,
+    "space": 1,
+    "type": 1
+  },
+  {
+    "addr": 4210168,
+    "external": false,
+    "name": "__frame_dummy_init_array_entry",
+    "primary": true,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4198694,
+    "external": false,
+    "name": "add",
+    "primary": true,
+    "space": 1,
+    "type": 1
+  },
+  {
+    "addr": 4198714,
+    "external": false,
+    "name": "sum_to",
+    "primary": true,
+    "space": 1,
+    "type": 1
+  },
+  {
+    "addr": 4202792,
+    "external": false,
+    "name": "__FRAME_END__",
+    "primary": true,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4202504,
+    "external": false,
+    "name": "__GNU_EH_FRAME_HDR",
+    "primary": false,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4210664,
+    "external": false,
+    "name": "_GLOBAL_OFFSET_TABLE_",
+    "primary": true,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4210696,
+    "external": false,
+    "name": "data_start",
+    "primary": true,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4210712,
+    "external": false,
+    "name": "_edata",
+    "primary": false,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4198828,
+    "external": false,
+    "name": "_fini",
+    "primary": true,
+    "space": 1,
+    "type": 1
+  },
+  {
+    "addr": 4210696,
+    "external": false,
+    "name": "__data_start",
+    "primary": false,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4210704,
+    "external": false,
+    "name": "__dso_handle",
+    "primary": true,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4202496,
+    "external": false,
+    "name": "_IO_stdin_used",
+    "primary": true,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4210720,
+    "external": false,
+    "name": "_end",
+    "primary": true,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4198512,
+    "external": false,
+    "name": "_dl_relocate_static_pie",
+    "primary": true,
+    "space": 1,
+    "type": 1
+  },
+  {
+    "addr": 4198464,
+    "external": false,
+    "name": "_start",
+    "primary": true,
+    "space": 1,
+    "type": 1
+  },
+  {
+    "addr": 4210712,
+    "external": false,
+    "name": "__bss_start",
+    "primary": false,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4198760,
+    "external": false,
+    "name": "main",
+    "primary": true,
+    "space": 1,
+    "type": 1
+  },
+  {
+    "addr": 4210712,
+    "external": false,
+    "name": "__TMC_END__",
+    "primary": true,
+    "space": 1,
+    "type": 0
+  },
+  {
+    "addr": 4198400,
+    "external": false,
+    "name": "_init",
+    "primary": true,
+    "space": 1,
+    "type": 1
+  },
+  {
+    "addr": 4198448,
+    "external": false,
+    "name": "FUN_00401030",
+    "primary": true,
+    "space": 1,
+    "type": 1
+  },
+  {
+    "addr": 4198432,
+    "external": false,
+    "name": "FUN_00401020",
+    "primary": true,
+    "space": 1,
+    "type": 1
+  }
+]

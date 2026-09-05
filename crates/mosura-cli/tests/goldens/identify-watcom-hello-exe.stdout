@@ -1,0 +1,42 @@
+key	value	evidence
+input	input	15995 bytes
+input.digest	d5ff6830f566c8a5f430a096fc0353e121de02a83f4b603b7138a3e2a44401dc	blake3
+container	MZ (DOS)	
+native.loader	LE	beyond-Ghidra; load.loader=native for its view
+le.header	0x2a50	LE; standalone — e_lfanew points at it
+compiler.version	watcom:1988-1994	Era: WATCOM C/C++32 Run-Time system. (c) Copyright by WATCOM International Corp. 1988-1994
+compiler.watcom	watcom:1988-1994	WATCOM C/C++32 Run-Time system. (c) Copyright by WATCOM Internatio…
+load	default	loaded, not analyzed
+language	x86:LE:32:default	
+cspec	watcom	resolved
+compiler.opinion	watcom:1988-1994	Ghidra CompilerOpinion label
+compiler.detected	watcom:1988-1994	the version marker as the loader recorded it
+base	0x10000	32 bits
+endian	little	
+block	obj1_text	0x00010000..0x000104d4 r-x
+block	obj2_data	0x00020000..0x0002108f rw-
+entry	0x10088	
+functions	1	loader-stage
+symbols	1	loader-stage
+relocations	56	relocatable
+fid.database	borland-bc4.0-flat-x86-32	953 records, 1 libraries
+fid.database	borland-bc4.5-flat-x86-32	941 records, 1 libraries
+fid.database	borland-bc4.52-flat-x86-32	942 records, 1 libraries
+fid.database	borland-cb5-cw32-x86-32	983 records, 1 libraries
+fid.database	borland-cb5-cw32mt-x86-32	1023 records, 1 libraries
+fid.database	watcom-10.0a-cpp-x86-32	569 records, 1 libraries
+fid.database	watcom-10.0a-stack-x86-32	736 records, 1 libraries
+fid.database	watcom-10.0a-x86-32	749 records, 1 libraries
+fid.database	watcom-10.5-cpp-x86-32	505 records, 1 libraries
+fid.database	watcom-10.5-stack-x86-32	952 records, 1 libraries
+fid.database	watcom-10.5-x86-32	1391 records, 1 libraries
+fid.database	watcom-10.6-cpp-x86-32	506 records, 1 libraries
+fid.database	watcom-10.6-stack-x86-32	988 records, 1 libraries
+fid.database	watcom-10.6-x86-32	1428 records, 1 libraries
+fid.database	watcom-11.0-cpp-x86-32	555 records, 1 libraries
+fid.database	watcom-11.0-stack-x86-32	1262 records, 1 libraries
+fid.database	watcom-11.0-x86-32	1735 records, 1 libraries
+fid.database	watcom-9.01-stack-x86-32	634 records, 1 libraries
+fid.database	watcom-9.01-x86-32	654 records, 1 libraries
+fid.database	watcom-ow2-x86-32	1269 records, 1 libraries
+fid.records	18775	

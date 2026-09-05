@@ -1,0 +1,6 @@
+int8 FUN_00100000(void)
+{
+  int4 iVar1;
+
+  return iVar1 + 2;
+}

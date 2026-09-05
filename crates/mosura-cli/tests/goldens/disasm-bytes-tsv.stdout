@@ -1,0 +1,7 @@
+addr	len	bytes	mnemonic	operands	flow_kind	ends_flow	has_call_target	call_target	flows
+401000	1	55	PUSH	EBP		false	false	0	
+401001	2	89e5	MOV	EBP,ESP		false	false	0	
+401003	3	8b4508	MOV	EAX,dword ptr [EBP + 0x8]		false	false	0	
+401006	3	83c001	ADD	EAX,0x1		false	false	0	
+401009	1	5d	POP	EBP		false	false	0	
+40100a	1	c3	RET			false	false	0	

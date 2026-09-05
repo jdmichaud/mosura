@@ -1,0 +1,40 @@
+key	value	evidence
+input	input	229835 bytes
+input.digest	8c169d696141316551ee2ae97178e3e2be1fc2ad68a3609283b395259322649a	blake3
+container	MZ + PE	
+native.loader	none	the default dispatch owns this file
+compiler.version	gcc:14-win32	Exact: GCC: (GNU) 14-win32
+load	default	loaded, not analyzed
+language	x86:LE:32:default	
+cspec	windows	resolved
+compiler.opinion	gcc:unknown	Ghidra CompilerOpinion label
+compiler.detected	gcc:14-win32	the version marker as the loader recorded it
+base	0x400000	32 bits
+endian	little	
+block	Headers	0x00400000..0x004003ff r--
+block	.text	0x00401000..0x004081ff r-x
+block	.data	0x00409000..0x004091ff rw-
+block	.rdata	0x0040a000..0x0040a9ff r--
+block	/4	0x0040b000..0x0040c5ff r--
+block	.bss	0x0040d000..0x0040da73 rw- (uninitialized)
+block	.idata	0x0040e000..0x0040e5ff r--
+block	.tls	0x0040f000..0x0040f1ff rw-
+block	.reloc	0x00410000..0x004105ff r--
+block	/14	0x00411000..0x004115ff r--
+block	/29	0x00412000..0x004233ff r--
+block	/41	0x00424000..0x004273ff r--
+block	/55	0x00428000..0x0042efff r--
+block	/67	0x0042f000..0x0042f3ff r--
+block	/78	0x00430000..0x004317ff r--
+block	/94	0x00432000..0x004389ff r--
+block	/110	0x00439000..0x004395ff r--
+entry	0x4013f0	
+functions	1	loader-stage
+symbols	2	loader-stage
+relocations	0	
+fid.database	vs2012_x86	80059 records, 2 libraries
+fid.database	vs2015_x86	88502 records, 2 libraries
+fid.database	vs2017_x86	47465 records, 2 libraries
+fid.database	vs2019_x86	64373 records, 2 libraries
+fid.database	vsOlder_x86	216946 records, 10 libraries
+fid.records	497345	

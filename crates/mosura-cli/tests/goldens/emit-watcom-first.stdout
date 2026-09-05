@@ -1,0 +1,9 @@
+#pragma aux entry modify [ebx ecx edx edi];
+#pragma aux func_0x00010100 modify [eax ebx ecx edi edx];
+extern int func_0x00010100();
+
+void FUN_00010088(xunknown4 param_1, xunknown4 param_2)
+{
+  func_0x00010100(param_1, param_2);
+  return;
+}

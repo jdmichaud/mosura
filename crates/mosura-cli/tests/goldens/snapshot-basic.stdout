@@ -1,0 +1,396 @@
+# mosura-analysis-snapshot v1 lang=x86:LE:64:default compiler=gcc compilerinfo=unknown compilerversion=gcc:14.2.0 base=00400000 endian=little addrsize=64
+block 00400000 0040034f segment_2.1
+block 00400350 0040036f .note.gnu.property
+block 00400370 00400393 .note.gnu.build-id
+block 00400394 004003af .interp
+block 004003b0 004003cb .gnu.hash
+block 004003d0 0040042f .dynsym
+block 00400430 00400479 .dynstr
+block 0040047a 00400481 .gnu.version
+block 00400488 004004b7 .gnu.version_r
+block 004004b8 004004e7 .rela.dyn
+block 004004e8 004004ff .rela.plt
+block 00401000 00401016 .init
+block 00401020 0040103f .plt
+block 00401040 004011a9 .text
+block 004011ac 004011b4 .fini
+block 00402000 00402007 .rodata
+block 00402008 00402043 .eh_frame_hdr
+block 00402048 0040212b .eh_frame
+block 0040212c 0040214b .note.ABI-tag
+block 00403df8 00403dff .init_array
+block 00403e00 00403e07 .fini_array
+block 00403e08 00403fd7 .dynamic
+block 00403fd8 00403fe7 .got
+block 00403fe8 00404007 .got.plt
+block 00404008 00404017 .data
+block 00404018 0040401f .bss
+block 00405000 00405017 EXTERNAL
+func 00401000 _init
+func 00401020 FUN_00401020
+func 00401030 FUN_00401030
+func 00401040 _start
+func 00401070 _dl_relocate_static_pie
+func 00401080 deregister_tm_clones
+func 004010b0 register_tm_clones
+func 004010f0 __do_global_dtors_aux
+func 00401120 frame_dummy
+func 00401126 add
+func 0040113a sum_to
+func 00401168 main
+func 004011ac _fini
+func 00405000 __libc_start_main
+func 00405008 printf
+entry 00401000 _init
+entry 00401040 _start
+entry 00401070 _dl_relocate_static_pie
+entry 004010f0 __do_global_dtors_aux
+entry 00401120 frame_dummy
+entry 00401168 main
+entry 004011ac _fini
+entry 00402000 _IO_stdin_used
+entry 00404008 data_start
+entry 00404010 __dso_handle
+entry 00404018 completed.0
+entry 00404020 _end
+sym 004003b0 __DT_GNU_HASH Label
+sym 004003d0 __DT_SYMTAB Label
+sym 00400430 __DT_STRTAB Label
+sym 0040047a __DT_VERSYM Label
+sym 00400488 __DT_VERNEED Label
+sym 004004b8 __DT_RELA Label
+sym 004004e8 __DT_JMPREL Label
+sym 00401000 __DT_INIT Label
+sym 00401000 _init Function
+sym 00401020 FUN_00401020 Function
+sym 00401030 FUN_00401030 Function
+sym 00401040 _start Function
+sym 00401070 _dl_relocate_static_pie Function
+sym 00401080 deregister_tm_clones Function
+sym 004010b0 register_tm_clones Function
+sym 004010f0 __do_global_dtors_aux Function
+sym 00401120 frame_dummy Function
+sym 00401126 add Function
+sym 0040113a sum_to Function
+sym 00401168 main Function
+sym 004011ac __DT_FINI Label
+sym 004011ac _fini Function
+sym 00402000 _IO_stdin_used Label
+sym 00402008 __GNU_EH_FRAME_HDR Label
+sym 00402128 __FRAME_END__ Label
+sym 0040212c __abi_tag Label
+sym 00403df8 __DT_INIT_ARRAY Label
+sym 00403df8 __frame_dummy_init_array_entry Label
+sym 00403e00 __DT_FINI_ARRAY Label
+sym 00403e00 __do_global_dtors_aux_fini_array_entry Label
+sym 00403e08 _DYNAMIC Label
+sym 00403fe8 _GLOBAL_OFFSET_TABLE_ Label
+sym 00403fe8 __DT_PLTGOT Label
+sym 00404008 __data_start Label
+sym 00404008 data_start Label
+sym 00404010 __dso_handle Label
+sym 00404018 __TMC_END__ Label
+sym 00404018 __bss_start Label
+sym 00404018 _edata Label
+sym 00404018 completed.0 Label
+sym 00404020 _end Label
+sym 00405000 __libc_start_main Function
+sym 00405008 printf Function
+sym 00405010 __gmon_start__ Label
+ref 00400018 00401040 DATA
+ref 00400020 00400040 DATA
+ref 00400050 00400040 DATA
+ref 00400088 00400394 DATA
+ref 004000f8 00401000 DATA
+ref 00400130 00402000 DATA
+ref 00400168 00403df8 DATA
+ref 004001a0 00403e08 DATA
+ref 004001d8 00400350 DATA
+ref 00400210 00400370 DATA
+ref 00400248 0040212c DATA
+ref 00400280 00400350 DATA
+ref 004002b8 00402008 DATA
+ref 00400328 00403df8 DATA
+ref 00401004 00403fe0 READ
+ref 0040100e 00401012 CONDITIONAL_JUMP
+ref 00401010 00405010 COMPUTED_CALL
+ref 00401020 00403ff0 READ
+ref 00401026 00403ff8 INDIRECTION
+ref 00401030 00404000 INDIRECTION
+ref 00401030 00405008 COMPUTED_CALL_TERMINATOR
+ref 0040103b 00401020 UNCONDITIONAL_CALL
+ref 00401054 00401168 PARAM
+ref 0040105b 00403fd8 READ
+ref 0040105b 00405000 COMPUTED_CALL
+ref 00401080 00404018 DATA
+ref 00401085 00404018 DATA
+ref 0040108b 004010a0 CONDITIONAL_JUMP
+ref 00401095 004010a0 CONDITIONAL_JUMP
+ref 00401097 00404018 DATA
+ref 004010b0 00404018 DATA
+ref 004010b5 00404018 DATA
+ref 004010cd 004010e0 CONDITIONAL_JUMP
+ref 004010d7 004010e0 CONDITIONAL_JUMP
+ref 004010d9 00404018 DATA
+ref 004010f4 00404018 READ
+ref 004010fb 00401110 CONDITIONAL_JUMP
+ref 00401101 00401080 UNCONDITIONAL_CALL
+ref 00401106 00404018 WRITE
+ref 00401124 004010b0 UNCONDITIONAL_CALL
+ref 0040114f 0040115b UNCONDITIONAL_JUMP
+ref 00401161 00401151 CONDITIONAL_JUMP
+ref 0040117a 00401126 UNCONDITIONAL_CALL
+ref 00401187 0040113a UNCONDITIONAL_CALL
+ref 00401194 00402004 PARAM
+ref 0040119e 00401030 UNCONDITIONAL_CALL
+ref 0040200c 00402048 DATA
+ref 00402014 00401020 INDIRECTION
+ref 00402018 004020a0 DATA
+ref 0040201c 00401040 INDIRECTION
+ref 00402020 00402060 DATA
+ref 00402024 00401070 INDIRECTION
+ref 00402028 0040208c DATA
+ref 0040202c 00401126 INDIRECTION
+ref 00402030 004020c8 DATA
+ref 00402034 0040113a INDIRECTION
+ref 00402038 004020e8 DATA
+ref 0040203c 00401168 INDIRECTION
+ref 00402040 00402108 DATA
+ref 00403df8 00401120 DATA
+ref 00403e00 004010f0 DATA
+ref 00403e20 00401000 DATA
+ref 00403e30 004011ac DATA
+ref 00403e40 00403df8 DATA
+ref 00403e60 00403e00 DATA
+ref 00403e80 004003b0 DATA
+ref 00403e90 00400430 DATA
+ref 00403ea0 004003d0 DATA
+ref 00403ee0 00403fe8 DATA
+ref 00403f10 004004e8 DATA
+ref 00403f20 004004b8 DATA
+ref 00403f50 00400488 DATA
+ref 00403f70 0040047a DATA
+ref 00403fd8 00405000 DATA
+ref 00403fe0 00405010 DATA
+ref 00403fe8 00403e08 DATA
+ref 00404000 00405008 DATA
+insn 00401000
+insn 00401004
+insn 0040100b
+insn 0040100e
+insn 00401010
+insn 00401012
+insn 00401016
+insn 00401020
+insn 00401026
+insn 00401030
+insn 00401036
+insn 0040103b
+insn 00401040
+insn 00401042
+insn 00401045
+insn 00401046
+insn 00401049
+insn 0040104d
+insn 0040104e
+insn 0040104f
+insn 00401052
+insn 00401054
+insn 0040105b
+insn 00401061
+insn 00401070
+insn 00401080
+insn 00401085
+insn 0040108b
+insn 0040108d
+insn 00401092
+insn 00401095
+insn 00401097
+insn 0040109c
+insn 004010a0
+insn 004010b0
+insn 004010b5
+insn 004010bc
+insn 004010bf
+insn 004010c3
+insn 004010c7
+insn 004010ca
+insn 004010cd
+insn 004010cf
+insn 004010d4
+insn 004010d7
+insn 004010d9
+insn 004010de
+insn 004010e0
+insn 004010f0
+insn 004010f4
+insn 004010fb
+insn 004010fd
+insn 004010fe
+insn 00401101
+insn 00401106
+insn 0040110d
+insn 0040110e
+insn 00401110
+insn 00401120
+insn 00401124
+insn 00401126
+insn 00401127
+insn 0040112a
+insn 0040112d
+insn 00401130
+insn 00401133
+insn 00401136
+insn 00401138
+insn 00401139
+insn 0040113a
+insn 0040113b
+insn 0040113e
+insn 00401141
+insn 00401148
+insn 0040114f
+insn 00401151
+insn 00401154
+insn 00401157
+insn 0040115b
+insn 0040115e
+insn 00401161
+insn 00401163
+insn 00401166
+insn 00401167
+insn 00401168
+insn 00401169
+insn 0040116c
+insn 00401170
+insn 00401175
+insn 0040117a
+insn 0040117f
+insn 00401182
+insn 00401185
+insn 00401187
+insn 0040118c
+insn 0040118f
+insn 00401192
+insn 00401194
+insn 00401199
+insn 0040119e
+insn 004011a3
+insn 004011a8
+insn 004011a9
+insn 004011ac
+insn 004011b0
+insn 004011b4
+fnbody 00401000 00401000:00401016
+fnbody 00401020 00401020:0040102b
+fnbody 00401030 00401030:00401035
+fnbody 00401040 00401040:00401061
+fnbody 00401070 00401070:00401070
+fnbody 00401080 00401080:0040109d 004010a0:004010a0
+fnbody 004010b0 004010b0:004010e0
+fnbody 004010f0 004010f0:0040110e 00401110:00401110
+fnbody 00401120 00401120:00401125
+fnbody 00401126 00401126:00401139
+fnbody 0040113a 0040113a:00401167
+fnbody 00401168 00401168:004011a9
+fnbody 004011ac 004011ac:004011b4
+fnbody 00405000 00405000:00405000
+fnbody 00405008 00405008:00405008
+data 00400000 Elf64_Ehdr 64
+data 00400040 Elf64_Phdr[14] 784
+data 00400350 NoteGnuProperty_4 16
+data 00400360 NoteGnuPropertyElement_4 12
+data 00400370 GnuBuildId 36
+data 00400394 TerminatedCString 28
+data 004003b0 dword 4
+data 004003b4 dword 4
+data 004003b8 dword 4
+data 004003bc dword 4
+data 004003c0 qword[1] 8
+data 004003c8 dword[1] 4
+data 004003d0 Elf64_Sym[4] 96
+data 00400431 string-utf8 18
+data 00400443 string-utf8 7
+data 0040044a string-utf8 10
+data 00400454 string-utf8 12
+data 00400460 string-utf8 11
+data 0040046b string-utf8 15
+data 0040047a word 2
+data 0040047c word 2
+data 0040047e word 2
+data 00400480 word 2
+data 004004b8 Elf64_Rela[2] 48
+data 004004e8 Elf64_Rela[1] 24
+data 00402000 undefined4 4
+data 00402008 eh_frame_hdr 4
+data 0040200c dword 4
+data 00402010 dword 4
+data 00402014 fde_table_entry 8
+data 0040201c fde_table_entry 8
+data 00402024 fde_table_entry 8
+data 0040202c fde_table_entry 8
+data 00402034 fde_table_entry 8
+data 0040203c fde_table_entry 8
+data 00402048 dword 4
+data 0040204c dword 4
+data 00402050 byte 1
+data 00402051 string 3
+data 00402054 uleb128 1
+data 00402055 sleb128 1
+data 00402056 byte 1
+data 00402057 uleb128 1
+data 00402058 dwfenc 1
+data 00402059 byte[7] 7
+data 00402060 dword 4
+data 00402064 dword 4
+data 00402068 dword 4
+data 0040206c qword 8
+data 00402074 dword 4
+data 00402078 dword 4
+data 0040207c byte 1
+data 0040207d string 3
+data 00402080 uleb128 1
+data 00402081 sleb128 1
+data 00402082 byte 1
+data 00402083 uleb128 1
+data 00402084 dwfenc 1
+data 00402085 byte[7] 7
+data 0040208c dword 4
+data 00402090 dword 4
+data 00402094 dword 4
+data 00402098 qword 8
+data 004020a0 dword 4
+data 004020a4 dword 4
+data 004020a8 dword 4
+data 004020ac dword 4
+data 004020b0 uleb128 1
+data 004020b1 byte[23] 23
+data 004020c8 dword 4
+data 004020cc dword 4
+data 004020d0 dword 4
+data 004020d4 dword 4
+data 004020d8 uleb128 1
+data 004020d9 byte[15] 15
+data 004020e8 dword 4
+data 004020ec dword 4
+data 004020f0 dword 4
+data 004020f4 dword 4
+data 004020f8 uleb128 1
+data 004020f9 byte[15] 15
+data 00402108 dword 4
+data 0040210c dword 4
+data 00402110 dword 4
+data 00402114 dword 4
+data 00402118 uleb128 1
+data 00402119 byte[15] 15
+data 00402128 dword 4
+data 0040212c NoteAbiTag 32
+data 00403df8 pointer 8
+data 00403e00 pointer 8
+data 00403e08 Elf64_Dyn[24] 384
+data 00403fd8 pointer 8
+data 00403fe0 pointer 8
+data 00403fe8 pointer 8
+data 00403ff0 pointer 8
+data 00403ff8 pointer 8
+data 00404000 pointer 8
+data 00404018 undefined1 1

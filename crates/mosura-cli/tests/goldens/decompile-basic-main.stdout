@@ -1,0 +1,9 @@
+xunknown8 FUN_00401168(void)
+{
+  xunknown4 xVar1;
+
+  xVar1 = func_0x00401126(4, 3);
+  xVar1 = func_0x0040113a(xVar1);
+  func_0x00401030(&xRam0000000000402004, xVar1);
+  return 0;
+}

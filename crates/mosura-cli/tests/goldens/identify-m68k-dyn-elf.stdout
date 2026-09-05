@@ -1,0 +1,53 @@
+key	value	evidence
+input	input	10948 bytes
+input.digest	c7e75979f4f41834b7900600ea66ec9d75485fb591039a3833a116bd5800a7eb	blake3
+container	ELF	
+native.loader	none	the default dispatch owns this file
+compiler.version	gcc:14.2.0	Exact: GCC: (Debian 14.2.0-19) 14.2.0
+load	default	loaded, not analyzed
+language	68000:BE:32:Coldfire	
+cspec	default	resolved
+compiler.opinion	unknown	Ghidra CompilerOpinion label
+compiler.detected	gcc:14.2.0	the version marker as the loader recorded it
+base	0x80000000	32 bits
+endian	big	
+block	segment_2.1	0x80000000..0x80000153 r-x
+block	.note.gnu.build-id	0x80000154..0x80000177 r--
+block	.interp	0x80000178..0x80000184 r--
+block	.gnu.hash	0x80000188..0x800001b7 r--
+block	.dynsym	0x800001b8..0x80000217 r--
+block	.dynstr	0x80000218..0x8000026e r--
+block	.gnu.version	0x80000270..0x8000027b r--
+block	.gnu.version_r	0x8000027c..0x800002ab r--
+block	.rela.dyn	0x800002ac..0x800002c3 r--
+block	.rela.plt	0x800002c4..0x800002e7 r--
+block	.init	0x800002e8..0x8000030d r-x
+block	.plt	0x80000310..0x8000035f r-x
+block	.text	0x80000360..0x80000473 r-x
+block	.fini	0x80000474..0x80000489 r-x
+block	.rodata	0x8000048a..0x80000491 r--
+block	.eh_frame	0x80000492..0x80000495 r--
+block	.note.ABI-tag	0x80000498..0x800004b7 r--
+block	.note.package	0x800004b8..0x8000052f r--
+block	.init_array	0x80003f10..0x80003f13 rw-
+block	.fini_array	0x80003f14..0x80003f17 rw-
+block	.dynamic	0x80003f18..0x80003fff rw-
+block	.got	0x80004000..0x8000401f rw-
+block	.data	0x80004020..0x80004027 rw-
+block	.bss	0x80004028..0x8000402b rw- (uninitialized)
+block	EXTERNAL	0x80005000..0x80005017 rw- (uninitialized)
+entry	0x800002e8	
+entry	0x80000360	
+entry	0x800003e4	
+entry	0x800003fa	
+entry	0x80000438	
+entry	0x80000474	
+entry	0x8000048a	
+entry	0x80004020	
+entry	0x80004024	
+entry	0x80004028	
+entry	0x8000402c	
+functions	12	loader-stage
+symbols	40	loader-stage
+relocations	0	
+fid.records	0	no database matches this language and spec

@@ -1,0 +1,56 @@
+key	value	evidence
+input	input	15840 bytes
+input.digest	d593b653e94e0f98092d5907658cc7fa19ac45f1a6e99e8e5b438fb1708a5e47	blake3
+container	ELF	
+native.loader	none	the default dispatch owns this file
+compiler.version	gcc:14.2.0	Exact: GCC: (Debian 14.2.0-19) 14.2.0
+load	default	loaded, not analyzed
+language	x86:LE:64:default	
+cspec	gcc	resolved
+compiler.opinion	unknown	Ghidra CompilerOpinion label
+compiler.detected	gcc:14.2.0	the version marker as the loader recorded it
+base	0x400000	64 bits
+endian	little	
+block	segment_2.1	0x00400000..0x0040034f r--
+block	.note.gnu.property	0x00400350..0x0040036f r--
+block	.note.gnu.build-id	0x00400370..0x00400393 r--
+block	.interp	0x00400394..0x004003af r--
+block	.gnu.hash	0x004003b0..0x004003cb r--
+block	.dynsym	0x004003d0..0x0040042f r--
+block	.dynstr	0x00400430..0x00400479 r--
+block	.gnu.version	0x0040047a..0x00400481 r--
+block	.gnu.version_r	0x00400488..0x004004b7 r--
+block	.rela.dyn	0x004004b8..0x004004e7 r--
+block	.rela.plt	0x004004e8..0x004004ff r--
+block	.init	0x00401000..0x00401016 r-x
+block	.plt	0x00401020..0x0040103f r-x
+block	.text	0x00401040..0x004011a9 r-x
+block	.fini	0x004011ac..0x004011b4 r-x
+block	.rodata	0x00402000..0x00402007 r--
+block	.eh_frame_hdr	0x00402008..0x00402043 r--
+block	.eh_frame	0x00402048..0x0040212b r--
+block	.note.ABI-tag	0x0040212c..0x0040214b r--
+block	.init_array	0x00403df8..0x00403dff rw-
+block	.fini_array	0x00403e00..0x00403e07 rw-
+block	.dynamic	0x00403e08..0x00403fd7 rw-
+block	.got	0x00403fd8..0x00403fe7 rw-
+block	.got.plt	0x00403fe8..0x00404007 rw-
+block	.data	0x00404008..0x00404017 rw-
+block	.bss	0x00404018..0x0040401f rw- (uninitialized)
+block	EXTERNAL	0x00405000..0x00405017 rw- (uninitialized)
+entry	0x401000	
+entry	0x401040	
+entry	0x401070	
+entry	0x4010f0	
+entry	0x401120	
+entry	0x401168	
+entry	0x4011ac	
+entry	0x402000	
+entry	0x404008	
+entry	0x404010	
+entry	0x404018	
+entry	0x404020	
+functions	13	loader-stage
+symbols	42	loader-stage
+relocations	0	
+fid.records	0	no database matches this language and spec

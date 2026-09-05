@@ -1,0 +1,7 @@
+key	value	evidence
+input	input	65 bytes
+input.digest	4de90b0232a6521e258a4b91126cdd6311c9ea26b3d424ecc404e70b9d8a64af	blake3
+container	none	
+native.loader	none	the default dispatch owns this file
+compiler.version	none	no version marker found
+load	failed	unsupported: unrecognized container (not ELF/PE)

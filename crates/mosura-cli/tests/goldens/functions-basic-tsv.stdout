@@ -1,0 +1,16 @@
+space	entry	name
+1	405000	__libc_start_main
+1	405008	printf
+1	401080	deregister_tm_clones
+1	4010b0	register_tm_clones
+1	4010f0	__do_global_dtors_aux
+1	401120	frame_dummy
+1	401126	add
+1	40113a	sum_to
+1	4011ac	_fini
+1	401070	_dl_relocate_static_pie
+1	401040	_start
+1	401168	main
+1	401000	_init
+1	401030	FUN_00401030
+1	401020	FUN_00401020

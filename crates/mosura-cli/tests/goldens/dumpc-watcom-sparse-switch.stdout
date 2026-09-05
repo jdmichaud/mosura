@@ -1,0 +1,73 @@
+void FUN_00170000(int4 param_1)
+{
+  uint1 uVar1;
+  xunknown1 xVar2;
+  xunknown4 xVar3;
+
+  uVar1 = *((uint1 *)(param_1 + 6));
+  if (uVar1 < 0x11) {
+    if (uVar1 < 0xd) {
+      if (3 < uVar1) {
+        if (4 < uVar1) {
+          if (uVar1 != 0xc) {
+            return;
+          }
+          func_0x00171010(param_1 + 8);
+          return;
+        }
+        goto LAB_0017007a;
+      }
+    }
+    else if ((0xd < uVar1) && (0xe < uVar1)) {
+      if (uVar1 < 0x10) {
+        func_0x00171020(param_1 + 8);
+        return;
+      }
+    LAB_0017007a:
+      func_0x00171000(param_1);
+      return;
+    }
+  }
+  else if (uVar1 < 0x12) {
+    if (*((char *)((uint4)*((uint1 *)(param_1 + 1)) * 0x24 + 0x172000)) == '\x01') {
+      func_0x00171030(xRam00172100, *((uint1 *)(param_1 + 1)));
+      return;
+    }
+  }
+  else if (uVar1 < 0x14) {
+    if (uVar1 < 0x13) {
+      func_0x00171040(param_1);
+      return;
+    }
+    if (cRam00172200 == '\0') {
+      func_0x00171050(param_1 + 8, 0);
+      return;
+    }
+  }
+  else {
+    if (uVar1 < 0x15) {
+      func_0x00171060(param_1);
+      return;
+    }
+    if (uVar1 < 0x19) {
+      if (uVar1 != 0x15) {
+        return;
+      }
+      func_0x00171070(param_1);
+      return;
+    }
+    if (uVar1 < 0x1a) {
+      xVar2 = *((xunknown1 *)(param_1 + 1));
+      xVar3 = 1;
+    }
+    else {
+      if (uVar1 != 0x1a) {
+        return;
+      }
+      xVar2 = *((xunknown1 *)(param_1 + 1));
+      xVar3 = 0;
+    }
+    func_0x00171080(xVar2, xVar3);
+  }
+  return;
+}
