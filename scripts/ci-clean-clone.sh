@@ -5,7 +5,7 @@
 # mosura's test surface is designed to be EXACTLY {pinned Ghidra processor data + committed
 # in-repo goldens/fixtures} (docs/dependencies.md, BUILD/TEST tier). Everything else — the
 # Ghidra C++ oracle (oracle/capture, decomp_dbg), analyzeHeadless, the cross-toolchains, Open
-# Watcom, dosemu2, and the user-provided binaries (WAR2/cnv/comcom32) — is regeneration-only,
+# Watcom, dosemu2, and the user-provided binaries (the subject/cnv/comcom32) — is regeneration-only,
 # and every test that touches it SKIPS when it is absent.
 #
 # This job proves + guards that: a fresh checkout + the pinned Ghidra data runs the FULL
@@ -106,9 +106,11 @@ if [ "$HERMETIC" -eq 1 ]; then
   cat > "$REPO/dev-config.toml" <<EOF
 # written by scripts/ci-clean-clone.sh --hermetic; the real file is dev-config.toml.ci-hidden until the run ends
 [binaries]
-war2 = "$ABSENT/WAR2.EXE"
 cnv = "$ABSENT/cnv.exe"
 comcom32 = "$ABSENT/comcom32.exe"
+[[subject]]
+id = "hermetic"
+path = "$ABSENT/subject.exe"
 EOF
   WROTE_CFG=1
 fi
@@ -118,7 +120,7 @@ fi
 . "$SCRIPT_DIR/devcfg.sh"
 log "environment for the test run (regeneration-only tooling should be absent):"
 for p in "${HIDE_PATHS[@]}" \
-         "$(devcfg binaries.war2 "$HOME/WAR2.EXE")" \
+         "$(devcfg_first_subject_path)" \
          "$(devcfg binaries.cnv "$HOME/cnv.exe")" \
          "$(devcfg binaries.comcom32 "$HOME/.local/share/comcom32/comcom32.exe")"; do
   if [ -e "$p" ]; then echo "   PRESENT: $p"; else echo "   absent:  $p"; fi

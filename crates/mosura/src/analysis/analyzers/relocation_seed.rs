@@ -2,21 +2,21 @@
 //!
 //! # Why this is not a port
 //!
-//! Ghidra has no LE/LX loader. WAR2 reaches Ghidra only through warcraft2-re's LE→ELF conversion
-//! (`tools/ghidra/relocate_war2_elf.py`), which *bakes the patched pointer values into the image
+//! Ghidra has no LE/LX loader. the subject reaches Ghidra only through the RE tracker's LE→ELF conversion
+//! (`tools/ghidra/relocate_subject_elf.py`), which *bakes the patched pointer values into the image
 //! and discards the fixup records*. Ghidra therefore never sees the linker's index of stored
 //! pointers and must rediscover them statistically — which is what
 //! [`AddressTableAnalyzer`](super::address_table) does, by looking for runs of things that
 //! resemble pointers. A run-of-pointers heuristic cannot see an **isolated** pointer, one stored
 //! between non-pointer struct fields; the fixup table names it exactly.
 //!
-//! mosura's LE loader has the records: 17,511 slots on WAR2, 3,178 pointing into the code
-//! object — corroborated exactly against warcraft2-re's independent `le_fixups.py`.
+//! mosura's LE loader has the records: 17,511 slots on the subject, 3,178 pointing into the code
+//! object — corroborated exactly against the RE tracker's independent `le_fixups.py`.
 //!
 //! # Oracle
 //!
 //! Not Ghidra, which cannot do this at all. Validated against the **expert function tracker**
-//! (`warcraft2-re/analysis/decomp-tracker.csv`, 2120 functions) and the self-compiled
+//! (`the RE tracker/analysis/decomp-tracker.csv`, 2120 functions) and the self-compiled
 //! `lestruct.watcom-le` MVE, whose truth comes from the Open Watcom linker map
 //! (`ground_truth_parity::data_pointer_le_seeding`).
 //!
@@ -35,7 +35,7 @@
 //! `OperandReferenceAnalyzer` (:434) uses for an **isolated** pointer. A relocation slot is the
 //! isolated case.
 //!
-//! **Measured caveat, recorded so it is not rediscovered:** on WAR2 the two validators produce
+//! **Measured caveat, recorded so it is not rediscovered:** on the subject the two validators produce
 //! *identical* results (same 1965 functions, same coverage, same extra-decode runs).
 //! `mustTerminate` is close to vacuous at that scale because `checkValidSubroutine`'s terminal
 //! condition is `didTerminate || !mustTerminate || didCallValidSubroutine`, and a walk through
@@ -43,7 +43,7 @@
 //! reaches a call to some known function. The strict one is used anyway because it is the correct
 //! match to the evidence; it simply does not discriminate here.
 //!
-//! # Known defects, measured on WAR2 — do not let the headline number launder these
+//! # Known defects, measured on the subject — do not let the headline number launder these
 //!
 //! **Over-decoding: 7322 extra instruction starts in 255 contiguous runs** (104.4% of Ghidra's
 //! instruction bytes in the code object), i.e. ~168-255 seeds each decoding a long stretch of
@@ -72,7 +72,7 @@
 //! So the tracker records one function where the binary has two entries, and only `00010bb1` is
 //! mosura-only — and it too is call-reached, not seeded here.
 //!
-//! **51 functions in neither oracle** — see `docs/war2-relocation-seed-candidates.md`. All sit
+//! **51 functions in neither oracle** — see `<subject-profile>/notes/relocation-seed-candidates.md`. All sit
 //! in inter-function gaps (median gap 422 bytes), so they are plausible unrecorded functions
 //! rather than damage, but they are unadjudicated.
 //!

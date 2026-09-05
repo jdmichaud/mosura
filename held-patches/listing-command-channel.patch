@@ -34,7 +34,7 @@ index 30e933d..fec900b 100644
 +        // request was raised as `code_defined`, which re-notified the `Instruction`-typed
 +        // `AfterCode`/`AfterData` registrations — including on a `codeboundary` match over bytes
 +        // that never decode, which was therefore re-proposed on every re-entry forever (measured
-+        // on WAR2: `AfterCode` re-running indefinitely at ~22ms a turn, always
++        // on the subject: `AfterCode` re-running indefinitely at ~22ms a turn, always
 +        // `disasm=375 funcs=4`). A command is delivered to the disassembler and echoes nothing
 +        // back to the requester, so the cycle has no driver left to hold off.
          if !st.disassem_result.is_empty() {
@@ -43,7 +43,7 @@ index 30e933d..fec900b 100644
 -            // INSTRUCTION-typed registrations (`AfterCode`/`AfterData`) whenever *any* code unit
 -            // is added, so a location that never becomes an instruction — a `codeboundary` match
 -            // on bytes that fail to decode — is re-proposed on every re-entry, re-triggering the
--            // pass with an identical result set forever. Measured on WAR2 before this guard:
+-            // pass with an identical result set forever. Measured on the subject before this guard:
 -            // `AfterCode` re-ran indefinitely at ~22ms a turn, always `disasm=375 funcs=4`.
 -            // Deduping against what we have already requested makes the pass converge without
 -            // changing which addresses are ever requested.
@@ -165,7 +165,7 @@ index 8d8254d..5fd89eb 100644
 +        // listing even though `main_` calls it directly.
 +        //
 +        // ⚠️ Seeding every address of a LONG range instead is not a harmless generalisation — it
-+        // walks into inter-function padding. Measured on the war2 MZ stub: 8 misaligned decodes
++        // walks into inter-function padding. Measured on the subject MZ stub: 8 misaligned decodes
 +        // (the tracked bound) became 53, with 0 spurious functions, i.e. pure over-decode. The
 +        // `<= 4` cut is the line that governs it, and it is Ghidra's.
 +        const MAX_ADDRS_LEFT: u64 = 4; // `addrsLeft <= 4` (:262)

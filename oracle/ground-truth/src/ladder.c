@@ -1,6 +1,6 @@
 /* Ground-truth corpus (era-style, 2026-08-23): compare ladders — mixed signed/unsigned
  * comparisons, short-circuit conditions, a bounded search loop with two exits, and a
- * saturating mix of the results. The kind of branchy integer code that fills WAR2's 20-99-insn
+ * saturating mix of the results. The kind of branchy integer code that fills the subject's 20-99-insn
  * band. Freestanding + per-arch exit shim. */
 #include "shim.h"
 

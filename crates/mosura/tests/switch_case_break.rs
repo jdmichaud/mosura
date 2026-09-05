@@ -1,6 +1,6 @@
 //! Ghidra `PrintC::emitBlockSwitch` ends every case that EXITS the switch (its block has exactly
 //! one out-edge, `BlockSwitch::addCase` sets `isexit = sizeOut()==1`) with `break;` — except the
-//! last case, which needs none. The WAR2 specimen 0x2c00c (fixture `x86_2c00c_switch.xml`): case
+//! last case, which needs none. The subject specimen 0x2c00c (fixture `x86_2c00c_switch.xml`): case
 //! 13's body is an if-with-return whose exit edge goes to the switch tail (`JE 0x2c085`); a
 //! "RETURN-terminated" heuristic dropped the `break` and the C fell through into case 14 — wrong
 //! code (docs/wc2src-reconciliation-4.md W8).

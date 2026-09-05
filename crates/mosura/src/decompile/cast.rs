@@ -22,7 +22,7 @@
 //!     false when written. But **nothing in the tree ever CONSTRUCTS one**: every occurrence across
 //!     `types.rs`, `varmap.rs`, `ptrarith.rs`, `setcasts.rs` and this file is a consumer — a
 //!     `matches!`, a match arm, a field read. Measured consequence: **0 of 37 corpus SUBPIECEs and
-//!     0 of 1704 WAR2 SUBPIECEs have a struct-typed input.** So every `TypeStruct::*` port is inert
+//!     0 of 1704 the subject SUBPIECEs have a struct-typed input.** So every `TypeStruct::*` port is inert
 //!     until struct types are PRODUCED, not merely declarable. Union is absent outright.
 //!   - **variable-length** — no `is_variable_length` anywhere in `decompile/`, so `castStandard`'s
 //!     `isVariableLength() && isptr && hasSameVariableBase()` escape (cast.cc:336) is unported and
@@ -47,7 +47,7 @@ use super::types::{type_order, Datatype};
 /// `TypeOpCpoolref`/`TypeOpNew` override it to "never needs casting" (typeop.hh:867/878). The
 /// placeholder came in with the first cast commit (`79f5406`, which wired only the comparisons) and
 /// was never a decision about the other ops. What it cost, measured READ-ONLY before it was changed:
-/// **3 casts over the 79 x86-64 datatests and 693 over WAR2's 1303 functions** — and every one of
+/// **3 casts over the 79 x86-64 datatests and 693 over the subject's 1303 functions** — and every one of
 /// the 693 is the same shape, a POINTER operand consumed by integer arithmetic and needing `(int4)`.
 /// (To re-derive: make this arm `{ let r = super::infertypes::input_type_local(f, op, slot);
 /// if let Some(c) = cast_standard(&r, &cur, false, true) { eprintln!("BASECAST {:?} slot={slot}
@@ -62,7 +62,7 @@ use super::types::{type_order, Datatype};
 /// `int` before arithmetic; these codes describe how an expression IS or WILL BE affected,
 /// and the `checkIntPromotion*` predicates below decide when that promotion forces a cast
 /// the plain type-reconciliation of [`cast_standard`] would not print. The measured stake
-/// (WAR2 `FUN_00048478`): `SEXT(x << 5)` with a 2-byte `x` must render
+/// (the subject's `FUN_00048478`): `SEXT(x << 5)` with a 2-byte `x` must render
 /// `(int4)(int2)(param_1 << 5)` — the `(int2)` re-truncation is what makes the C compute
 /// the IR's 2-byte shift under ANSI promotion; without it the recompiled code promotes
 /// FIRST (`MOVSX` before `SHL`) and both the bytes AND the value diverge.
@@ -487,7 +487,7 @@ pub fn output_token(f: &Funcdata, op: OpId) -> Datatype {
         //      offset, then rejects when `newoff + sz` spans past that field's end. The union
         //      versions (`TypeUnion` :2185, `TypePartialUnion` :2440) are separate virtual overrides
         //      on separate classes. So the original "struct OR union" framing was wrong twice over.
-        //   2. What is its reach? **ZERO.** 0 of 37 corpus SUBPIECEs and 0 of 1704 WAR2 SUBPIECEs
+        //   2. What is its reach? **ZERO.** 0 of 37 corpus SUBPIECEs and 0 of 1704 the subject SUBPIECEs
         //      have a struct-typed input 0.
         //   3. Why zero? **`Datatype::Struct` IS NEVER CONSTRUCTED.** Declared at types.rs:42 and
         //      read in five modules, but nothing anywhere builds one. The variant is UNINHABITED.
@@ -530,7 +530,7 @@ pub fn output_token(f: &Funcdata, op: OpId) -> Datatype {
         // the value's variable type, and `castStandard` accepts `undefined` where an int/uint is
         // required but not where a pointer or float is (cast.cc:339-391) — so an integral call result
         // stays bare while `pVar6 = func_0x0007803f();` becomes `pVar6 = (int4 *)func_0x0007803f();`,
-        // as Ghidra renders it. WAR2 FUN_000729cd fails E1010 on exactly this.
+        // as Ghidra renders it. the subject's FUN_000729cd fails E1010 on exactly this.
         //
         // CALLOTHER is deliberately NOT included: its Ghidra token consults the userop's own
         // `getOutputLocal` (typeop.cc:865), a per-userop table mosura does not model, so claiming
@@ -677,7 +677,7 @@ mod tests {
     /// The two shapes the base `TypeOp::getInputCast` (typeop.cc:295) newly reaches, as
     /// `castStandard` sees them. Both were verified end-to-end against `oracle/capture --c`:
     /// FLOAT_ADD on an `int4` load is `pointerrel`'s `(float4)piStack_10[-1]`, and INT_ADD on a
-    /// pointer is `stackstring`'s `(int8)&xStack_20` — the single class behind all 693 WAR2
+    /// pointer is `stackstring`'s `(int8)&xStack_20` — the single class behind all 693 the subject
     /// firings. `care_uint_int=false, care_ptr_uint=true` are the base's fixed arguments.
     #[test]
     fn base_input_cast_casts_pointer_to_int_and_int_to_float() {

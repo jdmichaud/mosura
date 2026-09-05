@@ -43,10 +43,10 @@ fn main() {
     .expect("toolchain")
     .owning_work_dir();
     // The watcom_10_0a profile's own flag knowledge (buildconfig.rs): `-d1+` is what makes
-    // 10.0a emit the BP frame on WAR2's path — saves pushed BEFORE the frame (`52 55 89e5`),
+    // 10.0a emit the BP frame on the subject's path — saves pushed BEFORE the frame (`52 55 89e5`),
     // which is the whole point of the callee-save fixture: the saved-EBP slot carves the
     // ownership hole BELOW the register save. `-of`/`-of+` force the other prologue path
-    // (frame first) and are evidence-rejected for WAR2.
+    // (frame first) and are evidence-rejected for the subject.
     let flags: Vec<String> =
         ["-5r", "-fpi87", "-s", "-onatx", "-d1+", "-zq"].iter().map(|s| s.to_string()).collect();
     let mut products: Vec<&str> = Vec::new();

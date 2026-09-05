@@ -66,7 +66,7 @@ pub(crate) fn recognize(pr: &mut PrintC<'_>, f: &Funcdata) {
         pr.report.testmem.candidates.push((out, o.seqnum.pc.offset));
     }
     // a narrow GLOBAL read (a ram input, no LOAD op) masked into a zero-equality is the same
-    // shape: the original's `TEST byte ptr [0x8196c],0x8` (WAR2 FUN_00037280) says the source
+    // shape: the original's `TEST byte ptr [0x8196c],0x8` (the subject's FUN_00037280) says the source
     // read the wider element and masked
     if f.spaces.by_name("ram").is_none() {
         return;
@@ -110,7 +110,7 @@ pub(crate) fn recognize(pr: &mut PrintC<'_>, f: &Funcdata) {
 
 /// A read of a GLOBAL as the printer names it: a ram-space varnode that is an input, or a
 /// version of the global heritage renamed through a marker (an INDIRECT after a call, a
-/// MULTIEQUAL at a join) — the same name, the same memory read (WAR2 FUN_000229b4's second
+/// MULTIEQUAL at a join) — the same name, the same memory read (the subject's FUN_000229b4's second
 /// `TEST byte ptr [g],1` follows a call, so its read is INDIRECT-defined, not an input).
 fn global_read(f: &Funcdata, v: VarnodeId) -> bool {
     let vn = f.vn(v);

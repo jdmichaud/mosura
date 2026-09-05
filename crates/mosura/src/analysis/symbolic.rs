@@ -503,7 +503,7 @@ pub fn flow_constants(
         //    UNDER-measured it: a short buffer truncates the window near its end, so the wide
         //    read decodes fewer instructions than it does in a real image. Size from the
         //    real-code figures. The x86-32 rate corroborates independently — 58.8 µs/instruction
-        //    here against 62.8 µs measured on WAR2, the same language.
+        //    here against 62.8 µs measured on the subject, the same language.
         //
         // The p-code still has to be lifted — unlike the body walk, this walk INTERPRETS the
         // instruction, and `CodeUnit::Instruction` carries flow properties but not ops. Ghidra

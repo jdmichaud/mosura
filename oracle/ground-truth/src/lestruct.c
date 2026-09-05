@@ -1,10 +1,10 @@
-/* Ground-truth corpus program (war2-issues-become-source-tests) — the LE-format MVE for
+/* Ground-truth corpus program (issues-become-source-tests (subject-profile note)) — the LE-format MVE for
  * DATA-POINTER SEEDING, and the ONLY fixture in the corpus built as a Linear Executable.
  *
  * WHAT IT REPRODUCES. `datafnptr` covers a RUN of function pointers, which Ghidra's
  * AddressTableAnalyzer finds. This covers the case that no run-of-pointers heuristic can ever
  * find: a pointer stored ALONE, between non-pointer struct fields. Only the linker's fixup
- * table knows it is a pointer — and Ghidra never gets that table for WAR2, because the LE->ELF
+ * table knows it is a pointer — and Ghidra never gets that table for the subject, because the LE->ELF
  * conversion it is fed bakes the patched values in and discards the records.
  *
  * NEGATIVE RESULT THAT MADE THIS FILE NECESSARY — do not "simplify" it back. The obvious MVE

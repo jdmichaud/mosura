@@ -151,7 +151,7 @@ pub fn build_cfg(f: &mut Funcdata) {
     // nothing to do with loop exits, and Ghidra has no loop-exit count anywhere in jump-table
     // recovery. The check was an invented heuristic (AGENT.md rule 4 names "a multi-exit check"
     // as the anti-pattern) and it DESTROYED REAL CODE: clearing the edges of a fully recovered
-    // table left the case bodies unreachable, so the sweep below deleted them. WAR2 FUN_00051298
+    // table left the case bodies unreachable, so the sweep below deleted them. the subject's FUN_00051298
     // rendered `switch (...) { }` with 10 of its 12 calls gone, and FUN_0006af2c lost its whole
     // CFG (1 block, all 18 calls). Once a table is recovered its targets ARE the successors.
 

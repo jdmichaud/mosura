@@ -1,6 +1,6 @@
 //! `frame-fill=aggregate` (docs/compilable-c-remediation.md Phase 10b): a frame the original opens
 //! with `SUB ESP,0xd0` but whose recovered locals total 14 bytes declares as ONE byte aggregate at the
-//! frame bottom, every slot a field at its byte offset — fable-b's srcform12 form, EXACT on WAR2
+//! frame bottom, every slot a field at its byte offset — fable-b's srcform12 form, EXACT on the subject
 //! 0x2dcd4 (the biased-EBP prologue included).
 use mosura::decompile::emit::EmitChoices;
 use mosura::decompile::printc::{print_c_recovered, print_c_report, RecoveredChoices};
@@ -36,7 +36,7 @@ fn under_sized_frame_declares_one_aggregate_with_field_offsets() {
 }
 
 /// Seam 4/5 (probe w4bp, fable-b's hold): an element read of a symbol the aggregate swallowed
-/// (`aiStack_2c[0]` at WAR2 0x4e06e) must render as the field at its slot, never by the vanished
+/// (`aiStack_2c[0]` at the subject's 0x4e06e) must render as the field at its slot, never by the vanished
 /// name — every stack symbol the C references must be declared. The MVE puts an int array in the
 /// MIDDLE of a 0xcc frame (80 untouched bytes on each side), lets its base escape to a callee, and
 /// reads one element by constant index and the rest in a loop: the gate fires on the slack, the

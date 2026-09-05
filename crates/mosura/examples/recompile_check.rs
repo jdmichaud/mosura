@@ -115,7 +115,7 @@ fn main() {
     // one batched sweep rather than three thousand emulator sessions.
     // Library code is EXCLUDED by default. `memset`, `printf` and the CRT startup are reproduced
     // by linking the Watcom libraries, not by decompiling them, so counting them measures the
-    // toolchain rather than the port. Measured on WAR2: 5 of 131 library functions are byte-exact
+    // toolchain rather than the port. Measured on the subject: 5 of 131 library functions are byte-exact
     // (3.8%) against 534 of 2892 of the subject's own (18.5%), so excluding them RAISES the ratio.
     // They were dragging it down, not flattering it. `--include-library` restores them for anyone
     // measuring the identification itself.
@@ -290,7 +290,7 @@ fn main() {
     // semantics diverge, so the verdicts stay the ground truth.
     let (mut agg_equal, mut agg_denom) = (0u64, 0u64);
     let (mut sim_sum, mut sim_n) = (0f64, 0usize);
-    // The CANONICAL census (scripts/war2-verdicts.sh, the runbook's only allowed census, and gate 8's
+    // The CANONICAL census (scripts/corpus-verdicts.sh, the runbook's only allowed census, and gate 8's
     // delta): Σ orig_n·sim / Σ orig_n — a function weighs its ORIGINAL size, a bloated candidate
     // lowers its sim, not the denominator. Printed next to the micro-average so the harness and the
     // script agree.
@@ -335,7 +335,7 @@ fn main() {
         }
         let subject = Subject { name: row.name.clone(), va: row.va, len: row.len };
         // Table-correspondence search window: the original's jump tables sit near the
-        // function (WAR2 places them in the inter-function gap right before the entry).
+        // function (the subject places them in the inter-function gap right before the entry).
         // Nearest match to the function wins if the same content appears more than once.
         let win_lo = row.va.saturating_sub(0x2_0000);
         let win = prog.memory.read_window(Address::new(space, win_lo), (0x4_0000 + row.len).min(0x10_0000));
@@ -493,7 +493,7 @@ fn main() {
         );
         eprintln!("{:.4}  unweighted mean of per-function sim", sim_sum / sim_n as f64);
         eprintln!(
-            "{:.4}  WGSS — the canonical census (scripts/war2-verdicts.sh: Σ orig_n·sim / Σ orig_n over {canon_n} original instructions)",
+            "{:.4}  WGSS — the canonical census (scripts/corpus-verdicts.sh: Σ orig_n·sim / Σ orig_n over {canon_n} original instructions)",
             canon_w / canon_n.max(1) as f64
         );
         // Both fidelities, side by side: WGSS above counts a layout shift as agreement (the same
@@ -526,9 +526,14 @@ fn main() {
     // `--prev`, no EXACT may be lost and no COMPILE_FAIL appear (8; the other downs are listed with
     // the WGSS delta, their classification stays the human step). A violation FAILS the round after
     // the rows are written; without `--prev` gate 8 prints SKIP, never a silent pass.
-    if !no_gates {
+    // The guard sets are the SUBJECT's (its profile's `corpus-gates.tsv`, dev-config `[[subject]]`).
+    let gates_file = mosura::devcfg::subject_for(Path::new(bin)).and_then(|s| s.file("corpus-gates.tsv"));
+    if !no_gates && gates_file.is_none() {
+        eprintln!("corpus gates: no configured subject profile carries corpus-gates.tsv for {bin}; verdict gates skipped");
+    }
+    if let (false, Some(gates_file)) = (no_gates, gates_file) {
         use mosura::recompile::gates;
-        let baseline = gates::Baseline::load(&mosura::paths::corpus_gates_file()).unwrap_or_else(|e| {
+        let baseline = gates::Baseline::load(&gates_file).unwrap_or_else(|e| {
                 eprintln!("corpus gates baseline: {e}");
                 std::process::exit(2)
             });

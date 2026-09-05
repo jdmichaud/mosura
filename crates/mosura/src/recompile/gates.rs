@@ -2,7 +2,7 @@
 //! pure functions over the rendered TU text and the verdict rows, so a violation FAILS the round
 //! instead of living in a reviewer's greps (fable-b's `rows/gates.txt`, regexes ported verbatim).
 //!
-//! - The bars and sets are committed data — [`Baseline`], `scripts/corpus-gates.tsv`: every row
+//! - The bars and sets are committed data — [`Baseline`], `<subject-profile>/corpus-gates.tsv`: every row
 //!   carries its own rule (`>=` a floor, `==` a count, `no-switch`, `EXACT`) and the round it was
 //!   set at. A round that legitimately moves a bar edits that file in the landing commit.
 //! - The scope (game vs foreign) is the CALLER's predicate over its manifest — the survey passes
@@ -14,7 +14,7 @@
 //!   provenance) is `tests/fixture_provenance.rs`.
 //! - Hits are sorted by va and carry the offending line.
 //!
-//! Callers: `war2_survey` post-emit (1–6), `recompile_check` post-verdict (7–8),
+//! Callers: `corpus_emit` post-emit (1–6), `recompile_check` post-verdict (7–8),
 //! `examples/corpus_gates.rs` on an existing tree (all).
 use regex::Regex;
 use std::collections::{BTreeMap, HashSet};
@@ -164,7 +164,7 @@ fn snippet(line: &str) -> String {
 // ---------------------------------------------------------------------------------------------
 // The committed bars and sets
 
-/// One row of `scripts/corpus-gates.tsv`.
+/// One row of `<subject-profile>/corpus-gates.tsv`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BaselineRow {
     pub gate: String,
@@ -463,7 +463,7 @@ pub fn parse_verdicts(tsv: &str) -> Result<BTreeMap<u64, VerdictRow>, String> {
     Ok(rows)
 }
 
-/// The CANONICAL census every round report quotes (`scripts/war2-verdicts.sh`, the runbook's only
+/// The CANONICAL census every round report quotes (`scripts/corpus-verdicts.sh`, the runbook's only
 /// allowed census — 0.5576 at w6a): `1 − Σ orig_n·(1−sim) / Σ orig_n` = `Σ orig_n·sim / Σ orig_n`,
 /// with each row's `sim` = equal / max(orig_n, cand_n) as `recompile_check` wrote it. Not the
 /// micro-average Σ equal / Σ max(orig, cand) that `recompile_check` also prints.

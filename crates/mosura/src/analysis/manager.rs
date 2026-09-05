@@ -147,7 +147,7 @@ impl Scheduling {
     /// `codeDefined` at all.
     ///
     /// mosura expressed both as `code_defined`, and that one substitution produced three defects
-    /// at once (`docs/function-discovery-backlog.md` §9):
+    /// at once (`<subject-profile>/notes/function-discovery-backlog.md` §9):
     ///
     ///  1. a request was only delivered to analyzers registered in *that* manager, so every
     ///     request the byte-pattern passes made evaporated — their manager has no disassembler;
@@ -387,7 +387,7 @@ mod tests {
     /// registered — a command is not a notification and has no subscribers to miss.
     ///
     /// mosura routed the command to a REGISTERED analyzer by name, so in a manager without that
-    /// registration the request silently evaporated — the fs_mgr half of the 374-function WAR2
+    /// registration the request silently evaporated — the fs_mgr half of the 374-function the subject
     /// listing hole.
     #[test]
     fn a_command_executes_in_a_manager_with_no_matching_analyzer() {

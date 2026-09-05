@@ -28,7 +28,7 @@ use std::collections::HashMap;
 /// A one-function translation unit cannot know where its callees and globals will live, so the
 /// compiler writes a placeholder and records a fixup. Comparing those placeholders against the
 /// original's resolved addresses would report a divergence at every call and every global — the
-/// failure that made 2377 of 3023 WAR2 functions structurally unmatchable under byte comparison.
+/// failure that made 2377 of 3023 the subject functions structurally unmatchable under byte comparison.
 ///
 /// The honest repair is not to mask those bytes but to **resolve them**: ask what address the
 /// fixup's symbol denotes, substitute it, and let a wrong target stay a real difference. The
@@ -76,7 +76,7 @@ pub enum SemArg {
     /// `pc+4` to `LR`, MIPS `JAL` writes it to `$ra`. It is layout-dependent for exactly the same
     /// reason [`SemArg::Target`] is, and holding it in the key had exactly the same consequence:
     /// one byte of size drift anywhere upstream made **every later call** report a spurious
-    /// `immediate` divergence. Measured on WAR2, that was 5741 rows across 1722 functions —
+    /// `immediate` divergence. Measured on the subject, that was 5741 rows across 1722 functions —
     /// enough to distort which cause the census reports as dominant.
     ///
     /// Erasing it hides nothing. A candidate whose calls really did land at other addresses has

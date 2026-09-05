@@ -230,7 +230,7 @@ pub(crate) fn falls_through_stored(
 /// analysis has overridden a reftype (an `UNCONDITIONAL_CALL` ref can sit on a `jmp`); consulting
 /// references here is additive, so it closes the computed-jump gap without changing any flow the
 /// opcode walk already followed. Converting the walk to be reference-driven outright is a separate
-/// change with a much wider blast radius — see `docs/function-discovery-backlog.md` §9.
+/// change with a much wider blast radius — see `<subject-profile>/notes/function-discovery-backlog.md` §9.
 pub(crate) fn follows_flow_ref(t: RefType) -> bool {
     if !t.is_flow() {
         return false;
@@ -286,7 +286,7 @@ impl Analyzer for Disassembler {
         // listing even though `main_` calls it directly.
         //
         // ⚠️ Seeding every address of a LONG range instead is not a harmless generalisation — it
-        // walks into inter-function padding. Measured on the war2 MZ stub: 8 misaligned decodes
+        // walks into inter-function padding. Measured on the subject MZ stub: 8 misaligned decodes
         // (the tracked bound) became 53, with 0 spurious functions, i.e. pure over-decode. The
         // `<= 4` cut is the line that governs it, and it is Ghidra's.
         const MAX_ADDRS_LEFT: u64 = 4; // `addrsLeft <= 4` (:262)
@@ -323,15 +323,15 @@ impl Analyzer for Disassembler {
         let mut prev_block_end: Option<u64> = None;
         // ⚠️ CALL FLOW IS **NOT** FOLLOWED YET, unlike Ghidra (Disassembler.java:1301-1306
         // queues call targets in the same command, deferred until the current block is laid
-        // down). Two landing attempts measured the same +8 misaligned on the war2 MZ stub:
+        // down). Two landing attempts measured the same +8 misaligned on the subject MZ stub:
         // callers newly reached through call flow fall through into the `13a56` dispatcher
         // family's 2-byte inline parameters. The repair that cleans exactly that class is
         // PORTED (`clearflow.rs`, gate `inline_call_parameters_are_not_decoded_as_code`
-        // green) — but on war2 the repair never fires because no-return DETECTION parity is
+        // green) — but on the subject the repair never fires because no-return DETECTION parity is
         // still missing: each manager phase delivers `FindNoReturnFunctionsAnalyzer` ONE
         // giant batch (the whole decode cascade outruns its 301 priority), so the indicator
         // evidence is fragmented and the 3-indication threshold is never met (Ghidra: 6
-        // no-return marks on war2, the whole family; mosura: 0). Call-following lands after
+        // no-return marks on the subject, the whole family; mosura: 0). Call-following lands after
         // detection parity — see docs/analysis-open-tasks.md.
         while let Some(a) = work.pop() {
             let addr = Address::new(ram, a);
@@ -936,7 +936,7 @@ impl Analyzer for ConstantPropagationAnalyzer {
         // once function bodies and call destinations have been removed. Applied to the raw set it
         // drops entries: an `AddressSet` coalesces adjacent ranges, so functions at consecutive
         // entries collapse into one range and only the first was ever propagated
-        // (`docs/function-discovery-backlog.md`, CAUSE B).
+        // (`<subject-profile>/notes/function-discovery-backlog.md`, CAUSE B).
         let __t1=std::time::Instant::now();
         let mut unanalyzed = set.clone();
         remove_uninitialized_blocks(program, &mut unanalyzed);
@@ -1056,9 +1056,9 @@ mod disassembler_bounds_tests {
     /// the decode ends the walk; Ghidra counts consecutive same-repeated-byte instructions and
     /// terminates the block once the run exceeds 16.
     ///
-    /// **This is the ninth over-decode cluster of `docs/function-discovery-backlog.md` §9** — the
+    /// **This is the ninth over-decode cluster of `<subject-profile>/notes/function-discovery-backlog.md` §9** — the
     /// one deliberately left unexplained because it is not the inline-parameter thunk. Measured on
-    /// the war2 MZ stub against the committed Ghidra golden: 50 bytes of `00` at `00018f00`, both
+    /// the subject MZ stub against the committed Ghidra golden: 50 bytes of `00` at `00018f00`, both
     /// listings start the run at `00018f04`, Ghidra keeps through `00018f24` and stops, mosura ran
     /// on through `00018f32` and into the next function at `00018f34`. 17 instructions, not 16 —
     /// the tripping instruction is still added (`processInstruction`, :1254) and only its
@@ -1136,7 +1136,7 @@ mod constant_propagation_location_tests {
     use crate::analysis::manager::Scheduling;
     use crate::decompile::space::{SpaceKind, SpaceManager};
 
-    /// CAUSE B (`docs/function-discovery-backlog.md`): `ConstantPropagationAnalyzer.added`
+    /// CAUSE B (`<subject-profile>/notes/function-discovery-backlog.md`): `ConstantPropagationAnalyzer.added`
     /// (ConstantPropagationAnalyzer.java:178-186) reduces the set to start locations with
     /// `findLocationsRemoveFunctionBodies` (:248), whose FIRST pass contributes the entry point of
     /// every function overlapping the set (:259-264). Reading `r.min` off the raw set implemented
@@ -1432,7 +1432,7 @@ mod thunk_resolution_tests {
     /// [`compute_function_bodies`] follows the `jmp` and the target is **swallowed into the
     /// jumping function's body**; the overlap refusal then declines a function there forever.
     ///
-    /// **The fixture is WAR2's own `_cstart_` shape, reduced.** WAR2.EXE's entry `0x601f8` is
+    /// **The fixture is the subject's own `_cstart_` shape, reduced.** the subject binary's entry `0x601f8` is
     /// `EB 76` — a short jump over the inline Watcom copyright banner
     /// (`analysis/loader/watcom.rs:5`) — and `0x601f8 + 2 + 0x76 = 0x60270` exactly. Ghidra
     /// creates `FUN_00060270`; mosura does not. Because the whole span between the two is a
@@ -1487,9 +1487,9 @@ mod thunk_resolution_tests {
             p.function_manager.functions().map(|f| f.entry_point().offset).collect::<Vec<_>>()
         );
         // ⭐ Ghidra's MEASURED shape, not merely "the target is elsewhere": the oracle reports
-        // WAR2's `fn@0x601f8` with `isThunk = true` and `body = [[000601f8, 000601f9]]` — two
+        // the subject's `fn@0x601f8` with `isThunk = true` and `body = [[000601f8, 000601f9]]` — two
         // bytes, just the `EB 76`. The committed MZ golden says the same for its own thunks
-        // (`goldens/analysis/war2.snapshot`: `fnbody 00017c4c 00017c4c:00017c4e`). Reproducing
+        // (`goldens/analysis/analysis.snapshot (subject profile)`: `fnbody 00017c4c 00017c4c:00017c4e`). Reproducing
         // that shape is why no thunk *relationship* needs modelling: once the target is a
         // function, the body walk stops at it and the minimal body falls out.
         let thunk_body = p.function_manager.function_at(base).unwrap().body().clone();
@@ -1566,8 +1566,8 @@ mod thunk_resolution_tests {
     /// The INSTRUMENT's gate (task #4): [`thunk::report`] must name the arm that decided each
     /// entry, and its raw-decode column must see a jump at an entry the *listing* cannot describe.
     ///
-    /// This is what makes the WAR2 report readable as evidence rather than as a table. It is
-    /// deliberately built on the two arms that decide the interesting WAR2 cases —
+    /// This is what makes the subject report readable as evidence rather than as a table. It is
+    /// deliberately built on the two arms that decide the interesting the subject cases —
     /// `TargetInsideFunctionBody` (the veto) and `NoInstructionAtEntry` (an entry that never
     /// reached the listing) — plus the two jump encodings the crude probe could not both handle:
     /// `eb` (2-byte) and `e9` (5-byte). SLEIGH decodes both, so `raw_uncond_jump_target` is
@@ -1641,7 +1641,7 @@ mod thunk_resolution_tests {
         assert_eq!(at(0x40_1020).thunked, None);
         // V: the shape the ported subset is blind to — its entry is not a jump, so it is not a
         // candidate at all, and only the UPPER BOUND column shows the unported walk could reach
-        // 0x401060 in 2 instructions. This is the column the WAR2 sizing rests on.
+        // 0x401060 in 2 instructions. This is the column the subject sizing rests on.
         assert_eq!(at(0x40_1030).outcome, thunk::Outcome::FlowNotJumpOrTerminalCall);
         assert_eq!(at(0x40_1030).thunked, None);
         assert_eq!(
@@ -1656,7 +1656,7 @@ mod thunk_resolution_tests {
         // A: a local branch is followed (4 bytes), and the `ret` it lands on ends the walk with
         // no thunked address — so an ordinary function does not enter the bound.
         assert_eq!(at(0x40_1000).multi_insn_upper_bound, None);
-        // Nothing is left to create at the fixpoint — the invariant the WAR2 report rests on.
+        // Nothing is left to create at the fixpoint — the invariant the subject report rests on.
         assert!(report.iter().all(|c| c.outcome != thunk::Outcome::WouldCreate));
     }
 }

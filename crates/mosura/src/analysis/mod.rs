@@ -122,7 +122,7 @@ pub fn analyze_file_as(path: &Path, x86_32_cspec: Option<&str>) -> Result<Progra
 /// auto-analysis pipeline over its 32-bit objects — the opt-in `--le` path for a bound exe
 /// (docs/le-loader-notes.md). The default container dispatch ([`analyze_file`]) keeps a bound
 /// exe on the Ghidra-parity MZ-stub path; this is the two-oracle native-LE view, validated
-/// against the warcraft2-re RE ground truth (Ghidra has no LE loader). The CLI flag + warning
+/// against the the RE tracker RE ground truth (Ghidra has no LE loader). The CLI flag + warning
 /// that select this land later with the CLI; today it is a library entry point.
 pub fn analyze_le_file(path: &Path) -> Result<Program, AnalysisError> {
     analyze_le_file_with(path, &Knobs::default())
@@ -232,11 +232,11 @@ pub fn analyze(program: &mut Program) {
     // AddressTableAnalyzer, a BYTE_ANALYZER at DATA_TYPE_PROPOGATION.before()). It creates no
     // function; it disassembles the pointed-to code, and the call targets *inside* that code
     // become functions the ordinary way. This is the only route into a subgraph whose sole
-    // inbound edges are DATA references (war2-survey/analysis-gap/REPORT.md §7).
+    // inbound edges are DATA references (<subject-survey>/analysis-gap/REPORT.md §7).
     if let Some(at) = analyzers::address_table::AddressTableAnalyzer::for_program(program) {
         mgr.add_analyzer(Box::new(at), program);
     }
-    // BEYOND-GHIDRA (oracle: the warcraft2-re tracker + the `lestruct` ground-truth MVE, never
+    // BEYOND-GHIDRA (oracle: the the RE tracker tracker + the `lestruct` ground-truth MVE, never
     // Ghidra, which cannot do this): seed disassembly at the loader's relocation targets. The
     // LE->ELF conversion Ghidra is fed bakes in the patched values and discards the fixup
     // records, so an isolated code pointer stored between non-pointer struct fields is invisible
@@ -315,7 +315,7 @@ pub fn analyze(program: &mut Program) {
     // A7 Task 1: shared-return tail calls (Ghidra SharedReturnAnalyzer + SharedReturnAnalysisCmd).
     // Still STAGED, deliberately — the LAST link of the manager unification, not the second:
     // an in-manager registration at the faithful 398 priority was measured to create a
-    // spurious `128bc` on war2 MZ, because SR is the most sequence-sensitive consumer and
+    // spurious `128bc` on the subject MZ, because SR is the most sequence-sensitive consumer and
     // mosura's main-phase cascade order still differs from Ghidra's until call-following
     // lands (which itself waits on no-return detection parity). Order of the campaign:
     // pattern-phase unification → call-following → THEN this pass moves in-manager.
@@ -360,7 +360,7 @@ pub fn analyze(program: &mut Program) {
         // this manager every request the pattern search made was silently dropped:
         // `function_defined` reached ZERO consumers, so a pattern-discovered function was
         // never disassembled, never constant-propagated, and its callees were never
-        // discovered — `docs/function-discovery-backlog.md` §9, gated by
+        // discovered — `<subject-profile>/notes/function-discovery-backlog.md` §9, gated by
         // `ground_truth_parity::recovered_functions_are_in_the_listing`. The delayed creator
         // rides inside its one-shot command (FunctionStartAnalyzer.java:853-854), never
         // registered.
@@ -371,7 +371,7 @@ pub fn analyze(program: &mut Program) {
         // In Ghidra's ONE manager, code the pattern phase decodes re-triggers
         // `FindNoReturnFunctionsAnalyzer` like any other extent; mosura's second manager was
         // dropping those notifications, so a no-return dispatcher whose CALLERS are only
-        // reached in this phase (war2's `13a56` inline-parameter family — its callers and
+        // reached in this phase (the subject's `13a56` inline-parameter family — its callers and
         // sibling functions all materialize here) was never examined and the repair never
         // ran. Registered here, its indicators see this phase's decoded extents WITH this
         // phase's functions in place.
@@ -396,8 +396,8 @@ pub fn analyze(program: &mut Program) {
         // (`handleFunctionAddedOrBodyChanged` -> `functionTasks.notifyAdded`,
         // AutoAnalysisManager.java:392-395, :280-290) and `SharedReturnAnalyzer` is on that list,
         // so a delivery here is the right SHAPE. Delivering it as ONE batch of everything this
-        // block created is not, and it produced a spurious function on the WAR2 MZ image:
-        // `pe_mz_convergence_parity` failed with `war2: spurious functions vs Ghidra: [1d74e]`.
+        // block created is not, and it produced a spurious function on the subject MZ image:
+        // `pe_mz_convergence_parity` failed with `the subject: spurious functions vs Ghidra: [1d74e]`.
         //
         // WHAT WAS MEASURED (task #11), so this is not re-derived from scratch next time:
         //   * Ghidra's golden has NO function at 1d74e because 1d74e is INTERIOR to FUN_0001d76a:

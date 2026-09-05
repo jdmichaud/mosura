@@ -9,7 +9,7 @@ reproducible.
 
 Every patch script is idempotent, asserts its pre-image bytes and refuses on mismatch, and takes
 the target path as an argument — **always pass a copy**, never
-`warcraft2-re/tmp/watcom-experiments/watcom_10.0a/WATCOM`.
+`the RE tracker/tmp/watcom-experiments/watcom_10.0a/WATCOM`.
 
 | script | what it does |
 | --- | --- |

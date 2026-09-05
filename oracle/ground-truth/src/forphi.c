@@ -1,11 +1,11 @@
-/* Ground-truth repro (war2-issues-become-source-tests) of the E1063 raw-MULTIEQUAL leak the WAR2
+/* Ground-truth repro (issues-become-source-tests (subject-profile note)) of the E1063 raw-MULTIEQUAL leak the subject
  * survey exposed (e.g. FUN_0002bd14): a for-loop whose induction variable's entry value comes from
  * a PHI (an earlier loop modified it), NOT from a def in the pre-loop block. mosura's for-recovery
  * lacked Ghidra's `BlockWhileDo::findInitializer` (block.cc:3223) checks — that a written
  * initializer's def be a NON-MARKER op in the pre-loop block — so it emitted the phi raw as the
  * for-init: `for (n = MULTIEQUAL(...); ...)`, which wcc386/gcc reject. Fixed: the phi-defined init
  * is rejected, the loop renders `for (; cond; iter)`. Built by wcc386 like watprog/narrowsw; gated
- * by ground_truth_parity::war2_forphi_no_marker_leak.
+ * by ground_truth_parity::forphi_no_marker_leak.
  *
  * `scan` modifies `n` in the first `while` (creating the phi), then the countdown `for` uses it —
  * so the for-loop's init input is the while-loop's phi. The loop body accumulates into a global

@@ -15,7 +15,7 @@
  *   - the real update is left with no consumer except the call ARGUMENT it also feeds, so
  *     `is_explicit` inlines it and NO assignment statement is emitted at all.
  *
- * Together those two produce a loop that cannot terminate. WAR2's FUN_00057034 is the specimen:
+ * Together those two produce a loop that cannot terminate. the subject's FUN_00057034 is the specimen:
  *
  *     mosura:  iVar3 = 0;
  *              while (iVar3 < (int4)(uRam000a71b3 + 1)) {
@@ -30,7 +30,7 @@
  *
  * ⚠️ THE INFINITE-LOOP SCAN PREDICATE CANNOT CERTIFY THIS FIX. FUN_00057034's condition reads a
  * GLOBAL bound, which is inside that predicate's documented blind spot
- * (scripts/war2-wrongcode-scan.py, `infinite_whiles`). The gate below reads the emitted statement
+ * (scripts/corpus-wrongcode-scan.py, `infinite_whiles`). The gate below reads the emitted statement
  * and the loop form directly instead.
  */
 const char callclob_banner[] =
@@ -51,7 +51,7 @@ int callclob_hits;
  *      guard.
  *   4. the update's value is ALSO the call's argument (`fp(i + 1)`), which is what makes the
  *      missing assignment observable: with the update consumed only by the loop, it would print as
- *      a statement even when the `for` is declined, and the loop would still terminate. WAR2's
+ *      a statement even when the `for` is declined, and the loop would still terminate. the subject's
  *      FUN_00057034 has exactly this overlap.
  *   5. the loop BOUND is a PARAMETER, deliberately NOT a global. A global bound would drag in the
  *      separate unported-ActionMapGlobals defect (adjacent globals merged into one oversized

@@ -395,13 +395,13 @@ impl StackSymbol {
 /// ⭐ The whole `Stack_` form is gated on `getLocalRange().inRange(addr,1)` (:554). That gate is not a
 /// formality: with the default window (`ProtoModel::default_local_range`, fspec.cc:2263) a
 /// non-negative frame offset is OUTSIDE the local range, so the caller-allocated `X` marker at :566
-/// is unreachable — which is why Ghidra emits `StackX_` zero times over WAR2's 1286 functions.
+/// is unreachable — which is why Ghidra emits `StackX_` zero times over the subject's 1286 functions.
 /// Out-of-range addresses fall through to [`build_internal_variable_name`], Ghidra's `return
 /// ScopeInternal::buildVariableName(...)` at :579.
 ///
 /// Two pieces of Ghidra's version are called out rather than approximated: the `Y` marker for an
 /// unusual stack region (:571-574) needs `ScopeLocal`'s `minParamOffset`/`maxParamOffset`, set by
-/// `restructure` from the symbols it maps, and Ghidra emits zero `StackY_` names over WAR2.
+/// `restructure` from the symbols it maps, and Ghidra emits zero `StackY_` names over the subject.
 /// `makeNameUnique` (:577) resolves collisions against the scope's name tree; `restructure` produces
 /// a DISJOINT cover, so two symbols cannot share a start and no collision arises.
 pub fn build_variable_name(
@@ -1178,7 +1178,7 @@ mod tests {
     /// 999999 bytes — the NEGATIVE offsets. So a non-negative frame offset never reaches the marker;
     /// it takes `ScopeInternal::buildVariableName`'s unmapped-address form instead (database.cc:2483,
     /// `2*addrSize` hex digits, no separator). This is why Ghidra emits `StackX_` and `StackY_` zero
-    /// times across WAR2's 1286 functions.
+    /// times across the subject's 1286 functions.
     #[test]
     fn nonnegative_frame_offsets_are_outside_the_local_range() {
         let (spaces, stack, local, param) = stack_fixture();

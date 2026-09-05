@@ -56,7 +56,7 @@ impl OperandAddressQuery for ProgramOperandAddresses<'_> {
     ) -> bool {
         // ⚠️ Indexed, not a scan. This asks "are there references out of THIS instruction", once
         // per operand of every instruction FID hashes; `references()` walks all >20k of them, and
-        // `perf` put this at 2.75% of a whole WAR2 run. A reference's `from` is an instruction
+        // `perf` put this at 2.75% of a whole the subject run. A reference's `from` is an instruction
         // address, so it is always in the program's default space — the previous offset-only test
         // could not match anything else in practice.
         let from = crate::decompile::space::Address::new(self.0.default_space, instruction_address);
@@ -120,7 +120,7 @@ pub fn hash_function(program: &Program, entry: Address) -> Option<FidHashQuad> {
         // window makes SLEIGH decode every instruction that fits in it — ~5 on x86 — and
         // `.next()` throws four of them away. Doubly so here, because the window is decoded
         // TWICE (once for p-code, once for the fingerprint). `perf --children` put
-        // `hash_function -> disassemble_ctx` at ~7.4% of a whole WAR2 run.
+        // `hash_function -> disassemble_ctx` at ~7.4% of a whole the subject run.
         //
         // Fourth instance of this class after b6754d2, 90dd655 and the thunk entry probe; the
         // bound is the same one 90dd655 established (symbolic.rs:521). The comment above already

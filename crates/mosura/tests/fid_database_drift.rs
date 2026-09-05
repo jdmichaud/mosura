@@ -78,7 +78,7 @@ const SOURCES: &[Source] = &[
     language: None,
         compiler_spec: None,
     },
-    // Watcom 10.0a DOS — the column WAR2 is built against, and the one that moved when the OMF
+    // Watcom 10.0a DOS — the column the subject is built against, and the one that moved when the OMF
     // loader learned to apply **absolute** (non-self-relative) fixups. Without a shipped-release
     // Watcom source here, that change would have gone unmeasured by this gate: the Open Watcom 2
     // row above is a source build, and the two Borland rows are a different loader path.

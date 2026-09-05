@@ -10,7 +10,7 @@
 //!     cargo run --release --example over_decode -- <binary> [--le]
 //!     cargo run --release --example over_decode -- --self-test
 //!
-//! `--le` selects `analyze_le_file` (the DOS/4GW path WAR2 uses).
+//! `--le` selects `analyze_le_file` (the DOS/4GW path the subject uses).
 //!
 //! **`--self-test` is not optional ceremony.** Every corpus fixture reports zero on every check,
 //! so a zero from this tool is indistinguishable from the tool being broken. The self-test feeds
@@ -58,7 +58,7 @@ fn a3_offcut_flow(edges: &[(u64, u64)], insns: &Insns) -> Vec<(u64, u64)> {
 ///
 /// NOT "an instruction overlapping a fixup slot", which is what `docs/over-decode-measure.md`
 /// first specified and which is wrong: LE fixups routinely patch operands *inside* instructions
-/// (a `call rel32` displacement, WAR2's `jmp cs:[reg*4+disp]`), so that form fires on every
+/// (a `call rel32` displacement, the subject's `jmp cs:[reg*4+disp]`), so that form fires on every
 /// correctly-decoded relocated call in the image.
 /// Returns `(offcut targets, how many targets were CODE-TARGETED)` — the second is A4's real
 /// denominator. Reporting the total relocation count instead overstates it: most fixups resolve
@@ -102,7 +102,7 @@ fn runs(mut a: Vec<(u64, u64)>) -> Vec<(u64, u64, usize)> {
 }
 
 /// THE POSITIVE CONTROL. Each predicate gets a synthetic input with exactly one planted
-/// violation, plus a clean input that must stay silent. Without this a zero on WAR2 says nothing.
+/// violation, plus a clean input that must stay silent. Without this a zero on the subject says nothing.
 fn self_test() {
     // A1: three instructions, the middle one outside the single executable range.
     let insns = [(0x1000, 4), (0x9000, 4), (0x1008, 4)];

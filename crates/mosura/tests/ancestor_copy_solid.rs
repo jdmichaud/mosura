@@ -9,7 +9,7 @@
 //! passthrough INDIRECT (:2093) is reachable only when the trial is defined by the INDIRECT
 //! itself. mosura's flattened walk used to recurse through the COPY into the ESP passthrough
 //! INDIRECT (`mov eax,esp` feeding the call) and reject the argument; the pre-call marker store
-//! then flowed through the call, the post-call test constant-folded, and WAR2's FUN_00066da8
+//! then flowed through the call, the post-call test constant-folded, and the subject's FUN_00066da8
 //! lost its whole body (61 lines → three calls). The fixture is that function's bytes; the
 //! expected shape is Ghidra's own (`oracle/capture --c` on the same fixture): the stack buffer is
 //! passed to the call and tested afterwards.

@@ -14,7 +14,7 @@ fn main() {
     // x86-64 tables for its whole life — right for the x86-64 datatests it was built on,
     // and silently catastrophic for anything else: a 32-bit fixture decoded as 64-bit
     // garbage, and the pipeline spun on the nonsense without terminating (measured: 57
-    // CPU-minutes on an 8-instruction WAR2 function before it was killed).
+    // CPU-minutes on an 8-instruction the subject function before it was killed).
     let lang_id = dt.arch.rfind(':').map_or(dt.arch.as_str(), |i| &dt.arch[..i]);
     let (spec, ctx) = mosura::lang::load_cached(lang_id).expect("fixture language loads");
     let image: Vec<(u64, &[u8])> = dt.chunks.iter().map(|c| (c.offset, c.bytes.as_slice())).collect();

@@ -3,7 +3,7 @@
 //! compares at the narrow width (`CMP AL,0x8 ; JA`, `CMP BX,0x1 ; JBE`). C promotes both operands
 //! to int and this compiler then widens the value first (`XOR EDX,EDX ; MOV DL,AL ; CMP EDX,0x8 ;
 //! JG` — a signed compare of the promoted value); a constant of the operand's own type keeps the
-//! compare narrow and unsigned (WAR2 FUN_00020220 EXACT, FUN_00049b84's compare rows; 65 non-exact
+//! compare narrow and unsigned (the subject's FUN_00020220 EXACT, FUN_00049b84's compare rows; 65 non-exact
 //! functions carry a narrow-vs-wide compare row on round f0). Value-identical: the constant is
 //! representable at the operand's width (checked), so the cast changes nothing but the width the
 //! compiler compares at. The witness (`recovered.narrow_cmp.sites`, from

@@ -521,7 +521,7 @@ impl Spec {
     /// `Translate::getRegisterName(space, offset, size)`, which is how the decompiler names a
     /// register in output (`extraout_<reg>`, `in_<reg>`, `unaff_<reg>`). The processor `.sla`
     /// is the authority, so this works on any architecture; a hardcoded offset table is right
-    /// for exactly one and silently wrong elsewhere (measured: an x86-64 table named WAR2's
+    /// for exactly one and silently wrong elsewhere (measured: an x86-64 table named the subject's
     /// 32-bit EAX `RAX`).
     pub fn register_table(&self) -> Vec<((u64, u32), String)> {
         let Some(reg_space) = self.spaces.iter().find(|s| s.name == "register").map(|s| s.index)

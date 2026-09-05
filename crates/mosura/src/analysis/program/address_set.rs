@@ -91,7 +91,7 @@ impl AddressSet {
     /// every caller that adds ranges in a loop quadratic-with-a-sort:
     /// `union` calls it once per range of the other set, `get_function_body` once per
     /// INSTRUCTION, and `find_locations_remove_function_bodies` unions a growing `in_body` across
-    /// all 3023 WAR2 functions. It showed up in `perf` as `slice::sort::drift::sort` plus the
+    /// all 3023 the subject functions. It showed up in `perf` as `slice::sort::drift::sort` plus the
     /// allocator traffic around it.
     ///
     /// The set is canonical — sorted by `(space, min)`, pairwise non-overlapping and
@@ -141,7 +141,7 @@ impl AddressSet {
     ///
     /// ⚠️ **`a = a.union(b)` in a loop is quadratic in copying**: `union` starts from
     /// `self.clone()`, so accumulating across N sets clones the growing accumulator N times.
-    /// `find_locations_remove_function_bodies` does exactly that over all 3023 WAR2 functions on
+    /// `find_locations_remove_function_bodies` does exactly that over all 3023 the subject functions on
     /// every invocation. This adds into `self` and clones nothing.
     pub fn extend(&mut self, other: &AddressSet) {
         for r in &other.ranges {
@@ -172,13 +172,13 @@ impl AddressSet {
     /// ⚠️ **Not `!intersect(other).is_empty()`** — that builds the whole intersection, allocating a
     /// fresh `AddressSet` and every overlapping range, just to answer a yes/no.
     /// `find_locations_remove_function_bodies` asks it once per FUNCTION on every invocation:
-    /// 3023 functions x 95 invocations = ~287k allocating intersections per WAR2 run, which is
+    /// 3023 functions x 95 invocations = ~287k allocating intersections per the subject run, which is
     /// most of the allocator traffic `perf` attributes to the analysis lane. This short-circuits
     /// on the first overlap and allocates nothing.
     pub fn intersects(&self, other: &AddressSet) -> bool {
         // Both sides are canonical — sorted by `(space, min)` — so this is a two-pointer merge,
         // O(n + m), not the O(n x m) nested scan. It matters: the caller asks once per FUNCTION
-        // per invocation, and on WAR2 the sets reach 652 ranges against bodies of up to 93.
+        // per invocation, and on the subject the sets reach 652 ranges against bodies of up to 93.
         let (mut i, mut j) = (0usize, 0usize);
         while i < self.ranges.len() && j < other.ranges.len() {
             let a = self.ranges[i];

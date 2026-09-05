@@ -3,7 +3,7 @@
 //! the loop variable the body iterates last, prints as the `for` loop the source wrote —
 //! `for (init; !A; iterate) { [if (B) break;] body }` — where the original ROTATED the loop:
 //! entered by a jump to the test at the loop's end, the test's branch jumping backward to the
-//! body. This compiler rotates a `for` loop and not a `while` loop (measured on WAR2
+//! body. This compiler rotates a `for` loop and not a `while` loop (measured on the subject
 //! FUN_0005beb0: the `for` form is byte-exact, the `while` form tests at the top and jumps
 //! back), and Ghidra's `BlockWhileDo::finalTransform` (block.cc:3358) declines the for-loop
 //! rewrite for every overflow loop, so the port keeps the `while( true )` — which this
@@ -144,14 +144,14 @@ fn loop_parts(pr: &PrintC<'_>, s: &Structured, idx: usize) -> Option<(Parts, u64
     let branch = pr.f.block(a_bid).ops.iter().rev().copied().find(|&op| !pr.f.op(op).is_dead() && pr.f.op(op).code() == OpCode::Cbranch)?;
     let branch_pc = pr.f.op(branch).seqnum.pc.offset;
     // the iterate is the header's: a labeled tail block would keep its label with no statement
-    // after it (`LAB: }` — E1082 on WAR2 FUN_00018238, FUN_00028aa8, round f2)
+    // after it (`LAB: }` — E1082 on the subject's FUN_00018238, FUN_00028aa8, round f2)
     if pr.f.op(iterate).parent.is_some_and(|b| pr.labels.contains(&b)) {
         return None;
     }
     // a constant initializer against a constant bound: this compiler folds the entry test of
     // the port's `while( true )` form itself (the test is decidable at the initializer) and
     // rotates the loop; the `for` form then duplicates the body's leading break test at the
-    // loop end and hoists its loads (WAR2 FUN_0006eec5 0.950 → 0.762, FUN_000289f8 −0.211,
+    // loop end and hoists its loads (the subject's FUN_0006eec5 0.950 → 0.762, FUN_000289f8 −0.211,
     // round f2). The arm's win is the undecidable entry test.
     let init_const = init_var.is_some_and(|iv| {
         let vn = pr.f.vn(iv);

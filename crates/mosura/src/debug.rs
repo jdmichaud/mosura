@@ -75,7 +75,7 @@ pub enum Topic {
     Analysis,
     /// decompile/merge (was `MOSURA_IMPLIED_DEBUG`).
     Merge,
-    /// the survey's own env-gated diagnostics (examples/war2_survey.rs: was `MOSURA_KERNEL_SHADOW`,
+    /// the survey's own env-gated diagnostics (examples/corpus_emit.rs: was `MOSURA_KERNEL_SHADOW`,
     /// `_SHARED_RET_DEBUG`, `_SHADOW_DEBUG`, `_EXTENT`, `_AUX_DEBUG`, `_AGG_DEBUG`; the raw-IR dump is `raw-ir`,
     /// the survey's zapcheck driver prints under `watsched` with the mechanism it exercises) — its normal output (the manifest, the summaries) is not a diagnostic and
     /// stays plain.

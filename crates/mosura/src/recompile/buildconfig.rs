@@ -1,6 +1,6 @@
 //! Recovering the BUILD, not just the code: which compiler options each function was compiled with.
 //!
-//! A byte-exact claim is a claim about a specific compiler invoked a specific way. Two of WAR2's
+//! A byte-exact claim is a claim about a specific compiler invoked a specific way. Two of the subject's
 //! options are visible in its own bytes and change the emitted function completely — whether a BP
 //! frame is built at all, and whether callee-saved registers are pushed before or after it — so
 //! compiling every function one way guarantees a mismatch on most of them, however good the
@@ -9,8 +9,8 @@
 //! The evidence is read from the ORIGINAL function's decoded instructions rather than from a byte
 //! pattern. A frame prologue is "push the frame-pointer register, then copy the stack pointer into
 //! it" — a statement about what the instructions do, which holds for every encoding of it and for
-//! architectures whose spellings nobody here has seen. Matching hex, the way the WAR2-specific
-//! script this replaces does, misses the second encoding of the same instruction: WAR2 contains
+//! architectures whose spellings nobody here has seen. Matching hex, the way the subject-specific
+//! script this replaces does, misses the second encoding of the same instruction: the subject contains
 //! both `55 89 e5` and `55 8b ec`, and a scan written for one silently mis-flags 84 functions.
 //!
 //! What stays outside: which flags a *profile* maps evidence to is toolchain knowledge, and it
@@ -43,7 +43,7 @@ pub struct Evidence {
     /// presence PROVES the function was compiled with pre-Pentium tuning; the evidence is
     /// one-sided — absence proves nothing, and the default stays the profile's `-5r`.
     ///
-    /// Measured on WAR2 (docs/war2-toolchain-synthesis.md): exactly one contiguous module —
+    /// Measured on the subject (docs/watcom-toolchain-synthesis.md): exactly one contiguous module —
     /// 9 functions, 0x69fb0..0x6e6e0, 18 sites — carries the form inside an otherwise
     /// Pentium-tuned build. A per-module CFLAGS difference in the original Makefile, which is
     /// why the CPU digit is per-function evidence and not only a profile constant.
@@ -64,7 +64,7 @@ pub struct Evidence {
     /// the cleanup, not the call, is the witness. Measured on the two-way recompile of the
     /// whole corpus (2026-09-04, `-onatx` against `-onatmil`): the shape occurs in four
     /// functions, all four byte-exact only without `-or`, none among the 342 EXACT functions
-    /// that need it (WAR2 FUN_00051764, FUN_00068789, FUN_000692f0, FUN_0006ae98 — two
+    /// that need it (the subject's FUN_00051764, FUN_00068789, FUN_000692f0, FUN_0006ae98 — two
     /// source modules built without the reorderer); the seven constant stores that follow a
     /// bare `CALL` split 3 no-reorderer / 3 reorderer / 1 indifferent, as the rover predicts.
     pub immediate_store_after_cleanup: bool,
@@ -76,7 +76,7 @@ pub struct Evidence {
     /// the original's order proves it was compiled without `-or`. Decided by the model itself
     /// (`watsched::schedule` over each window, with the source's weights), and only for that
     /// pair shape: the general "predicted motion" is not evidence (the model over-predicts
-    /// elsewhere). Measured on the two-way recompile: WAR2 FUN_00068bca and FUN_0006b496
+    /// elsewhere). Measured on the two-way recompile: the subject's FUN_00068bca and FUN_0006b496
     /// (byte-exact only without `-or`), FUN_00069430 (up), and one foreign function at
     /// sim 0.115 either way.
     pub unscheduled_load_pair: bool,
@@ -255,7 +255,7 @@ pub fn widened_sites_from_evidence(
 /// or a few instructions before it — the IR op's address is usually the `Jcc` that consumes
 /// the flags — so the scan walks back a short window.
 ///
-/// Measured on WAR2: 452 sites want the complement, 749 want the rendering as-is, and 101
+/// Measured on the subject: 452 sites want the complement, 749 want the rendering as-is, and 101
 /// functions want BOTH at different sites, which is why this is per site where the axis is
 /// per function.
 pub fn complement_compares_from_evidence(
@@ -356,7 +356,7 @@ pub fn narrow_zexts_from_evidence(
 /// returns. Under this compiler's register convention an argument register is the caller's to
 /// lose — a callee that preserves one did not receive an argument in it; the input the
 /// decompiler saw is the caller's preserved value reaching the callee's callee, and the
-/// original passes it by leaving the register alone (WAR2 FUN_0002c160 / FUN_00011f18: EXACT once
+/// original passes it by leaving the register alone (the subject's FUN_0002c160 / FUN_00011f18: EXACT once
 /// the `param_2` in EDX and its pass-through go, the saved EDX then reappears; 87 functions
 /// carry the shape on round e6). Only the last parameter is dropped, so the signature shrinks
 /// without a hole.
@@ -627,7 +627,7 @@ pub fn split_returns_from_evidence(
 
 /// Register parameters the original handles as a NARROW value: every IR use of the parameter
 /// is a mask to its low bytes (`param & 0xff`) and the original's entry region copies the
-/// parameter's low byte into a byte register (`MOV CL,AL`, WAR2 FUN_00019e38) — the source
+/// parameter's low byte into a byte register (`MOV CL,AL`, the subject's FUN_00019e38) — the source
 /// declared a byte parameter, which this compiler keeps in a byte register where a masked int
 /// parameter is copied whole and masked (`MOV ECX,EAX .. AND EAX,0xff`). Returns the parameter
 /// varnodes with their witnessed width.
@@ -724,7 +724,7 @@ pub fn load_hoists_from_evidence(candidates: &[(u64, u64)], insns: &[NormInsn]) 
 /// The function ends by WRITING EAX from a register on every return path — `MOV EAX,EDX`
 /// right before the epilogue (`POP` / `LEAVE` / `MOV ESP,EBP` / `ADD ESP,n` up to the `RET`)
 /// — a return value whose producer is also used elsewhere, which the decompiler's own
-/// return-trial gate discards (WAR2 FUN_0004984c: the buffer it fills and returns; Ghidra
+/// return-trial gate discards (the subject's FUN_0004984c: the buffer it fills and returns; Ghidra
 /// prints `void`). The mark reaches the pipeline through `Program::tail_return_writes`.
 pub fn tail_return_write_from_evidence(insns: &[NormInsn]) -> bool {
     let rets: Vec<usize> = insns.iter().enumerate().filter(|(_, x)| x.text.starts_with("RET")).map(|(i, _)| i).collect();
@@ -746,7 +746,7 @@ pub fn tail_return_write_from_evidence(insns: &[NormInsn]) -> bool {
         })
 }
 
-/// The function returns FAR: its return instructions are `RETF` (WAR2 FUN_00058840).
+/// The function returns FAR: its return instructions are `RETF` (the subject's FUN_00058840).
 pub fn far_return_from_evidence(insns: &[NormInsn]) -> bool {
     let rets: Vec<&NormInsn> = insns.iter().filter(|x| x.text.starts_with("RET")).collect();
     !rets.is_empty() && rets.iter().all(|x| x.text == "RETF" || x.text.starts_with("RETF "))
@@ -754,7 +754,7 @@ pub fn far_return_from_evidence(insns: &[NormInsn]) -> bool {
 
 /// Stack parameter slots the function POPS (`RET n`, `Funcdata::ret_pop`) beyond the ones the
 /// decompiler recovered: a function with no recovered parameter at all and a `RET 4` took one
-/// argument it never read (WAR2 FUN_0004dd2c, FUN_0004e820: `return 0;` / `return 1;` under
+/// argument it never read (the subject's FUN_0004dd2c, FUN_0004e820: `return 0;` / `return 1;` under
 /// `RET 4`). Only the all-or-nothing case: a function with recovered register parameters and
 /// a `RET n` mixes conventions this reading does not decide.
 pub fn dummy_stack_params(f: &crate::decompile::funcdata::Funcdata) -> u32 {
@@ -974,7 +974,7 @@ pub fn branch_returns_from_evidence(candidates: &[u64], insns: &[NormInsn]) -> s
 /// lone `return 0;` — `if (x != 0) { .. } return 0;` — where the original's `JZ` lands on the
 /// bare epilogue PAST the shared `XOR EAX,EAX`, the tested register already holding the 0; the
 /// merged form's `JZ` lands ON the load. Only a source-level early return
-/// (`if (x == 0) return 0;`) puts the jump there (WAR2 FUN_000367a8, FUN_000184b0).
+/// (`if (x == 0) return 0;`) puts the jump there (the subject's FUN_000367a8, FUN_000184b0).
 pub fn const_phi_returns_from_evidence(
     candidates: &[(u64, u64)],
     insns: &[NormInsn],
@@ -1110,7 +1110,7 @@ pub fn narrow_return_from_evidence(candidates: &[(u64, u32, u32)], insns: &[Norm
         if writes_a(&insns[last].text) != Some(true) {
             // A return site whose value is a CALLEE's (`CALL f ; RET`, the passthrough) says
             // nothing about the width: the callee's `AL` is this function's `AL` and its `EAX`
-            // this function's `EAX`. Neutral — it neither anchors nor vetoes (WAR2 FUN_00014114:
+            // this function's `EAX`. Neutral — it neither anchors nor vetoes (the subject's FUN_00014114:
             // `MOV AL,8` / `MOV AL,9` at two sites and a passthrough at the third).
             if insns[last].text.starts_with("CALL") {
                 continue;
@@ -1304,7 +1304,7 @@ pub fn testmem_from_evidence(
 /// Revival condition: if the emitter ever renders aux-pragma inlines, the embedded-C subset
 /// comes back in scope and this classification must be revisited.
 ///
-/// The trigger census on WAR2 (63 functions): 32 software interrupts (`INT 0x21`/`0x31`/
+/// The trigger census on the subject (63 functions): 32 software interrupts (`INT 0x21`/`0x31`/
 /// `0x10` — DOS, DPMI, BIOS), 20 port I/O, 7 `PUSHFD`, plus CPUID and the CALL-CS
 /// dispatcher — the DOS-extender support layer, in 35 runs of which 5 are 3+ contiguous
 /// functions (module-granular).
@@ -1333,7 +1333,7 @@ pub fn looks_hand_written(insns: &[NormInsn]) -> bool {
             || t.starts_with("IN ")
             || t.starts_with("OUT ")
             // `INT ` with the space: `INT 0x21` (a DOS call) is hand-assembly; a bare `INT3`
-            // is not — WAR2's compiled C carries it as the retail assert-trap idiom
+            // is not — the subject's compiled C carries it as the retail assert-trap idiom
             // (`TEST EAX,EAX ; JNZ over ; INT3`: 0x2a4f0, 0x2d7fc, 0x592d8, 0x59344), as
             // alignment padding after a jump-table dispatch (0x484b4), and as `app_fatal`'s
             // own trap body (0x5cf88). All six audited rows emit clean C (no placeholder
@@ -1572,7 +1572,7 @@ pub fn arm_swaps_from_evidence(
 /// the site unusable, because the compiler schedules parameter loads by its own policy
 /// (measured: `FUN_00073328` — no pragma order, argument order, or temp materialization
 /// moves the `[EBP+8]`/`[EBP+0xc]` load pair; that sub-shape is the parked load-scheduling
-/// residual, docs/war2-toolchain-synthesis.md).
+/// residual, docs/watcom-toolchain-synthesis.md).
 #[derive(Debug, Clone)]
 pub struct CallSetupSite {
     pub callee: u64,
@@ -1705,24 +1705,24 @@ pub fn volatile_globals_from_evidence(insns: &[NormInsn]) -> std::collections::H
     super::watsched::volatile_globals(insns)
 }
 
-/// Watcom C/C++32 10.0a as WAR2 was built with it.
+/// Watcom C/C++32 10.0a as the subject was built with it.
 ///
 /// The base options are the register calling convention (`-4r`), inline 387 (`-fpi87`), no stack
 /// checking (`-s`) and the measured optimization set (`-onatx`). The one evidence rule is `-d1+`:
 /// line-number debug information, which is what makes this compiler emit a BP frame on the path
-/// WAR2 was built with. Adding it to a frameless function adds four bytes that are not there, so
+/// the subject was built with. Adding it to a frameless function adds four bytes that are not there, so
 /// it is applied only where the original has a frame.
 ///
-/// Deliberately NOT here: `-of`/`-of+`. Both force the other prologue path, and every WAR2
+/// Deliberately NOT here: `-of`/`-of+`. Both force the other prologue path, and every the subject
 /// function that saves registers before its frame is evidence against them.
-/// `-5r`, not `-4r`: the CPU digit is a TUNING level, not a convention change, and WAR2 was
-/// tuned for Pentium. Measured 2026-08-18 (docs/war2-toolchain-synthesis.md): 10.0a's code
+/// `-5r`, not `-4r`: the CPU digit is a TUNING level, not a convention change, and the subject was
+/// tuned for Pentium. Measured 2026-08-18 (docs/watcom-toolchain-synthesis.md): 10.0a's code
 /// generator carries a CPU_586 gate that suppresses the in-place scaled-LEA selection
 /// (`SHL EAX,2` instead of `LEA EAX,[EAX*4]` — the gate survives into Open Watcom source as
-/// the `op1 == result && _CPULevel( CPU_586 )` arm of V_LEA_GOOD's OP_LSHIFT case). WAR2
+/// the `op1 == result && _CPULevel( CPU_586 )` arm of V_LEA_GOOD's OP_LSHIFT case). the subject
 /// uses the SHL form everywhere. Corpus-wide on sb43 sources: SHL>LEA divergence rows
 /// 157 -> 12, EXACT 586 -> 591 (+6/-1). `-4r` had itself replaced `-3r` on the same kind of
-/// evidence (V_GOOD_CLR needs CPU_486 — the warcraft2-re byte-zero-store finding).
+/// evidence (V_GOOD_CLR needs CPU_486 — the the RE tracker byte-zero-store finding).
 pub fn watcom_10_0a() -> Profile {
     Profile {
         name: "watcom-10.0a".into(),
@@ -1975,7 +1975,7 @@ mod tests {
         // the port holds the value in a sub-register (AL) where the CMP names EAX: the container matches
         assert!(cmp_orders_from_evidence(&[(0x1002, Some(CmpOperand::Reg(0, 1)), edx)], &insns).contains(&0x1002));
         // MOV DL,[0x8032e] ; CMP DL,byte ptr [0x8f042] ; JBE: the memory operand is the source's
-        // right-hand side — the port's operands the other way round mirror (WAR2 FUN_00014990)
+        // right-hand side — the port's operands the other way round mirror (the subject's FUN_00014990)
         let mem = lift("8a152e0308003a1542f0080076f0");
         let (a, b) = (Some(CmpOperand::Mem(0x8032e)), Some(CmpOperand::Mem(0x8f042)));
         assert_eq!(mem[1].text, "CMP DL,byte ptr [0x8f042]", "{:?}", mem.iter().map(|x| (x.addr, &x.text)).collect::<Vec<_>>());
@@ -2163,7 +2163,7 @@ mod tests {
     }
 
     /// BOTH encodings of `mov ebp,esp` are a frame setup. The script this replaces matched hex, and
-    /// WAR2 contains both spellings — 261 functions use one and 84 the other.
+    /// the subject contains both spellings — 261 functions use one and 84 the other.
     #[test]
     /// N1 witness: `MOV DL,9` (8-bit) is a narrow site; `MOV EDX,9` (32-bit) is not.
     #[test]
@@ -2421,7 +2421,7 @@ mod tests {
     /// Cross-register scaled LEAs are legal at every level and must not trigger it.
     #[test]
     fn in_place_scaled_lea_downgrades_the_cpu_digit() {
-        // lea eax,[eax*4+0]; ret  — the -4r signature (WAR2's 0x69fb0..0x6e6e0 module)
+        // lea eax,[eax*4+0]; ret  — the -4r signature (the subject's 0x69fb0..0x6e6e0 module)
         let ev = detect(&lift("8d048500000000c3"), ESP, EBP);
         assert!(ev.in_place_scaled_lea);
         // lea eax,[edx*4+0]; ret  — cross-register, non-evidence
@@ -2599,7 +2599,7 @@ pub fn inline_calls_from_evidence(cands: &[(u64, u64)], insns: &[NormInsn]) -> s
 /// popped before its returns ([`preserved_registers`]) yet never read or written by any body
 /// instruction — the function itself has no use for the register, so the only reason to preserve
 /// it is a callee DECLARED to clobber it (the declaration the original was compiled against, not
-/// the callee's body: WAR2 FUN_0004f850 saves EBX around one call to a callee whose recovered
+/// the callee's body: the subject's FUN_0004f850 saves EBX around one call to a callee whose recovered
 /// clobber set is `[eax ecx edx]`, and is byte-exact only with `ebx` in the caller's `modify`
 /// clause). Register-space offsets (EAX 0, ECX 4, EDX 8, EBX 12, ESI 24, EDI 28); empty when the
 /// function calls nothing.

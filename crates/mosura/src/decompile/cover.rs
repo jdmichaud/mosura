@@ -165,7 +165,7 @@ pub fn cover_to_read(f: &Funcdata, v: VarnodeId, read_op: OpId, pos: &OpPosition
 
 /// `(block index, op index within the block)` for every op, dense-indexed by [`OpId`] (op ids are
 /// arena indices, so a flat vector replaces the former `HashMap` — the map's hashing was a
-/// measurable share of the WAR2 profile). Ops not in any block report `None` from [`get`].
+/// measurable share of the subject profile). Ops not in any block report `None` from [`get`].
 ///
 /// [`get`]: OpPositions::get
 pub struct OpPositions {

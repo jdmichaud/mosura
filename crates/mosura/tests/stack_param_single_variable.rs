@@ -1,7 +1,7 @@
 //! A stack parameter reads as ONE variable across calls (the zc48 down class).
 //!
 //! The fixture is SELF-COMPILED (examples/watcom_mve_fixtures.rs: a `__cdecl` dispatch chain, wcc386
-//! 10.0a in-house, source embedded in the fixture) — no game bytes. Like WAR2's 0x6c390 it
+//! 10.0a in-house, source embedded in the fixture) — no game bytes. Like the subject's 0x6c390 it
 //! takes two stack parameters and re-reads them after every call in a long dispatch chain. The call-crossing INDIRECTs on the parameter slots must collapse
 //! (`RuleIndirectCollapse` on `nolocalalias`) so every read prints through the parameter —
 //! Ghidra's shape for the same fixture. When the classification kept the slots merely

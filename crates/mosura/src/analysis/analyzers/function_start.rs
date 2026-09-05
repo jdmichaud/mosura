@@ -8,7 +8,7 @@
 //! fixup slot. This one recognises a function by the *shape of its prologue bytes*, matching a
 //! processor/compiler-specific pattern file
 //! (`Processors/<proc>/data/patterns/*.xml`) with the [`bytesearch`](crate::analysis::bytesearch)
-//! engine. On WAR2 it is worth 243 functions that nothing else reaches.
+//! engine. On the subject it is worth 243 functions that nothing else reaches.
 //!
 //! Ghidra registers the same analyzer four times, differing only in *when* it runs and over
 //! *what* set — see [`FunctionStartKind`]. A pattern can carry a pre-requisite ("must follow
@@ -18,14 +18,14 @@
 //! # Beyond-Ghidra: the Watcom pattern set
 //!
 //! `patternconstraints.xml` maps `(language, compiler)` to a pattern file and has **no `watcom`
-//! entry** — Ghidra ships no Watcom compiler spec at all. Ghidra only reaches WAR2's prologues
-//! because auto-detect labels the warcraft2-re ELF wrapper `gcc`; mosura's loader correctly says
+//! entry** — Ghidra ships no Watcom compiler spec at all. Ghidra only reaches the subject's prologues
+//! because auto-detect labels the the RE tracker ELF wrapper `gcc`; mosura's loader correctly says
 //! `watcom`, so a strictly faithful port would contribute exactly zero here. The
 //! `(language, compiler) -> file` lookup below is a faithful port; the *mapping entry* for
 //! `watcom`, and the pattern file it names, are mosura's, living in `specs/patterns/` — Ghidra's
 //! own extension point (`Application.findModuleSubDirectories("data/patterns")` merges the
 //! constraint files of every module, so an added module dir is how Ghidra itself is extended).
-//! Their oracle is the warcraft2-re expert tracker, not Ghidra. See `specs/patterns/README.md`.
+//! Their oracle is the the RE tracker expert tracker, not Ghidra. See `specs/patterns/README.md`.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -548,7 +548,7 @@ impl Analyzer for FunctionStartAnalyzer {
         // request was raised as `code_defined`, which re-notified the `Instruction`-typed
         // `AfterCode`/`AfterData` registrations — including on a `codeboundary` match over bytes
         // that never decode, which was therefore re-proposed on every re-entry forever (measured
-        // on WAR2: `AfterCode` re-running indefinitely at ~22ms a turn, always
+        // on the subject: `AfterCode` re-running indefinitely at ~22ms a turn, always
         // `disasm=375 funcs=4`). A command is delivered to the disassembler and echoes nothing
         // back to the requester, so the cycle has no driver left to hold off.
         if !st.disassem_result.is_empty() {
@@ -897,7 +897,7 @@ fn check_already_in_function_above_with(
     // ⚠️ The fall-through test is the whole rule, and this port used to omit it — it vetoed on
     // ADJACENCY, i.e. on any instruction merely *ending* at `addr`. `getFallThrough()` is null
     // after a `ret`, so Ghidra does not veto a prologue that follows an epilogue and mosura did.
-    // Measured on WAR2: 6 tracker functions sit immediately after a `pop…pop; ret` with no
+    // Measured on the subject: 6 tracker functions sit immediately after a `pop…pop; ret` with no
     // function recognised above them, were proposed by the pattern set, and were refused here.
     // The comment above this code already said "falls through"; the code did not implement it.
     // Same drift class as `falls_through`'s own creation: a decision stated once and re-derived
@@ -1126,7 +1126,7 @@ mod tests {
 
     /// The pattern-file lookup must resolve for the two configurations this track turns on:
     /// x86-32 + `gcc` (the faithful Ghidra mapping, which the ground-truth Watcom ELF column
-    /// lands on) and x86-32 + `watcom` (mosura's own mapping, which WAR2 lands on).
+    /// lands on) and x86-32 + `watcom` (mosura's own mapping, which the subject lands on).
     #[test]
     fn pattern_files_resolve_for_x86_32() {
         use crate::decompile::space::{SpaceKind, SpaceManager};
@@ -1182,12 +1182,12 @@ mod tests {
 
     /// THE PROLOGUE SHIFT, and the property the Watcom pattern set exists for.
     ///
-    /// The bytes are WAR2's `FUN_00016ed4` verbatim (`53 51 52 56 57 55 89 e5 83 ec 04 …` — push
+    /// The bytes are the subject's `FUN_00016ed4` verbatim (`53 51 52 56 57 55 89 e5 83 ec 04 …` — push
     /// ebx/ecx/edx/esi/edi, push ebp, mov ebp,esp, sub esp,4), preceded by the previous function's
     /// `ret`. Watcom's save-first prologue puts a run of register saves BEFORE the frame setup;
     /// `x86gcc_patterns.xml`'s `0x5589e583ec` anchors at the `55`, i.e. **five bytes past the true
     /// entry**. Verified against the real image for all 104 shifted entries Ghidra reports on
-    /// WAR2: 104/104, distances 1-5, no exceptions.
+    /// the subject: 104/104, distances 1-5, no exceptions.
     ///
     /// The assertion is a differential on the two real, committed pattern files — it fails if the
     /// Watcom file loses its push-run family, or if the mark lands anywhere but the first push.
@@ -1230,7 +1230,7 @@ mod tests {
     /// WATCOM'S PUSH ORDER IS PART OF THE SPEC — the save-first family accepts a subsequence of
     /// `ebx ecx edx esi edi` and nothing else.
     ///
-    /// The measured invariant (warcraft2-re's census of WAR2's 1317 save-first functions: 1317
+    /// The measured invariant (the RE tracker's census of the subject's 1317 save-first functions: 1317
     /// conforming, 0 nonconforming; independently reproduced by Watcom 10.0a under `-od` and by
     /// Open Watcom v2 in `wprologue.watcom-x86-32`) is a property of the *pattern file*, and the
     /// ground-truth fixtures cannot see it: `wprologue` and `fnpattern` are both built `-of+`, so
@@ -1296,7 +1296,7 @@ mod tests {
     }
 
     /// THE BARE FRAME-FIRST PROLOGUE — a frame setup with **no `sub esp`**, which is 81% of
-    /// WAR2's framed functions (save-first 891 without / 426 with, frame-first 187 / 52).
+    /// the subject's framed functions (save-first 891 without / 426 with, frame-first 187 / 52).
     ///
     /// The Watcom file originally took two of `x86gcc_patterns.xml`'s six frame-first patterns —
     /// the two that require `sub esp`. The four left behind are precisely the bare shape. This
@@ -1356,7 +1356,7 @@ mod tests {
     }
 
     /// THE ABOVE-FUNCTION GUARD TESTS FALL-THROUGH, NOT ADJACENCY (`checkAlreadyInFunctionAbove`
-    /// :512) — the local gate for `be85c85`, whose only gate until now was a WAR2 run.
+    /// :512) — the local gate for `be85c85`, whose only gate until now was a subject run.
     ///
     /// Ghidra:
     ///
@@ -1367,7 +1367,7 @@ mod tests {
     ///
     /// `getFallThrough()` is null after a `ret`, so an epilogue immediately followed by the next
     /// function's prologue is NOT a veto. This port vetoed on mere adjacency and so refused every
-    /// pattern-only function that begins one byte past a `c3` — 6 tracker functions on WAR2.
+    /// pattern-only function that begins one byte past a `c3` — 6 tracker functions on the subject.
     ///
     /// THE ARM UNDER TEST IS THE `funcAbove == None` ONE. When a function *is* recognised above,
     /// the first arm returns `function_containing(addr) == above` and this code never runs; the
@@ -1423,7 +1423,7 @@ mod tests {
         );
     }
 
-    /// The same defect at the ANALYZER level, on the path WAR2 actually took: a
+    /// The same defect at the ANALYZER level, on the path the subject actually took: a
     /// `funcstart after="defined"` pattern (family (3) of `x86watcom_patterns.xml`, the ESP-frame
     /// family) whose predecessor is a decoded `ret` belonging to no function.
     ///

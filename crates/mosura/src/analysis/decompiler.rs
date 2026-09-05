@@ -128,7 +128,7 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
         //
         // This must happen HERE and not inside the decompiler: it needs the callee's body, which
         // only the whole-program `Program` has. It is also why Ghidra cannot do it — it recovers a
-        // prototype from one function in isolation, and asked about the same WAR2 callee through
+        // prototype from one function in isolation, and asked about the same the subject callee through
         // the whole-image wrapper it emits the same truncated function.
         record_callee_effects(program, spec, ctx, &mut f);
         // SELF-EVIDENCE PROTOTYPE — the same scan, turned on THIS function. A callee that returns
@@ -137,7 +137,7 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
         // computes it is DEAD and is removed, the only reads of its inputs go with it, and
         // `recover_input_params` then has no trials left — the function comes back as
         // `void FUN_x(void) { return; }`. Measured on regout `bump_` (`add ebx,eax ; ret`), and it
-        // is what the WAR2 survey's 5-byte `void FUN(void){ return; }` rows actually are: not
+        // is what the subject survey's 5-byte `void FUN(void){ return; }` rows actually are: not
         // stubs, but functions whose entire body was eliminated. That is why `void_proto` shows up
         // in every top-5 mismatch cluster — it is the SYMPTOM, and the body is the defect.
         //
@@ -154,7 +154,7 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
             // For the function's OWN lists the flow-walk is the wrong tool: it bails on the
             // first BRANCHIND, and a function with a SWITCH has one by construction -- so the
             // biggest functions, the ones whose `modify` list matters most, got none. Watcom then
-            // had to preserve every scratch register the body uses: WAR2's FUN_0006c6f0 (1,963 B,
+            // had to preserve every scratch register the body uses: the subject's FUN_0006c6f0 (1,963 B,
             // a switch) grew three extra saves (`PUSH EBX/ECX/EDX`), shifting every frame offset
             // in the function. The union-over-instructions the lists want does not need flow at
             // all: analysis already resolved the switch targets when it computed the RECORDED
@@ -250,7 +250,7 @@ mod tests {
 /// restoring before its terminal return. Such a register is one this callee does not preserve,
 /// whatever the model says — and the model is a DEFAULT: Watcom sets `modify` per translation
 /// unit via `#pragma aux`, and hand-written assembly obeys whatever contract its callers were
-/// built against. Measured on WAR2: 264 such registers across 245 functions.
+/// built against. Measured on the subject: 264 such registers across 245 functions.
 ///
 /// Deliberately conservative. The walk is linear and stops at the first branch or call, so a
 /// callee it cannot follow keeps today's behaviour rather than acquiring a guess.
@@ -269,7 +269,7 @@ fn record_callee_effects(
     // site; `recover::recovered_output_list` maps them as that call's OUTPUT storage when the
     // default `<output>` does not explain the return; and `check_input_trial_use` vetoes an
     // argument trial for any register the callee never reads. Measured on the regout MVE
-    // (oracle/ground-truth/src/regout.c), which reproduces the WAR2 FUN_00074744 defect:
+    // (oracle/ground-truth/src/regout.c), which reproduces the subject's FUN_00074744 defect:
     //
     //   gated off   pxVar1 = pxRam08049070; func_0x08048106(param_2); *pxVar1 = param_1;
     //   enabled     pxVar1 = (xunknown1 *)func_0x08048106(param_2);   *pxVar1 = param_1;
@@ -300,7 +300,7 @@ fn record_callee_effects(
     // with the callee's own (`recovered_input_list`) makes the recovered registers consecutive
     // groups, leaving the faithful rule nothing to fire on, and retires the suppression entirely.
     //
-    // On the regout MVE, which reproduces WAR2 FUN_00074744:
+    // On the regout MVE, which reproduces the subject's FUN_00074744:
     //
     //   before   pxVar1 = pxRam08049070; func_0x08048106(param_2);            *pxVar1 = param_1;
     //   now      pxVar1 = (xunknown1 *)func_0x08048106(xRam08049070,param_2); *pxVar1 = param_1;
@@ -1038,7 +1038,7 @@ fn callee_writes_cfg(
     // walk reports every callee-saved register as written, the downgrade never fires for it, and a
     // caller holding a value across the call has that value killed.
     //
-    // Measured on WAR2's FUN_000458ec, whose callee saves and restores EDX: the caller's
+    // Measured on the subject's FUN_000458ec, whose callee saves and restores EDX: the caller's
     // `param_2 = param_2 + 1` lost its consumer, was absorbed into the call as a second argument,
     // and the loop counter stopped advancing — an INFINITE LOOP in the emitted C, not merely
     // different bytes.

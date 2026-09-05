@@ -3,12 +3,12 @@
 //! The "fixture-as-specimen" trick (bytes lifted from the survey manifest) is for scratch
 //! diagnosis only; eight such fixtures were committed twice in one week and replaced by MVEs.
 //!
-//! This test rejects any fixture whose code shares a window with the WAR2 text: 32 bytes for a
+//! This test rejects any fixture whose code shares a window with a subject binary's text: 32 bytes for a
 //! hand-assembled fixture, 64 for a generator product. The compiler reproduces its own templates —
-//! x86_32c00's prologue + memcpy pair coincides with WAR2 for 34 bytes by construction — but never
+//! x86_32c00's prologue + memcpy pair coincides with the subject for 34 bytes by construction — but never
 //! a whole lifted function, and the header the generator writes is text anyone can paste above
 //! lifted bytes, so it raises the bar rather than waiving it. The test needs the binary to compare
-//! against and SKIPS (with a note) when it is absent — `binaries.war2` in dev-config.toml or its default — so
+//! against and SKIPS (with a note) when it is absent — the configured subjects, dev-config `[[subject]]` — so
 //! the suite stays third-party-free on machines without it.
 //!
 //! The generator is the source of truth for its products: before landing anything that touches a
@@ -25,7 +25,7 @@ const GENERATED_MARKER: &str = "<!-- SELF-COMPILED fixture: wcc386";
 /// Pre-existing specimens (already pushed), allow-listed until their MVEs exist — the fixture-policy
 /// follow-up on the ledger (fable-b's R1 review, 2026-08-27).
 const ALLOW_LISTED: &[&str] = &[
-    // b555c38 (the AncestorRealistic port), 255 B at WAR2 0x66da8 — tests/ancestor_copy_solid.rs
+    // b555c38 (the AncestorRealistic port), 255 B at the subject's 0x66da8 — tests/ancestor_copy_solid.rs
     "x86_watcom_ancestor_copy_solid.xml",
     // c3489dd, a 115-byte shared window (fable-b's scan) — tests/dowhile_or.rs
     "x86_watcom_dowhile_or.xml",
@@ -90,35 +90,42 @@ fn window_detection_is_exact() {
 }
 
 #[test]
-fn no_fixture_carries_a_window_of_the_war2_text() {
-    let exe = mosura::paths::war2_exe().display().to_string(); // `binaries.war2` in dev-config.toml
-    let Ok(text) = std::fs::read(&exe) else {
-        eprintln!("fixture_provenance: {exe} absent — the WAR2 window check is skipped here");
-        return;
-    };
-    let index = window_index(&text);
-    let dir = mosura::paths::oracle_fixtures_dir();
-    let mut offenders = Vec::new();
-    let mut checked = 0;
-    for entry in std::fs::read_dir(&dir).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("xml") {
+fn no_fixture_carries_a_window_of_a_subject_text() {
+    let mut ran = 0;
+    for s in mosura::devcfg::subjects() {
+        let Ok(text) = std::fs::read(&s.path) else {
+            eprintln!("fixture_provenance: subject {} absent — its window check is skipped here", s.id);
             continue;
+        };
+        ran += 1;
+        let index = window_index(&text);
+        let dir = mosura::paths::oracle_fixtures_dir();
+        let mut offenders = Vec::new();
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("xml") {
+                continue;
+            }
+            let name = path.file_name().unwrap().to_string_lossy().to_string();
+            if ALLOW_LISTED.contains(&name.as_str()) {
+                continue;
+            }
+            let xml = std::fs::read_to_string(&path).unwrap();
+            let win = if xml.starts_with(GENERATED_MARKER) { GENERATED_WINDOW } else { WINDOW };
+            checked += 1;
+            if fixture_chunks(&xml).iter().any(|chunk| shares_window(chunk, win, &text, &index)) {
+                offenders.push(format!("{name} ({win}-byte window)"));
+            }
         }
-        let name = path.file_name().unwrap().to_string_lossy().to_string();
-        if ALLOW_LISTED.contains(&name.as_str()) {
-            continue;
-        }
-        let xml = std::fs::read_to_string(&path).unwrap();
-        let win = if xml.starts_with(GENERATED_MARKER) { GENERATED_WINDOW } else { WINDOW };
-        checked += 1;
-        if fixture_chunks(&xml).iter().any(|chunk| shares_window(chunk, win, &text, &index)) {
-            offenders.push(format!("{name} ({win}-byte window)"));
-        }
+        assert!(checked > 0, "no fixtures found under {}", dir.display());
+        assert!(
+            offenders.is_empty(),
+            "fixtures carrying verbatim bytes of subject {} (replace with self-compiled MVEs via examples/watcom_mve_fixtures.rs): {offenders:?}",
+            s.id
+        );
     }
-    assert!(checked > 0, "no fixtures found under {}", dir.display());
-    assert!(
-        offenders.is_empty(),
-        "fixtures carrying verbatim WAR2 bytes (replace with self-compiled MVEs via examples/watcom_mve_fixtures.rs): {offenders:?}"
-    );
+    if ran == 0 {
+        eprintln!("fixture_provenance: no configured subject (dev-config [[subject]]) — the window check is skipped here");
+    }
 }

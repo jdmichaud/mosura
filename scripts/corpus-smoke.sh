@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# war2-smoke — the ~3-minute gate to run BEFORE any corpus round (docs/byte-exact-status.md
+# corpus-smoke — the ~3-minute gate to run BEFORE any corpus round (docs/byte-exact-status.md
 # sb99 retrospective; memory: experiment-discipline). Emits the whole tree (the emit is
 # whole-program, ~100s) but COMPILES only the pinned smoke set: mechanism-sensitive EXACTs
 # (one sentinel per landed recovery: extrapop, param-order, volatile, cdecl family, thunk,
@@ -8,25 +8,34 @@
 # poisoned -dirty caches, pipeline-corrupting mutations) in minutes instead of a
 # 45-minute corpus round.
 #
-# usage: scripts/war2-smoke.sh [out-dir]     (default /data/be2/smoke)
+# usage: scripts/corpus-smoke.sh [--bin <subject.exe>] [out-dir]     (default: the first configured [[subject]], /data/be2/smoke)
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 . "$(dirname "${BASH_SOURCE[0]}")/devcfg.sh"
-EXE="$(devcfg binaries.war2 "$HOME/WAR2.EXE")"
+# The subject: `--bin <exe>`, else the first configured `[[subject]]` (dev-config.toml).
+EXE=""
+ARGS=()
+while [ $# -gt 0 ]; do case "$1" in --bin) EXE="$2"; shift 2 ;; *) ARGS+=("$1"); shift ;; esac; done
+set -- "${ARGS[@]}"
+[ -n "$EXE" ] || EXE="$(devcfg_first_subject_path)"
+[ -n "$EXE" ] || { echo "corpus-smoke: no --bin and no configured [[subject]] in dev-config.toml" >&2; exit 2; }
 WATCOM="$(devcfg watcom.install "$HOME/watcom")"
 CACHE="$(devcfg recompile.cache "${TMPDIR:-/tmp}/mosura-recompile-cache")"
 OUT=${1:-/data/be2/smoke}
 TARGET=${CARGO_TARGET_DIR:-/data/mosura-target}
-EXPECT=scripts/war2-smoke.expected.tsv
+# The pinned sentinels are the SUBJECT's: `smoke.expected.tsv` in its profile (dev-config `[[subject]]`).
+PROFILE="$(devcfg_profile "$EXE")"
+EXPECT="$PROFILE/smoke.expected.tsv"
+[ -n "$PROFILE" ] && [ -f "$EXPECT" ] || { echo "corpus-smoke: no subject profile with smoke.expected.tsv for $EXE (dev-config [[subject]])" >&2; exit 2; }
 
-CARGO_TARGET_DIR=$TARGET cargo build --release --example war2_survey --example recompile_check
+CARGO_TARGET_DIR=$TARGET cargo build --release --example corpus_emit --example recompile_check
 
 mkdir -p "$OUT"
 # A stale -dirty param-order cache from a broken binary poisons the emit silently
-# (war2-remeasure runbook) — the smoke tree always re-derives.
+# (remeasure (subject-profile note) runbook) — the smoke tree always re-derives.
 rm -f "$OUT"/param-orders.*-dirty.tsv
-"$TARGET/release/examples/war2_survey" "$EXE" "$OUT" > "$OUT/emit.log" 2>&1
+"$TARGET/release/examples/corpus_emit" "$EXE" "$OUT" > "$OUT/emit.log" 2>&1
 MANIFEST=$(sed -n 's/^manifest: //p' "$OUT/emit.log" | tail -1)
 
 IDS=$(awk -F'\t' '!/^#/{print $1}' "$EXPECT" | paste -sd,)
@@ -45,7 +54,7 @@ while IFS=$'\t' read -r idx va name expected; do
 done < "$EXPECT"
 
 if [[ $fail -ne 0 ]]; then
-    echo "war2-smoke: FAIL — do not run a corpus round; diagnose the drift first."
+    echo "corpus-smoke: FAIL — do not run a corpus round; diagnose the drift first."
     exit 1
 fi
-echo "war2-smoke: OK ($(grep -cv '^#' "$EXPECT") sentinels hold)"
+echo "corpus-smoke: OK ($(grep -cv '^#' "$EXPECT") sentinels hold)"

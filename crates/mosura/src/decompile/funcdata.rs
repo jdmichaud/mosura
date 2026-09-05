@@ -124,7 +124,7 @@ pub struct Funcdata {
     /// Ghidra's `TypeSpacebase::getSubType` queries a PERSISTENT `Scope`; mosura's `recover_scope`
     /// REBUILDS the whole table (O(function size)) on every call. That is fine for the callers that
     /// ask once per pass, but `RulePtrsubUndo` asks per PTRSUB evaluation, which measured 23µs a
-    /// call and kept WAR2's FUN_00024a88 from finishing. Invalidated wherever the local layout is
+    /// call and kept the subject's FUN_00024a88 from finishing. Invalidated wherever the local layout is
     /// recomputed (`ActionRestructureVarnode`), which is exactly when Ghidra's Scope changes.
     pub stack_syms_cache: Option<Vec<super::varmap::StackSymbol>>,
     pub readonly_ranges: Vec<(u64, u64)>,
@@ -168,7 +168,7 @@ pub struct Funcdata {
     /// WhileDo overflow choice among them (`ruleBlockWhileDo`, blockaction.cc:1538) — is frozen
     /// in the persistent graph until `structureReset()`. That first collapse typically runs at
     /// mainloop iteration 1, BEFORE the delayed ram heritage merges a loop's global reload into
-    /// its phi web — so loopcomma's `while(true)` overflow form and the WAR2 nested-if families
+    /// its phi web — so loopcomma's `while(true)` overflow form and the subject nested-if families
     /// hinge on the iteration-1 statement counts. mosura's re-deriving builds recomputed
     /// `complex` on the late graph and silently flipped those verdicts; this cache pins them to
     /// the first build, cleared exactly where Ghidra clears the structure (CFG mutation).
@@ -219,21 +219,21 @@ pub struct Funcdata {
     /// rendering but the survey's recovered one. mosura-only.
     pub dropped_params: std::collections::HashSet<VarnodeId>,
     /// MARK (decided by the survey from the original's bytes): the function returns FAR
-    /// (`RETF`); its own contract declares `far` (WAR2 FUN_00058840, a far-called handler).
+    /// (`RETF`); its own contract declares `far` (the subject's FUN_00058840, a far-called handler).
     pub far_return: bool,
     /// MARK (decided by the survey from the original's bytes): register parameters the
     /// original handles as a NARROW value — copied into a byte register at entry (`MOV CL,AL`)
     /// and read only through a mask in the IR (`param_1 & 0xff`) — declared at that width
-    /// (`uint1 param_1`), the mask elided (WAR2 FUN_00019e38 and its two siblings).
+    /// (`uint1 param_1`), the mask elided (the subject's FUN_00019e38 and its two siblings).
     pub narrow_params: std::collections::HashMap<VarnodeId, u32>,
     /// MARK (decided by the survey from the original's `RET n`): stack parameter slots the
     /// function pops but never reads — declared as unused parameters under the stack
-    /// convention so the recompile pops them too (WAR2 FUN_0004dd2c: `return 0;` with `RET 4`).
+    /// convention so the recompile pops them too (the subject's FUN_0004dd2c: `return 0;` with `RET 4`).
     pub extra_stack_params: u32,
     /// MARK (decided by the survey from the original's bytes, BEFORE the pipeline): every
     /// return path writes EAX from a register right before the epilogue — the function
     /// returns that value, and the return-trial gate keeps the EAX trial regardless of the
-    /// value's other uses (`recover::check_output_trial_use`; WAR2 FUN_0004984c returns the
+    /// value's other uses (`recover::check_output_trial_use`; the subject's FUN_0004984c returns the
     /// buffer it filled, which Ghidra prints as `void`).
     pub tail_return_write: bool,
 
@@ -1093,7 +1093,7 @@ impl Funcdata {
     /// op list. "After an INDIRECT" means after the STORE or CALL it is indirect for (:376-385):
     /// the INDIRECT sits before that op, and an op placed between them precedes the effect it
     /// follows — mosura's snip/trim COPYs used to land there (the snip fix, eccdac4, and
-    /// `trim_op_output`: WAR2 FUN_0002cca0 wrote a global before the STORE that reads its old
+    /// `trim_op_output`: the subject's FUN_0002cca0 wrote a global before the STORE that reads its old
     /// value). Every `opInsertAfter` caller gets the redirect, as in Ghidra.
     pub fn op_insert_after(&mut self, newop: OpId, prev: OpId) {
         let prev = if self.ops[prev.0 as usize].opcode == OpCode::Indirect {

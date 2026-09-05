@@ -21,7 +21,7 @@
 //! thunk model at all (`function_start.rs:766` recorded this), so
 //! [`super::compute_function_bodies`]'s walk followed the `jmp`, swallowed the target into the
 //! jumping function's body, and the overlap refusal then declined a function there permanently.
-//! WAR2's entry `0x601f8` is exactly this shape: `EB 76`, a short jump over the inline Watcom
+//! the subject's entry `0x601f8` is exactly this shape: `EB 76`, a short jump over the inline Watcom
 //! copyright banner (`analysis/loader/watcom.rs`), and `0x601f8 + 2 + 0x76 = 0x60270` — the
 //! address Ghidra creates `FUN_00060270` at and mosura did not. `SharedReturnAnalysisCmd` cannot
 //! be the mechanism there: the span between source and target is a *string*, so no function entry
@@ -117,7 +117,7 @@ fn thunked_addr_reporting(
     // `simple_flow` can only succeed where the instruction really flows — it rejects anything
     // that is neither a jump nor a terminal call. The overwhelming majority of function entries
     // are ordinary `FallThrough` instructions, and decoding each of them with SLEIGH just to
-    // learn that cost 3.37% of a whole WAR2 run: this runs for every function on every
+    // learn that cost 3.37% of a whole the subject run: this runs for every function on every
     // `resolve_thunks` pass, and `compute_function_bodies` makes 96 of those.
     //
     // The SUCCESSOR is tested too, and that is not optional: when the entry's p-code is empty
@@ -168,7 +168,7 @@ fn thunked_addr_reporting(
 ///   `empty-bodies-take-the-permissive-branch` in its exact recorded form.
 /// - **After the walk with no correction**, every thunk's body has swallowed its own target and
 ///   vetoes it — and excluding merely the candidate's own body is not enough, because *sibling*
-///   thunks veto each other. WAR2's MZ stub is the live case: `0x17c4c` and `0x17c50` both jump to
+///   thunks veto each other. the subject's MZ stub is the live case: `0x17c4c` and `0x17c50` both jump to
 ///   `0x17dbe`, so each one's body contains the other's target.
 ///
 /// So the veto reads **non-thunk bodies only**. That is not an extra condition bolted on; it
@@ -321,7 +321,7 @@ impl Outcome {
 /// **Why the report needs it.** Without it the instrument is structurally blind to that arm: an
 /// entry whose *first* instruction is not a jump never enters the candidate population at all, so
 /// "every declined entry was declined correctly" could not be falsified for the exact arm most
-/// likely to explain a decline. A count here is what turns "maybe the missing walk is what WAR2
+/// likely to explain a decline. A count here is what turns "maybe the missing walk is what the subject
 /// needs" into a number.
 ///
 /// **What it reproduces** (`resolveThunk` calls `getThunkedAddr(program, entry)`, which is

@@ -2,21 +2,21 @@
 //! Watcom awareness is `OmfLoader.mapTranslator` mapping the OMF `"WATCOM"` translator
 //! comment to the `"watcom"` opinion secondary, and there is **no watcom compiler spec in any
 //! Ghidra processor**). The Watcom C run-time startup embeds a copyright banner right at the
-//! `_cstart_` entry (the CRT init thunk jumps over it — WAR2.EXE's entry is `EB 76`, a jump
+//! `_cstart_` entry (the CRT init thunk jumps over it — the subject binary's entry is `EB 76`, a jump
 //! over the inline string). Scanning for that banner identifies the compiler as Watcom and
 //! pins its **era**.
 //!
 //! **Oracle (not memory).** The banner grammar + strings are grounded in Open Watcom source
 //! (`open-watcom-v2 bld/clib/startup/h/msgcpyrt.h` composes it: `"<Open >?Watcom C/C++<bits>
 //! Run-Time system. "` + the copyright line) and verified against a real Watcom 10.0a
-//! toolchain's runtime libraries (`clib3r.lib` etc.) plus the WAR2.EXE ground truth.
+//! toolchain's runtime libraries (`clib3r.lib` etc.) plus the subject binary ground truth.
 //!
 //! **Granularity — a grounded finding, not a limitation to hide.** The embedded run-time
 //! banner is an *era* fingerprint (vendor wording + product + bitness + copyright year range),
 //! **not** a precise release: one toolchain (10.0a) ships several runtime libraries carrying
 //! different year ranges (`1988-1993` for the older `C 386`/`C/C++32` runtimes, `1988-1994`
-//! for the `C/C++` ones), and WAR2.EXE (built by a compiler *older* than 10.0a per
-//! warcraft2-re) carries the same `1988-1994` banner as 10.0a. So the banner reliably names
+//! for the `C/C++` ones), and the subject binary (built by a compiler *older* than 10.0a per
+//! the RE tracker) carries the same `1988-1994` banner as 10.0a. So the banner reliably names
 //! Watcom + the era; the exact `wcc`/`wpp` release is not recoverable from the compiled image
 //! (it lives in the tool banner, not the runtime banner). The detected value is therefore the
 //! honest era fingerprint, not an invented version number.

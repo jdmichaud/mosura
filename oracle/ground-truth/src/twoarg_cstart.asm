@@ -20,7 +20,7 @@ add2_   endp
 
 ; The SAME contract, but with a BRANCH in the body. `callee_effects`' straight-line scan bails at
 ; the first branch and claims nothing, so this callee exercises the FALLBACK path where the call's
-; parameter list comes from the convention rather than from the callee's own recovered reads. WAR2's
+; parameter list comes from the convention rather than from the callee's own recovered reads. the subject's
 ; real callees are branchy, so this is the shape that actually matters there.
         public  add2b_
 add2b_  proc

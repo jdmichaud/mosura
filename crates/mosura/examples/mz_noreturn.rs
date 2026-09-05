@@ -1,10 +1,16 @@
-//! Scratch probe: war2 MZ no-return state around the 13a56 inline-parameter dispatcher —
-//! is it detected, and are its call sites overridden?
+//! Scratch probe: the subject's MZ no-return state around the 13a56 inline-parameter dispatcher —
+//! is it detected, and are its call sites overridden? `mz_noreturn [<subject.exe>]` (default: the
+//! first configured subject, dev-config `[[subject]]`).
 
 use mosura::decompile::space::Address;
 
 fn main() {
-    let data = std::fs::read(mosura::paths::war2_exe()).unwrap();
+    let path = std::env::args()
+        .nth(1)
+        .map(std::path::PathBuf::from)
+        .or_else(|| mosura::devcfg::subjects().first().map(|s| s.path.clone()))
+        .expect("a subject binary: an argument or a configured [[subject]]");
+    let data = std::fs::read(&path).unwrap();
     let mut prog = mosura::analysis::loader::load(&data).unwrap();
     mosura::analysis::analyze(&mut prog);
     let ram = prog.default_space;

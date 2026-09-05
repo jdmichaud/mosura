@@ -2,7 +2,7 @@
 //! GLOBAL where the original reloads it. Ghidra's data-flow names the stored VALUE at every
 //! later use (`xRam00080004 = xRam0008f046; f(xRam0008f046);`): the same value, but this
 //! compiler then keeps the source global's load for the argument where the original reloaded
-//! the stored one (`MOV [0x80004],AX .. MOV AX,[0x80004]`, WAR2 FUN_00014214 and FUN_00014240:
+//! the stored one (`MOV [0x80004],AX .. MOV AX,[0x80004]`, the subject's FUN_00014214 and FUN_00014240:
 //! the source wrote `g = h; f(g);`). The witness (`recovered.store_forward.sites`, from
 //! `buildconfig::store_forwards_from_evidence` over this arm's `store_forward_candidates`):
 //! between the store and the call, the original loads the stored global. Value-identical: no

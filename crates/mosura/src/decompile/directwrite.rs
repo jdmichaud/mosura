@@ -89,7 +89,7 @@ impl Action for ActionDirectWrite {
                         // really a CPUI_STORE (coreaction.cc:1382, `isStackStore`), trace the COPY
                         // source through one more COPY; a source written by a marker (an INDIRECT —
                         // the callee's return value as an indirect creation, or a passthrough) makes
-                        // this a direct write. WAR2 0x2dcd4: `xStack_cc = func(...)` is exactly a
+                        // this a direct write. the subject's 0x2dcd4: `xStack_cc = func(...)` is exactly a
                         // stack store of the call's `AX` creation; without this the addr-forced
                         // INDIRECT carrying it across the next call was never direct-written, the
                         // deadcode clear stripped it, and the store vanished (W4).

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ABSOLUTE quality gauge for WAR2: mosura's emitted C vs GHIDRA's, per function.
+"""ABSOLUTE quality gauge for the subject: mosura's emitted C vs GHIDRA's, per function.
 
 WHY THIS EXISTS
     A differential scan (this build vs the last build) can only ever see *incremental* loss, so a
@@ -30,10 +30,10 @@ REFERENCE HIERARCHY — bytes > Ghidra > mosura
     4; mosura 1) caught two separate counting bugs in this file's own predicates.
 
 USAGE
-    scripts/war2-absolute-gauge.py [--sweep ghidra-all.txt] [--src <dir>] [--manifest <tsv>]
+    scripts/corpus-absolute-gauge.py [--sweep ghidra-all.txt] [--src <dir>] [--manifest <tsv>]
                                    [--top N] [--list-deficits <file>]
 
-    Regenerate the sweep with:  OUT=ghidra-all.txt scripts/ghidra-decompile-war2.sh --all
+    Regenerate the sweep with:  OUT=ghidra-all.txt scripts/ghidra-decompile-subject.sh --all
 """
 import argparse
 import os
@@ -131,7 +131,7 @@ def _selftest() -> int:
 
 
 def split_sweep(path: str) -> dict:
-    """Split `ghidra-decompile-war2.sh` output into {va8: c_text}."""
+    """Split `ghidra-decompile-subject.sh` output into {va8: c_text}."""
     out, cur, buf = {}, None, []
     with open(path) as fh:
         for line in fh:
@@ -217,8 +217,8 @@ def load_mosura(src: str, manifest: str) -> dict:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument('--sweep', default='ghidra-all.txt', help="Ghidra sweep output")
-    ap.add_argument('--src', default=None, help="dir of mosura-emitted .c (default war2-survey/src)")
-    ap.add_argument('--manifest', default=None, help="war2-survey/manifest.tsv")
+    ap.add_argument('--src', default=None, help="dir of mosura-emitted .c (default <subject-survey>/src)")
+    ap.add_argument('--manifest', default=None, help="<subject-survey>/manifest.tsv")
     ap.add_argument('--top', type=int, default=15)
     ap.add_argument('--list-deficits', default=None, help="write deficit VAs (worst first) here")
     ap.add_argument('--selftest', action='store_true',
@@ -229,7 +229,7 @@ def main() -> int:
         return _selftest()
 
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    survey = os.path.join(os.path.dirname(root), 'war2-survey')
+    survey = os.path.join(os.path.dirname(root), 'the subject survey folder')
     manifest = a.manifest or os.path.join(survey, 'manifest.tsv')
     src = a.src or os.path.join(survey, 'src')
 
@@ -241,7 +241,7 @@ def main() -> int:
     gh = split_sweep(a.sweep)
     mos = load_mosura(src, manifest)
 
-    print("=== WAR2 ABSOLUTE GAUGE (mosura vs Ghidra, per function) ===")
+    print("=== the subject ABSOLUTE GAUGE (mosura vs Ghidra, per function) ===")
     print(f"reference: {a.sweep} ({len(gh)} functions)")
     print(f"mosura   : {src} ({len(mos)} functions, keyed by their own definition lines)")
     print("reference hierarchy: bytes > Ghidra > mosura. Ghidra is a PROXY, not ground truth —")

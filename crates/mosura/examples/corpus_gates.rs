@@ -1,5 +1,5 @@
 //! Re-run the corpus gates (`recompile::gates`, review R4) on an existing survey tree — the same
-//! functions `war2_survey` runs post-emit (gates 1–6) and `recompile_check` post-verdict (7–8).
+//! functions `corpus_emit` runs post-emit (gates 1–6) and `recompile_check` post-verdict (7–8).
 //!
 //! usage: corpus_gates <tree> [--rec <round>-rec.tsv] [--prev <previous>-rec.tsv]
 //!                     [--baseline <tsv>] [--partial]
@@ -16,7 +16,7 @@ fn main() {
     let tree = PathBuf::from(a.first().expect(USAGE));
     let mut rec: Option<PathBuf> = None;
     let mut prev: Option<PathBuf> = None;
-    let mut baseline = mosura::paths::corpus_gates_file();
+    let mut baseline: Option<PathBuf> = None;
     let mut partial = false;
     let mut i = 1;
     while i < a.len() {
@@ -31,7 +31,7 @@ fn main() {
             }
             "--baseline" => {
                 i += 1;
-                baseline = PathBuf::from(&a[i]);
+                baseline = Some(PathBuf::from(&a[i]));
             }
             "--partial" => partial = true,
             other => {
@@ -41,6 +41,14 @@ fn main() {
         }
         i += 1;
     }
+    // The bars and sets are the SUBJECT's: `--baseline <tsv>`, else the first configured subject
+    // profile that carries `corpus-gates.tsv` (dev-config `[[subject]]`).
+    let baseline = baseline
+        .or_else(|| mosura::devcfg::subjects().iter().find_map(|s| s.file("corpus-gates.tsv")))
+        .unwrap_or_else(|| {
+            eprintln!("no --baseline and no configured subject profile carries corpus-gates.tsv");
+            std::process::exit(2)
+        });
     let baseline = gates::Baseline::load(&baseline).unwrap_or_else(|e| {
         eprintln!("baseline: {e}");
         std::process::exit(2);

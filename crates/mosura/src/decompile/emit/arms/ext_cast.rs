@@ -6,7 +6,7 @@
 //! belongs behind. The reference renderings (`ext-cast=ghidra`, `hide-wide`) stay the port's —
 //! `PrintC::opIntZext`/`opIntSext` with `isExtensionCastImplied` (printc.cc:786, cast.cc:249).
 //!
-//! The rules, each measured on the WAR2 corpus:
+//! The rules, each measured on the subject corpus:
 //! - a zero-extension TO int width prints bare for a NARROW-TYPED operand (a declared variable or
 //!   parameter, a load, a cast, a boolean, a mask, a right shift, a call result under its
 //!   `extern int`), which C's promotion widens faithfully; it keeps a `(uintN)` cast over
@@ -66,7 +66,7 @@ pub(crate) fn render(pr: &mut PrintC<'_>, op: OpId, signed: bool) -> Option<(Str
             if narrow_typed_operand(pr, in0) {
                 // the 16-BIT widening of a byte: `XOR AH,AH ; MOV AL,..` paired in the original
                 // (this compiler zero-extends a byte to 16 bits when the value is consumed
-                // at 16 bits — a short global's store, WAR2 FUN_000207b8 EXACT with `(uint2)x`;
+                // at 16 bits — a short global's store, the subject's FUN_000207b8 EXACT with `(uint2)x`;
                 // 21 functions carry the pair against the recompile's `XOR EAX,EAX` on round
                 // f4). The cast is the identity on a zero-extended byte. Witnessed by the
                 // PAIR (`buildconfig::narrow_zexts_from_evidence`, the int-width arm), never
@@ -140,7 +140,7 @@ pub struct Report {
     /// The IR's 2-byte ZEXT does not say how the compiler widened: this one zero-extends into
     /// the full register (`XOR EDX,EDX ; MOV DL,..`, and computes at 32 bits) unless the source
     /// pinned the 16-bit width, when it zeroes only the high byte (`XOR AH,AH ; MOV AL,..`,
-    /// WAR2 FUN_00019344's `(ushort)byte * 2`). A target rule reads which idiom the original used
+    /// the subject's FUN_00019344's `(ushort)byte * 2`). A target rule reads which idiom the original used
     /// at the site and keeps the cast only for the 16-bit one (`narrow_zexts_from_evidence`);
     /// printing it everywhere measured −3 EXACT / +1 (round e1, 2026-09-03).
     pub candidates: Vec<(u64, u32, u32)>,

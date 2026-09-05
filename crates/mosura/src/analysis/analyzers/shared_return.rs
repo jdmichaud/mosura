@@ -281,7 +281,7 @@ impl SharedReturnAnalyzer {
     /// **Nothing else.** In particular there is no "location lies inside some function's
     /// body" arm: a tail-call destination is *always* inside the jumping function's body
     /// (flow follows the `jmp` into it), so such a gate vetoes every shared-return
-    /// destination — which is precisely what kept WAR2's `FUN_00067f40` / `FUN_00072301` /
+    /// destination — which is precisely what kept the subject's `FUN_00067f40` / `FUN_00072301` /
     /// `FUN_00079330` (and 28 more) from being created. `oracle/ground-truth/src/tailjmp.c`
     /// is the self-compiled repro.
     fn could_have_fall_thru_to(&self, program: &Program, location: Address) -> bool {
@@ -316,7 +316,7 @@ impl SharedReturnAnalyzer {
     /// op. The difference is not cosmetic: `rep movs` lifts to an internal loop whose LAST op
     /// is a p-code-relative `BRANCH`, so the last-op reading calls it an unconditional jump
     /// and reports no fall-through — which made `checkIfCouldHaveFallThruTo` miss the veto and
-    /// split WAR2's `FUN_00012e68` at the `rep movsw` boundary.
+    /// split the subject's `FUN_00012e68` at the `rep movsw` boundary.
     fn instruction_falls_through(&self, program: &Program, addr: Address) -> bool {
         let Some(insn) = self.decode(program, addr) else {
             return false;
@@ -343,7 +343,7 @@ impl SharedReturnAnalyzer {
 /// re-queried only once the walk has passed `functionAfterSrc`, so while it is frozen it holds the
 /// function-before of an EARLIER address — never higher than a fresh query — and
 /// `destAddr < functionBeforeSrc` therefore fails where a fresh query would pass. Re-querying both
-/// on every source (which is what a "cleaned-up" version does) over-creates: on WAR2 it invents
+/// on every source (which is what a "cleaned-up" version does) over-creates: on the subject it invents
 /// functions at three shared epilogues (0x51e12 / 0x53254 / 0x78039) that Ghidra's own
 /// `SharedReturnAnalysisCmd`, run one-shot over the whole program, does not create.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -452,7 +452,7 @@ impl Analyzer for SharedReturnAnalyzer {
         // an `AddressSet` coalesces adjacent ranges, so functions at consecutive entries
         // (`08048110 sink_` / `08048111 __CHK` / `08048112 p_leaf_` on `wprobe.watcom-x86-32`)
         // collapse into a single range and reading `r.min` kept only the first
-        // (`docs/function-discovery-backlog.md`, CAUSE B).
+        // (`<subject-profile>/notes/function-discovery-backlog.md`, CAUSE B).
         let new_function_entries: Vec<Address> = {
             let mut entries: Vec<u64> = program
                 .function_manager
@@ -671,7 +671,7 @@ mod destination_set_tests {
         );
     }
 
-    /// CAUSE B (`docs/function-discovery-backlog.md`): `SharedReturnAnalysisCmd.applyTo` drives
+    /// CAUSE B (`<subject-profile>/notes/function-discovery-backlog.md`): `SharedReturnAnalysisCmd.applyTo` drives
     /// `symbolTable.getSymbols(set, SymbolType.FUNCTION, true)` (SharedReturnAnalysisCmd.java:66)
     /// — **every** function symbol in the set. Reading one entry per `AddressSet` range instead
     /// drops all but the first of any run of adjacent entries, because the set coalesces them
@@ -870,7 +870,7 @@ mod destination_set_tests {
     /// function set, so re-running the same whole-program invocation later reproduces it exactly:
     /// the second pass starts from the bottom and arrives here with the same stale cursor. Only an
     /// invocation whose scan set STARTS near the source — Ghidra's per-round granularity — primes
-    /// the cursors close enough to decide it freshly. WAR2's `0x69032` is this shape, measured:
+    /// the cursors close enough to decide it freshly. the subject's `0x69032` is this shape, measured:
     /// carried `before` = `0x67d45`, fresh = `0x68f25`.
     #[test]
     fn a_forward_source_leaves_the_before_cursor_stale_with_the_function_set_unchanged() {

@@ -5,7 +5,7 @@
 //! carries which operand the source wrote first — but this compiler emits the `CMP` in SOURCE
 //! order (`CMP a,b` for `a < b`, `CMP b,a` for `b > a`), so the original bytes still do. The
 //! witness is `recovered.cmp_order.sites`, from `buildconfig::cmp_orders_from_evidence`
-//! (measured on WAR2 FUN_0002530c: the original `CMP EDX,EAX ; SETGE` where the port's
+//! (measured on the subject's FUN_0002530c: the original `CMP EDX,EAX ; SETGE` where the port's
 //! `x <= y` compiled to `CMP EAX,EDX ; SETLE`; EXACT once mirrored). Constant operands are never
 //! candidates: x86 always encodes the constant second, so their order carries no information —
 //! the off-by-one immediate flavour of the same canonicalization is `complement_cmp`'s. A
@@ -31,7 +31,7 @@ pub(crate) fn render(pr: &mut PrintC<'_>, op: OpId, strict: bool, prec: u8) -> O
     // LEAF operands only: a value the compare reads as it stands (an input, a load, a named
     // variable, an extension or piece of one). An ARITHMETIC operand is evaluated into a register
     // by the compare's own code, and mirroring the compare re-orders that evaluation and with it
-    // the allocation (WAR2 FUN_0004bdb0: `field >> 16 > a + b` lost SAME_SHAPE, round e2).
+    // the allocation (the subject's FUN_0004bdb0: `field >> 16 > a + b` lost SAME_SHAPE, round e2).
     if !leaf(pr, a) || !leaf(pr, b) {
         return None;
     }
@@ -67,7 +67,7 @@ fn leaf(pr: &PrintC<'_>, v: VarnodeId) -> bool {
 /// `(offset, size)` of `v` in the register space — `None` for anything else (memory, a
 /// temporary, a stack slot): only a register the disassembly can name is matched by the witness.
 /// A compare operand the original's `CMP` can name: a general register (by register-space
-/// offset and size) or a GLOBAL by its address (`CMP DL,byte ptr [0x8f042]`, WAR2 FUN_00014990:
+/// offset and size) or a GLOBAL by its address (`CMP DL,byte ptr [0x8f042]`, the subject's FUN_00014990:
 /// two byte globals compared, the memory operand names the source's right-hand side).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CmpOperand {

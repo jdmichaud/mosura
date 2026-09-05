@@ -58,7 +58,7 @@ use std::fmt;
 /// **storage** it travels in.
 ///
 /// A function may compute one byte and return it in a four-byte register. The reference decompiler
-/// prints the value's width — measured, it emits `undefined1` for WAR2's `FUN_000570cc`, whose
+/// prints the value's width — measured, it emits `undefined1` for the subject's `FUN_000570cc`, whose
 /// original is `XOR EAX,EAX ; MOV AL,[m] ; RET`. That is a true statement about the value, and it
 /// is also the rendering under which the compiler emits only the `MOV AL`, dropping the `XOR` that
 /// materializes the other three bytes. Declaring the storage width recovers the `XOR` and breaks
@@ -87,7 +87,7 @@ pub enum ReturnWidth {
 /// recovered IR; C forces a choice; which one the original source spelled is not derivable
 /// from the IR (though no known period source spells the hardware's own mask). Measured
 /// probe (rule 3): Watcom 10.0a materializes the printed mask as a real `AND CL,0x1f` —
-/// WAR2 `FUN_00038d88`, whose original has none, and 64 functions / 94 divergence rows
+/// the subject's `FUN_00038d88`, whose original has none, and 64 functions / 94 divergence rows
 /// corpus-wide on sb43-5r.
 ///
 /// The elision applies only where the mask is provably the hardware's: an implied
@@ -106,7 +106,7 @@ pub enum ShiftMask {
 /// Whether a narrow register-resident local declares at the width of its **value** or of
 /// the register it lives in — [`ReturnWidth`]'s question, asked of locals.
 ///
-/// The original of WAR2's `FUN_00031044` widens a byte global into a full register at the
+/// The original of the subject's `FUN_00031044` widens a byte global into a full register at the
 /// def (`XOR EAX,EAX ; MOV AL,[m]`) — an int-typed local in the source; the reference
 /// decompiler recovers the value's width (`xunknown1`), under which the compiler works in
 /// the byte register and re-widens at every use (`AND EAX,0xff`). Declaring the local at
@@ -133,7 +133,7 @@ pub enum LocalWidth {
 ///
 /// The decompiler canonicalizes comparison constants (`x >= 4` and `3 < x` are one IR
 /// object, and the reference rendering prints the strict form Ghidra's rules normalize to —
-/// oracle-verified on WAR2 `FUN_000207b8`: both print `3 < u`). The original programmer
+/// oracle-verified on the subject's `FUN_000207b8`: both print `3 < u`). The original programmer
 /// wrote whichever form they wrote, and the compiled bytes differ (`CMP EAX,4` vs
 /// `CMP EAX,3` with complementary jump senses). Both renderings are the same predicate on
 /// every input; which one the source used is not derivable from the IR, so it is searched.
@@ -155,7 +155,7 @@ pub enum CompareForm {
 /// expression or as per-path constant returns.
 ///
 /// The decompiler's rules collapse "set 1 on this path, 0 on that" into a single boolean
-/// (`return x != 0;` — the reference rendering, oracle-verified on WAR2 `FUN_000260c4`),
+/// (`return x != 0;` — the reference rendering, oracle-verified on the subject's `FUN_000260c4`),
 /// and Watcom materializes the boolean with `TEST/SETNZ/AND`. The original source returned
 /// constants on separate paths, which compiles to a branch and lets the compiler reuse
 /// known register values (the measured original returns the call's own EAX=0 on the zero
@@ -178,7 +178,7 @@ pub enum ReturnSplit {
 /// The two are the same program by the definition of short-circuit evaluation, and the
 /// reference decompiler prints the collapsed form its structuring rules built. Watcom
 /// compiles the comma clause by MATERIALIZING the clause's boolean (`SETcc` + mask beside
-/// the very branch that tests it — measured on WAR2 specimen `01304`), where the original
+/// the very branch that tests it — measured on the subject specimen `01304`), where the original
 /// — written as nested ifs — stays branch-only; the nested hand probe removed every
 /// materialization row. Applies only to a plain un-`else`'d `if` (nesting changes where an
 /// else would fire) whose printed `&&` spine carries statement clauses; everything else
@@ -236,7 +236,7 @@ pub struct EmitChoices {
 /// `Promotion`
 /// prints the bare operand for a zero-extension and `(intN)x` for a sign-extension, leaving the
 /// widening to C's promotion: value-identical, and the rendering Watcom 10.0a compiles closest to
-/// WAR2's bytes (zc42 vs zc46: the Ghidra casts moved −262 weighted; each shape wants the cast
+/// the subject's bytes (zc42 vs zc46: the Ghidra casts moved −262 weighted; each shape wants the cast
 /// on some sites and not others — the per-site evidence rule for the original's own
 /// MOVZX/XOR forms is the open design, see docs/byte-exact-status.md zc42–zc46).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -256,7 +256,7 @@ pub enum ExtCast {
 /// rendered. `Ghidra` is the reference form (the sweep and datatests compare against it); it is
 /// not C that compiles (`swi` is not a declarable function). `Int3` prints the pair as one
 /// `__int3();` statement, backed by the target prelude's `#pragma aux __int3 = 0xcc` so the
-/// recompile inlines the literal breakpoint byte — WAR2's compiled C carries INT3 as the retail
+/// recompile inlines the literal breakpoint byte — the subject's compiled C carries INT3 as the retail
 /// assert-trap idiom (`TEST ; Jcc over ; INT3`) and as `app_fatal`'s body (the D5 audit rows).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SwiForm {
@@ -386,7 +386,7 @@ pub enum SdivPow2 {
 /// frame (`SUB ESP,n`) is larger than the recovered locals recompiles with a smaller frame and a
 /// different layout. `aggregate` declares the frame's locals as ONE byte aggregate at the frame
 /// bottom sized to `n`, every slot a field access at its byte offset (fable-b's srcform12 form,
-/// EXACT on WAR2 0x2dcd4 with the biased-EBP prologue reproduced); `ghidra` is the reference
+/// EXACT on the subject's 0x2dcd4 with the biased-EBP prologue reproduced); `ghidra` is the reference
 /// per-symbol rendering. Witnessed on the original prologue bytes, gated on an escaping local and
 /// >= 32 bytes of slack (docs/compilable-c-remediation.md Phase 10b).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

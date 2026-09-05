@@ -11,7 +11,7 @@
 //! different roots: a compiler id an `.ldefs` does not register falls back to the language
 //! default silently, so `arch=…:watcom` yields watcall under one root and `__fastcall` under
 //! another. Before the root was keyed, switching roots served the old root's captures back —
-//! which is how a batch of WAR2 captures were read as watcom while they were Visual Studio's
+//! which is how a batch of the subject captures were read as watcom while they were Visual Studio's
 //! convention. See `scripts/make-oracle-root.sh` for the root this repo intends.
 
 use std::collections::hash_map::DefaultHasher;

@@ -48,7 +48,7 @@ fn try_emit(pr: &mut PrintC<'_>, site: Site<'_>, out: &mut String) -> Option<Ans
 /// selector as `if (x != 0) { switch (x) { case k: A } } else { B }` — the compare tree tests 0
 /// first (`TEST AX,AX ; JBE case0`, the unsigned order flags of a switch tree's lowest value)
 /// and `k` next. Printed as one switch, `case 0: B; break; case k: A; break;`, this compiler
-/// rebuilds the original tree (WAR2 FUN_000487cc EXACT, FUN_0004b86c, FUN_00015d20). Witness:
+/// rebuilds the original tree (the subject's FUN_000487cc EXACT, FUN_0004b86c, FUN_00015d20). Witness:
 /// the zero test's branch is `JBE`/`JA` (`recovered.zero_cmp.sites`, the zero-cmp arm's
 /// evidence at the same compare) and the nonzero arm is a plain if the narrow switch prints on
 /// the same scrutinee (its own witnessed 16-bit compare). Value-identical: the same tests on
@@ -772,7 +772,7 @@ fn try_emit_sparse_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
 /// (`MOV AX,[..] ; CMP AX,k` / `TEST AX,AX`: the `sparse_cmp_sites` witness at the branch with a
 /// 2-byte register and the case's constant) prints as nested one-case switches. The bytes say the
 /// source wrote a switch: this compiler compares a 16-bit `if` operand at int width (`MOVSX` /
-/// `XOR ; MOV` then `CMP EAX,k`, or `CMP word ptr [mem],k` in place — measured on WAR2
+/// `XOR ; MOV` then `CMP EAX,k`, or `CMP word ptr [mem],k` in place — measured on the subject
 /// FUN_0004921c under every `if` spelling), and only a `switch` selector is loaded into a 16-bit
 /// register and compared there; `switch (*param_2) { case 9: .. }` is EXACT, and 89 message
 /// dispatchers share the shape (`if ((*p == 9) && (p[1] == 0))` = two nested one-case switches).
@@ -790,7 +790,7 @@ fn try_emit_narrow_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
     }
     let mut cases: Vec<(VarnodeId, Vec<i64>)> = Vec::new();
     // the leading clauses that are witnessed 16-bit equalities become the switch nest; a TAIL of
-    // other clauses (a byte global's test after the two message compares, WAR2 FUN_0003ec58)
+    // other clauses (a byte global's test after the two message compares, the subject's FUN_0003ec58)
     // prints as an inner `if` in the innermost case — the switch owns exactly the compares the
     // original made at 16 bits. One tail clause, and only one that reads MEMORY: a tail testing
     // a register local measured 10 downs in the long dispatcher chains (round e30), the switch
@@ -832,7 +832,7 @@ fn try_emit_narrow_switch(pr: &mut PrintC<'_>, s: &Structured, idx: usize, inden
                 // an UNSIGNED 16-bit range `x <= k` / `x < k` for a small k, witnessed by the
                 // original's `CMP r16,k ; JBE/JA` (or `JB/JAE`): the case list `0 .. k` — the
                 // switch compares at 16 bits where the `if` promotes and compares signed
-                // (`XOR EBX,EBX ; .. CMP EBX,1 ; JLE` for `CMP BX,1 ; JBE`, WAR2 FUN_0002bb98,
+                // (`XOR EBX,EBX ; .. CMP EBX,1 ; JLE` for `CMP BX,1 ; JBE`, the subject's FUN_0002bb98,
                 // probed EXACT as `case 0: case 1:`)
                 OpCode::IntLessequal | OpCode::IntLess => {
                     // `sparse_compare` folds a mirrored compare into `cneg`: the clause holds

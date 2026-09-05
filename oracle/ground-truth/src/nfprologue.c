@@ -1,4 +1,4 @@
-/* Ground-truth corpus program (war2-issues-become-source-tests): the source-reduced repro of the
+/* Ground-truth corpus program (issues-become-source-tests (subject-profile note)): the source-reduced repro of the
  * NO-FRAME PROLOGUE gap — a callee-save push run followed by neither a frame setup nor a stack
  * adjust, which is what `wcc386` emits BY DEFAULT (`-of+` is what turns the frame pointer ON).
  * Compiled by Open Watcom `wcc386` into a freestanding ELF32 (x86:LE:32:default), gated by
@@ -6,7 +6,7 @@
  *
  * ⚠️ READ THIS BEFORE ASSUMING THE GAP IS "NO FRAME". It is not. Measured against the committed
  * `x86watcom_patterns.xml` with the real matcher: family (3), the ESP-frame family, ALREADY covers
- * a push run followed by `sub esp` in both encodings — 4 of the 7 WAR2 entries that motivated this
+ * a push run followed by `sub esp` in both encodings — 4 of the 7 the subject entries that motivated this
  * work match it at offset 0, and `retorphan`'s no-frame orphan (`56 57 55 83 ec 14`) is already
  * recovered by it. What is unmodelled is the push run followed by something OTHER than a stack
  * adjust. This program pins exactly those follow-ons and nothing wider.
@@ -17,7 +17,7 @@
  *   nf_stackarg2  56 57 8b 7c 24 0c      push esi,edi     ; mov edi,[esp+0xc]
  *   nf_absload    53 51 52 8b 0d <abs32> push ebx,ecx,edx ; mov ecx,[abs32]
  *
- * The first is WAR2 `0004de58` (`56 57 55 8b 4c 24 10`) to the register nibble; the third is WAR2
+ * The first is the subject `0004de58` (`56 57 55 8b 4c 24 10`) to the register nibble; the third is the subject
  * `00064427` (`52 8b 15 <abs32>`) with a longer run. So the corpus reproduces the tracker's own
  * shapes rather than an approximation of them.
  *
@@ -42,7 +42,7 @@
  *    earlier draft of this very program emitted it — but `89 xx` is ubiquitous mid-function, so a
  *    pattern that wide trades precision for recall on a file that has no Ghidra oracle to check it
  *    against. That shape stays missed.
- *  - WAR2 `00072f08`'s `51 52 c8 1c 00 00` (`enter 0x1c,0`). No Open Watcom v2 build available here
+ *  - the subject `00072f08`'s `51 52 c8 1c 00 00` (`enter 0x1c,0`). No Open Watcom v2 build available here
  *    emits `enter`, so it cannot be gated from source; and `enter` IS a frame setup
  *    (`push ebp ; mov ebp,esp ; sub esp,imm`), so it belongs with the framed shapes anyway.
  */

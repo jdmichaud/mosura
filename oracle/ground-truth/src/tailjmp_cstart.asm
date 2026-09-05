@@ -10,7 +10,7 @@
 ;                it, and its first instruction is not a terminator.
 ;
 ; This is Ghidra `SharedReturnAnalysisCmd.applyTo`'s forward arm (srcAddr < destAddr:
-; `destAddr >= getFunctionAfter(srcAddr)` -> createFunction). WAR2 0x601f8 -> 0x60270 is the same
+; `destAddr >= getFunctionAfter(srcAddr)` -> createFunction). the subject's 0x601f8 -> 0x60270 is the same
 ; shape. Do not reorder these three procs — the layout IS the test.
         .386
         public  _cstart_

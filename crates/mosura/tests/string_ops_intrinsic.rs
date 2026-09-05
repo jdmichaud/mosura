@@ -122,8 +122,8 @@ fn stack_array_dst_from_typed_param_pair() {
 }
 
 #[test]
-fn war2_32c00_pair_survives_expandload() {
-    // WAR2 0x32c00 extracted whole: the byte loop's LOAD is widened by Ghidra's cleanup
+fn memcpy_pair_survives_expandload() {
+    // The subject's 0x32c00 shape, self-compiled: the byte loop's LOAD is widened by Ghidra's cleanup
     // RuleExpandLoad (`SUBPIECE(LOAD:4, 0)`), and the dst is a typed stack dword array behind CASTs.
     let path = paths::oracle_fixtures_dir().join("x86_32c00.xml");
     let dt = datatest::parse_file(&path).unwrap();

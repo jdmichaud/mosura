@@ -1,12 +1,12 @@
-/* Ground-truth corpus program (war2-issues-become-source-tests): the source-reduced repro of the
- * SECOND auto-analysis gap the WAR2.EXE function survey exposed — code that is reachable ONLY
+/* Ground-truth corpus program (issues-become-source-tests (subject-profile note)): the source-reduced repro of the
+ * SECOND auto-analysis gap the subject binary function survey exposed — code that is reachable ONLY
  * through a FUNCTION POINTER STORED IN DATA is never disassembled, so neither it nor anything it
  * calls ever becomes a function. Compiled by Open Watcom `wcc386` exactly like watprog/tailjmp
  * into a freestanding ELF32 (x86:LE:32:default). Gated in `ground_truth_parity.rs` (recall) +
  * `::data_pointer_function_discovery`.
  *
- * WHAT IT REPRODUCES — `war2-survey/analysis-gap/REPORT.md` §7: of 815 functions mosura misses on
- * WAR2, 783 have NO reference in mosura's own reference set at all, and mosura never disassembles
+ * WHAT IT REPRODUCES — `<subject-survey>/analysis-gap/REPORT.md` §7: of 815 functions mosura misses on
+ * the subject, 783 have NO reference in mosura's own reference set at all, and mosura never disassembles
  * 24.7% of the code object (109,338 bytes in 23 regions >2KB). Those regions form a subgraph whose
  * members call each other but whose ONLY inbound edges from outside are DATA references — e.g.
  * region 00039bd4 is entered by DATA x11 + CALL x8, and 00010010 is DATA-referenced from 00083436
@@ -25,12 +25,12 @@
  *     Shrinking it below the threshold turns arm A into arm B and stops testing the table path.
  *  3. ARM B is a LONE pointer (`g_solo`) — no run, so no address table can be formed. It is the
  *     single-function-pointer path (Ghidra `OperandReferenceAnalyzer.checkForPointer` ->
- *     `DataOperandReferenceAnalyzer`), which is how WAR2's 00010010 is reached.
+ *     `DataOperandReferenceAnalyzer`), which is how the subject's 00010010 is reached.
  *  4. `deep_helper` is called ONLY from `tab_h0`, i.e. only from inside the data-reachable
  *     subgraph. It is the CASCADE assertion: recovering the pointed-to code must also recover
- *     what that code calls, which is the shape of WAR2's 1547 UNCONDITIONAL_CALL references into
+ *     what that code calls, which is the shape of the subject's 1547 UNCONDITIONAL_CALL references into
  *     functions mosura never decoded.
- *  5. `g_table` and `g_solo` are NOT const — they live in the writable data section, like WAR2's
+ *  5. `g_table` and `g_solo` are NOT const — they live in the writable data section, like the subject's
  *     tables, not in .rodata next to the code.
  *  6. The dispatch index is opaque to constant propagation (`i & 3` on a parameter), so the
  *     indirect call target cannot be resolved by mosura's existing SymbolicPropogator /

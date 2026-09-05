@@ -1,5 +1,5 @@
 ; Minimal _cstart_ entry stub for `datafnptr` (see src/datafnptr.c), the shared Open Watcom
-; x86-32 recipe (watprog_cstart.asm / war2gates_cstart.asm): this stub IS the entry (via
+; x86-32 recipe (watprog_cstart.asm / trimshape_cstart.asm): this stub IS the entry (via
 ; `end _cstart_`), calls main, and returns — so the committed binary carries only our own
 ; functions (no Watcom C run-time recall surface). Assembled with Open Watcom `wasm`.
         .386

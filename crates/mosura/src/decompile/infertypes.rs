@@ -79,7 +79,7 @@ pub(crate) fn input_type_local(f: &Funcdata, op: OpId, slot: usize) -> Datatype 
     // A shift's AMOUNT operand is the one place Ghidra opts out of the char preference:
     // `TypeOpIntLeft/IntRight/IntSright::getInputLocal` return `getBaseNoChar(size,TYPE_INT)` for
     // slot 1 (typeop.cc:1514/1539/1604), so a 1-byte shift count stays `int1` instead of becoming
-    // `char`. Ported for completeness with the `char` core type; MEASURED INERT on WAR2 today —
+    // `char`. Ported for completeness with the `char` core type; MEASURED INERT on the subject today —
     // re-emitting all 1303 functions with and without it changes ZERO files, because mosura's
     // `cast.rs` has no cast rule for a shift's slot 1, so nothing consumes this seed yet. Recorded
     // with what it was measured against, since a later cast rule for that slot would revive it.
@@ -1063,7 +1063,7 @@ mod tests {
     fn no_type_propagates_across_an_indirect_creation() {
         // Ghidra `TypeOpIndirect::propagateType` guards `if (op->isIndirectCreation()) return 0`
         // FIRST: a value created out of nothing by a call's indirect effect must not relay a type
-        // onto/off its input. A plain (non-creation) INDIRECT still relays. (Surfaced by WAR2
+        // onto/off its input. A plain (non-creation) INDIRECT still relays. (Surfaced by the subject
         // partialsplit: a clobbered stack pointer was inheriting a stale `Unknown(8)` pointee.)
         let spaces = SpaceManager::standard();
         let ram = spaces.by_name("ram").unwrap();

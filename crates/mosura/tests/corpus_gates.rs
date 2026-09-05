@@ -111,7 +111,7 @@ fn verdict_rows_parse_by_header_and_wgss_is_the_canonical_census() {
     //   A: 10 insns, sim 1.0 (10 equal)          → orig·sim = 10
     //   B: 10 insns, sim 0.4 (8 equal of max 20) → orig·sim = 4   (Σ equal/Σ orig would say 0.8 here)
     //   C: 20 insns, COMPILE_FAIL, sim 0          → 0
-    // canonical (scripts/war2-verdicts.sh): Σ orig·sim / Σ orig = 14 / 40 = 0.35;
+    // canonical (scripts/corpus-verdicts.sh): Σ orig·sim / Σ orig = 14 / 40 = 0.35;
     // the other two formulas give 18/40 = 0.45 (Σ equal/Σ orig) and 18/50 = 0.36 (Σ equal/Σ max).
     let rows = table(&[(0x100, "EXACT", 1.0, 10, 10), (0x200, "MISMATCH", 0.4, 8, 10), (0x300, "COMPILE_FAIL", 0.0, 0, 20)]);
     assert_eq!(rows.len(), 3);
@@ -195,24 +195,28 @@ fn baseline_parses_rules_and_rejects_the_wrong_ones() {
     assert!(Baseline::parse("gate\tkey\trule\tvalue\tset_at\nfoo\tx\t>=\t1\tw\n").unwrap_err().contains("unknown gate"));
 }
 
+/// Each configured subject's `corpus-gates.tsv` loads, and its set sizes match the pins its own
+/// `expect.toml` records (`gates.*`) — a regression pin of that file, kept beside it in the profile.
+/// Skips, saying so, when no subject carries a gates file.
 #[test]
-fn the_committed_baseline_loads_with_the_expected_sets() {
-    let b = Baseline::load(&mosura::paths::corpus_gates_file()).unwrap();
-    assert_eq!(b.string_ops_bar().len(), 4);
-    // 12 at w5c; 0x14b44 and 0x3d470 left the chain set when the narrow one-case switch printed
-    // in them and recompiled closer (round e2: 0.455 -> 0.545, 0.438 -> 0.500)
-    // 11 since round e31: 0x47594 pinned as an if-chain — the narrow switch's tail clause must not
-    // reach a register-local tail (docs/exact-arms.md)
-    assert_eq!(b.chains().len(), 11);
-    assert_eq!(b.switch_labels().len(), 19);
-    assert_eq!(b.guards("guard_frame").len(), 16);
-    assert_eq!(b.guards("guard_volatile").len(), 14);
-    // the dropped-parameter (phantom) specimens, EXACT since round e10 (docs/exact-arms.md)
-    assert_eq!(b.guards("guard_phantom").len(), 2);
-    // the far-return, dummy-stack-parameter and narrow-parameter contracts (docs/exact-arms.md)
-    // 7 since round e34: 0x30dc8's stack-convention callee clause (docs/exact-arms.md)
-    assert_eq!(b.guards("guard_contract").len(), 7);
-    assert!(b.rows.iter().all(|r| !r.set_at.is_empty()));
+fn each_subject_baseline_loads_with_its_pinned_sets() {
+    let mut ran = 0;
+    for s in mosura::devcfg::subjects() {
+        let Some(file) = s.file("corpus-gates.tsv") else { continue };
+        ran += 1;
+        let b = Baseline::load(&file).unwrap();
+        let pin = |key: &str| s.expect_u64(&format!("gates.{key}")).map(|n| n as usize);
+        if let Some(n) = pin("string_ops_bar") { assert_eq!(b.string_ops_bar().len(), n, "subject {}: string_ops_bar", s.id); }
+        if let Some(n) = pin("chains") { assert_eq!(b.chains().len(), n, "subject {}: chains", s.id); }
+        if let Some(n) = pin("switch_labels") { assert_eq!(b.switch_labels().len(), n, "subject {}: switch_labels", s.id); }
+        for guard in ["guard_frame", "guard_volatile", "guard_phantom", "guard_contract"] {
+            if let Some(n) = pin(guard) { assert_eq!(b.guards(guard).len(), n, "subject {}: {guard}", s.id); }
+        }
+        assert!(b.rows.iter().all(|r| !r.set_at.is_empty()));
+    }
+    if ran == 0 {
+        eprintln!("skip each_subject_baseline_loads_with_its_pinned_sets: no configured subject carries corpus-gates.tsv");
+    }
 }
 
 #[test]
@@ -222,7 +226,7 @@ fn load_tree_joins_the_manifest_with_the_recovered_files() {
     std::fs::create_dir_all(&rec).unwrap();
     std::fs::write(
         dir.join("manifest.tsv"),
-        "# war2_survey emit @ test\nidx\tva\tname\tstatus\tkind\n00000\t00010010\tFUN_00010010\tOK\tuser\n00001\t00010020\tFUN_00010020\tOK\tlibrary\n00002\t00010030\tFUN_00010030\tOK\tuser\n",
+        "# corpus_emit emit @ test\nidx\tva\tname\tstatus\tkind\n00000\t00010010\tFUN_00010010\tOK\tuser\n00001\t00010020\tFUN_00010020\tOK\tlibrary\n00002\t00010030\tFUN_00010030\tOK\tuser\n",
     )
     .unwrap();
     std::fs::write(rec.join("00000.c"), CLEAN).unwrap();

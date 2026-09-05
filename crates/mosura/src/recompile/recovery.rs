@@ -2,10 +2,10 @@
 //! commit a): the REPORT PASS (a render under the canonical choices that records every candidate
 //! site), the `buildconfig::*_from_evidence` WITNESSES over the function's original instructions,
 //! and the SECOND EVIDENCE ROUND (a render under the recovered decisions, re-assessing the
-//! candidates that interact). Shared by `war2_survey` (its call site is where this code sat) and
+//! candidates that interact). Shared by `corpus_emit` (its call site is where this code sat) and
 //! the gcc ground-truth oracle (R5 commit b), so both measure the same recovery.
 //!
-//! Moved verbatim out of war2_survey.rs: the `RecoveredChoices` literal, the second round and the
+//! Moved verbatim out of corpus_emit.rs: the `RecoveredChoices` literal, the second round and the
 //! `MOSURA_EMIT_DEBUG` print (an experiment leftover, carried as-is for review R6); the only
 //! textual changes are the crate paths (`mosura::` → `crate::`), `&insns` → `insns` (a slice
 //! parameter here) and the choices named by their role (`choices` = the canonical arm of the
@@ -327,7 +327,7 @@ pub enum SretWitness {
     Callers(usize),
 }
 
-/// The Watcom-32 CANONICAL ARM SET — the survey's flagless arm, verbatim from war2_survey.rs
+/// The Watcom-32 CANONICAL ARM SET — the survey's flagless arm, verbatim from corpus_emit.rs
 /// (review R5, commit b moved it here so the oracle and the survey build the same set; the
 /// survey's `--arms` override and its own shift-mask rule stay the survey's).
 pub fn canonical_arm() -> EmitChoices {

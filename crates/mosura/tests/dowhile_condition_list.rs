@@ -6,7 +6,7 @@
 //! when that block is a `BlockCondition`, `emitBlockCondition` prints `(a) || (stmt, b)` with the
 //! second operand under `comma_separate`. mosura's `render_cond_expr` used to treat the body list
 //! as a leaf and read one CBRANCH off its exit basic, which dropped the second operand entirely —
-//! WAR2's FUN_0004d0f8 lost its `func_0x000123dc` call from the output. The fixture is that
+//! the subject's FUN_0004d0f8 lost its `func_0x000123dc` call from the output. The fixture is that
 //! function's bytes; the expected shape is Ghidra's own (`oracle/capture --c` on the same fixture):
 //!
 //! ```text

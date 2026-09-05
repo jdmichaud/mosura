@@ -1,5 +1,5 @@
 //! A model of the ORIGINAL COMPILER's instruction scheduler — Open Watcom 1.0
-//! `bld/cg/c/inssched.c`, the surviving source of the 10.0-line code generator WAR2 was
+//! `bld/cg/c/inssched.c`, the surviving source of the 10.0-line code generator the subject was
 //! built with — used by evidence rules to answer the question black-box calibration
 //! could not: WOULD the scheduler have reordered these instructions?
 //!

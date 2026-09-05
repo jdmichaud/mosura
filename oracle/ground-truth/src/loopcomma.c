@@ -54,7 +54,7 @@ int loopcomma_hits;
  *      global "lives in memory, is re-loaded each iteration and has no register phi, so no `for`
  *      is formed". That is too strong: ram IS heritaged, a global CAN carry a loop-carried
  *      MULTIEQUAL in the head, and Ghidra recovers for-loops over plainly global induction
- *      variables — WAR2 has five, e.g. FUN_000130ec's
+ *      variables — the subject has five, e.g. FUN_000130ec's
  *          for (DAT_0008f19b = 0; DAT_0008f19b < 8; DAT_0008f19b = DAT_0008f19b + 1)
  *      So "global => never a for" is false in general. Why THIS global stays a WhileDo is not
  *      established (aliasing through the body's stores is the obvious suspect, unverified).

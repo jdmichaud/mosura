@@ -1,16 +1,16 @@
-# The WAR2 compiler — synthesis of the "custom compiler" question
+# The subject compiler — synthesis of the "custom compiler" question
 
 *2026-08-18. This closes out a question several investigation generations have circled:
-which compiler produced WAR2.EXE's bytes, and why does no compiler we own reproduce them?
+which compiler produced the subject binary's bytes, and why does no compiler we own reproduce them?
 Prior conclusions invariably retreated to "a mysterious custom compiler". This document
 assembles both projects' evidence (mosura `docs/watcom-codegen-fingerprint.md`,
-warcraft2-re `analysis/toolchain.md` + `analysis/openwatcom-investigation/`), adds the
+the RE tracker `analysis/toolchain.md` + `analysis/openwatcom-investigation/`), adds the
 measurements that were missing, and states what is now known, what is newly fixed, and
 what genuinely remains.*
 
 ## The two piles, and why "custom compiler" kept regenerating
 
-WAR2's application code (not its CRT — Blizzard's own functions) simultaneously exhibits:
+the subject's application code (not its CRT — Blizzard's own functions) simultaneously exhibits:
 
 **Pile A — 10.0a-and-later markers.**
 - The byte-compare **promotion** (`MOV AL,[mem]; AND EAX,0xff; CMP EAX,imm`), verified at
@@ -26,7 +26,7 @@ WAR2's application code (not its CRT — Blizzard's own functions) simultaneousl
   scan (the method `recompile/buildconfig.rs`'s module doc warns misses encodings);
   disassembling every original finds **336 such folds across 226 functions** (586/312 with
   `[ESP/EBP+imm]` address-of-local forms; `examples/dumplea`), six in byte-EXACT functions. So
-  WAR2 folds; "never folds" is dead. It does **not** follow that WAR2 folds under 10.0a's
+  the subject folds; "never folds" is dead. It does **not** follow that the subject folds under 10.0a's
   conditions — the F2 rows show it declines where 10.0a folds. The right experiment (no-fold
   INVARIANCE, not a wholesale toggle) shows the fold is not F2's discriminator at all; F2's
   real difference is an emission-side mutation/liveness question of **unmeasured**
@@ -39,7 +39,7 @@ WAR2's application code (not its CRT — Blizzard's own functions) simultaneousl
   folds the probe `x % 4 + 0x12` into `LEA EAX,[EDX+0x12]` under `-onatx`, `-onasx`,
   `-os`, `-ot`, `-or`, `-3r/-4r/-5r`, and bare flags. Only `-od` (no optimizer, spills
   everything) avoids it.
-- The **register-allocation order** divergence (warcraft2-re's `ecx-allocator-mystery`:
+- The **register-allocation order** divergence (the RE tracker's `ecx-allocator-mystery`:
   `DoubleRegs[]` picks EDX where the target picks ECX/EBX — 13-byte pure-register diffs
   on otherwise identical 43-byte bodies).
 - **Callee-saves of unmodified registers** (`bxsidi-save-no-modify`; corpus-wide:
@@ -58,8 +58,8 @@ install into 10.0a. Findings:
    *"A compare of an unsigned type shorter than an int and a constant which could be
    represented in that type would be done as the original type instead of being promoted
    to an integer."* This is vendor documentation for the fingerprint doc's measured
-   "one-release excursion", and it means **WAR2's compiler is at or after a-level** —
-   the 10.0-GA hypothesis for WAR2 is dead.
+   "one-release excursion", and it means **the subject's compiler is at or after a-level** —
+   the 10.0-GA hypothesis for the subject is dead.
 2. The a-level codegen changelog contains **no LEA-fold or allocator changes** — pile B
    is not the GA↔a delta.
 3. `ptch23.a` patches `binb\wcc386.exe`, but the bpatch format (OW `bld/bdiff`) writes
@@ -86,9 +86,9 @@ patches available in a couple months" after the troubled 10.0 GA.)
 Reading the LEA selection in the Open Watcom source (`bld/cg/intel/c/i86ver.c`,
 `V_LEA_GOOD`) exposed CPU/size gates on these transforms. One is live in 10.0a:
 **`-5r` (Pentium tuning) suppresses the in-place scaled LEA** — `SHL EAX,2` instead of
-`LEA EAX,[EAX*4]` — exactly WAR2's shape (the gate survives in OW source as
+`LEA EAX,[EAX*4]` — exactly the subject's shape (the gate survives in OW source as
 `op1 == result && _CPULevel( CPU_586 )`). The CPU digit is tuning, not a convention
-change, and WAR2 is a Pentium-era title; the profile had been `-4r` since the
+change, and the subject is a Pentium-era title; the profile had been `-4r` since the
 byte-zero-store finding (itself a `-3r`→`-4r` correction of the same kind).
 
 Corpus-wide on sb43 sources (`/data/be2/sb43-5r.tsv`):
@@ -104,7 +104,7 @@ The profile base is now `-5r` (`recompile::buildconfig::watcom_10_0a`). The
 `selection SHL>LEA` family in `byte-exact-families.md` was a **flags** family, not a
 compiler one.
 
-The lone `-5r` regression exposed one more real fact: **WAR2's own build mixed tuning
+The lone `-5r` regression exposed one more real fact: **the subject's own build mixed tuning
 levels.** Exactly one contiguous module — 9 functions, 0x69fb0..0x6e6e0, 18 sites —
 contains in-place scaled LEAs, the form `-5r` can never emit, and measurably improves
 under `-4r` (its EXACT function returns, neighbors gain similarity). A per-module CFLAGS
@@ -115,7 +115,7 @@ keeps `-5r`. EXACT 591 → **592**; the only verdict change is that function.
 
 ## Watcom 10.5 measured (2026-08-19) — a release the fingerprint work never covered
 
-The store held `Watcom CPP 10.5 (ISO).7z` (files stamped July 1995 — exactly WAR2's build
+The store held `Watcom CPP 10.5 (ISO).7z` (files stamped July 1995 — exactly the subject's build
 window) and it was absent from the measured list. Its DOS-hosted `wcc386.exe` was extracted
 by building OW 1.0's own `wpack` unpacker natively and unpacking the installer's spanned
 `PCK00017` archive; the compiler runs in the harness via a tree swap.
@@ -125,11 +125,11 @@ Results, all three quick discriminators plus the runtime:
 - **Codegen: indistinguishable from 10.0a on our dials.** The reg+imm LEA fold probe folds
   (`LEA EAX,[EDX+0x12]`), the byte-compare promotion promotes, `-5r` selects `SHL` over the
   in-place scaled LEA — byte-for-byte the same probe outputs as 10.0a.
-- **Runtime: decisively NOT WAR2's.** Against WAR2's 130 name-matched library functions
+- **Runtime: decisively NOT the subject's.** Against the subject's 130 name-matched library functions
   (OMF-paged module extraction, relocation-masked byte compare): **10.0a CLIB3R = 50
-  byte-identical / 80 differing; 10.5 CLIB3R = 19 / 111.** WAR2 links the 10.0a-era runtime.
+  byte-identical / 80 differing; 10.5 CLIB3R = 19 / 111.** the subject links the 10.0a-era runtime.
 
-Consequences: 10.5 is eliminated as WAR2's toolchain; the interim-build hypothesis SURVIVES
+Consequences: 10.5 is eliminated as the subject's toolchain; the interim-build hypothesis SURVIVES
 and narrows — the no-fold code generator is not 10.5 any more than it was 10.0a or 10.6, and
 the runtime pins Blizzard's tree to 10.0a-era libraries with a codegen between shipped
 snapshots. Also closed: the second 10.0 ISO in the store (`Watcom_C++_10.0.iso`) differs by
@@ -153,12 +153,12 @@ against empirical probes of the store's compilers:
   not push `OptForSize` past 50. The dial-under-development argument loses that support.
   What survives is direct: the fold decision is ONE ARM OF ONE SWITCH, now located, patched
   on a copy, and measured — and the measurement (see `watcom-nofold-patch.md`) is that
-  disabling the fold does NOT reproduce WAR2, because the fold was never F2's discriminator.
+  disabling the fold does NOT reproduce the subject, because the fold was never F2's discriminator.
   So this line of attack on the fold is spent; the productive remaining pile-B dials are the
   two below.
 - **The allocation order is one table**: `386rgtbl.c`'s `DoubleRegs[] = EAX, EDX, ECX,
-  EBX, ESI, EDI`. The inherited claim was that WAR2's allocator "prefers ECX/EBX where 10.0a
-  picks EDX" (warcraft2-re's `ecx-allocator-mystery`), i.e. a differently-ordered table.
+  EBX, ESI, EDI`. The inherited claim was that the subject's allocator "prefers ECX/EBX where 10.0a
+  picks EDX" (the RE tracker's `ecx-allocator-mystery`), i.e. a differently-ordered table.
   **CHECKED BEFORE PATCHING (2026-08-19) — the claim does not survive its own data, and the
   planned dial-patch was CANCELLED.** Two measurements over sb93's 12,778 `regalloc` rows:
 
@@ -188,9 +188,9 @@ binary surgery and a new phase — awaiting JD's go.
 
 ## What genuinely remains, stated precisely
 
-After `-5r`, WAR2's compiler still differs from the shipped 10.0a in:
+After `-5r`, the subject's compiler still differs from the shipped 10.0a in:
 
-1. ~~the reg+imm LEA fold~~ **— REFUTED (2026-08-19): WAR2 folds; see above. The 188
+1. ~~the reg+imm LEA fold~~ **— REFUTED (2026-08-19): the subject folds; see above. The 188
    MOV>LEA divergence rows are a SOURCE-SHAPE difference, i.e. ordinary recovery work, not
    compiler identity,**
 2. `DoubleRegs[]` allocation order,

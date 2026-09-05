@@ -1,5 +1,5 @@
 //! A store into an address-taken stack aggregate between two calls must survive dead-code removal
-//! (WAR2 0x2dcd4, wc2src-reconciliation-4 W4; oracle: `xStack_cc = func_0x000422b8(param_3,1);`).
+//! (the subject's 0x2dcd4, wc2src-reconciliation-4 W4; oracle: `xStack_cc = func_0x000422b8(param_3,1);`).
 //! Three faithful pieces make it so: `Heritage::guardCalls`' `holdind` is `queryProperties`'
 //! `addrtied` — true for every stack/ram range, so the passthrough INDIRECT at the second call is
 //! addr-forced; `RuleStoreVarnode` marks its COPY output `stack_store`; and `ActionDirectWrite`

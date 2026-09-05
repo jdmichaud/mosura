@@ -71,7 +71,7 @@ impl Action for ActionHeritage {
             // state at the first call of each path, so every LATER call's retaddr store stayed
             // an unconverted raw STORE for the late rules to place with solver-derived offsets —
             // one +4 composition slip away from landing return addresses inside aliased locals
-            // (WAR2 FUN_0003495c, the E1082 family). With the walk first, every call converts at
+            // (the subject's FUN_0003495c, the E1082 family). With the walk first, every call converts at
             // its sval-exact slot and ExtraPopSetup models only the residual delta (see
             // `CallSpec::push_neutralized`).
             super::stackvars::recover_stack(data);
@@ -113,7 +113,7 @@ impl Action for ActionHeritage {
                     // judged no-use on the clone, `fillin_map`'s dnu-chain rule then dropped the
                     // struct-pointer register behind it, the pointer never reached the call, and
                     // the probe reported NO aliased slot — the field stores of every by-address
-                    // stack struct died (WAR2 59c6c/58694/30550, oracle re-sweep).
+                    // stack struct died (the subject 59c6c/58694/30550, oracle re-sweep).
                     super::directwrite::ActionDirectWrite::new(true).apply(&mut probe);
                     super::directwrite::ActionDirectWrite::new(false).apply(&mut probe);
                     super::recover::resolve_return(&mut probe);
@@ -530,7 +530,7 @@ impl Action for ActionSpacebase {
 /// Two shapes, and the difference matters. A KNOWN extrapop becomes `sp = sp + n` inserted AFTER
 /// the call, because the change is exact. An UNKNOWN one becomes an `INDIRECT` on the stack pointer
 /// inserted BEFORE the call — the value afterwards is indeterminate, and saying "unchanged" would
-/// be a lie the stack recovery would then build on. WAR2's `__watcall` is the unknown case;
+/// be a lie the stack recovery would then build on. the subject's `__watcall` is the unknown case;
 /// x86-64-gcc's `__stdcall` is the known one (8).
 /// Ghidra `ActionConstbase::apply` (coreaction.cc:678), tracked-set half: for each register the
 /// pspec's `<tracked_set>` declares a default value for (x86 = `DF=0`), insert `reg = COPY val` at
@@ -574,7 +574,7 @@ impl Action for ActionExtraPopSetup {
         // Ghidra walks `data.numCalls()`/`getCallSpecs(i)` — an ORDERED vector, in call order.
         // mosura keys call specs by OpId in a HashMap, whose iteration order is randomized per
         // process, so the keys must be sorted or the pass is nondeterministic. (It is: leaving
-        // this unsorted made 11 of 3023 WAR2 functions emit differently between two runs of an
+        // this unsorted made 11 of 3023 the subject functions emit differently between two runs of an
         // otherwise identical build.) OpId is creation order, which for calls is program order.
         let mut calls: Vec<super::op::OpId> = data.call_specs.keys().copied().collect();
         calls.sort();
@@ -864,7 +864,7 @@ impl Action for ActionStartCleanUp {
 /// trash sink, has its data flow cut — the INDIRECT becomes an indirect *creation* and the
 /// masking AND's constant becomes zero.
 ///
-/// Driven by the cspec's `<likelytrash>` element (`ProtoModel::likelytrash`). x86-32-watcom (WAR2)
+/// Driven by the cspec's `<likelytrash>` element (`ProtoModel::likelytrash`). x86-32-watcom (the subject)
 /// and x86-64-gcc (the corpus) declare none, so this is inert on both of mosura's targets;
 /// x86win, x86gcc, x86borland, x86delphi and x86-32-golang declare it.
 pub struct ActionLikelyTrash;
@@ -941,7 +941,7 @@ impl Action for ActionParamDouble {
         // Ghidra walks `data.numCalls()`/`getCallSpecs(i)` — an ORDERED vector, in call order.
         // mosura keys call specs by OpId in a HashMap, whose iteration order is randomized per
         // process, so the keys must be sorted or the pass is nondeterministic. (It is: leaving
-        // this unsorted made 11 of 3023 WAR2 functions emit differently between two runs of an
+        // this unsorted made 11 of 3023 the subject functions emit differently between two runs of an
         // otherwise identical build.) OpId is creation order, which for calls is program order.
         let mut calls: Vec<super::op::OpId> = data.call_specs.keys().copied().collect();
         calls.sort();
@@ -1378,7 +1378,7 @@ pub fn universal_action() -> ActionGroup {
                         // ActionDeadCode at Ghidra's :5503 — INSIDE the mainloop, after
                         // RestrictLocal and BEFORE restructure/spacebase/nzmask/infertypes and the
                         // pools, so every pool pass runs on a dead-code-swept graph. The slot is
-                        // load-bearing for RULE OUTCOMES, not just hygiene — verified on WAR2
+                        // load-bearing for RULE OUTCOMES, not just hygiene — verified on the subject
                         // FUN_0002a4f0 with parallel OPACTION_DEBUG traces: this sweep kills the
                         // imul's dead flag web (CF = INT_NOTEQUAL(SEXT48(lo), product)), which
                         // makes the wide product lone-descended, which lets RuleSubCommute narrow

@@ -1,7 +1,7 @@
 /* Ground-truth corpus (era-style, 2026-08-23): a game-like entity table walked through struct
  * fields — field loads/stores at constant offsets off a base pointer, a nearest-search compare
  * ladder, a damage pass with clamping, and a flag count. Mid-size functions (30-120 insns)
- * where WAR2's recompile loss lives. Freestanding + per-arch exit shim. */
+ * where the subject's recompile loss lives. Freestanding + per-arch exit shim. */
 #include "shim.h"
 
 struct entity {

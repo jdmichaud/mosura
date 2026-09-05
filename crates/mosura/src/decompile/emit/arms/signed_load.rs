@@ -2,7 +2,7 @@
 //! SIGNED type of its width, `(*(int2 *)(p + 0x10) & 1) != 0`, where the ORIGINAL sign-extends
 //! the masked value before testing it (`MOV AX,[..] ; XOR AH,AH ; AND AL,1 ; CWDE ; TEST EAX,EAX`
 //! — the source read a `short`). The port types the load unsigned (nothing in the IR distinguishes
-//! the signs of a masked zero test) and this compiler zero-extends (`AND EAX,0xffff`): WAR2
+//! the signs of a masked zero test) and this compiler zero-extends (`AND EAX,0xffff`): the subject
 //! FUN_0002ebd0 (EXACT with the signed derefs), FUN_00043514, FUN_0002ea18 (four sites). The
 //! candidates are the `testmem` shape's LOAD half (a sub-int LOAD whose zext-linked single use is
 //! an INT_AND with a constant that fits the width, feeding equalities against zero); the mask and

@@ -949,7 +949,7 @@ mod tests {
     #[test]
     fn x86_16_default_has_no_register_args() {
         // x86-16 default_proto passes all args on the stack — no integer-arg registers, so
-        // param recovery on a 16-bit binary (comcom32/war2) invents nothing (0 spurious).
+        // param recovery on a 16-bit binary (comcom32/the subject) invents nothing (0 spurious).
         if crate::lang::resolve_cspec("x86:LE:16:Real Mode", "default").is_none() {
             eprintln!("skip: ghidra tree not present");
             return;

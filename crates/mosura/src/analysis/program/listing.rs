@@ -82,7 +82,7 @@ pub struct Listing {
     units: HashMap<(u32, u64), (Address, CodeUnit)>,
     /// Ordered index of instruction start addresses — the backing for Ghidra's
     /// `Listing.getInstructionAfter`, which `AddressTable.getEntry` calls once per candidate
-    /// table (a scan of the hash map is O(listing) and WAR2 holds >100k instructions).
+    /// table (a scan of the hash map is O(listing) and the subject holds >100k instructions).
     instruction_starts: std::collections::BTreeSet<(u32, u64)>,
 }
 

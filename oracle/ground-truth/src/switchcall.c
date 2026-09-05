@@ -1,16 +1,16 @@
-/* Ground-truth corpus program (task #3 / war2-issues-become-source-tests). Open Watcom / x86-32
+/* Ground-truth corpus program (task #3 / issues-become-source-tests (subject-profile note)). Open Watcom / x86-32
  * column, compiled by wcc386 into a freestanding ELF32 i386 (x86:LE:32:default) exactly like
  * watprog. A three-way differential on a `switch` with NON-TRIVIAL case bodies -- cases that call
- * and mutate state, as WAR2's do, rather than `narrowsw.c`'s `return <const>`.
+ * and mutate state, as the subject's do, rather than `narrowsw.c`'s `return <const>`.
  *
- * WHY IT EXISTS. WAR2 shows an EMPTY SWITCH BODY: `FUN_00051298` recovers all eight jump-table
+ * WHY IT EXISTS. the subject shows an EMPTY SWITCH BODY: `FUN_00051298` recovers all eight jump-table
  * targets and then renders `switch (...) { }`, losing 10 of its 12 calls, and `FUN_0006af2c` is
  * the same shape at full severity (10 targets recovered, whole CFG torn down to one block, all 18
  * calls lost). This program was written to reduce that.
  *
  * ⚠️ IT DOES NOT REPRODUCE THE EMPTY BODY -- and that is the useful result. All three functions
  * keep their case bodies. So "narrowed selector + calls inside the cases" is NOT the trigger, and
- * the WAR2 empty body needs a different reduction. Do not delete this file on that basis: a
+ * the subject empty body needs a different reduction. Do not delete this file on that basis: a
  * negative reduction that rules out the obvious hypothesis is evidence, and the pair below found a
  * REAL defect on its own (see next paragraph).
  *
@@ -50,7 +50,7 @@ int sw_call_int(int x, int *out)
     return acc;
 }
 
-/* GAP CANDIDATE: 16-bit narrowed selector (WAR2 0x513a8 / 0x58afb shape). */
+/* GAP CANDIDATE: 16-bit narrowed selector (the subject's 0x513a8 / 0x58afb shape). */
 int sw_call_short(int xx, int *out)
 {
     short x = (short)xx;

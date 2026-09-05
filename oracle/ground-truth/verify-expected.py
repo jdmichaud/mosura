@@ -22,7 +22,7 @@ both sides — the same argument that makes RELOC_EXACT legitimate in the survey
 import os, re, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, "/home/jd/projects/warcraft2-re/tools/wardiff")
+sys.path.insert(0, "/home/jd/projects/the RE tracker/tools/wardiff")
 WAT = os.environ.get("GT_WATCOM", os.path.expanduser("~/tools/open-watcom"))
 PRE = ("typedef int code(); typedef unsigned int uint4; typedef unsigned int xunknown4; "
        "typedef unsigned char uint1; typedef int int4;")

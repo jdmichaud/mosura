@@ -845,7 +845,7 @@ impl ConditionalExecution {
         // block lists hold only live ops (dead ones are unlinked), while mosura's keep
         // gutted ops in place — the same divergence the structurer's `is_complex` fix
         // documents. A gutted MULTIEQUAL (dead, output stripped) in this walk panicked
-        // `test_removability` on eight WAR2 functions the moment known-extrapop modelling
+        // `test_removability` on eight the subject functions the moment known-extrapop modelling
         // changed their heritage rounds (sb96).
         let ops: Vec<OpId> = data
             .block(self.iblock)

@@ -64,7 +64,7 @@ pub struct Program {
     /// oracle recipes. The byte-exact emitter selects the STANDALONE model instead: the binary
     /// is its oracle, the original source wrote plain address constants, and the standalone
     /// context (no auto-symbols, `ActionConstantPtr` silent) reproduces them — measured at
-    /// 590 vs 501 EXACT on WAR2. Both are real Ghidra contexts; this field says which
+    /// 590 vs 501 EXACT on the subject. Both are real Ghidra contexts; this field says which
     /// environment is being modeled, not how analysis behaves.
     pub global_scope_all_loaded: bool,
     pub spaces: SpaceManager,

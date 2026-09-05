@@ -56,7 +56,7 @@ int forcomma_hits;
  *
  *      ⚠️ Do NOT read that as "a global cannot be a for-loop". This comment originally said a
  *      global has no register phi so no `for` is formed; that is false — ram is heritaged, and
- *      Ghidra recovers for-loops over global induction variables (WAR2 has five, e.g.
+ *      Ghidra recovers for-loops over global induction variables (the subject has five, e.g.
  *      `for (DAT_0008f19b = 0; DAT_0008f19b < 8; DAT_0008f19b = DAT_0008f19b + 1)`). The
  *      local-vs-global swap is a reliable lever ON THESE TWO PROGRAMS, established by measurement
  *      and re-proved by the gates; it is not a general rule, and the mechanism behind it is not
@@ -65,7 +65,7 @@ int forcomma_hits;
  * Note the iterate statement `p = p->next` reads `p` DIRECTLY. That matters:
  * `BlockWhileDo::testIterateForm` (block.cc:3287) truncates its operand walk at every explicit
  * Varnode, so an iterate that reached the loop variable only through the explicit `v` would be
- * rejected and the `for` declined (that is what happens in WAR2's FUN_00016764).
+ * rejected and the `for` declined (that is what happens in the subject's FUN_00016764).
  */
 int walk(struct node *p, int want) {
     int v = 0;

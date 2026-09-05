@@ -2364,12 +2364,12 @@ impl Rule for RuleDumptyHump {
 // (ruleaction.cc:2394) right beside the INT_XOR case that is live.
 //
 // The redundancy was MEASURED, not argued: restricting this rule to `[IntSub]` alone left all 1303
-// WAR2 functions byte-identical, which is what proves RuleTrivialArith already covered the other
+// the subject functions byte-identical, which is what proves RuleTrivialArith already covered the other
 // five opcodes.
 //
-// AND THE INT_SUB HALF WAS NOT IDLE — the deletion commit's message said it "never fires on WAR2",
+// AND THE INT_SUB HALF WAS NOT IDLE — the deletion commit's message said it "never fires on the subject",
 // which was WRONG. A non-transforming observer probe counted it: `INT_SUB(a,a)` occurs 90 times
-// across 32 WAR2 functions. Deleting it is still byte-identical because `RuleSub2Add`
+// across 32 the subject functions. Deleting it is still byte-identical because `RuleSub2Add`
 // (ruleaction.cc:4012) rewrites EVERY subtraction `V - W` into `V + W*-1` unconditionally, so
 // `a - a` becomes `a + a*-1` and the term-collection rules fold it to 0 down the faithful path.
 // A trace of FUN_000601f8 names `sub2add` as the consumer of those ops, so this is measured too.
@@ -2392,7 +2392,7 @@ impl Rule for RuleDumptyHump {
 // mask included. The invention was a second, UNMASKED copy: it built its constant with a bare
 // `wrapping_mul` at u64 width, so `(x*0xff)*0xff` in a 1-byte INT_MULT became `x * 0xfe01` — a
 // constant varnode that cannot fit its own size (correct is 0xfe01 & 0xff = 1, the identity).
-// Measured before deletion: the sole creator of oversized constants in 136 of 1303 WAR2 functions.
+// Measured before deletion: the sole creator of oversized constants in 136 of 1303 the subject functions.
 // The lesson worth keeping is that it was invisible for as long as it was because the rule NAMED
 // itself after no Ghidra class; `scripts/trace-names.py` now reports exactly that as ADAPTATION.
 
@@ -4311,7 +4311,7 @@ impl Rule for RuleNotDistribute {
 /// That prerequisite (**Task #8**) has since landed: both rules run in the MAIN pool at Ghidra's
 /// actprop positions (pipeline.rs (42)/(52) vs coreaction.cc:5553/:5563), and the rule is WIRED at
 /// Ghidra's own slot (AndZext → AndCompare → DoubleSub, coreaction.cc:5540-5542). The activation
-/// evidence: on WAR2's FUN_00017e00 the faithful-convention trace-diff shows Ghidra firing
+/// evidence: on the subject's FUN_00017e00 the faithful-convention trace-diff shows Ghidra firing
 /// `andcompare` 10× and `andpiece` 2× on the shapes it creates, mosura zero of either — the
 /// sequence alignment put the first hard divergence exactly at Ghidra's `andcompare @ 0x17e28`.
 pub struct RuleAndCompare;

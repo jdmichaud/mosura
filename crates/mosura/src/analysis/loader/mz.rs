@@ -116,7 +116,7 @@ pub fn load_mz(data: &[u8]) -> Result<Program, LoadError> {
 
     // Watcom compiler detection (two-oracle — see `watcom.rs`), beyond Ghidra (which reports
     // `unknown`): an MZ/DOS-extender image built by Watcom embeds the C run-time copyright
-    // banner (WAR2.EXE's DOS/4GW-bound stub carries it). Record the detected era as the
+    // banner (the subject binary's DOS/4GW-bound stub carries it). Record the detected era as the
     // `Compiler` info property; a non-Watcom MZ (e.g. DJGPP comcom32) has no banner → unchanged.
     if let Some(w) = super::watcom::detect(data) {
         program.compiler = w.compiler_label();
@@ -151,14 +151,12 @@ mod tests {
         })
     }
 
-    fn check(path: std::path::PathBuf, name: &str, golden: &str) {
+    fn check(path: std::path::PathBuf, name: &str, golden: &std::path::Path) {
         let Some(data) = external(&path, name) else { return };
         let prog = load_mz(&data).unwrap_or_else(|e| panic!("load {name}: {e}"));
         let snap = prog.snapshot();
         assert_eq!(snap.addr_size, 16);
-        let g = crate::analysis::snapshot::parse(
-            &std::fs::read_to_string(crate::paths::analysis_goldens_dir().join(golden)).unwrap(),
-        );
+        let g = crate::analysis::snapshot::parse(&std::fs::read_to_string(golden).unwrap());
         assert_eq!(snap.blocks, g.blocks, "{name} MZ memory map mismatch");
         assert_eq!(snap.functions, g.functions, "{name} MZ functions mismatch");
         assert_eq!(snap.entries, g.entries, "{name} MZ entry points mismatch");
@@ -167,11 +165,17 @@ mod tests {
 
     #[test]
     fn comcom32_memory_map_matches_golden() {
-        check(crate::paths::comcom32_exe(), "comcom32", "comcom32.loaded.snapshot");
+        check(crate::paths::comcom32_exe(), "comcom32", &crate::paths::analysis_goldens_dir().join("comcom32.loaded.snapshot"));
     }
 
+    /// Every configured subject whose profile carries the loader-stage golden (dev-config
+    /// `[[subject]]`, `analysis.loaded.snapshot`).
     #[test]
-    fn war2_memory_map_matches_golden() {
-        check(crate::paths::war2_exe(), "war2", "war2.loaded.snapshot");
+    fn subjects_memory_maps_match_their_goldens() {
+        for s in crate::devcfg::subjects() {
+            if let Some(g) = s.file("analysis.loaded.snapshot") {
+                check(s.path.clone(), &format!("subject {}", s.id), &g);
+            }
+        }
     }
 }

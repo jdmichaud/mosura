@@ -4,8 +4,8 @@
 //!
 //! # What this recovers
 //!
-//! A **run of consecutive pointers** stored in data. WAR2 reaches large parts of its code
-//! through such tables: `war2-survey/analysis-gap/REPORT.md` §7 measured that mosura never
+//! A **run of consecutive pointers** stored in data. the subject reaches large parts of its code
+//! through such tables: `<subject-survey>/analysis-gap/REPORT.md` §7 measured that mosura never
 //! disassembles 24.7% of the code object (109,338 bytes in 23 regions >2KB), that 783 of the
 //! 815 missing functions have no reference in mosura's reference set at all, and that the only
 //! edges into those regions from outside are `DATA` (region `00039bd4` is entered by DATA×11).

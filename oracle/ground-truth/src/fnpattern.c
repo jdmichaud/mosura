@@ -1,4 +1,4 @@
-/* Ground-truth corpus program (war2-issues-become-source-tests): the source-reduced repro of the
+/* Ground-truth corpus program (issues-become-source-tests (subject-profile note)): the source-reduced repro of the
  * FUNCTION START SEARCH gap — a function that NOTHING references is invisible to every
  * reference-driven analyzer mosura has, and can only be found by recognising its PROLOGUE BYTES.
  * Compiled by Open Watcom `wcc386` into a freestanding ELF32 (x86:LE:32:default), and gated by
@@ -6,7 +6,7 @@
  *
  * WHAT IT REPRODUCES — Ghidra's four `Function Start Search` analyzers
  * (`FunctionStartAnalyzer` + the Pre/AfterCode/AfterData subclasses, driven by
- * `ghidra.util.bytesearch` over `Processors/x86/data/patterns/*.xml`). On WAR2 they are worth 243
+ * `ghidra.util.bytesearch` over `Processors/x86/data/patterns/*.xml`). On the subject they are worth 243
  * functions that no other pass reaches. Every other discovery route mosura has needs an inbound
  * edge: a direct call, a shared-return `jmp` (`tailjmp`), a pointer run in data (`datafnptr`), or
  * an LE fixup slot (`lestruct`). `orphan_fn_` has none of those — the ONLY thing that says
@@ -23,7 +23,7 @@
  *       -oc (dflt) `56 57 55 83 ec 14`            push/push/push; sub esp   (no `mov ebp,esp`)
  *       -od        `56 57 55 89 e5 81 ec 2c ..`   SAVE-FIRST: pushes, THEN the frame setup
  *
- *     The `-od` shape is WAR2's own (0x16ed4 = `53 51 52 56 57 55 89 e5 83 ec 04`), and it is the
+ *     The `-od` shape is the subject's own (0x16ed4 = `53 51 52 56 57 55 89 e5 83 ec 04`), and it is the
  *     shape that SHIFTS: Ghidra's `x86gcc_patterns.xml` has no pattern starting at a push run, so
  *     its `0x5589e583ec` anchors at the `55`, N bytes past the true entry. That defect is real and
  *     is fixed by mosura's Watcom pattern set (`specs/patterns/x86watcom_patterns.xml`) — but it

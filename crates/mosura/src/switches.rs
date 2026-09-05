@@ -37,7 +37,7 @@
 /// registry's own list ([`crate::decompile::emit::arms::registry::Recovered::ARMS`]), which owns a
 /// typed `Sites` per arm and clears it to switch off; this table is every OTHER class, where "off"
 /// means the code does not run at all. The two lists are joined for validation in one place
-/// (`war2_survey`'s `--arms-off`) and never authored twice.
+/// (`corpus_emit`'s `--arms-off`) and never authored twice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Switch {

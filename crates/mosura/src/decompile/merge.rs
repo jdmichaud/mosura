@@ -306,10 +306,10 @@ pub(crate) fn explicit_leading(f: &Funcdata, v: VarnodeId) -> Option<bool> {
         // The PIECE escape is load-bearing for byte-granular global updates: a `mov byte [g], 1`
         // into a 4-byte global heritages as `g = PIECE(SUBPIECE(old >> 8), 1)`, and the 3-byte
         // SUBPIECE output lands at the global's address+1 — addrtied. Ghidra marks it IMPLIED
-        // (measured on WAR2 FUN_00021b84's site with `CAPTURE_FLAGS_AT`: `ram:0x8196d:3
+        // (measured on the subject's FUN_00021b84's site with `CAPTURE_FLAGS_AT`: `ram:0x8196d:3
         // addrtied=1 ... explicit=0 implied=1`) and prints it inline, `CONCAT31((unkint3)uVar4,
         // 1)`. Marking it explicit instead materialized the statement `uRam._1_3_ = …` — the
-        // partial-symbol accessor whose 3-byte width no emitter rewrite can legalize (the WAR2
+        // partial-symbol accessor whose 3-byte width no emitter rewrite can legalize (the subject
         // E1032 family).
         let use_op = match vn.descend.as_slice() {
             [only] => *only,
@@ -2116,7 +2116,7 @@ fn trim_slot(
 /// defined in `block` necessarily covers it (a phi read covers the predecessor whose exit it is
 /// live at — where the trim COPY lands), and the rewiring gives reads only to the new varnodes,
 /// so no absent-from-map cover can become non-empty. The former full `all_covers` rebuild per trim
-/// was the dominant WAR2 decompile cost.
+/// was the dominant the subject decompile cost.
 fn refresh_covers(
     f: &Funcdata,
     covers: &mut HashMap<VarnodeId, Cover>,
@@ -2195,7 +2195,7 @@ fn trim_op_output(f: &mut Funcdata, op: super::op::OpId) {
     // merge.cc:663-666: for an INDIRECT the COPY goes AFTER THE SOURCE OF THE INDIRECT (the
     // call/store it is guarded by), not after the INDIRECT — which sits BEFORE that op. Placed
     // after the INDIRECT, a global's post-store version was written before the STORE that must
-    // read the old one: WAR2 FUN_0002cca0 (a list push) printed `iRam = iVar1; *(param_1 + 8) =
+    // read the old one: the subject's FUN_0002cca0 (a list push) printed `iRam = iVar1; *(param_1 + 8) =
     // iRam;` where Ghidra prints `*(param_1 + 8) = iRam; iRam = iVar1;`.
     let afterop = if f.op(op).code() == OpCode::Indirect {
         f.op(op).guarded_op().filter(|&g| !f.op(g).is_dead()).unwrap_or(op)
@@ -2899,7 +2899,7 @@ mod tests {
     use crate::decompile::space::{Address, SpaceManager};
     use crate::decompile::{BlockBasic, BlockId, Funcdata, OpCode, SeqNum};
 
-    /// Regression for the WAR2 `FUN_00011954` panic (`merge.rs:1205` index-out-of-bounds): a
+    /// Regression for the subject's `FUN_00011954` panic (`merge.rs:1205` index-out-of-bounds): a
     /// non-MULTIEQUAL marker op (an INDIRECT, whose slot-0 data input `merge_op` may force-trim)
     /// must trim in its OWN block at `op->getAddr()` (`opInsertBefore`), not via the MULTIEQUAL
     /// predecessor lookup `in_edges[slot]`. `Merge::trimOpInput` (merge.cc:692) branches on the op

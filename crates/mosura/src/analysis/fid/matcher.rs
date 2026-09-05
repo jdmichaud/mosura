@@ -363,7 +363,7 @@ pub fn apply_name(result: &SearchResult) -> Option<String> {
 /// that case: it declines to rename — two functions with identical code cannot be told apart, and
 /// guessing would put a wrong name on one — but it records what it found. Returning only
 /// `Option<String>` threw that away, so a recognised-but-ambiguous function was indistinguishable
-/// from an unrecognised one. Measured on WAR2: 3 functions are in exactly this state, two of them
+/// from an unrecognised one. Measured on the subject: 3 functions are in exactly this state, two of them
 /// scoring 75.0 against a pair of names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FidMarkup {

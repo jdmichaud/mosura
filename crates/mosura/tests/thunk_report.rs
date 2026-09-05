@@ -20,10 +20,10 @@
 //! function without this port; one whose only inbound edge is the thunk's own jump would not.
 //!
 //! ```sh
-//! # WAR2 native-LE (the campaign view). ~minutes — lead-owned.
-//! cargo test --release --test thunk_report -- --ignored --nocapture war2_le
-//! # WAR2 the default MZ view.
-//! cargo test --release --test thunk_report -- --ignored --nocapture war2_mz
+//! # the subject native-LE (the campaign view). ~minutes — lead-owned.
+//! cargo test --release --test thunk_report -- --ignored --nocapture subjects_le
+//! # the subject the default MZ view.
+//! cargo test --release --test thunk_report -- --ignored --nocapture subjects_mz
 //! # The cheap fixpoint gate (runs in the normal suite).
 //! cargo test --release --test thunk_report -- thunk_report_is_taken_at_the_fixpoint
 //! ```
@@ -31,7 +31,7 @@
 use mosura::analysis::analyzers::thunk::{self, Candidate, Outcome};
 use mosura::analysis::program::{Program, RefType};
 use mosura::decompile::space::Address;
-use mosura::paths::{analysis_corpus_dir, comcom32_exe, war2_exe};
+use mosura::paths::{analysis_corpus_dir, comcom32_exe};
 
 /// Take the report on a converged program (see the module note on why that timing is the whole
 /// validity argument).
@@ -137,33 +137,34 @@ fn print_report(name: &str, program: &Program) {
     eprintln!("===== end {name} =====\n");
 }
 
-/// WAR2, native-LE (`analyze_le_file`) — the campaign view, where the +1 was measured.
-/// Lead-owned: minutes, not seconds.
+/// The configured subjects, native-LE (`analyze_le_file`) — the campaign view, where the +1 was
+/// measured. Lead-owned: minutes, not seconds.
 #[test]
-#[ignore = "WAR2 run — minutes; lead-owned"]
-fn war2_le_thunk_report() {
-    let path = war2_exe();
-    if !path.exists() {
-        eprintln!("skip war2_le_thunk_report: WAR2.EXE absent (MOSURA_WAR2_EXE)");
-        return;
+#[ignore = "subject run — minutes; lead-owned"]
+fn subjects_le_thunk_report() {
+    for s in mosura::devcfg::subjects() {
+        if !s.path.exists() {
+            eprintln!("skip subject {}: binary absent", s.id);
+            continue;
+        }
+        let prog = mosura::analysis::analyze_le_file(&s.path).expect("native-LE analysis of the subject");
+        print_report(&format!("subject {} (le)", s.id), &prog);
     }
-    let prog = mosura::analysis::analyze_le_file(&path).expect("native-LE analysis of WAR2.EXE");
-    print_report("war2-le", &prog);
 }
 
-/// WAR2 through the default MZ/DOS-4GW-stub path (`analyze_file`) — the view the committed Ghidra
-/// golden `war2.snapshot` is compared against, and where the MZ thunk cluster
-/// (`0x17c4c` / `0x17c50` -> `0x17dbe`) lives.
+/// The configured subjects through the default MZ/DOS-extender-stub path (`analyze_file`) — the
+/// view the profile's Ghidra golden is compared against, where the MZ thunk cluster lives.
 #[test]
-#[ignore = "WAR2 run — minutes; lead-owned"]
-fn war2_mz_thunk_report() {
-    let path = war2_exe();
-    if !path.exists() {
-        eprintln!("skip war2_mz_thunk_report: WAR2.EXE absent (MOSURA_WAR2_EXE)");
-        return;
+#[ignore = "subject run — minutes; lead-owned"]
+fn subjects_mz_thunk_report() {
+    for s in mosura::devcfg::subjects() {
+        if !s.path.exists() {
+            eprintln!("skip subject {}: binary absent", s.id);
+            continue;
+        }
+        let prog = mosura::analysis::analyze_file(&s.path).expect("MZ analysis of the subject");
+        print_report(&format!("subject {} (mz)", s.id), &prog);
     }
-    let prog = mosura::analysis::analyze_file(&path).expect("MZ analysis of WAR2.EXE");
-    print_report("war2-mz", &prog);
 }
 
 /// The instrument's own gate, on the committed corpus: a report taken after `analyze_file`

@@ -3,7 +3,7 @@
 //! The question this answers is not "how many bytes agree" but "what would have to change for
 //! them to agree". A byte comparison cannot answer that: insert one byte and every later byte
 //! disagrees, so a function that is one register-allocation choice away from exact and a function
-//! written in hand assembler both score near zero. That is the state the WAR2 census was in —
+//! written in hand assembler both score near zero. That is the state the subject census was in —
 //! 2074 of 2552 mismatches under 25% byte agreement, and 96% of them attributed to
 //! "unclassified".
 //!
@@ -56,7 +56,7 @@ pub enum DivergenceClass {
     /// **This is a consequence, never a cause.** Something upstream changed size, and that change
     /// is reported where it happened; this row only records that the shift propagated here.
     /// Counting it as [`DivergenceClass::Encoding`] said the opposite — `encoding` means "not
-    /// reachable from C, do not work on this function" — and would have written 109 WAR2 functions
+    /// reachable from C, do not work on this function" — and would have written 109 the subject functions
     /// off the work-list for a difference that is entirely downstream of a fixable one.
     LayoutShift,
 }
@@ -212,7 +212,7 @@ fn sub_cost(a: &NormInsn, b: &NormInsn) -> (u32, DivergenceClass) {
 /// (see [`super::candidate`]).
 pub fn compare(orig: &[NormInsn], cand: &[NormInsn]) -> FnDiff {
     let (n, m) = (orig.len(), cand.len());
-    // Needleman–Wunsch. n*m stays small — the largest WAR2 function is ~1500 instructions, so
+    // Needleman–Wunsch. n*m stays small — the largest the subject function is ~1500 instructions, so
     // the table is a few million cells at worst and the whole census runs in seconds.
     let mut dp = vec![u32::MAX; (n + 1) * (m + 1)];
     let idx = |i: usize, j: usize| i * (m + 1) + j;

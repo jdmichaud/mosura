@@ -1,12 +1,12 @@
-//! WAR2 per-function recompile survey — EMIT stage (uncommitted measurement harness).
+//! the subject per-function recompile survey — EMIT stage (uncommitted measurement harness).
 //!
-//! Read-only w.r.t. the decompiler: loads WAR2 via the `--le` path, decompiles every recovered
+//! Read-only w.r.t. the decompiler: loads the subject via the `--le` path, decompiles every recovered
 //! function, and emits (a) a standalone C translation unit per function (prelude + synthesized
 //! declarations + the decompiled body) for wcc386, and (b) a manifest with each function's
 //! original machine-code bytes (from the fixed-up LE image, over the decompiler's covered
 //! instruction extent) so a later compile+diff stage can classify recompilation fidelity.
 //!
-//! Usage: cargo run -q --release --example war2_survey -- <war2.exe> <out_dir>
+//! Usage: cargo run -q --release --example corpus_emit -- <the subject.exe> <out_dir>
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::Write;
@@ -37,7 +37,7 @@ use mosura::switches::{Knobs, Switch};
 //
 // ⚠️ WHICH ODD WIDTHS BELONG HERE — the line is Ghidra's `max_basetype_size` (10,
 // architecture.cc:1422). At or below it, `TypeFactory::getBase` (type.cc:3652) really does hand back
-// a base type of that width, and Ghidra's own WAR2 output contains `uint6` x8, `uint3` x19,
+// a base type of that width, and Ghidra's own the subject output contains `uint6` x8, `uint3` x19,
 // `int3` x50, `undefined6` x6 — so those names are FAITHFUL and their absence from a C compiler is
 // the prelude's problem, which is what the prelude exists for. ABOVE it `getBase` returns
 // `undefined1[N]` instead, so a `uint12`/`uint20`/`xunknown12` in our output is OUR defect (an
@@ -199,7 +199,7 @@ typedef unsigned char bool;
 /// A recompilation denominator must not count library code. `memset`, `printf` and the CRT
 /// startup are reproduced by LINKING the Watcom libraries, not by decompiling them, so counting
 /// them measures the toolchain rather than the port -- and their verdicts are not the port's to
-/// claim either way. Measured on WAR2: 5 of 131 library functions are byte-exact (3.8%) against
+/// claim either way. Measured on the subject: 5 of 131 library functions are byte-exact (3.8%) against
 /// 534 of 2892 of the subject's own (18.5%), so excluding them RAISES the ratio -- they were
 /// dragging it down, not flattering it, which is the opposite of what was assumed here first.
 ///
@@ -352,7 +352,7 @@ fn kind_of_insns(name: &str, insns: &[mosura::recompile::insn::NormInsn]) -> &'s
     k
 }
 
-/// The subject's language. WAR2 is a 32-bit protected-mode DOS image.
+/// The subject's language. the subject is a 32-bit protected-mode DOS image.
 const SURVEY_LANG: &str = "x86:LE:32:default";
 
 fn git_stamp() -> String {
@@ -1074,7 +1074,7 @@ fn own_contract(
     // WHO POPS is a third, independent fact, and it is not a choice: Watcom's default is
     // callee-pops (`parm routine`), and a function whose original ends in a bare `RET` after
     // reading `[ESP+4]` is caller-pops. Emitting the default regardless put a `RET 4` where the
-    // original has `RET` in 101 WAR2 functions — 13 of them one instruction from exact and
+    // original has `RET` in 101 the subject functions — 13 of them one instruction from exact and
     // nothing else wrong. `recompile::callee_stack_cleanup` reads the contract off the function's
     // own return instruction; where it cannot tell (no return, or returns that disagree) the
     // default stands, because a guess here is wrong code in every caller.
@@ -1133,21 +1133,21 @@ fn main() {
     // module doc); nothing is read from the environment.
     let argv = mosura::debug::from_args(std::env::args().skip(1).collect()).unwrap_or_else(|e| panic!("--debug: {e}"));
     let mut args = argv.into_iter();
-    let first = args.next().expect("usage: war2_survey [--prelude-only] <war2.exe> <out_dir>");
+    let first = args.next().expect("usage: corpus_emit [--prelude-only] <subject.exe> <out_dir>");
     // `--prelude-only <out_dir>` rewrites <out>/prelude.h from PRELUDE and exits. It exists so a
     // prelude change never has to be hand-applied to the generated file (see PRELUDE's warning):
     // the compile stage's header is always regenerated from the constant, in seconds, without a
     // 6-minute re-emit.
     if first == "--prelude-only" {
         let out = std::path::PathBuf::from(
-            args.next().expect("usage: war2_survey --prelude-only <out_dir>"),
+            args.next().expect("usage: corpus_emit --prelude-only <out_dir>"),
         );
         std::fs::write(out.join("prelude.h"), build_prelude()).unwrap();
         println!("wrote {}", out.join("prelude.h").display());
         return;
     }
     let bin = first;
-    let out = std::path::PathBuf::from(args.next().expect("usage: war2_survey <war2.exe> <out_dir>"));
+    let out = std::path::PathBuf::from(args.next().expect("usage: corpus_emit <subject.exe> <out_dir>"));
     let rest: Vec<String> = args.collect();
     let force = rest.iter().any(|a| a == "--force");
     // `--cons-probe`: the Order-Y constant-witness probe prints its reaching-write census (below).
@@ -1230,7 +1230,7 @@ fn main() {
     // gained a materialized `AND CL,0x1f` the originals never had).
     // The RECOVERED tree is the PRODUCT: one emission whose per-site choices are read from
     // the original's own instructions by the target profile — what a compilerless field run
-    // ships, and since the union's retirement (docs/war2-recompile-remeasure.md) also the
+    // ships, and since the union's retirement (docs/corpus-round-runbook.md) also the
     // canonical measurement. Emitted ALWAYS, to `<out>/recovered` unless `--recovered <dir>`
     // overrides; `--no-recovered` skips it (probe/diagnostic runs).
     let recovered_dir: Option<std::path::PathBuf> = if rest.iter().any(|a| a == "--no-recovered")
@@ -1270,7 +1270,7 @@ fn main() {
     // This exists because the emit used to write those three paths directly and truncate them, so
     // every measurement destroyed the state it would have been compared against. The only defence
     // was the operator remembering to copy a snapshot aside first — and the evidence that it does
-    // not work is still in war2-survey/: 21 hand-made snapshot directories in five different
+    // not work is still in <subject-survey>/: 21 hand-made snapshot directories in five different
     // naming conventions, of which 8 (`src.prev`, `src.base`, `src.b2-half`, …) name no commit at
     // all and are therefore useless as a baseline for any claim.
     //
@@ -1309,7 +1309,7 @@ fn main() {
     // CLEAR the stamped dirs first. `create_dir_all` alone leaves earlier files in place, so a
     // re-emit that produces fewer functions — or renumbers them — blends two runs into one
     // directory that is a snapshot of neither. That is not hypothetical: the pre-stamping
-    // `war2-survey/src/` held .c files spanning 2026-08-03 to 2026-08-05 from separate emits.
+    // `<subject-survey>/src/` held .c files spanning 2026-08-03 to 2026-08-05 from separate emits.
     // Only reachable for a new stamp (nothing to clear), a `-dirty` stamp, or --force.
     if !probing {
         for d in arm_dirs.iter().chain([&raw_dir]) {
@@ -1341,7 +1341,7 @@ fn main() {
     // it cannot be silent. Zero is the expected reading; a nonzero one is a finding to chase.
     let mut cleanup_undecided = 0usize;
 
-    eprintln!("loading WAR2 via analyze_le_file ...");
+    eprintln!("loading the subject via analyze_le_file ...");
     let mut prog = analysis::analyze_le_file_with(std::path::Path::new(&bin), &knobs).expect("analyze_le_file");
     // The byte-exact emitter models Ghidra's STANDALONE global-scope context (no auto-resolved
     // symbols, ActionConstantPtr silent): the binary is this tool's oracle, its source wrote
@@ -1519,12 +1519,12 @@ fn main() {
     // This replaces three invented constants, each of which would have truncated silently:
     //   * `.min(*va + 8192)` -- no function may exceed 8 KB. Nothing checks this, and a larger
     //     function would simply have been compared against its first 8 KB and reported as a
-    //     decompiler failure. Zero functions in WAR2 reach it, so it never fired; it was a
+    //     decompiler failure. Zero functions in the subject reach it, so it never fired; it was a
     //     tripwire waiting for a bigger subject.
     //   * `.min(0x7_c4a0)` -- this binary's code-section end, hardcoded into a tool that is
     //     supposed to work on any binary. Correct here by coincidence, wrong everywhere else.
     //   * `.unwrap_or(*va + 512)` -- an arbitrary extent for the LAST function, which has no
-    //     next entry. WAR2's last function is 207 bytes, so this never fired either.
+    //     next entry. the subject's last function is 207 bytes, so this never fired either.
     //
     // The block end answers the same question the constants were guessing at, and answers it
     // for whatever binary is loaded.
@@ -1560,7 +1560,7 @@ fn main() {
     // says which tree produced it. Both consumers skipped exactly one line (compile.sh's
     // `tail -n +2`, compare.py's `header = next(fh)`), so they were changed to drop `#` lines
     // first — otherwise this line pushes the column header into the data.
-    writeln!(mf, "# war2_survey emit @ {stamp}").unwrap();
+    writeln!(mf, "# corpus_emit emit @ {stamp}").unwrap();
     // The arm set this tree was MEASURED with (the recovered emit's choices, every axis spelled
     // out), so a tree or a copied manifest is self-describing about its arm set (code review
     // 2026-08-27: measurement documents carry their arm set). `#` lines are skipped by every reader.
@@ -1632,7 +1632,7 @@ fn main() {
     let mut order_excluded: std::collections::HashSet<u64> = Default::default();
     // The evidence is a pure function of the ORIGINAL binary and the code that reads it, so
     // it is cached beside the manifest keyed by the emit stamp. The exclusion set costs a
-    // mini-decompile of every claimed callee (~170 on WAR2 — minutes), which a full emit
+    // mini-decompile of every claimed callee (~170 on the subject — minutes), which a full emit
     // amortizes but which made every `--only` PROBE pay the whole pre-pass: JD measured a
     // single-function probe at five minutes. A probe at the same stamp now loads in
     // milliseconds; a stamp change re-derives.
@@ -2780,7 +2780,7 @@ fn main() {
         // The function's extent is mosura's OWN recorded body, not the gap to the next entry.
         //
         // `[entry, next-entry)` attributes to a function everything the linker happened to place
-        // after it, and what follows a function is very often DATA. Measured on WAR2: the body is
+        // after it, and what follows a function is very often DATA. Measured on the subject: the body is
         // smaller than the gap for 2140 of 3023 functions, totalling 49,359 bytes of data counted
         // as code. The worst is `FUN_00075801` -- a 48-byte comparator followed by a 7,727-byte
         // table -- which was compared as 2591 instructions against the 20 it really has, and read
@@ -2969,7 +2969,7 @@ fn main() {
             for (a, w) in gsizes.iter_mut() {
                 // A READ-ONLY global this function reads at two IR widths, its own bytes reading
                 // it at the wider one (`MOV BX,word ptr [g]` for the divisor, `MOV AL,[g]` for the
-                // byte factor, WAR2 FUN_000377a4): declared at the wider width, the narrower reads
+                // byte factor, the subject's FUN_000377a4): declared at the wider width, the narrower reads
                 // print as casts of the same bytes — probed EXACT. The same-function two-width
                 // gate keeps this off the 138 read-only TUs the blanket widening moved.
                 if let (Some(&mx), Some(&rw)) = (gsizes_max.get(a), own_read_w.get(a)) {
@@ -2990,7 +2990,7 @@ fn main() {
         }
         // STACK-BASED CONVENTION. A function whose recovered parameters all live on the STACK is
         // not using default __watcall — Watcom spells that `#pragma aux <name> parm []`, and
-        // warcraft2-re's proven sources use exactly that form. Without the declaration the emitted
+        // the RE tracker's proven sources use exactly that form. Without the declaration the emitted
         // C is compiled as a register-convention function: the argument arrives in EAX instead of
         // at [ebp+8] and the body ends `ret` instead of `ret 4`. Measured on FUN_00030da8, whose
         // original is
@@ -3302,7 +3302,7 @@ fn main() {
             // the original compiled against, which the callee's own recovered clobber set
             // cannot show. Every callee of this TU with a clobber clause takes the register
             // (a caller's saves cannot say which callee); a TU with no clause at all gives
-            // it to every callee. WAR2 FUN_0004f850: EXACT with `ebx` in its callee's clause.
+            // it to every callee. the subject's FUN_0004f850: EXACT with `ebx` in its callee's clause.
             let saved = if !knobs.on(Switch::CalleeClobbers) {
                 Vec::new()
             } else {
@@ -3644,9 +3644,16 @@ fn main() {
     // one (a `--only` probe's partial tree would misfire the corpus-level bars and sets); the scope
     // for the string-ops bar is the manifest's `kind`. `--no-gates` for diagnostics only.
     if let Some(dir) = &recovered_dir {
-        if !rest.iter().any(|a| a == "--no-gates") {
+        // The gates' bars and sets are the SUBJECT's — its profile's `corpus-gates.tsv` (dev-config
+        // `[[subject]]`); a binary with no configured profile emits with no corpus gates and says so.
+        let gates_file = mosura::devcfg::subject_for(std::path::Path::new(&bin)).and_then(|s| s.file("corpus-gates.tsv"));
+        let no_gates = rest.iter().any(|a| a == "--no-gates");
+        if !no_gates && gates_file.is_none() {
+            eprintln!("corpus gates: no configured subject profile carries corpus-gates.tsv for {bin}; gates skipped");
+        }
+        if let (false, Some(gates_file)) = (no_gates, gates_file) {
             use mosura::recompile::gates;
-            let baseline = gates::Baseline::load(&mosura::paths::corpus_gates_file()).unwrap_or_else(|e| {
+            let baseline = gates::Baseline::load(&gates_file).unwrap_or_else(|e| {
                 eprintln!("corpus gates baseline: {e}");
                 std::process::exit(2)
             });

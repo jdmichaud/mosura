@@ -2,16 +2,16 @@
  * pattern set (`specs/patterns/x86watcom_patterns.xml`, beyond-Ghidra — Ghidra ships no Watcom
  * compiler spec, so that pattern file has no Ghidra oracle and must get one here).
  *
- * WHY THIS EXISTS. Precision is **unmeasurable on WAR2**: the expert tracker covers 71.4% of the
+ * WHY THIS EXISTS. Precision is **unmeasurable on the subject**: the expert tracker covers 71.4% of the
  * code object, so a pattern hit in a gap may be a real function the tracker lacks or may be noise,
- * and nothing in the binary distinguishes them. Tuning the pattern against WAR2's function count is
+ * and nothing in the binary distinguishes them. Tuning the pattern against the subject's function count is
  * therefore chasing a number with no specification behind it. Here every function is known from the
  * compiler's own symbol table, so BOTH properties become measurable:
  *   recall    — the search finds every real entry;
  *   precision — it creates nothing that is not one.
  *
  * WHAT IT MUST COVER — measured, not assumed. Reading the first 6 bytes at each of the 2120
- * tracker-known WAR2 entries gives 376 distinct shapes, dominated by a run of callee-saved pushes
+ * tracker-known the subject entries gives 376 distinct shapes, dominated by a run of callee-saved pushes
  * followed by a frame setup:
  *
  *     333  4 pushes + 89 e5        288  5 pushes + 89          201  6 pushes + (>6 bytes)
@@ -22,7 +22,7 @@
  *   - the push run reaches 6, not 5, and `push ebp` (0x55) is itself INSIDE the run;
  *   - `sub esp` (`83 ec`/`81 ec`) is frequently ABSENT, so requiring it — as Ghidra's
  *     x86gcc_patterns.xml `0x5589e583ec` does — misses most real Watcom prologues. That is exactly
- *     why Ghidra's own Function Start Search contributes only 243 functions on WAR2.
+ *     why Ghidra's own Function Start Search contributes only 243 functions on the subject.
  *
  * So the functions below are written to force a SPREAD of callee-saved register pressure (wcc386
  * pushes one register per live value it must preserve), plus the frame/no-frame and leaf/non-leaf

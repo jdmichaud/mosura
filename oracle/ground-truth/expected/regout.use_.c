@@ -19,7 +19,7 @@
  * The wrong form discards the call's result and stores through the caller's STALE pre-call
  * pointer. Recovering it needs the callee's own body — its `modify` and `parm` lists — which is
  * why this is `caller-evidence prototypes` and why Ghidra, decompiling one function in isolation,
- * emits the wrong form. Measured on WAR2 FUN_00074744/FUN_000748fd, the class this reproduces.
+ * emits the wrong form. Measured on the subject's FUN_00074744/FUN_000748fd, the class this reproduces.
  *
  * BOTH arguments matter. EBX is both an argument and the return register, so a fix that recovers
  * the output half while dropping the input half still fails here — the call must carry

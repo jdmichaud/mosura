@@ -1,7 +1,7 @@
 /* Ground-truth repro: an indirect call through a GLOBAL FUNCTION POINTER.
  *
  * The shape is `call DWORD PTR ds:<addr>` — a single memory-indirect call, 6 bytes, no register
- * load. It is the most common call form in the WAR2 survey: the `indirect_call` smell covers
+ * load. It is the most common call form in the subject survey: the `indirect_call` smell covers
  * 1193 of the attributable mismatches, and the smallest extent-verified specimen (7 bytes: the
  * call plus a `ret`) shows the defect with nothing else in the way.
  *

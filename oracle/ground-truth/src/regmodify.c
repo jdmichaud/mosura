@@ -1,7 +1,7 @@
 /* Ground-truth repro: a caller HOLDS A VALUE IN A REGISTER ACROSS A CALL, because the callee's
  * `#pragma aux ... modify` list says that register survives.
  *
- * This is the class behind the WAR2 survey's biggest byte-delta bucket. Measured on FUN_00011920:
+ * This is the class behind the subject survey's biggest byte-delta bucket. Measured on FUN_00011920:
  *
  *     original   mov eax,[g] ; xor edx,edx ; call FUN_00059344 ; mov [g],edx
  *     ours       func_0x00059344(g); g = 0;

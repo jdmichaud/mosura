@@ -117,7 +117,7 @@ impl Recovered {
 
     /// Switch one arm's witnessed decisions off — the port then prints that arm's sites as it
     /// prints everything else — or `Err` with the unknown name. A tree emitted with an arm off
-    /// must say so: the caller stamps the manifest's `arms:` line (`war2_survey --arms-off`).
+    /// must say so: the caller stamps the manifest's `arms:` line (`corpus_emit --arms-off`).
     pub fn switch_off(&mut self, arm: &str) -> Result<(), String> {
         match arm.replace('-', "_").as_str() {
             "port" => self.port.off(),

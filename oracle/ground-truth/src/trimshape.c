@@ -1,17 +1,17 @@
-/* Ground-truth corpus program (war2-issues-become-source-tests): the source-reduced repro of the
- * decompiler PANIC the WAR2.EXE recompilation survey exposed (docs/war2-function-status.md —
+/* Ground-truth corpus program (issues-become-source-tests (subject-profile note)): the source-reduced repro of the
+ * decompiler PANIC the subject binary recompilation survey exposed (<subject-profile>/notes/function-status.md —
  * all 117 DECOMPILE_FAILs were this one bug). Compiled by Open Watcom `wcc386` exactly like
  * watprog/narrowsw into a freestanding ELF32 (x86:LE:32:default). Gated in
- * `ground_truth_parity.rs::war2_trim_shape_no_panic`.
+ * `ground_truth_parity.rs::trim_shape_no_panic`.
  *
  * PRIMARY — trim_shape — Stage 0 (`b6ec467`, docs/decompiler-bug-merge-indirect-trim-panic.md):
- *   the source-reduced mimic of WAR2 `FUN_00011954` (the survey's first panic): THREE sequential
+ *   the source-reduced mimic of the subject's `FUN_00011954` (the survey's first panic): THREE sequential
  *   register-arg calls in one block, two results stored to globals, EDX callee-saved across all
  *   of them. The chained call-guard INDIRECTs force merge-marker's non-MULTIEQUAL trim — the
  *   `Merge::trimOpInput` branch whose partial port panicked (`in_edges[slot]` OOB in the entry
  *   block). PROVEN against the toolchain: pre-fix mosura (`ef65486`) panics at merge.rs:1205 on
  *   exactly this compiled shape; the single-call variant does NOT trigger it. wcc386 lowers it to
- *   WAR2's opcode sequence (push edx / mov+call x3 / mov-to-global x2 / pop edx / ret; only the
+ *   the subject's opcode sequence (push edx / mov+call x3 / mov-to-global x2 / pop edx / ret; only the
  *   10.0a `ebp` frame is absent under ow2).
  *
  * The other two functions are realistic call-graph context that also exercises the Stage-1
@@ -22,7 +22,7 @@
  *   - port_io — raw port IO via `#pragma aux` -> `in`/`out` SLEIGH userops (CALLOTHER).
  *
  * The Watcom run-time banner below is embedded verbatim because `loader::watcom::detect` keys on
- * it (WAR2 carries it via the CRT; these CRT-less fixtures let the banner constant stand in —
+ * it (the subject carries it via the CRT; these CRT-less fixtures let the banner constant stand in —
  * same bytes, same detection path). */
 
 /* The exact 10.0a-era banner (loader/watcom.rs test oracle) — DATA, never executed. */
@@ -36,7 +36,7 @@ extern void take1(int x);
 extern int give1(int x);
 extern int give2(int x, int y);
 
-/* 1. Stage-0 shape (mimics WAR2 FUN_00011954): three calls, two global stores, one block. */
+/* 1. Stage-0 shape (mimics the subject's FUN_00011954): three calls, two global stores, one block. */
 void trim_shape(void) {
     take1(0x11920);
     shared_g1 = give1(0xfc8);

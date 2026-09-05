@@ -16,11 +16,6 @@ pub fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-/// The corpus gates' bars and sets (`recompile::gates`), committed next to the smoke set.
-pub fn corpus_gates_file() -> PathBuf {
-    workspace_root().join("scripts/corpus-gates.tsv")
-}
-
 /// The pinned Ghidra source checkout: `ghidra_src` in `dev-config.toml`, else
 /// `<workspace>/../ghidra` ([`crate::devcfg::ghidra_src`]).
 pub fn ghidra_src() -> PathBuf {
@@ -127,7 +122,7 @@ pub fn fid_db_dir() -> PathBuf {
 /// itself in `oracle/fid/db` (Borland, Watcom, sdcc — `docs/fid-building-databases.md`).
 ///
 /// ⚠️ Searching only the first is why FID identified **nothing** in a Watcom binary while the
-/// Watcom databases sat in the tree: WAR2.EXE analysed to 3021 functions with 1 name (its entry
+/// Watcom databases sat in the tree: the subject binary analysed to 3021 functions with 1 name (its entry
 /// point) because zero databases matched, and to 121 names the moment this directory was
 /// included. A signature database nobody looks in is not a feature.
 ///
@@ -141,13 +136,8 @@ pub fn fid_db_dirs() -> Vec<PathBuf> {
 // User-provided binaries: located by their `[binaries]` key in `dev-config.toml` with the
 // `$HOME`-relative default the dependency manifest promises ([`crate::devcfg::binary`]). These
 // are copyrighted third-party files that are **not committed**; the tests that use them skip when
-// absent (`docs/dependencies.md`). No absolute path is baked in.
-
-/// `WAR2.EXE` — Warcraft II, a DOS/4GW-bound Watcom LE. `binaries.war2`, default
-/// `$HOME/WAR2.EXE`. Native-LE analysis + Watcom-detection ground truth.
-pub fn war2_exe() -> PathBuf {
-    crate::devcfg::binary("war2").expect("war2 has a manifest default")
-}
+// absent (`docs/dependencies.md`). No absolute path is baked in. The binaries under STUDY are not
+// here at all: they are `[[subject]]` entries with a profile ([`crate::devcfg::subjects`]).
 
 /// A 16-bit **Microsoft C** DOS program. `binaries.msc16`, default `$HOME/msc16.exe`.
 /// Ground truth for the 16-bit real-mode path: the `msc-7.0-*` FID columns and the 16-bit

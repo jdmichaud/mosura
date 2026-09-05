@@ -21,7 +21,7 @@
 //! That is deliberate: an instrument that *can* print a bare number will eventually have its bare
 //! number quoted, and this one has already changed a decision that a bare number could not have.
 //!
-//! Calibration, WAR2 @ `6abd1ae` (the run this tool was extracted from):
+//! Calibration, the subject @ `6abd1ae` (the run this tool was extracted from):
 //!
 //! ```text
 //!   corroborated (expert tracker)   2111/2118   99.7%
@@ -60,7 +60,7 @@
 //! # Truth sources
 //!
 //! * a corpus `.truth` file — `func <hex> <size> <name> <class>` lines;
-//! * the warcraft2-re tracker CSV — a `va` column of `0x…` addresses.
+//! * the the RE tracker tracker CSV — a `va` column of `0x…` addresses.
 //!
 //! ⚠️ **Nothing here reads the truth file's SIZE column.** The Watcom column of the ground-truth
 //! corpus carries `size 0` for every symbol (`nm` emits no sizes for Watcom objects), so any
@@ -96,7 +96,7 @@ fn usage() -> ! {
          \x20         [--cspec <id>] [--le] [--shift N] [--list-failures]\n\
          \n\
          --truth is REQUIRED: without a control population the rate is not interpretable.\n\
-         --le              load a bound MZ+LE image through the native LE loader (WAR2)\n\
+         --le              load a bound MZ+LE image through the native LE loader (the subject)\n\
          --shift N         corroboration window in bytes (default 8); the expert tracker anchors\n\
          \x20                 save-first functions mid-prologue at the `push ebp`, so exact-address\n\
          \x20                 matching understates the corroborated arm\n\
@@ -197,7 +197,7 @@ fn main() {
             cursor += len;
         }
 
-        // CALIBRATION DIAGNOSTICS. The first WAR2 run of this tool did NOT reproduce the harness
+        // CALIBRATION DIAGNOSTICS. The first the subject run of this tool did NOT reproduce the harness
         // it was extracted from (3 failures vs 8, same 3018 total), so it reports the two ways a
         // re-decoding instrument can disagree with a listing-based one:
         //   * misaligned — decoding forward from the range start does not land exactly on its end,

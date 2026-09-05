@@ -1,12 +1,12 @@
-/* Ground-truth corpus program (war2-issues-become-source-tests): the source-reduced repro of the
- * AUTO-ANALYSIS gap the WAR2.EXE function survey exposed — a function that is reachable ONLY by an
+/* Ground-truth corpus program (issues-become-source-tests (subject-profile note)): the source-reduced repro of the
+ * AUTO-ANALYSIS gap the subject binary function survey exposed — a function that is reachable ONLY by an
  * unconditional `jmp` tail call is never created, so its whole call sub-tree is lost. Compiled by
  * Open Watcom `wcc386` exactly like watprog/narrowsw into a freestanding ELF32
  * (x86:LE:32:default). Gated in `ground_truth_parity.rs` (recall) + `::tail_jump_shared_return`.
  *
  * WHAT IT REPRODUCES — Ghidra `SharedReturnAnalysisCmd.applyTo`'s `assumeContiguousFunctions`
  * rule: an unconditional jump that crosses a NEIGHBOURING FUNCTION'S ENTRY is a shared-return tail
- * call, and Ghidra creates a function at the destination. On WAR2 this is the only mechanism that
+ * call, and Ghidra creates a function at the destination. On the subject this is the only mechanism that
  * reaches FUN_00067f40 / FUN_00072301 / FUN_00079330 — each the target of a lone `e9 rel32` and of
  * nothing else. (Those three were originally filed as "plain direct call" seeds because Ghidra
  * REPORTS the reference as UNCONDITIONAL_CALL; that is the reference type AFTER the CALL_RETURN
@@ -19,12 +19,12 @@
  *     `jmp X` rewrite, i.e. it suppresses the shape under test. See `build.sh`.
  *  2. BACKWARD arm (C, `jump_back` -> `tail_lo`): `tail_lo` is defined FIRST so it lands at a
  *     lower address than `jump_back`, whose tail call lowers to `jmp tail_lo_` — a jump back past
- *     `jump_back_`'s own entry. That is the WAR2 shape (0x69032->0x67f40, 0x77dc1->0x72301,
+ *     `jump_back_`'s own entry. That is the subject shape (0x69032->0x67f40, 0x77dc1->0x72301,
  *     0x7a66b->0x79330 are all backward).
  *  3. FORWARD arm (`tailjmp_cstart.asm`, `fwd_jumper` -> `fwd_landing`): a jump FORWARD over
  *     `gap_fn`'s entry. It lives in the asm stub because wcc386 always lays a tail-call callee
  *     adjacent to (or before) its caller, so the forward arm cannot be produced from C with this
- *     compiler. It exercises the other arm of the same rule (WAR2 0x601f8->0x60270 etc.).
+ *     compiler. It exercises the other arm of the same rule (the subject's 0x601f8->0x60270 etc.).
  *  4. Both jump targets are preceded by a `ret`, so NOTHING falls through into them — Ghidra's
  *     `checkIfCouldHaveFallThruTo` must not veto, and the destination is genuinely unreachable
  *     without the rule. Both start with a non-terminator instruction, so the `RefType.TERMINATOR`
@@ -39,7 +39,7 @@
  * function set. mosura's `SharedReturnAnalyzer::could_have_fall_thru_to` carried an invented gate
  * ("a location inside an existing function's body must have a fall-through predecessor") which is
  * not in Ghidra; the destination gets swallowed into the JUMPING function's body (flow follows the
- * `jmp`), so that gate vetoed every tail-call destination — including all three WAR2 seeds. */
+ * `jmp`), so that gate vetoed every tail-call destination — including all three the subject seeds. */
 
 int g_acc;
 

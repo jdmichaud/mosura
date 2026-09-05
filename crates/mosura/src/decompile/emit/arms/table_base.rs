@@ -4,7 +4,7 @@
 //! materializes the base as an immediate (`MOV EDX,0x8f070 ; .. ; ADD EDX,EAX`, or `ADD
 //! EAX,0x8f070 ; LEA EDX,[EAX + 0x8]` for a field of the element). This compiler folds a
 //! literal address into one `LEA r,[idx + 0x8f070]` and keeps a relocatable symbol as its own
-//! operand — the original's tables were symbols. WAR2 FUN_00013bfc and FUN_00013a9c go EXACT
+//! operand — the original's tables were symbols. the subject's FUN_00013bfc and FUN_00013a9c go EXACT
 //! with the symbol; 126 non-exact functions carry a base-address immediate the recompile lacks
 //! (round f0). Value-identical: the symbol resolves to the base (the survey declares
 //! `extern char aRam<base>[]` and the relink binds it there), so the sum names the same address;
@@ -36,7 +36,7 @@ pub(crate) fn render(pr: &mut PrintC<'_>, op: OpId) -> Option<(String, u8)> {
     }
     // an INLINE sum only (an argument, a deref's address): a sum assigned to a declared local
     // takes the local's register and the symbol form costs a `MOV r,offset` the original's
-    // in-place `ADD r,offset` does not have (WAR2 FUN_00016764, SAME_SHAPE → MISMATCH, round f4)
+    // in-place `ADD r,offset` does not have (the subject's FUN_00016764, SAME_SHAPE → MISMATCH, round f4)
     if o.output.is_some_and(|out| pr.is_explicit(out)) {
         return None;
     }

@@ -520,7 +520,7 @@ mod tests {
     /// `CBRANCH` to its own next address plus a p-code-relative `BRANCH` back — collapses to
     /// `NO_FALLTHRU | BRANCH_TO_END`, i.e. `FALL_THROUGH`. Reading the LAST p-code op instead
     /// sees the trailing `BRANCH` and calls it an unconditional jump, which is what split
-    /// WAR2's `FUN_00012e68` at a `rep movsw`.
+    /// the subject's `FUN_00012e68` at a `rep movsw`.
     #[test]
     fn rep_string_op_internal_loop_falls_through() {
         let pc_rel = PArg::Var(Varnode { space: "const".into(), offset: 3, size: 8 });

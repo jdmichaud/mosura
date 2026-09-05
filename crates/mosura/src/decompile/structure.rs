@@ -258,7 +258,7 @@ fn block_index_of(blocks: &[FlowBlock], rpo: &[i32], b: usize) -> i32 {
 /// `isolated_count < graph.getSize()` with `getSize()` = `list.size()`, `BlockGraph::orderBlocks`
 /// (block.hh:430) guards its sort with `if (list.size()!=1)`, and `PrintC::emitBlockGraph`
 /// (printc.cc:2746) emits every element. Treating the result as one root instead silently drops
-/// every component but the entry's — measured on WAR2 `FUN_00077dcb`, where Ghidra (given the same
+/// every component but the entry's — measured on the subject's `FUN_00077dcb`, where Ghidra (given the same
 /// liveness) produces the same two components and prints both.
 #[derive(Clone)]
 pub struct Structured {
@@ -282,7 +282,7 @@ pub struct Structured {
     /// only equivalent while that block is the last thing printed. It is for a leaf and for a
     /// `List`; it is NOT for an `If`, whose exit basic block sits inside the then-arm. Getting that
     /// wrong buries the goto in a nested block and leaves the composite's other path falling off the
-    /// end of the function — five WAR2 functions, of which `FUN_00077dcb` is the worked example.
+    /// end of the function — five the subject functions, of which `FUN_00077dcb` is the worked example.
     pub node_gotos: HashMap<usize, Vec<GotoRecord>>,
     /// Basic blocks that are goto targets (get a label).
     pub labels: HashSet<BlockId>,
@@ -1215,8 +1215,8 @@ impl Structured {
     /// overflow-syntax variant is a deferred print-side refinement.)" It is not print-side and
     /// it was not a refinement: without it the condition block's statements are emitted ONCE
     /// ahead of the loop instead of on every iteration, which is wrong code. Ghidra takes the
-    /// overflow branch on **98 sites across 71** of the 1286 WAR2 functions in
-    /// `war2-survey/ghidra-all.txt`.
+    /// overflow branch on **98 sites across 71** of the 1286 the subject functions in
+    /// `<subject-survey>/ghidra-all.txt`.
     ///
     /// ⚠️ Counting trap, because the obvious grep is wrong: `grep 'while( true )'` returns 146
     /// lines, and they are TWO constructs. `while( true ) {` (98/71) is this overflow syntax
@@ -3154,7 +3154,7 @@ fn install_switch_defaults(s: &mut Structured, f: &Funcdata) {
 /// measure, and nothing else measures it. A block the tree never reaches is never emitted. If it
 /// still had a surviving in-edge the emitter renders `goto LAB_x` with no `LAB_x:` anywhere — which
 /// at least fails to compile (wcc386 `E1018`). If it had NO surviving in-edge it disappears in
-/// SILENCE: the C compiles, and it is simply the wrong program. Measured on WAR2, `FUN_00051298`
+/// SILENCE: the C compiles, and it is simply the wrong program. Measured on the subject, `FUN_00051298`
 /// loses 11 of its 50 blocks while surfacing only 2 undefined labels, so the label symptom
 /// undercounts the defect by roughly 5x.
 ///
@@ -3210,7 +3210,7 @@ pub fn structure(f: &Funcdata) -> Structured {
     }
     // `MOSURA_STRUCT=1` emits one header per function before any of its trace lines. Without it the
     // trace is UNSEGMENTABLE: `analyze_le_file` structures every function it recovers (1639 of them
-    // on WAR2), the trace lines carry only block numbers, and block numbers repeat across
+    // on the subject), the trace lines carry only block numbers, and block numbers repeat across
     // functions — so a per-specimen question could only be answered by correlating against the
     // dump ORDER, which is exactly the kind of guess this project treats as a fabricated
     // measurement. The `structure` topic already prints `CFG <name>`; this is the same key for the other
@@ -3979,9 +3979,9 @@ pub fn force_loop_overflow() -> bool {
 ///     while( true ) { param_1 = param_1 + -1;
 ///                     if (param_1 == -1) break;  ... }  ->  je
 /// ```
-/// Measured on WAR2's FUN_000458ec, whose original is the `je` form: the comma rendering compiles
+/// Measured on the subject's FUN_000458ec, whose original is the `je` form: the comma rendering compiles
 /// to 35 bytes against the original's 27, and the overflow rendering compiles to all 27, matching
-/// instruction for instruction. 86 emitted WAR2 functions carry a comma-operator condition, and 269
+/// instruction for instruction. 86 emitted the subject functions carry a comma-operator condition, and 269
 /// emit more `setcc` than their original.
 ///
 /// This is a rendering choice, not a claim about the binary: it changes only C surface syntax,

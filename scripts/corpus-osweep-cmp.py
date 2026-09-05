@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Compare two oracle-sweep runs (idx-joined): score deltas, insn-weighted by a recompile_check
-verdict table: usage: war2-osweep-cmp.py <old-sweep.tsv> <new-sweep.tsv> <rec.tsv>."""
+verdict table: usage: corpus-osweep-cmp.py <old-sweep.tsv> <new-sweep.tsv> <rec.tsv>."""
 import sys
 A = sys.argv[1]; B = sys.argv[2]
 REC = sys.argv[3] if len(sys.argv) > 3 else '/data/be2/zc29-rec.tsv'

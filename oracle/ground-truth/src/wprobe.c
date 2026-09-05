@@ -5,9 +5,9 @@
  * defines comes in by inclusion, so all three fixtures move together and the only variable is the
  * flag under test.
  *
- * WHY THIS CELL IS FIRST. `-s` suppresses Watcom's stack-overflow probe. WAR2 was built with it;
+ * WHY THIS CELL IS FIRST. `-s` suppresses Watcom's stack-overflow probe. the subject was built with it;
  * **most binaries are not, because it is not the default** — so this is the axis most likely to
- * matter on a binary that is not WAR2, which is the whole point of the standing scope rule.
+ * matter on a binary that is not the subject, which is the whole point of the standing scope rule.
  *
  * WHAT CHANGES — measured on native OW2 before any pattern was written:
  *

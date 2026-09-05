@@ -1,4 +1,4 @@
-# `cp-floor-instrument.patch` — decompose the WAR2 Constant Propagation floor
+# `cp-floor-instrument.patch` — decompose the subject Constant Propagation floor
 
 Diagnostic only. **Never land it**: it puts two `Instant::now()` pairs on the per-instruction path.
 
@@ -7,7 +7,7 @@ Applies cleanly to `46cccf5` and compiles (both verified).
 ```sh
 git apply held-patches/cp-floor-instrument.patch
 cargo build --release
-MOSURA_ANALYSIS_TRACE=1 <your WAR2 LE run> > /tmp/war2-fc.log 2>&1
+MOSURA_ANALYSIS_TRACE=1 <your the subject LE run> > /tmp/subject-fc.log 2>&1
 git checkout -- crates/mosura/src/analysis/symbolic.rs crates/mosura/src/analysis/analyzers/mod.rs
 ```
 
@@ -44,15 +44,15 @@ unbounded-walk half, regardless of which timer wins.
 
 ## Aggregating
 
-WAR2 will emit one `[fc]` per walk across ~95 invocations, so expect a large file.
+the subject will emit one `[fc]` per walk across ~95 invocations, so expect a large file.
 
 ```sh
 # where the time went, per phase, across the whole run
-awk -F'flow=' '/^\[cp\]/{print $2}' /tmp/war2-fc.log | head -40
+awk -F'flow=' '/^\[cp\]/{print $2}' /tmp/subject-fc.log | head -40
 # the 20 most expensive walks
-grep '^\[fc\]' /tmp/war2-fc.log | sed 's/.*total=//' | sort -rh | head -20
+grep '^\[fc\]' /tmp/subject-fc.log | sed 's/.*total=//' | sort -rh | head -20
 # total decodes across all walks — multiply by ~40µs for the candidate-1 prediction
-grep -o 'n_dis=[0-9]*' /tmp/war2-fc.log | cut -d= -f2 | paste -sd+ | bc
+grep -o 'n_dis=[0-9]*' /tmp/subject-fc.log | cut -d= -f2 | paste -sd+ | bc
 ```
 
 ## Caveat

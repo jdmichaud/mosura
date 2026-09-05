@@ -1,7 +1,7 @@
 /* Ground-truth repro: a parameter passed ON THE STACK, which mosura recovers as an
  * UNINITIALISED LOCAL instead.
  *
- * Measured on WAR2 FUN_0006aec4, whose whole body is
+ * Measured on the subject's FUN_0006aec4, whose whole body is
  *
  *     8b 44 24 04    mov eax,[esp+4]      <- the parameter
  *     8b 00          mov eax,[eax]
@@ -20,7 +20,7 @@
  *
  *     <pentry minsize="1" maxsize="500" align="4"><addr offset="4" space="stack"/></pentry>
  *
- * so `possible_param` should accept it. ~100 functions in the WAR2 survey read a `Stack<offset>`
+ * so `possible_param` should accept it. ~100 functions in the subject survey read a `Stack<offset>`
  * value they never assign.
  *
  * Properties this program depends on — do not "simplify" them away:

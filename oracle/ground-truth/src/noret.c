@@ -5,7 +5,7 @@
  * `ElfFunctionsThatDoNotReturn`) selects its name list from the memory map and **returns early
  * unless a `.dynsym`, `.plt` or `EXTERNAL` block exists** (noreturn.rs:128-137). Every other
  * binary in this corpus is freestanding: the gcc columns link `-nostdlib -static` and the Watcom
- * columns link `option nodefaultlib`, and WAR2 is a DOS/4GW LE image whose objects are named
+ * columns link `option nodefaultlib`, and the subject is a DOS/4GW LE image whose objects are named
  * `objN_text`/`objN_data`. Measured on all of them: **`noreturn_functions` is EMPTY**. So an
  * entire analyzer had zero coverage, on any target, and any test asserting a no-return behaviour
  * would have passed whether or not the code under it worked.

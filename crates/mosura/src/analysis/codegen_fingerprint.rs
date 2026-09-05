@@ -21,7 +21,7 @@
 //!   the 10.0 line, and either `SETcc ; MOVZX` or the inline constant division `MOV r,imm ; CDQ ;
 //!   IDIV r` (the `cdq` sign-extension, where the classic 10.0a-11.0 line uses `SAR`) indicates a
 //!   revision outside that interior — **9.01 or Open Watcom, not Open Watcom alone**; *absence* is
-//!   inconclusive, never a wrong exclusion. It reports a class (often the era, which is what WAR2
+//!   inconclusive, never a wrong exclusion. It reports a class (often the era, which is what the subject
 //!   needs), not always a single revision. Honest by construction.
 //!
 //! Signals are `Option` — `None` = "not observed", never contradicts a revision.
@@ -308,7 +308,7 @@ pub fn identify_watcom(lang_id: &str, code: &[u8], base: u64) -> Vec<&'static st
 /// constructs across all of them, and aggregates by unanimity (see [`Votes`]). On a real binary
 /// the strategy signals (byte-compare promotion, setcc zero-extension) are consistent and survive,
 /// while register-allocation artifacts (the loop-bound register) vary and drop out — so the result
-/// is honest: often a *class* (e.g. the promoting 10.0 line = WAR2's era) rather than always a
+/// is honest: often a *class* (e.g. the promoting 10.0 line = the subject's era) rather than always a
 /// single revision. An empty result means "no Watcom fingerprint found" (not Watcom, or stripped
 /// of the constructs).
 pub fn identify_watcom_program(program: &crate::analysis::program::Program) -> Vec<&'static str> {
@@ -448,18 +448,18 @@ mod tests {
     /// here, and interpolating an unmeasured revision from its neighbours is unsound: had 9.5b
     /// been guessed from 9.01 and 10.0a, BOTH neighbours would have given the wrong answer.
     ///
-    /// WAR2's identification is unaffected: it rests on 10.0a's *promoting* `cmp eax,5`, which
+    /// the subject's identification is unaffected: it rests on 10.0a's *promoting* `cmp eax,5`, which
     /// remains unique to that row.
     /// 10.0a is a **one-release excursion**, and every revision around it agrees against it.
     ///
-    /// The promoting byte compare (`and eax,0ffH ; cmp eax,5`) that identifies WAR2 is unique to
+    /// The promoting byte compare (`and eax,0ffH ; cmp eax,5`) that identifies the subject is unique to
     /// 10.0a *retail*. Its immediate predecessors — 9.5b (1993) and the 10.0 **beta** (LA preprod,
     /// 16 Mar 1994) — and its successors 10.5/10.6 (1995) all emit byte-identical code WITHOUT it.
     /// So the promotion appeared between the March 1994 beta and 10.0a retail, and was gone again
     /// by 10.5.
     ///
     /// This is the strongest form of the non-monotonicity argument: 10.0a cannot be interpolated
-    /// from anything, and nothing can be interpolated *through* it. It also sharpens WAR2's
+    /// from anything, and nothing can be interpolated *through* it. It also sharpens the subject's
     /// identification rather than weakening it — the promoting form is now known to be unique to a
     /// single release, not merely to "the 10.0 line".
     #[test]
@@ -593,7 +593,7 @@ mod tests {
     /// ⚠️ This test used to be called `..._fires_on_ow2_not_classic` and its composition assertion
     /// read `vec!["watcom:open"]`. Both were wrong once 9.01 was measured: `9.01.obj` contains
     /// `mov ebx,7 ; cdq ; idiv ebx`, so the anchor is evidence of the lineage's OUTER ENDS, not of
-    /// Open Watcom. The 10.0a/10.6/11.0 half of the claim — the half WAR2 actually rests on — is
+    /// Open Watcom. The 10.0a/10.6/11.0 half of the claim — the half the subject actually rests on — is
     /// unchanged and is still asserted below.
     #[test]
     fn inline_const_div_anchor_fires_on_the_cdq_revisions() {

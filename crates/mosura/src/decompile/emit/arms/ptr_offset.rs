@@ -2,7 +2,7 @@
 //! arithmetic, `*(T *)((char *)p + k)`, where the port prints `*(T *)((int4)p + k)` (Ghidra's
 //! `arithmeticOutputStandard`: the sum of a pointer and an int is int-natured and casts). Both
 //! name the same address, but this compiler treats the int-cast sum as integer arithmetic and
-//! materializes it (`LEA EAX,[EDX + 0x1a]` then `CMP word ptr [EAX],0`, WAR2 FUN_0003ca54;
+//! materializes it (`LEA EAX,[EDX + 0x1a]` then `CMP word ptr [EAX],0`, the subject's FUN_0003ca54;
 //! `ADD EAX,0x1f` in FUN_0001c918) where it folds pointer arithmetic into the addressing mode
 //! (`CMP word ptr [EDX + 0x1a],0`) — 118 emitted TUs carry the form, 87 of them with an extra
 //! `LEA` (round e12). The witness (`recovered.ptr_offset.sites`, from

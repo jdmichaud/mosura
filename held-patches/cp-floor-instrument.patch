@@ -55,7 +55,7 @@ index 63e8502..d6b75ef 100644
      // arg-register set there, so [`add_param_references`] no-ops. (`isHarvard` — default space
      // ≠ default data space — is false for the flat images these loaders build.)
 +    // ── DIAGNOSTIC (temporary, `MOSURA_ANALYSIS_TRACE=1`) ────────────────────────────────
-+    // One line per walk, to decide what the WAR2 Constant Propagation floor actually is.
++    // One line per walk, to decide what the subject Constant Propagation floor actually is.
 +    // Read the env var ONCE per walk (not per instruction) and keep every counter a local, so
 +    // this adds no shared state — cf. `inert-is-not-thread-safe`.
 +    let trace = std::env::var_os("MOSURA_ANALYSIS_TRACE").is_some();

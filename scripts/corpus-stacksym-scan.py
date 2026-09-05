@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""SOURCE SCAN for task #6 / B2's three sub-classes over an emitted WAR2 `src/` directory.
+"""SOURCE SCAN for task #6 / B2's three sub-classes over an emitted the subject `src/` directory.
 
 The wcc386 ladder reports only the FIRST error per function, so it cannot count a class that a
-different class masks (docs/war2-recompile-remeasure.md). These predicates read the emitted C
+different class masks (docs/corpus-round-runbook.md). These predicates read the emitted C
 directly, so each class count is independent of every other class.
 
-    scripts/war2-stacksym-scan.py <src-dir> [<baseline-src-dir>]
+    scripts/corpus-stacksym-scan.py <src-dir> [<baseline-src-dir>]
 
 Classes (each printed with its file count and its occurrence count):
 
@@ -27,7 +27,7 @@ Classes (each printed with its file count and its occurrence count):
 
 UNCOVERED by this scan, stated so its silence is never read as completeness: a stack local that is
 declared with the WRONG TYPE (the name agrees, so (b) is silent); a declared-but-unused local; any
-wrong VALUE. Use scripts/war2-wrongcode-scan.py and the absolute call gauge for those.
+wrong VALUE. Use scripts/corpus-wrongcode-scan.py and the absolute call gauge for those.
 """
 import re
 import sys
@@ -51,7 +51,7 @@ STACK_IDENT = re.compile(
 # local look declared, i.e. it silently undercounts the class this scan exists to count. Found by a
 # duplicate-declaration cross-check reporting 17 phantom files; the instrument was the defect.
 # The leading indent is `\s{0,2}`, not `\s{2}`: a column-0 match is the EMITTER's synthesized
-# file-scope declaration (`war2_survey.rs`'s `build_tu`, the same synthesis that covers
+# file-scope declaration (`corpus_emit.rs`'s `build_tu`, the same synthesis that covers
 # `extraout_`/`unaff_`/`in_`/`register0x`), and it declares the identifier just as a local does.
 # Requiring the indent made every synthesized declaration invisible and kept 4 files in the
 # undeclared class after they had been closed.

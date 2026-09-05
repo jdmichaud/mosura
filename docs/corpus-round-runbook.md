@@ -1,4 +1,4 @@
-# Running the WAR2 recompile tooling
+# Running the subject recompile tooling
 
 How to drive the three in-repo tools that answer, per function: **does the C mosura emits, compiled
 by the original toolchain and relinked at the original's address, reproduce the original's bytes?**
@@ -10,7 +10,7 @@ next, see [`byte-exact-status.md`](byte-exact-status.md); for why the pipeline i
 ## Prerequisites
 
 - `dosemu2` working (there is a `dosemu2` skill).
-- Watcom 10.0a at `/home/jd/projects/warcraft2-re/tmp/watcom-experiments/watcom_10.0a/WATCOM`.
+- Watcom 10.0a at `/home/jd/projects/the RE tracker/tmp/watcom-experiments/watcom_10.0a/WATCOM`.
 - Build the tree you want to measure — the emit uses the current decompiler.
 - Put the build target on **local disk**; the project mount is sshfs and far slower:
   `export CARGO_TARGET_DIR=/data/<you>-target`
@@ -19,15 +19,15 @@ next, see [`byte-exact-status.md`](byte-exact-status.md); for why the pipeline i
 
 ```sh
 OUT=/data/be2/run1                       # local disk; never inside a worktree
-WAT=/home/jd/projects/warcraft2-re/tmp/watcom-experiments/watcom_10.0a/WATCOM
+WAT=/home/jd/projects/the RE tracker/tmp/watcom-experiments/watcom_10.0a/WATCOM
 EX=$CARGO_TARGET_DIR/release/examples
 ```
 
-### 1. `war2_survey` — emit
+### 1. `corpus_emit` — emit
 
 ```sh
-$EX/war2_survey <war2.exe> <out_dir> [--arms '<θ>;<θ>...'] [--only <va>,...] [--force]
-$EX/war2_survey /home/jd/WAR2.EXE $OUT
+$EX/corpus_emit <the subject.exe> <out_dir> [--arms '<θ>;<θ>...'] [--only <va>,...] [--force]
+$EX/corpus_emit /home/jd/the subject binary $OUT
 ```
 
 Decompiles every function and writes one standalone compilable `.c` each, plus `manifest.tsv`.
@@ -50,7 +50,7 @@ $EX/recompile_check <binary> <manifest> <src-dir> <flags-file> <watcom-dir> \
     [--only <idx|0xva>,...] [--cache <dir>] [--verbose] [--out <tsv>] [--divergences <tsv>] \
     [--prev <previous --out tsv>] [--no-gates]
 
-$EX/recompile_check /home/jd/WAR2.EXE $OUT/manifest.tsv $OUT/src recover $WAT \
+$EX/recompile_check /home/jd/the subject binary $OUT/manifest.tsv $OUT/src recover $WAT \
     --cache /data/be2/cache --out $OUT/verdicts.tsv --divergences $OUT/div.tsv
 ```
 
@@ -68,9 +68,9 @@ function is doing wrong.
 
 #### The corpus gates (review R4)
 
-Both tools end by running the corpus gates (`recompile::gates`, `scripts/corpus-gates.tsv`) over
+Both tools end by running the corpus gates (`recompile::gates`, `<subject-profile>/corpus-gates.tsv`) over
 what they just wrote, and EXIT 1 on a violation — the invariants that decided the 2026-08-26/27
-landings are round failures, not a reviewer's greps. `war2_survey` runs the text gates after the
+landings are round failures, not a reviewer's greps. `corpus_emit` runs the text gates after the
 emit (1 declared symbols, 2 piece-on-field, 3 call-as-argument on any emit; 4 the string-ops bar,
 5 chains never switch, 6 switch labels only on a full emit — a `--only` probe skips them audibly);
 `recompile_check` runs the verdict gates after writing `--out` (7 the guard sets stay EXACT; 8
@@ -78,7 +78,7 @@ against `--prev <previous --out tsv>`: no EXACT lost, no new failure verdict (CO
 DECOMPILE_FAIL), every other down LISTED
 with old/new verdict and sim under the WGSS delta — their classification stays the human step).
 Without `--prev` gate 8 prints `SKIP`, never a silent pass. The bars and sets live in
-`scripts/corpus-gates.tsv`, each row with its rule (`>=` floor, `==` count, `no-switch`, `EXACT`)
+`<subject-profile>/corpus-gates.tsv`, each row with its rule (`>=` floor, `==` count, `no-switch`, `EXACT`)
 and the round it was set at: a landing that legitimately moves a bar edits that file in the same
 commit. The string-ops bar's scope is the manifest's `kind` column (`user`), the same scope as
 `recompile_check`'s default census. `--no-gates` is for diagnostics only. Re-run everything on an
@@ -110,7 +110,7 @@ tried left to right, so put the reference rendering first.
 emission whose per-site choices are read from the original's own instructions by the target
 profile, the same emission a compilerless field run ships:
 
-    war2_survey <exe> <out>
+    corpus_emit <exe> <out>
     recompile_check <exe> <out>/manifest.tsv <out>/recovered recover <WATCOM> --cache <cache> --out <sbNN>-rec.tsv
 
 No flags: the survey always emits `src/` (the reference rendering) and `recovered/` (the
@@ -126,7 +126,7 @@ tail-merge butterflies — functions where blanket widening perturbs Watcom's ep
 no evidence maps to that, and they are parked with the allocation policy. To re-measure that
 margin (a diagnostic, not the canonical number):
 
-    war2_survey <exe> <out> --arms 'default;local-width=storage' --recovered <out>/recovered
+    corpus_emit <exe> <out> --arms 'default;local-width=storage' --recovered <out>/recovered
     # check all three, then recompile_select default/rec/lw as before
 
 **Arm 2 (compare-form + return-split + cond-form as a blanket per-function arm) is RETIRED
@@ -210,7 +210,7 @@ the changed op in the op-action trace (`--debug opaction`).
 - `--only` is read-only, but with the `proto-pass` switch on (the default) it still runs the whole-program prototype
   pass first, so debug output covers **every** function. Filter on the call address.
 - **`git checkout` reverts the source and leaves the built binary.** Every measurement here runs
-  binaries by path (`$EX/war2_survey`), not through `cargo run`, so nothing rebuilds them for you.
+  binaries by path (`$EX/corpus_emit`), not through `cargo run`, so nothing rebuilds them for you.
   Revert a change, forget the rebuild, and the next emit silently carries the reverted behaviour.
   This produced a 60-function error: three source-level checks — `git status`, `git grep HEAD`, a
   full diff of every changed file — all agreed the tree was clean while the binary disagreed, which
@@ -223,11 +223,11 @@ the changed op in the op-action trace (`--debug opaction`).
 
 ## Superseded
 
-Earlier revisions drove an out-of-repo harness in `/home/jd/projects/mosura/war2-survey/`
+Earlier revisions drove an out-of-repo harness in `/home/jd/projects/mosura/<subject-survey>/`
 (`compile.sh`, `compare.py`, `wardiff`, `postlink.py`) across three shell processes.
 `recompile_check` replaced it by doing compile, relink, align and score in one program, because
 splitting the stages let the emit, the objects and the manifest drift apart.
 
-`war2-survey/` remains the historical record and the store for `ghidra-all.txt` (Ghidra's own
-decompilation of WAR2, used as an oracle). It is no longer the measurement path, and its
+`<subject-survey>/` remains the historical record and the store for `ghidra-all.txt` (Ghidra's own
+decompilation of the subject, used as an oracle). It is no longer the measurement path, and its
 `RELOC_EXACT` verdict no longer exists — relocations are resolved and verified, not masked.

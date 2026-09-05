@@ -1,19 +1,19 @@
 //! LE (Linear Executable) loader — for DOS-extender-bound 32-bit executables (e.g. the
-//! DOS/4GW-bound WAR2.EXE). file bytes → a [`Program`] whose objects-as-blocks match the
+//! DOS/4GW-bound the subject binary). file bytes → a [`Program`] whose objects-as-blocks match the
 //! Linear Executable's real structure (the 32-bit protected-mode image), as
 //! `x86:LE:32:default`, image base `0x10000`.
 //!
 //! **No Ghidra oracle.** Ghidra has no LE/LX loader, so — unlike `elf.rs`/`pe.rs`/`mz.rs`,
 //! which port the *output* of a Ghidra loader — this loader is grounded in the **LE/LX
-//! format spec** and validated against the **warcraft2-re reverse-engineering ground truth**
+//! format spec** and validated against the **the RE tracker reverse-engineering ground truth**
 //! recorded in `docs/le-loader-notes.md` (the two objects + the entry). See that file for
 //! the format references and the rationale for a native loader (vs the ELF32-wrapper hack).
 //!
 //! **Scope / honesty.** This produces the LE's memory map + entry (validated by
-//! `le_war2_objects` in `analysis_parity.rs` against the recorded RE result). It is **not**
-//! wired into the default `analyze` dispatch for the bound WAR2.EXE: that file's committed
+//! `le_subjects_objects` in `analysis_parity.rs` against the recorded RE result). It is **not**
+//! wired into the default `analyze` dispatch for the bound the subject binary: that file's committed
 //! goldens are Ghidra's 16-bit *MZ-stub* interpretation (Ghidra can't load the LE), so the
-//! war2 Ghidra-parity gates depend on the MZ path — re-pointing them at the LE objects has
+//! the subject Ghidra-parity gates depend on the MZ path — re-pointing them at the LE objects has
 //! no Ghidra oracle to validate against. What remains (see the task report) is the
 //! dispatch/gate-policy decision + the 32-bit analysis pipeline + a switch-table golden.
 
@@ -260,7 +260,7 @@ pub fn load_le_with(data: &[u8], knobs: &crate::switches::Knobs) -> Result<Progr
     }
 
     // Apply the LE relocation ("fixup") records: patch each internal reference to its loaded
-    // address (source obj-relative offset + object reloc_base). WAR2's cs:-relative inline
+    // address (source obj-relative offset + object reloc_base). the subject's cs:-relative inline
     // jump tables — the real protected-mode switches — are entirely constructed from these
     // fixups (both the `jmp cs:[reg*4+disp]` displacement and every table entry), so without
     // this pass the switch tables read garbage and the switch-gated code stays undiscovered.
@@ -351,7 +351,7 @@ pub fn load_le_with(data: &[u8], knobs: &crate::switches::Knobs) -> Result<Progr
 /// - **Fixup Record Table** (`LE+0x6c`): the packed records themselves.
 ///
 /// A record is `SRC(1) FLAGS(1) SRCOFF/CNT OBJECT TARGETOFF [ADDITIVE] [SRCOFF-list]`:
-/// - `SRC` low nibble = source size (`0x07` = 32-bit offset — WAR2's kind), `0x10` = the
+/// - `SRC` low nibble = source size (`0x07` = 32-bit offset — the subject's kind), `0x10` = the
 ///   source is a *list* (a count byte replaces the single 2-byte source offset, and the list
 ///   of 2-byte source offsets trails the target data).
 /// - `FLAGS` low 2 bits = target type (`0` = internal reference); `0x40` = 16-bit object
@@ -362,7 +362,7 @@ pub fn load_le_with(data: &[u8], knobs: &crate::switches::Knobs) -> Result<Progr
 /// records Ghidra's loaders put in the program's `RelocationTable`. The caller stores them
 /// there; `AddressTable.getEntry`'s `isValidRelocationAddress` filter consumes them.
 ///
-/// Only **internal** (target-type 0) fixups are applied — WAR2 is 100% internal 32-bit-offset
+/// Only **internal** (target-type 0) fixups are applied — the subject is 100% internal 32-bit-offset
 /// fixups (its import table is empty). Imports/selectors are neither sized nor applied here;
 /// on encountering one the page is abandoned (no LE test binary exercises them). Ghidra has no
 /// LE loader — the oracle is the binary's own fixup bytes (docs/le-loader-notes.md).
@@ -469,7 +469,7 @@ fn apply_le_fixups(
                 q += 2;
                 u64::from(v)
             };
-            // Additive addend (unused by WAR2): skip its 2/4 bytes.
+            // Additive addend (unused by the subject): skip its 2/4 bytes.
             if flags & 0x04 != 0 {
                 q += if flags & 0x20 != 0 { 4 } else { 2 };
             }

@@ -64,12 +64,11 @@ for com in "$CORPUS"/*.com; do
   echo "  wrote $name.snapshot + $name.loaded.snapshot"
 done
 
-# User-provided binaries (not committed): capture only if present. Located by their `[binaries]`
-# keys in dev-config.toml with $HOME-relative defaults (docs/dependencies.md; matches devcfg.rs).
+# User-provided sample binaries (not committed): capture only if present. Located by their
+# `[binaries]` keys in dev-config.toml with $HOME-relative defaults (docs/dependencies.md).
 CNV_EXE="$(devcfg binaries.cnv "$HOME/cnv.exe")"
 COMCOM32_EXE="$(devcfg binaries.comcom32 "$HOME/.local/share/comcom32/comcom32.exe")"
-WAR2_EXE="$(devcfg binaries.war2 "$HOME/WAR2.EXE")"
-for ext in "cnv:$CNV_EXE" "comcom32:$COMCOM32_EXE" "war2:$WAR2_EXE"; do
+for ext in "cnv:$CNV_EXE" "comcom32:$COMCOM32_EXE"; do
   name="${ext%%:*}"; path="${ext#*:}"
   if [ -f "$path" ]; then
     # cnv's converged snapshot is ~3MB (174k instructions) — too large to commit, so it
@@ -84,6 +83,19 @@ for ext in "cnv:$CNV_EXE" "comcom32:$COMCOM32_EXE" "war2:$WAR2_EXE"; do
     echo "  wrote $name goldens"
   else
     echo "skip $name: $path not present"
+  fi
+done
+# The configured SUBJECTS (dev-config `[[subject]]`): a subject's goldens live in its profile, never
+# in the repository (analysis.snapshot = converged, analysis.loaded.snapshot = loader-stage).
+cargo xtask devcfg 2>/dev/null | awk '/^subject /' | while IFS= read -r line; do
+  id="${line#subject }"; id="${id%% = *}"
+  rest="${line#* = }"; path="${rest%% (profile: *}"; profile="${rest#*(profile: }"; profile="${profile%)}"
+  if [ -n "$profile" ] && [ "$profile" != "-" ] && [ -f "$path" ]; then
+    echo "capturing subject $id (converged + loader-stage) into $profile …"
+    capture "$profile/analysis.snapshot" "$path"
+    capture "$profile/analysis.loaded.snapshot" "$path" -noanalysis
+  else
+    echo "skip subject $id: binary or profile absent"
   fi
 done
 echo "done"

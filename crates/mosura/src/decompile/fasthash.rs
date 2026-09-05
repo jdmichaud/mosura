@@ -1,6 +1,6 @@
 //! A fast deterministic hasher for hot integer-keyed maps (the rustc `FxHasher` construction).
 //!
-//! `std`'s default `SipHash` is a measurable share of the WAR2 analysis profile under
+//! `std`'s default `SipHash` is a measurable share of the subject analysis profile under
 //! [`super::mergesnip`]/[`super::cover`], where the keys are small dense integers (op ids, block
 //! indices). This hasher is only used where map/set *iteration order can not affect output* —
 //! pure membership tests and commutative folds — so swapping the hasher is output-neutral.

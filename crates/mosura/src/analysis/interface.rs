@@ -32,7 +32,7 @@ pub fn recover_prototypes(program: &Program) -> HashMap<u64, FuncProto> {
     recover_prototypes_of(program, entries)
 }
 
-/// [`recover_prototypes`] restricted to `scope` — the probe path (`war2_survey --only`): a
+/// [`recover_prototypes`] restricted to `scope` — the probe path (`corpus_emit --only`): a
 /// probed function's decompile consults `recovered_protos` only at its OWN call sites (lookup
 /// by direct static callee VA; an indirect call has no static target to look up), and every
 /// other upgrade-gate input comes from the landed world or per-callee lazy caches. So a probe

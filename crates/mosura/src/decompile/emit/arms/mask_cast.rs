@@ -3,7 +3,7 @@
 //! such a mask redundant (a byte plus a small constant never reaches bit 16) and removes it from
 //! the IR, so the port has nothing to print — but this compiler emits the mask only from a
 //! source that truncates (a `WORD` temporary, a cast), and without it the argument's `AND
-//! EAX,0xffff` is missing from the recompile (WAR2 FUN_000121ac and the `+ 0xbbb` message-id
+//! EAX,0xffff` is missing from the recompile (the subject's FUN_000121ac and the `+ 0xbbb` message-id
 //! family, FUN_0004a194's `(cond) + 0xbf8`: 23 near-miss functions on round e6). The witness is
 //! the original's own `AND r,0xff|0xffff` on the argument's register between the argument's
 //! definition and the call (`recovered.mask_cast.sites`, from `buildconfig::masked_args_from_evidence`

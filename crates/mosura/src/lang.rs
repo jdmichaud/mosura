@@ -89,8 +89,8 @@ fn resolve_language_paths(lang_id: &str) -> Option<(PathBuf, PathBuf)> {
 /// `watcom` on `x86:LE:32` returns from the mosura-authored spec before the tree walk begins, so it
 /// pays ~1 ms where every other configuration pays 35–120 ms. Anyone extrapolating a measurement
 /// from one target to another must check the configuration first: an x86-64 number over-states an
-/// x86-32-watcom target (WAR2's) by a factor of ~20, and doing exactly that produced a confident
-/// and wrong account of WAR2's constant-propagation profile, whose floor remains unexplained.
+/// x86-32-watcom target (the subject's) by a factor of ~20, and doing exactly that produced a confident
+/// and wrong account of the subject's constant-propagation profile, whose floor remains unexplained.
 ///
 /// The cache is keyed by `(lang_id, compiler_spec_id)` and holds the negative answer too — a
 /// language that declares no such `<compiler>` must not re-walk the tree to rediscover that.
@@ -331,7 +331,7 @@ pub type Language = (&'static Spec, &'static [u32]);
 ///
 /// Mosura's per-function bridge ([`crate::analysis::decompiler::decompile_function`]) used
 /// plain [`load`], so a whole-program decompile re-read the tables once per function (1286×
-/// for WAR2 — every one of those reads a chance to fail). The failure was silent and
+/// for the subject — every one of those reads a chance to fail). The failure was silent and
 /// *per-function*: an unreadable `.sla` yielded `None` (that function alone did not
 /// decompile), and an unreadable `.pspec` yielded an all-zero context register, decoding that
 /// one function in 16-bit real mode (`segment(...)`, `xunknown2`) while its neighbours decoded

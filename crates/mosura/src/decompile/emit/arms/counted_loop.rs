@@ -3,7 +3,7 @@
 //! original's bytes iterate at the loop END right after a call (`CALL ; INC EBX ; CMP EBX,4 ;
 //! JLE`). Ghidra prints the do-while (`BlockDoWhile` never takes the for-loop rewrite,
 //! block.cc:3358) with the increment as the body's last statement, and this compiler's
-//! scheduler hoists that statement above the preceding call (`INC EBX ; CALL`, WAR2
+//! scheduler hoists that statement above the preceding call (`INC EBX ; CALL`, the subject
 //! FUN_0003e858, FUN_0003e7ec); as the loop's own iterate clause it stays at the end.
 //! Value-identical: the `for` form tests the loop variable before the first iteration, so the
 //! arm fires only when that test is TRUE on the constant initializer.

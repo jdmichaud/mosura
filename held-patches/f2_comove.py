@@ -4,7 +4,7 @@
 Prediction recorded in docs/byte-exact-families.md before the experiment:
 
     if the interim build's difference is result-register-assignment preference, patching the
-    allocation dial toward WAR2's preference should move F2's rows TOGETHER WITH the regalloc
+    allocation dial toward the subject's preference should move F2's rows TOGETHER WITH the regalloc
     MOV>MOV class. If regalloc moves and F2 doesn't (or vice versa), the unification is wrong.
 
 F2's dial-patch-relevant half is the `selection MOV>LEA` signature (the SHL>LEA half was already

@@ -5,7 +5,7 @@ extra/missing/selection/operand-form rows), plus the semantic-vs-form coupling t
 decides whether form divergence (regalloc/selection/operand-form) is independent of semantic
 divergence (missing/extra/branch-target) or a consequence of it.
 
-usage: war2-mechanism-census.py <rec.tsv> <div.tsv>   (both from one recompile_check run:
+usage: corpus-mechanism-census.py <rec.tsv> <div.tsv>   (both from one recompile_check run:
        `--out rec.tsv --divergences div.tsv`)
 """
 import sys, re, collections

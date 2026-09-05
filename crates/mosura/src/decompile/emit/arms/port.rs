@@ -35,7 +35,7 @@ pub struct Report {
     /// pipeline's own placement of such a store is not the source's: a slot the callee reads
     /// through an INDIRECT is snipped into a COPY placed right before the call (Ghidra's
     /// `Merge::snipIndirect`, ported), so the parameter's store prints after the constant stores
-    /// the original wrote it before (WAR2 FUN_00012e40's `[8] = param_1` after `[6] = 0xe; [0] =
+    /// the original wrote it before (the subject's FUN_00012e40's `[8] = param_1` after `[6] = 0xe; [0] =
     /// 9`). A target rule reads the original's own `MOV [EBP + off],..` sequence
     /// (`buildconfig::stack_store_orders_from_evidence`) and returns the emission order.
     pub stack_store_runs: Vec<Vec<(OpId, i64, u32)>>,

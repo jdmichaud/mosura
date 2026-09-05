@@ -1,10 +1,10 @@
-//! **The Watcom column's recall gate — the product claim, without Ghidra and without WAR2.**
+//! **The Watcom column's recall gate — the product claim, without Ghidra and without the subject.**
 //!
 //! Every other Watcom check in this repo is self-referential. `fid_detect_versions` scores each
 //! database against its OWN records, so a database that has drifted out of agreement with real
 //! linked code still out-scores its neighbours exactly as before; `fid_database_drift` proves a
 //! database reproduces from its libraries, which says nothing about whether it matches a program.
-//! The only end-to-end evidence was WAR2.EXE, and by standing rule mosura's development must not
+//! The only end-to-end evidence was the subject binary, and by standing rule mosura's development must not
 //! depend on that binary: it is a development guide and post-release validation, never a gate.
 //!
 //! So this compiles a program **we wrote** (`oracle/fid/src/watprobe.c`) with a real Watcom 10.0a

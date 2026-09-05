@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The declaration-order -> register-assignment predicate, derived from Open Watcom source.
 
-Nothing here is calibrated against the WAR2 corpus. Every step is a source line:
+Nothing here is calibrated against the subject corpus. Every step is a source line:
 
   ConfList order   = declaration order            (cdecl2.c:623 append; cgen2.c:1670 forward walk;
                                                    makeaddr.c:590 temp creation; namelist.c:97

@@ -36,7 +36,7 @@ fn main() {
     let workdir = mosura::paths::workspace_root().join("build/gt-recompile");
     std::fs::create_dir_all(&workdir).ok();
     let mut tsv = String::from("program\tsymbol\tva\tverdict\tsim\tweight\tclasses\tnote\n");
-    // recompile_check's two table formats, so scripts/war2-mechanism-census.py runs unchanged.
+    // recompile_check's two table formats, so scripts/corpus-mechanism-census.py runs unchanged.
     let mut rec = String::from("idx\tva\tname\tverdict\tbytes\tprimary\tsim\tequal\torig_n\tcand_n\tclasses\n");
     let mut div = String::from(
         "idx\tfn_va\tclass\taddr\toi\tci\torig_n\tcand_n\torig_mn\tcand_mn\torig_regs\tcand_regs\torig_text\tcand_text\n",

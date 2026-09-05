@@ -2,7 +2,7 @@
 """WRONG-CODE scan over a directory of mosura-emitted C. A standing land gate.
 
 WHY THIS EXISTS
-    Every land battery run before 2026-07-30 reported "clean" while 11 WAR2 functions contained a
+    Every land battery run before 2026-07-30 reported "clean" while 11 the subject functions contained a
     `goto LAB_x` whose label was NEVER DEFINED. That cannot compile — unambiguous wrong code — and
     nothing looked for it. Two separate batteries (including one that was reviewed and ratified)
     over-claimed clean on that blind spot. Before it, the empty-body scan had missed `switch(){}`
@@ -89,7 +89,7 @@ UNCOVERED — known wrong-code shapes this scan does NOT detect (file them, don'
     - declared-but-unused / unreferenced parameters, and type errors generally -> wcc386's job
 
 USAGE
-    scripts/war2-wrongcode-scan.py <src-dir> [<baseline-src-dir>]
+    scripts/corpus-wrongcode-scan.py <src-dir> [<baseline-src-dir>]
     With a baseline, prints the per-class delta and exits nonzero if any BLOCKING class grew.
 """
 import os

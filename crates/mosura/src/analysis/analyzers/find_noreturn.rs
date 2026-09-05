@@ -15,8 +15,8 @@
 //! (`OPTION_DEFAULT_EVIDENCE_THRESHOLD`, **3**), the target is marked non-returning and every
 //! call to it gets `FlowOverride.CALL_RETURN`, which is what stops the fall-through.
 //!
-//! That inversion is the point, and it is why `docs/function-discovery-backlog.md` §9 #5 was
-//! framed the wrong way round: the mis-decode mosura produces after the war2 MZ stub's
+//! That inversion is the point, and it is why `<subject-profile>/notes/function-discovery-backlog.md` §9 #5 was
+//! framed the wrong way round: the mis-decode mosura produces after the subject MZ stub's
 //! inline-parameter thunks is not a defect Ghidra avoids, it is the *signal* Ghidra reads.
 //!
 //! # What is ported, and what is not

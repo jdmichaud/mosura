@@ -3,7 +3,7 @@
 //! narrow write completes a widening (`XOR EAX,EAX ; MOV AX,[g]`, the carve-out); the value
 //! the IR returns is still the narrow one, and a SIGNED narrow value (`short g`) then
 //! sign-extends in C — this compiler's `MOV EAX,[g-2] ; SAR EAX,0x10` where the original
-//! zero-extended (WAR2 FUN_000243bc, FUN_00029b50: `return iRam00090160;` under a `short`
+//! zero-extended (the subject's FUN_000243bc, FUN_00029b50: `return iRam00090160;` under a `short`
 //! declaration). The `XOR` IS the extension the original performed: the value prints
 //! `(uintN)` cast (`recovered.return_widen.zero_widened`, from the same witness). Value-faithful to
 //! the original's bytes, and to the IR's narrow value; only the C promotion changes.

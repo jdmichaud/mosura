@@ -94,7 +94,7 @@ pub(crate) fn recognize(pr: &mut PrintC<'_>, f: &Funcdata) {
                 .filter(|&u| !f.op(u).is_dead() && !f.op(u).is_marker())
                 .collect();
             // the probe family's shape: every use is a call argument — or, since round e3, any
-            // READ of the value (an index, an arithmetic operand: WAR2's 0x39554 family indexes a
+            // READ of the value (an index, an arithmetic operand: the subject's 0x39554 family indexes a
             // table by the byte global and then passes it to a call, and the original snapshots it
             // once into AL for both). A STORE of the value stays outside the shape (measured:
             // FUN_00011a50's store use perturbs allocation when materialized).

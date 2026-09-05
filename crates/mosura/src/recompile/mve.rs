@@ -108,10 +108,10 @@ void __cdecl mve(int base, int idx)
 "#;
 
 
-/// W5 (docs/sparse-switch-arm.md): the case set of WAR2 0x14620 — {4, 0xc, 0xd, 0xf, 0x10, 0x11,
+/// W5 (docs/sparse-switch-arm.md): the case set of the subject's 0x14620 — {4, 0xc, 0xd, 0xf, 0x10, 0x11,
 /// 0x12, 0x13, 0x14, 0x15, 0x19, 0x1a} on a byte at p+6. Watcom compiles it into the balanced
 /// JB/JBE compare tree (pivot 0x11); 0xd is an explicit empty case, 4 and 0x10 share a body,
-/// 0x10 and 0x13 are range-pruned singletons. The WAR2 address is provenance only.
+/// 0x10 and 0x13 are range-pruned singletons. The subject address is provenance only.
 const SPARSE_SWITCH_SRC: &str = r#"
 extern void f4(unsigned char *p);
 extern void fc(unsigned char *q);
@@ -144,7 +144,7 @@ void mve(unsigned char *p)
 "#;
 
 /// W6 (docs/struct-copy-arm.md): two 3-dword struct assignments between globals after a call, the
-/// shape of WAR2 0x20258 — Watcom emits `MOV EDI,&dst; MOV ESI,&src; MOVSD x3` (no REP), and
+/// shape of the subject's 0x20258 — Watcom emits `MOV EDI,&dst; MOV ESI,&src; MOVSD x3` (no REP), and
 /// heritage re-homes the copies at the block's exit.
 const STRUCT_COPY_GLOBALS_SRC: &str = r#"
 struct p12 { unsigned a; unsigned b; unsigned c; };
@@ -161,7 +161,7 @@ void mve(void)
 }
 "#;
 
-/// W6: a 2-dword struct assignment from a global into `p + 0xc`, the shape of WAR2 0x40470
+/// W6: a 2-dword struct assignment from a global into `p + 0xc`, the shape of the subject's 0x40470
 /// (`MOV ESI,&g; MOVSD; MOVSD`).
 const STRUCT_COPY_PTR_SRC: &str = r#"
 struct p8 { unsigned a; unsigned b; };
@@ -174,7 +174,7 @@ void mve(char *p)
 
 /// W8 (printc `emitBlockSwitch`): a jump-table switch whose case 4 body returns and whose case 6
 /// body is an if-with-return followed by more statements — its exit edge goes to the switch's
-/// tail, so the case must end with `break;` (WAR2 0x2c00c's shape, case 13/14 there).
+/// tail, so the case must end with `break;` (the subject's 0x2c00c's shape, case 13/14 there).
 const SWITCH_CASE_BREAK_SRC: &str = r#"
 extern int b0(int n);
 extern void a4(void);
@@ -208,7 +208,7 @@ void mve(int k)
 "#;
 
 /// W2/W1 (string-ops): `memcpy` of 0x30 bytes into a stack array whose base escapes — Watcom's
-/// intrinsic emits the REP MOVSD + REP MOVSB pair (WAR2 0x32c00's shape); the arm collapses the
+/// intrinsic emits the REP MOVSD + REP MOVSB pair (the subject's 0x32c00's shape); the arm collapses the
 /// pair to one `memcpy(aiStack_.., param_1, 0x30)`.
 const MEMCPY_STACK_SRC: &str = r#"
 void *memcpy(void *, const void *, unsigned);
@@ -224,7 +224,7 @@ void mve(int *src)
 
 /// W4 (dead store + frame-fill): a 0xd0-byte frame struct of which the source touches a few bytes
 /// (0, 6, a short at 8, a short at 0xc from a call result) before passing its address to a call —
-/// WAR2 0x2dcd4's shape: the recompile of the 12 declared bytes lost the frame and the store.
+/// the subject's 0x2dcd4's shape: the recompile of the 12 declared bytes lost the frame and the store.
 const FRAME_STORE_SRC: &str = r#"
 struct big { unsigned char b[0xd0]; };
 extern short getv(int c, int k);
@@ -243,7 +243,7 @@ void mve(unsigned short a, int unused, int c)
 /// W4b (frame-fill, seam 4): a 0xcc frame holding an int array in the MIDDLE — untouched bytes on
 /// both sides — whose base escapes and whose elements are read by constant index and in a loop. The
 /// frame-fill gate fires on the slack, the aggregate covers the array, and every element read must
-/// render as the field at its slot (the array declaration is gone — WAR2 0x4e06e's `aiStack_2c[0]`
+/// render as the field at its slot (the array declaration is gone — the subject's 0x4e06e's `aiStack_2c[0]`
 /// read the vanished name in probe w4bp).
 const FRAME_INDEX_SRC: &str = r#"
 struct big { int pad0[20]; int s[11]; int pad1[20]; };
@@ -290,7 +290,7 @@ pub struct Mve {
     pub writes: &'static [(&'static str, &'static str, usize)],
 }
 
-/// The 16-bit message dispatcher (WAR2's 0x4921c family, 89 functions): a `switch` on a short
+/// The 16-bit message dispatcher (the subject's 0x4921c family, 89 functions): a `switch` on a short
 /// field with ONE case, nested once. Watcom compiles the selector as a 16-bit register compare
 /// (`MOV AX,[EDX] ; CMP AX,9`) where an `if` on the same field compares at int width — the byte
 /// witness the narrow one-case switch of the sparse-switch arm reads.
@@ -312,7 +312,7 @@ int mve(int a, short *p)
 }
 "#;
 
-/// An order comparison written `table >= field` (WAR2 FUN_0002530c): Ghidra canonicalizes it to
+/// An order comparison written `table >= field` (the subject's FUN_0002530c): Ghidra canonicalizes it to
 /// `field <= table`, Watcom compiles the `CMP` in source order — the `cmp-order` arm mirrors the
 /// print back from the CMP's operand order.
 const CMP_ORDER_SRC: &str = r#"
@@ -324,7 +324,7 @@ int mve(unsigned char *p)
 }
 "#;
 
-/// A byte-returning function whose IR value is a full-width constant (WAR2 FUN_0002a16c): every
+/// A byte-returning function whose IR value is a full-width constant (the subject's FUN_0002a16c): every
 /// return site writes `AL` (`XOR AL,AL` / `MOV AL,1`), which is what the return declaration must
 /// carry for this compiler to write the byte — the `return-width` witness's width.
 const BYTE_RETURN_SRC: &str = r#"
@@ -340,7 +340,7 @@ unsigned char mve(int a)
 }
 "#;
 
-/// Three stores into a stack buffer passed to a call (WAR2 FUN_00012e40): the parameter's store
+/// Three stores into a stack buffer passed to a call (the subject's FUN_00012e40): the parameter's store
 /// FIRST in the source. The pipeline snips it into a COPY placed before the call (Ghidra's
 /// `Merge::snipIndirect`), so the print orders it last; the stack twin of the store-order
 /// witness restores the original's order.
@@ -356,7 +356,7 @@ void mve(unsigned char c, int x)
 }
 "#;
 
-/// A 16-bit product of a zero-extended byte stored to a short (WAR2 FUN_00019344): the source's
+/// A 16-bit product of a zero-extended byte stored to a short (the subject's FUN_00019344): the source's
 /// `(unsigned short)` pins the width and Watcom zero-extends with `XOR AH,AH` — the witness that
 /// keeps the `(uint2)` cast under `ext-cast=promotion`.
 const NARROW_ZEXT_SRC: &str = r#"
@@ -368,7 +368,7 @@ void mve(unsigned char i)
 }
 "#;
 
-/// A call argument the source truncates to a `WORD` (WAR2's `MOV AL,[g] ; ADD EAX,0xbbb ; AND
+/// A call argument the source truncates to a `WORD` (the subject's `MOV AL,[g] ; ADD EAX,0xbbb ; AND
 /// EAX,0xffff ; CALL` message-id family): the compiler masks it before the call, Ghidra's
 /// RuleAndMask proves the mask redundant and drops it, the `mask-cast` arm restores it from the
 /// bytes.
@@ -382,7 +382,7 @@ int mve(unsigned char i)
 }
 "#;
 
-/// Per-path constant returns behind a shared epilogue (WAR2 FUN_0002a75c and kin): the compiler
+/// Per-path constant returns behind a shared epilogue (the subject's FUN_0002a75c and kin): the compiler
 /// materializes `0` and `1` on their own paths and jumps both into one epilogue; Ghidra merges
 /// them into a phi (`x = 0; if (..) { ..; x = 1; } return x;`), the return-split arm's
 /// constant-phi shape prints the returns back per path. The `1` is assigned behind an inner if
@@ -403,7 +403,7 @@ int mve(int a)
 }
 "#;
 
-/// A widened narrow return of a SIGNED global (WAR2 FUN_000243bc): the compiler returns
+/// A widened narrow return of a SIGNED global (the subject's FUN_000243bc): the compiler returns
 /// `(unsigned short)g` as `XOR EAX,EAX ; MOV AX,[g]`; the decompiler types `g` short from the
 /// signed compare and returns it bare, which C would sign-extend — the return-widen arm's
 /// `(uint2)` cast from the same witness.
@@ -417,7 +417,7 @@ int mve(int a)
 }
 "#;
 
-/// A narrow signed field compared zero-extended (WAR2 FUN_00059784): `RuleZextEliminate`
+/// A narrow signed field compared zero-extended (the subject's FUN_00059784): `RuleZextEliminate`
 /// folds `ZEXT(x) == 1` into a 16-bit compare of a short-typed value, which C promotes by
 /// sign; the original's `AND EAX,0xffff` before the compare is the cmp-sign witness.
 const CMP_SIGN_SRC: &str = r#"
@@ -430,7 +430,7 @@ int mve(struct s *p)
 }
 "#;
 
-/// A field read at a constant offset from a pointer (WAR2 FUN_0003ca54's `p->flags < 0`): the
+/// A field read at a constant offset from a pointer (the subject's FUN_0003ca54's `p->flags < 0`): the
 /// decompiler prints the int-cast sum `*(int4 *)((int4)p + 6)`, which this compiler
 /// materializes with an `LEA`; the original folds the displacement (`[EAX + 0x6]`) — the
 /// ptr-offset arm's byte-pointer form.
@@ -441,7 +441,7 @@ int mve(int *p)
 }
 "#;
 
-/// A stack-convention callback that never reads its argument (WAR2 FUN_0004dd2c, FUN_0004e820:
+/// A stack-convention callback that never reads its argument (the subject's FUN_0004dd2c, FUN_0004e820:
 /// `return 0;` under `RET 4`): the decompiler recovers no parameter, so the recompile pops
 /// nothing — the dummy stack parameter the `RET n` witnesses restores the pop.
 const DUMMY_PARAM_SRC: &str = r#"
@@ -452,7 +452,7 @@ int mve(int unused)
 }
 "#;
 
-/// A far-returning function (WAR2 FUN_00058840, a far-called handler): `RETF` witnesses the
+/// A far-returning function (the subject's FUN_00058840, a far-called handler): `RETF` witnesses the
 /// `far` clause of its contract.
 const FAR_RETURN_SRC: &str = r#"
 #pragma aux mve far;
@@ -464,7 +464,7 @@ int mve(int a)
 }
 "#;
 
-/// Two byte globals compared (WAR2 FUN_00014990): the source wrote `b >= a`; the compiler
+/// Two byte globals compared (the subject's FUN_00014990): the source wrote `b >= a`; the compiler
 /// loads the left-hand side and compares against the right in memory (`MOV AL,[b] ; CMP
 /// AL,[a]`); the decompiler normalizes to `a <= b` — the cmp-order arm reads the memory
 /// operand as the right-hand side and mirrors back.
@@ -478,7 +478,7 @@ int mve(void)
 "#;
 
 /// A frame array copied element by element with the index advanced between the load and the
-/// store (WAR2 FUN_0002a75c: `g[i + 1] = buf[i]`): Ghidra keeps the element's POINTER explicit
+/// store (the subject's FUN_0002a75c: `g[i + 1] = buf[i]`): Ghidra keeps the element's POINTER explicit
 /// and inlines the load at the store, which this compiler compiles through a hoisted base
 /// register; the original loads straight from the frame through the scaled index — the
 /// load-hoist arm's explicitness swap.
@@ -495,7 +495,7 @@ void mve(void)
 }
 "#;
 
-/// A byte bool return the source wrote as a branch (WAR2 FUN_0002a228: `if (f() == 0) return 0;
+/// A byte bool return the source wrote as a branch (the subject's FUN_0002a228: `if (f() == 0) return 0;
 /// return 1;`): the compiler branches over the constant reusing the tested register
 /// (`TEST AL,AL ; JZ epilogue ; MOV AL,1`); the decompiler collapses it to `return x != 0;`,
 /// which recompiles to a `SETNZ` — the return-split arm's branch form prints it back.
@@ -511,7 +511,7 @@ unsigned char mve(int a)
 }
 "#;
 
-/// A global stored then passed (WAR2 FUN_00014214: `g = h; f(g);`): the decompiler names the
+/// A global stored then passed (the subject's FUN_00014214: `g = h; f(g);`): the decompiler names the
 /// stored VALUE at the call (`f(h)`), and this compiler then keeps the source global's load
 /// where the original reloaded the stored one (`MOV [g],AX .. MOV AX,[g]`) — the
 /// store-forward arm names the stored global back.

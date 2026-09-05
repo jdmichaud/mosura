@@ -28,3 +28,39 @@ devcfg() {
   case "$val" in "~/"*) val="$HOME/${val#~/}" ;; esac
   if [ -n "$val" ]; then printf '%s\n' "$val"; else printf '%s\n' "$default"; fi
 }
+
+# devcfg_profile <binary>  — the `profile` of the `[[subject]]` whose `path` is that binary (same file,
+# however spelled); empty when the binary is not a configured subject.
+devcfg_profile() {
+  local want file
+  want="$(readlink -f "$1" 2>/dev/null || printf '%s' "$1")"
+  file="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/dev-config.toml"
+  awk -v want="$want" '
+    function flush() { if (insub && spath != "") { cmd = "readlink -f \"" spath "\" 2>/dev/null"; cmd | getline real; close(cmd); if (real == "") real = spath; if (real == want) { print sprof; exit } } }
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    /^[[:space:]]*\[\[subject\]\]/ { flush(); insub = 1; spath = ""; sprof = ""; next }
+    /^[[:space:]]*\[/ { flush(); insub = 0; next }
+    insub && /=/ {
+      k = $0; sub(/[[:space:]]*=.*$/, "", k); sub(/^[[:space:]]*/, "", k)
+      v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); if (v ~ /^"/) { sub(/^"/, "", v); sub(/".*$/, "", v) }
+      if (v ~ /^~\//) { v = ENVIRON["HOME"] "/" substr(v, 3) }
+      if (k == "path") spath = v; if (k == "profile") sprof = v
+    }
+    END { flush() }' "$file" 2>/dev/null || true
+}
+
+# devcfg_first_subject_path — the `path` of the first `[[subject]]` block (the default subject of the
+# corpus scripts when no `--bin` is given); empty when none is configured.
+devcfg_first_subject_path() {
+  local file
+  file="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/dev-config.toml"
+  awk '
+    /^[[:space:]]*#/ || /^[[:space:]]*$/ { next }
+    /^[[:space:]]*\[\[subject\]\]/ { insub = 1; next }
+    /^[[:space:]]*\[/ { insub = 0; next }
+    insub && /^[[:space:]]*path[[:space:]]*=/ {
+      v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); if (v ~ /^"/) { sub(/^"/, "", v); sub(/".*$/, "", v) }
+      if (v ~ /^~\//) { v = ENVIRON["HOME"] "/" substr(v, 3) }
+      print v; exit
+    }' "$file" 2>/dev/null || true
+}

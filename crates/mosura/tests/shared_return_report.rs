@@ -21,9 +21,9 @@
 //! to end", which creates as it goes. Take it on a converged program.
 //!
 //! ```sh
-//! # WAR2 native-LE — the 0x67f40 case. Lead-owned.
-//! cargo test --release --test shared_return_report -- --ignored --nocapture war2_le
-//! cargo test --release --test shared_return_report -- --ignored --nocapture war2_mz
+//! # the subject native-LE — the 0x67f40 case. Lead-owned.
+//! cargo test --release --test shared_return_report -- --ignored --nocapture subjects_le
+//! cargo test --release --test shared_return_report -- --ignored --nocapture subjects_mz
 //! # Cheap corpus run (in the normal suite).
 //! cargo test --release --test shared_return_report
 //! ```
@@ -31,11 +31,14 @@
 use mosura::analysis::analyzers::shared_return::SharedReturnAnalyzer;
 use mosura::analysis::program::{AddressSet, Program};
 use mosura::decompile::space::Address;
-use mosura::paths::{analysis_corpus_dir, comcom32_exe, war2_exe};
+use mosura::paths::{analysis_corpus_dir, comcom32_exe};
 
-/// The destinations WAR2 is missing, per `docs/war2-function-status.md` and task #3. Printed in
-/// full whether or not they were created, so an absent row is itself the finding.
-const WAR2_WATCH: &[u64] = &[0x67f40, 0x69032, 0x68f25];
+/// The destinations a subject is known to miss come from its profile (`shared_return.watch` in
+/// `expect.toml`, task #3). Printed in full whether or not they were created, so an absent row is
+/// itself the finding.
+fn watch_of(s: &mosura::devcfg::Subject) -> Vec<u64> {
+    s.expect_list_u64("shared_return.watch").unwrap_or_default()
+}
 
 /// Replay round 1 of `analysis::shared_return_pass`: the whole function set, which is the set that
 /// pass hands the command (`analysis/mod.rs:369`).
@@ -155,33 +158,35 @@ fn print_report(name: &str, program: &Program, watch: &[u64]) {
     eprintln!("===== end {name} =====\n");
 }
 
-/// WAR2 native-LE — where `0x67f40` is missing.
+/// The configured subjects, native-LE — where the watched destinations are missing.
 #[test]
-#[ignore = "WAR2 run — minutes; lead-owned"]
-fn war2_le_shared_return_report() {
-    let path = war2_exe();
-    if !path.exists() {
-        eprintln!("skip: WAR2.EXE absent (MOSURA_WAR2_EXE)");
-        return;
+#[ignore = "subject run — minutes; lead-owned"]
+fn subjects_le_shared_return_report() {
+    for s in mosura::devcfg::subjects() {
+        if !s.path.exists() {
+            eprintln!("skip subject {}: binary absent", s.id);
+            continue;
+        }
+        let prog = mosura::analysis::analyze_le_file(&s.path).expect("native-LE analysis of the subject");
+        print_report(&format!("subject {} (le)", s.id), &prog, &watch_of(s));
     }
-    let prog = mosura::analysis::analyze_le_file(&path).expect("native-LE analysis of WAR2.EXE");
-    print_report("war2-le", &prog, WAR2_WATCH);
 }
 
-/// WAR2 through the default MZ path.
+/// The configured subjects through the default MZ path.
 #[test]
-#[ignore = "WAR2 run — minutes; lead-owned"]
-fn war2_mz_shared_return_report() {
-    let path = war2_exe();
-    if !path.exists() {
-        eprintln!("skip: WAR2.EXE absent (MOSURA_WAR2_EXE)");
-        return;
+#[ignore = "subject run — minutes; lead-owned"]
+fn subjects_mz_shared_return_report() {
+    for s in mosura::devcfg::subjects() {
+        if !s.path.exists() {
+            eprintln!("skip subject {}: binary absent", s.id);
+            continue;
+        }
+        let prog = mosura::analysis::analyze_file(&s.path).expect("MZ analysis of the subject");
+        print_report(&format!("subject {} (mz)", s.id), &prog, &watch_of(s));
     }
-    let prog = mosura::analysis::analyze_file(&path).expect("MZ analysis of WAR2.EXE");
-    print_report("war2-mz", &prog, WAR2_WATCH);
 }
 
-/// The corpus run — cheap, and it prints the same columns so the WAR2 output has a baseline.
+/// The corpus run — cheap, and it prints the same columns so the subject output has a baseline.
 #[test]
 fn corpus_shared_return_report() {
     let mut fixtures: Vec<(String, std::path::PathBuf)> = ["basic", "freestanding"]

@@ -87,7 +87,7 @@ pub fn dead_code(f: &mut Funcdata) {
     // `guardCalls`' INDIRECTs relay versions across calls — so the final write chain is live and
     // a SUPERSEDED intermediate write dies like any other dead value. Both guards are ported
     // (`heritage::guard_returns`/`guard_calls`), making the blanket redundant for the live-out
-    // and wrong for the intermediates: on WAR2 FUN_00021b84's `mov byte [0x8196c], 1` site it
+    // and wrong for the intermediates: on the subject's FUN_00021b84's `mov byte [0x8196c], 1` site it
     // kept two superseded byte-stores (`uRam._0_1_ = 0;` / `= 1;`) that Ghidra's output does not
     // have, and their covers then forced the 3-byte piece between them explicit — the
     // non-legalizable `._1_3_` partial of the E1032 family.)

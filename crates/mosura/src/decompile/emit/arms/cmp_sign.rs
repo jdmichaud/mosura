@@ -2,7 +2,7 @@
 //! an int-width constant is promoted by C; a SIGNED narrow type (`*(int2 *)(p + 0x1c) == 1`,
 //! the decompiler's type from a signed use elsewhere) promotes by sign-extension — this
 //! compiler's `MOV EAX,[p+0x1a] ; SAR EAX,0x10` — where the original zero-extended
-//! (`MOV AX,[p+0x1c] ; AND EAX,0xffff`, WAR2 FUN_00059784). Ghidra's `RuleZextEliminate`
+//! (`MOV AX,[p+0x1c] ; AND EAX,0xffff`, the subject's FUN_00059784). Ghidra's `RuleZextEliminate`
 //! removed the IR's ZEXT (`ZEXT(x) == 1` is `x == 1:2`), so the port has nothing to print; the
 //! original's own extension idiom before the compare is the witness (`recovered.cmp_sign.sites`
 //! from `buildconfig::cmp_signs_from_evidence` over this arm's `cmp_sign_candidates`): an

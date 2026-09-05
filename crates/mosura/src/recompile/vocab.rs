@@ -16,7 +16,7 @@
 //! that is absent may merely be unexercised. So the finding is reported with its evidence (which
 //! instruction, how many) and grows more decisive as the corpus does — never as a silent verdict.
 //!
-//! This is how the `55 8b ec` regions of WAR2.EXE were found: 84 functions whose frame setup uses
+//! This is how the `55 8b ec` regions of the subject binary were found: 84 functions whose frame setup uses
 //! an encoding Watcom does not emit, in three contiguous address ranges rather than scattered —
 //! the signature of linked-in objects from another toolchain, not of a decompiler defect.
 

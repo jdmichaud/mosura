@@ -7,7 +7,7 @@
  * `sf_orphan_fn_` and `sf_trail_fn_` (see PROPERTIES).
  *
  * WHY IT EXISTS. `wprologue` gates the pattern set for the FRAME-FIRST prologue (`55 89 e5` then
- * the saves) — the only shape modern Open Watcom emits under `-of+`. But WAR2's dominant family,
+ * the saves) — the only shape modern Open Watcom emits under `-of+`. But the subject's dominant family,
  * 1317 of its 1556 framed functions (84.6%), is SAVE-FIRST: the callee-save run comes BEFORE the
  * frame setup,
  *
@@ -28,13 +28,13 @@
  * — no historical compiler, no dosemu). Every function comes out save-first, spanning run lengths
  * 2..5:
  *
- *     p_leaf_      53 51 52 56 57  55 89 e5  81 ec 08 00 00 00   <- run 5, WAR2 0x16ed4's shape
+ *     p_leaf_      53 51 52 56 57  55 89 e5  81 ec 08 00 00 00   <- run 5, the subject's 0x16ed4's shape
  *     p_push2_     53 51 56 57     55 89 e5                      <- run 4
  *     p_push3_     51 56 57        55 89 e5                      <- run 3
  *     p_push4_     56 57           55 89 e5                      <- run 2
  *
  * Every run is a subsequence of Watcom's rigid save order `ebx ecx edx esi edi`, from a compiler
- * two decades newer than WAR2's 10.0a — a third independent confirmation of the invariant that
+ * two decades newer than the subject's 10.0a — a third independent confirmation of the invariant that
  * pattern family (1) is built on.
  *
  * PROPERTIES THIS PROGRAM DEPENDS ON — do not "simplify" any of them away. They are `fnpattern.c`'s
@@ -59,7 +59,7 @@
  *
  * WHAT IT DOES NOT COVER, so nobody mistakes it for the whole specification: `-od` never produces
  * a run of length 1 here, and it gives every function a `sub esp`, so the no-`sub esp` save-first
- * shape (891 of WAR2's 1317) is not exercised. The 31-subsequence enumeration itself is gated
+ * shape (891 of the subject's 1317) is not exercised. The 31-subsequence enumeration itself is gated
  * exhaustively and directly by
  * `analysis::analyzers::function_start::tests::save_first_family_enforces_watcoms_push_order`.
  */

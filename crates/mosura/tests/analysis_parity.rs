@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use mosura::analysis::{self, snapshot};
 use mosura::conformance::Tally;
-use mosura::paths::{analysis_corpus_dir, analysis_goldens_dir, cnv_exe, comcom32_exe, war2_exe};
+use mosura::paths::{analysis_corpus_dir, analysis_goldens_dir, cnv_exe, comcom32_exe};
 
 /// Committed ELF corpus (always present). `aarch64`, `riscv`, and `m68k` are the
 /// non-x86 fixtures (freestanding ARM64 / RV64GC / big-endian 32-bit m68k ELFs) —
@@ -28,7 +28,7 @@ const MANDATORY: &[&str] = &["freestanding", "basic", "aarch64", "riscv", "m68k"
 /// corpus binary was analyzed **four times** per run. Analysis is a pure function of the file
 /// for a given build — same path in, same `Program` out — so analyzing once per process and
 /// sharing the result is observationally identical and is the single largest avoidable cost in
-/// this test binary (it was ~230 s of a ~10 min suite; a WAR2 analysis alone is ~4 min).
+/// this test binary (it was ~230 s of a ~10 min suite; a subject analysis alone is ~4 min).
 ///
 /// ⚠️ Scope is deliberately narrow: **only the repeated corpus loops use this.** Any test that
 /// depends on analysis being re-run — a mutation, an env/override, or a per-test cspec — must
@@ -54,15 +54,22 @@ fn cached_analyze(path: &std::path::Path) -> std::sync::Arc<mosura::analysis::pr
     Arc::clone(guard.entry(path.to_path_buf()).or_insert(prog))
 }
 
-/// (name, binary path, mandatory?) — externals are user-provided, skipped if absent.
-fn corpus() -> Vec<(&'static str, PathBuf, bool)> {
-    let mut v: Vec<(&str, PathBuf, bool)> = MANDATORY
+/// (name, binary path, mandatory?, loader-stage golden) — externals are user-provided, skipped if
+/// absent; the configured subjects (dev-config `[[subject]]`) join with the golden their profile
+/// holds (`analysis.loaded.snapshot`).
+fn corpus() -> Vec<(String, PathBuf, bool, PathBuf)> {
+    let goldens = analysis_goldens_dir();
+    let mut v: Vec<(String, PathBuf, bool, PathBuf)> = MANDATORY
         .iter()
-        .map(|n| (*n, analysis_corpus_dir().join(format!("{n}.elf")), true))
+        .map(|n| (n.to_string(), analysis_corpus_dir().join(format!("{n}.elf")), true, goldens.join(format!("{n}.loaded.snapshot"))))
         .collect();
-    v.push(("cnv", cnv_exe(), false)); // PE, user-provided (MOSURA_CNV_EXE)
-    v.push(("comcom32", comcom32_exe(), false)); // MZ (MOSURA_COMCOM32_EXE)
-    v.push(("war2", war2_exe(), false)); // MZ (DOS/4GW stub), user-provided (MOSURA_WAR2_EXE)
+    v.push(("cnv".into(), cnv_exe(), false, goldens.join("cnv.loaded.snapshot"))); // PE, user-provided (binaries.cnv)
+    v.push(("comcom32".into(), comcom32_exe(), false, goldens.join("comcom32.loaded.snapshot"))); // MZ (binaries.comcom32)
+    for s in mosura::devcfg::subjects() {
+        if let Some(g) = s.file("analysis.loaded.snapshot") {
+            v.push((format!("subject {}", s.id), s.path.clone(), false, g));
+        }
+    }
     v
 }
 
@@ -72,14 +79,14 @@ fn memory_map_parity() {
     let mut blocks = Tally::default();
     let mut evaluated = Vec::new();
 
-    for (name, path, mandatory) in corpus() {
+    for (name, path, mandatory, golden_path) in corpus() {
         if !path.exists() {
             assert!(!mandatory, "mandatory corpus binary missing: {}", path.display());
             eprintln!("  skip {name}: {} not present", path.display());
             continue;
         }
         let golden = snapshot::parse(
-            &std::fs::read_to_string(goldens.join(format!("{name}.loaded.snapshot")))
+            &std::fs::read_to_string(&golden_path)
                 .unwrap_or_else(|e| panic!("loader-stage golden for {name}: {e}")),
         );
         let produced = analysis::analyze_binary(&path).unwrap_or_else(|e| panic!("analyze {name}: {e}"));
@@ -92,7 +99,7 @@ fn memory_map_parity() {
     }
 
     eprintln!("memory-map parity: {blocks} ({:?})", evaluated);
-    assert!(evaluated.contains(&"freestanding") && evaluated.contains(&"basic"), "ELF corpus must run");
+    assert!(evaluated.iter().any(|n| n == "freestanding") && evaluated.iter().any(|n| n == "basic"), "ELF corpus must run");
     assert_eq!(blocks.passed, blocks.total, "every evaluated binary's memory map must match its loader-stage golden");
 }
 
@@ -391,7 +398,7 @@ fn m68k_dynamic_link_path() {
 
 /// PE/MZ convergence — extends the A4/A5 checks beyond ELF. mosura must create no
 /// function Ghidra lacks (HARD, every format), and its disassembly must stay within a
-/// small, bounded misalignment of Ghidra's. comcom32 (MZ) is exact; war2 (16-bit DOS) has
+/// small, bounded misalignment of Ghidra's. comcom32 (MZ) is exact; the subject (16-bit DOS) has
 /// a handful of over-decodes where mosura runs past a function into inter-function padding
 /// that Ghidra's later data analysis (A6/A7) would claim — bounded and tracked here. cnv
 /// (PE) is smoke-tested in [`analysis_robustness`] (its converged golden is too large to
@@ -402,10 +409,10 @@ fn pe_mz_convergence_parity() {
     let goldens = analysis_goldens_dir();
     // (name, path, max tolerated misaligned decodes)
     //
-    // ⚠️ war2's bound is 46, NOT a round number and NOT a tolerance bump — it is the measured
+    // ⚠️ the subject's bound is 46, NOT a round number and NOT a tolerance bump — it is the measured
     // count of a NAMED, FILED defect, and it must be re-measured rather than nudged.
     //
-    // WHAT IT HOLDS: §9 #5, the inline-parameter call thunk in the 16-bit MZ stub. The war2 MZ
+    // WHAT IT HOLDS: §9 #5, the inline-parameter call thunk in the 16-bit MZ stub. The subject MZ
     // stub has a thunk family (0x13a38/47/4c/51) all calling 0x13a56, whose dispatcher pops its
     // own return address and reads the word THROUGH it — so each call is followed by a 2-byte
     // inline parameter, not code. mosura decodes the parameter; at 0x13a54 that 3-byte decode
@@ -434,13 +441,26 @@ fn pe_mz_convergence_parity() {
     // repaired flow (+1 instruction). The rest of the family's damage needs no-return
     // DETECTION PARITY (Ghidra marks all 6 family members; the batch structure fragments
     // mosura's indicator evidence) — the open half of task #10.
-    let cases: [(&str, PathBuf, usize); 2] =
-        [("comcom32", comcom32_exe(), 0), ("war2", war2_exe(), 43)];
+    // (name, binary, max misaligned decodes, converged golden, the MZ thunk cluster to assert if any):
+    // the committed corpus binary, plus every configured subject whose profile carries the
+    // converged golden (`analysis.snapshot`; `analysis.max_misaligned`, `analysis.mz_thunk_cluster`).
+    let mut cases: Vec<(String, PathBuf, usize, PathBuf, Option<Vec<u64>>)> =
+        vec![("comcom32".into(), comcom32_exe(), 0, goldens.join("comcom32.snapshot"), None)];
+    for s in mosura::devcfg::subjects() {
+        if let Some(g) = s.file("analysis.snapshot") {
+            cases.push((
+                format!("subject {}", s.id),
+                s.path.clone(),
+                s.expect_u64("analysis.max_misaligned").unwrap_or(0) as usize,
+                g,
+                s.expect_list_u64("analysis.mz_thunk_cluster"),
+            ));
+        }
+    }
     let mut evaluated = 0;
-    for (name, path, max_misaligned) in &cases {
-        let name = *name;
+    for (name, path, max_misaligned, golden_path, thunk_cluster) in &cases {
+        let name = name.as_str();
         let max_misaligned = *max_misaligned;
-        let golden_path = goldens.join(format!("{name}.snapshot"));
         if !path.exists() || !golden_path.exists() {
             eprintln!("  skip {name}: binary or golden absent");
             continue;
@@ -455,8 +475,8 @@ fn pe_mz_convergence_parity() {
 
         // ⭐ THE THUNK CLUSTER, against Ghidra's own committed golden — the only place in the
         // corpus where `CreateFunctionCmd.resolveThunk` (`analysis/analyzers/thunk.rs`) fires, and
-        // therefore the only non-WAR2-LE evidence that the port is right rather than merely
-        // harmless. `war2.snapshot` records two jump-only entries thunking to one target:
+        // therefore the only non-the subject-LE evidence that the port is right rather than merely
+        // harmless. `analysis.snapshot (subject profile)` records two jump-only entries thunking to one target:
         //     func 00017c4c thunk_FUN_11bd_61ee    fnbody 00017c4c 00017c4c:00017c4e
         //     func 00017c50 thunk_FUN_11bd_61ee    fnbody 00017c50 00017c50:00017c52
         //     func 00017dbe FUN_11bd_61ee          fnbody 00017dbe 00017dbe:00017e11
@@ -464,18 +484,18 @@ fn pe_mz_convergence_parity() {
         // own; mosura's body walk previously followed the jump and swallowed 0x17dbe instead.
         // Bodies are asserted, not just entries: recovering the target while leaving the thunk
         // with a swallowing body would be a half-port.
-        if name == "war2" {
-            for entry in [0x17c4cu64, 0x17c50, 0x17dbe] {
+        if let Some(cluster) = thunk_cluster {
+            for &entry in cluster {
                 assert!(
                     mf.contains(&entry),
-                    "war2: missing thunk-cluster function {entry:08x} — Ghidra has it"
+                    "{name}: missing thunk-cluster function {entry:08x} — Ghidra has it"
                 );
                 let gold_body = golden.bodies.iter().find(|b| b.entry == entry);
                 let mine_body = snap.bodies.iter().find(|b| b.entry == entry);
                 assert_eq!(
                     mine_body.map(|b| &b.ranges),
                     gold_body.map(|b| &b.ranges),
-                    "war2: body mismatch at {entry:08x} — the thunk must own only its own jump"
+                    "{name}: body mismatch at {entry:08x} — the thunk must own only its own jump"
                 );
             }
         }
@@ -490,7 +510,7 @@ fn pe_mz_convergence_parity() {
 
         // A6 computed-flow subset invariant: every COMPUTED_JUMP / COMPUTED_CALL mosura
         // recovers (decompiler switch analyzer + symbolic indirect-call resolution) must be
-        // one Ghidra also has — 0 spurious, on a real PE/MZ. war2 (16-bit real-mode DOS/4GW
+        // one Ghidra also has — 0 spurious, on a real PE/MZ. the subject (16-bit real-mode DOS/4GW
         // stub) currently recovers 0 of its 20 COMPUTED_JUMP / 2 COMPUTED_CALL: those switch
         // sources sit in protected-mode LE code that mosura's 16-bit function discovery does
         // not reach, so the switch instructions are never disassembled (not a switch-analyzer
@@ -698,109 +718,98 @@ fn z80_com_parity() {
     eprintln!("z80 .COM loader-stage: block + {} RST/NMI symbols + {} entries (exact)", gs.len(), ge.len());
 }
 
-/// war2 native-LE analysis (task #8/#2, two-oracle). The DEFAULT war2 view stays the Ghidra
-/// MZ-stub (its goldens + gates are untouched); this validates the opt-in native-LE path
-/// (`analyze_le_file`) — the 32-bit protected-mode objects (obj1 code @0x10000, obj2 data
-/// @0x80000, entry _cstart_ 0x601F8) — against the warcraft2-re RE ground truth (Ghidra has no
-/// LE loader). Validated as a clean subset: the reference invariant (every recovered reference
-/// targets mapped memory, 0 spurious) + the recovered protected-mode switches + watcall + entry.
-/// Skipped if WAR2.EXE is absent (user-provided).
+/// Native-LE analysis of the configured subjects (task #8/#2, two-oracle). The DEFAULT view of a
+/// DOS-extender-bound subject stays the Ghidra MZ-stub (its goldens + gates are untouched); this
+/// validates the opt-in native-LE path (`analyze_le_file`) — the 32-bit protected-mode objects —
+/// against the subject profile's expectations (`le.*` in `expect.toml`: the facts the RE ground
+/// truth established, Ghidra having no LE loader). Validated as a clean subset: the reference
+/// invariant (every recovered reference targets mapped memory, 0 spurious) + the recovered
+/// protected-mode switches + the cspec + the entry. Skips when no configured subject carries
+/// `le.entry`, saying so.
 ///
-/// SWITCH RECOVERY (task #2 — the "beat Ghidra on WAR2" win): the *real* protected-mode
-/// computed jumps are the Watcom `jmp CS:[reg*4 + disp]` inline jump tables — WAR2's cs:-relative
-/// dispatches. Both the table displacement and every table entry are LE relocation ("fixup")
-/// records; `loader/le.rs` now applies them (`apply_le_fixups`), so the tables read their real
-/// absolute targets and the switch-gated code (incl. the decompressor family fn_79130/793e0/7a5b0)
-/// is discovered — function count jumps ~541 → ~1279. The switch targets are therefore anchored
-/// in the binary's *own fixup records* (Ghidra has no LE loader — its MZ-stub `war2.snapshot`
-/// 20 COMPUTED_JUMP are artifacts of misreading the 32-bit code and are not used here). The two
-/// decompressor decode-loop dispatches are asserted EXACTLY (4-way each), and the whole set is a
+/// SWITCH RECOVERY (task #2): the *real* protected-mode computed jumps are the Watcom
+/// `jmp CS:[reg*4 + disp]` inline jump tables — cs:-relative dispatches. Both the table
+/// displacement and every table entry are LE relocation ("fixup") records; `loader/le.rs` applies
+/// them (`apply_le_fixups`), so the tables read their real absolute targets and the switch-gated
+/// code is discovered. The switch targets are therefore anchored in the binary's *own fixup
+/// records*. The `le.dispatch_<from>` expectations assert dispatches EXACTLY; the whole set is a
 /// clean subset: every COMPUTED_JUMP target is mapped, none invented.
 #[test]
-fn le_war2_analysis() {
+fn le_subjects_analysis() {
     use mosura::analysis::program::RefType;
-    let path = war2_exe();
-    if !path.exists() {
-        eprintln!("skip le_war2_analysis: WAR2.EXE absent");
-        return;
-    }
-    let prog = analysis::analyze_le_file(&path).expect("native-LE analysis of WAR2.EXE");
-    let ram = prog.default_space;
-    let at = |o: u64| mosura::decompile::space::Address::new(ram, o);
+    let mut ran = 0;
+    for s in mosura::devcfg::subjects() {
+        let (Some(entry), Some(cspec)) = (s.expect_u64("le.entry"), s.expect("le.cspec")) else { continue };
+        if !s.path.exists() {
+            eprintln!("skip subject {}: binary absent", s.id);
+            continue;
+        }
+        ran += 1;
+        let id = &s.id;
+        let prog = analysis::analyze_le_file(&s.path).expect("native-LE analysis of the subject");
+        let ram = prog.default_space;
+        let at = |o: u64| mosura::decompile::space::Address::new(ram, o);
 
-    // The watcall convention (task #7) is the LE path's compiler spec.
-    assert_eq!(prog.compiler_spec_id, "watcom", "native-LE war2 uses the watcall cspec");
-    // The _cstart_ entry (docs/le-loader-notes.md: obj1_vbase 0x10000 + 0x501F8).
-    assert!(
-        prog.entry_points.iter().any(|a| a.offset == 0x601f8),
-        "native-LE war2 has the _cstart_ entry 0x601F8"
-    );
-    // Function discovery reached the switch-gated 32-bit code (was ~541 before fixups; the
-    // default MZ path recovers ~none). A ratchet floor, not the exact count.
-    let nfuncs = prog.function_manager.function_count();
-    assert!(nfuncs > 1200, "native-LE war2 discovers its switch-gated functions, got {nfuncs}");
-    // The decompressor family — reachable only through the recovered cs: switches.
-    for f in [0x79130u64, 0x793e0, 0x7a5b0] {
-        assert!(
-            prog.function_manager.function_at(at(f)).is_some(),
-            "native-LE war2: decompressor fn_{f:x} discovered via recovered switch"
+        // The LE path's compiler spec (the watcall convention for a Watcom subject).
+        assert_eq!(prog.compiler_spec_id, cspec, "subject {id}: native-LE cspec");
+        assert!(prog.entry_points.iter().any(|a| a.offset == entry), "subject {id}: entry {entry:#x}");
+        // Function discovery reached the switch-gated 32-bit code — a ratchet floor, not the exact count.
+        let nfuncs = prog.function_manager.function_count();
+        if let Some(min) = s.expect_u64("le.min_functions") {
+            assert!(nfuncs as u64 > min, "subject {id}: switch-gated discovery, got {nfuncs} (floor {min})");
+        }
+        // Functions reachable only through the recovered cs: switches.
+        for f in s.expect_list_u64("le.switch_gated").unwrap_or_default() {
+            assert!(prog.function_manager.function_at(at(f)).is_some(), "subject {id}: fn_{f:x} discovered via a recovered switch");
+        }
+        // ⭐ The entry THUNK's target: the entry is a short jump over an inline banner; Ghidra creates
+        // the target as its own function through `CreateFunctionCmd.resolveThunk` ->
+        // `CreateThunkFunctionCmd.getReferencedFunction` (`analysis/analyzers/thunk.rs`). Without that
+        // port the body walk follows the `jmp` and swallows the target into the entry function.
+        if let Some(t) = s.expect_u64("le.thunk_target") {
+            assert!(prog.function_manager.function_at(at(t)).is_some(), "subject {id}: the entry thunk's target {t:#x} must be its own function");
+        }
+        // Clean subset — the no-spurious-reference invariant: every recovered reference targets
+        // mapped memory. No relocation or switch target may point outside the image.
+        for r in prog.reference_manager.references() {
+            assert!(prog.memory.contains(r.to), "subject {id}: reference to unmapped {:08x}", r.to.offset);
+        }
+        // The recovered protected-mode switches (COMPUTED_JUMP), all anchored in the subject's own
+        // fixup records. Every target mapped (0 spurious); the named dispatches resolve EXACTLY.
+        let cj: Vec<(u64, u64)> = prog
+            .reference_manager
+            .references()
+            .filter(|r| r.ref_type == RefType::ComputedJump)
+            .map(|r| (r.from.offset, r.to.offset))
+            .collect();
+        if let Some(min) = s.expect_u64("le.min_computed_jumps") {
+            assert!(cj.len() as u64 >= min, "subject {id}: recovered protected-mode switches, got {}", cj.len());
+        }
+        let mut dispatches: Vec<u64> = cj.iter().map(|(f, _)| *f).collect();
+        dispatches.sort();
+        dispatches.dedup();
+        if let Some(min) = s.expect_u64("le.min_dispatches") {
+            assert!(dispatches.len() as u64 >= min, "subject {id}: distinct switch dispatches, got {}", dispatches.len());
+        }
+        let targets_of = |disp: u64| {
+            let mut t: Vec<u64> = cj.iter().filter(|(f, _)| *f == disp).map(|(_, to)| *to).collect();
+            t.sort();
+            t
+        };
+        for (k, v) in s.expectations().entries() {
+            let Some(from) = k.strip_prefix("le.dispatch_").and_then(mosura::devcfg::parse_u64) else { continue };
+            let want = mosura::devcfg::parse_u64_list(v).unwrap_or_else(|| panic!("subject {id}: `{k}` is not a list of addresses"));
+            assert_eq!(targets_of(from), want, "subject {id}: dispatch {from:#x} resolves to its fixup-relocated case targets");
+        }
+        eprintln!(
+            "subject {id} native-LE: {nfuncs} functions, {} COMPUTED_JUMP from {} dispatches (0 unmapped/spurious), cspec {cspec}",
+            cj.len(),
+            dispatches.len()
         );
     }
-    // ⭐ The `_cstart_` THUNK's target. The entry `0x601F8` is `EB 76`, a short jump over the
-    // inline Watcom copyright banner (`analysis/loader/watcom.rs`), and
-    // `0x601F8 + 2 + 0x76 = 0x60270`. Ghidra creates `FUN_00060270` — not through
-    // `SharedReturnAnalysisCmd` (the span between the two is a *string*, so no function entry
-    // lies in it and `assumeContiguousFunctions`' forward arm cannot fire) but through
-    // `CreateFunctionCmd.resolveThunk` -> `CreateThunkFunctionCmd.getReferencedFunction`
-    // (`analysis/analyzers/thunk.rs`). Without that port the body walk follows the `jmp` and
-    // swallows the target into the entry function's own body.
-    assert!(
-        prog.function_manager.function_at(at(0x60270)).is_some(),
-        "native-LE war2: the _cstart_ thunk's target 0x60270 must be its own function"
-    );
-    // Clean subset — the no-spurious-reference invariant: every recovered reference targets
-    // mapped memory (obj1/obj2). No relocation or switch target may point outside the image.
-    for r in prog.reference_manager.references() {
-        assert!(prog.memory.contains(r.to), "native-LE war2: reference to unmapped {:08x}", r.to.offset);
+    if ran == 0 {
+        eprintln!("skip le_subjects_analysis: no configured subject carries le.entry/le.cspec expectations");
     }
-
-    // The recovered protected-mode switches (COMPUTED_JUMP), all anchored in WAR2's own fixup
-    // records. Every target mapped (0 spurious); the two decompressor decode-loop dispatches
-    // resolve EXACTLY to their fixup-relocated 4-entry tables.
-    let cj: Vec<(u64, u64)> = prog
-        .reference_manager
-        .references()
-        .filter(|r| r.ref_type == RefType::ComputedJump)
-        .map(|r| (r.from.offset, r.to.offset))
-        .collect();
-    assert!(cj.len() >= 40, "native-LE war2: recovered protected-mode switches, got {}", cj.len());
-    let mut dispatches: Vec<u64> = cj.iter().map(|(f, _)| *f).collect();
-    dispatches.sort();
-    dispatches.dedup();
-    assert!(dispatches.len() >= 8, "native-LE war2: distinct switch dispatches, got {}", dispatches.len());
-    let targets_of = |disp: u64| {
-        let mut t: Vec<u64> = cj.iter().filter(|(f, _)| *f == disp).map(|(_, to)| *to).collect();
-        t.sort();
-        t
-    };
-    // fn_793e0 decode-loop: `jmp CS:[ECX*4 + 0x694d0]` (fixup-relocated table @0x794d0).
-    assert_eq!(
-        targets_of(0x795d5),
-        vec![0x795e0, 0x79cb0, 0x7a400, 0x7a4a0],
-        "fn_793e0 dispatch resolves to its 4 fixup-relocated case targets"
-    );
-    // fn_7a5b0 decode-loop: `jmp CS:[ECX*4 + 0x6a6d0]` (fixup-relocated table @0x7a6d0).
-    assert_eq!(
-        targets_of(0x7a7d5),
-        vec![0x7a7e0, 0x7af10, 0x7b6c0, 0x7b7b0],
-        "fn_7a5b0 dispatch resolves to its 4 fixup-relocated case targets"
-    );
-    eprintln!(
-        "war2 native-LE: {nfuncs} functions, {} COMPUTED_JUMP from {} dispatches (0 unmapped/spurious), \
-         decompressor recovered, watcall cspec",
-        cj.len(),
-        dispatches.len()
-    );
 }
 
 /// Watcom compiler detection (two-oracle — `loader::watcom`). Beyond Ghidra (which reports
@@ -808,7 +817,7 @@ fn le_war2_analysis() {
 /// records the era as the `Compiler` info property. Validated against the SECOND oracle — real
 /// Watcom-toolchain output — not Ghidra: (1) `watcom_hello.exe`, a committed DOS/4GW LE freshly
 /// built with a real Watcom 10.0a toolchain (see oracle/analysis-corpus/src/watcom_hello.c);
-/// (2) WAR2.EXE if present (user-provided); and the no-false-positive case on a non-Watcom MZ
+/// (2) the subject binary if present (user-provided); and the no-false-positive case on a non-Watcom MZ
 /// (DJGPP comcom32). The banner is an era fingerprint (year range), not a precise release — see
 /// the `watcom` module note.
 #[test]
@@ -827,13 +836,16 @@ fn watcom_detection() {
     assert_eq!(prog.compiler_spec_id, "watcom", "Watcom LE → watcall cspec (not the gcc placeholder)");
     eprintln!("watcom_hello.exe: {} cspec={} ({})", prog.compiler, prog.compiler_spec_id, info.banner);
 
-    // (2) WAR2.EXE ground truth (user-provided): both the LE and the default MZ dispatch detect it.
-    let war2 = war2_exe();
-    if war2.exists() {
-        let d = std::fs::read(&war2).unwrap();
-        assert_eq!(mosura::analysis::loader::load_le(&d).unwrap().compiler, "watcom:1988-1994");
-        assert_eq!(mosura::analysis::loader::load(&d).unwrap().compiler, "watcom:1988-1994");
-        eprintln!("WAR2.EXE: watcom:1988-1994 (LE + MZ)");
+    // (2) The configured subjects (dev-config `[[subject]]`, `analysis.compiler` in the profile):
+    // the default dispatch detects the compiler, and the LE dispatch too where the subject is one.
+    for s in mosura::devcfg::subjects() {
+        let (Some(expected), true) = (s.expect("analysis.compiler"), s.path.exists()) else { continue };
+        let d = std::fs::read(&s.path).unwrap();
+        assert_eq!(mosura::analysis::loader::load(&d).unwrap().compiler, expected, "subject {}: default dispatch", s.id);
+        if s.expect("le.entry").is_some() {
+            assert_eq!(mosura::analysis::loader::load_le(&d).unwrap().compiler, expected, "subject {}: LE dispatch", s.id);
+        }
+        eprintln!("subject {}: {expected} detected", s.id);
     }
 
     // (3) No false positive: a non-Watcom MZ (DJGPP comcom32) has no Watcom banner.
@@ -846,51 +858,69 @@ fn watcom_detection() {
     }
 }
 
-/// Task 4 — native LE (Linear Executable) loader. WAR2.EXE is a DOS/4GW-bound LE; Ghidra
-/// has no LE loader, so there is no Ghidra golden — this validates `loader::le` against the
-/// warcraft2-re reverse-engineering ground truth recorded in `docs/le-loader-notes.md`: the
-/// two objects (virtual base / size / perms) + the absolute entry. Skipped if WAR2.EXE is
-/// absent (user-provided). This loader is NOT wired into war2's default dispatch (the bound
-/// exe stays on the MZ path for the Ghidra-parity gates) — it is exercised directly here.
+/// Task 4 — native LE (Linear Executable) loader, validated against each configured subject's
+/// profile (`le.header_offset`, `le.image_base`, `le.code_object`, `le.data_object`, `le.entry`,
+/// `le.entry_bytes` in `expect.toml` — the RE ground truth; Ghidra has no LE loader, so there is no
+/// Ghidra golden). Skips when no configured subject carries `le.header_offset`. This loader is NOT
+/// wired into a bound exe's default dispatch (it stays on the MZ path for the Ghidra-parity gates)
+/// — it is exercised directly here.
 #[test]
-fn le_war2_objects() {
+fn le_subjects_objects() {
     use mosura::analysis::loader;
     use mosura::analysis::program::SymbolType;
-    let path = war2_exe();
-    if !path.exists() {
-        eprintln!("skip le_war2_objects: WAR2.EXE not present");
-        return;
+    let mut ran = 0;
+    for s in mosura::devcfg::subjects() {
+        let Some(header_offset) = s.expect_u64("le.header_offset") else { continue };
+        if !s.path.exists() {
+            eprintln!("skip subject {}: binary absent", s.id);
+            continue;
+        }
+        ran += 1;
+        let id = &s.id;
+        let data = std::fs::read(&s.path).unwrap();
+        // A bound DOS-extender exe: e_lfanew is deliberately invalid, so the LE is found by
+        // scanning, not the standalone-dispatch path.
+        let le_off = loader::detect_le(&data).expect("embedded LE header detected");
+        assert_eq!(le_off as u64, header_offset, "subject {id}: LE header at the RE-confirmed file offset");
+
+        let prog = loader::load_le(&data).expect("LE load");
+        assert_eq!(prog.language_id, "x86:LE:32:default");
+        if let Some(base) = s.expect_u64("le.image_base") {
+            assert_eq!(prog.image_base.offset, base, "subject {id}: image base = first object's virtual base");
+        }
+        // The objects (RE ground truth): code R+X, data R+W, each "start,virtual size".
+        let blocks: Vec<_> = prog.memory.blocks().collect();
+        if let Some(code) = s.expect_list_u64("le.code_object") {
+            let b = blocks.iter().find(|b| b.is_execute()).expect("a code object");
+            assert_eq!((b.start().offset, b.end().offset), (code[0], code[0] + code[1] - 1), "subject {id}: code object");
+            assert!(b.is_read() && !b.is_write() && b.is_execute(), "subject {id}: code object R+X");
+        }
+        if let Some(dat) = s.expect_list_u64("le.data_object") {
+            let b = blocks.iter().find(|b| !b.is_execute()).expect("a data object");
+            assert_eq!((b.start().offset, b.end().offset), (dat[0], dat[0] + dat[1] - 1), "subject {id}: data object");
+            assert!(b.is_read() && b.is_write() && !b.is_execute(), "subject {id}: data object R+W");
+        }
+        if s.expect_list_u64("le.code_object").is_some() && s.expect_list_u64("le.data_object").is_some() {
+            assert_eq!(blocks.len(), 2, "subject {id}: exactly the two objects");
+        }
+        // Entry = obj base + init-EIP; its first bytes as the profile records them (the jump thunk
+        // over an inline banner string — verified file bytes).
+        if let Some(entry) = s.expect_u64("le.entry") {
+            let e = prog.entry_points.iter().find(|a| a.offset == entry).expect("the entry point");
+            assert_eq!(prog.symbol_table.primary_at(*e).map(|s| s.symbol_type()), Some(SymbolType::Function));
+            if let Some(bytes) = s.expect("le.entry_bytes") {
+                let want: Vec<Option<u8>> = bytes.split(',').map(|b| u8::from_str_radix(b.trim(), 16).ok()).collect();
+                let got: Vec<Option<u8>> = (0..want.len() as u64)
+                    .map(|i| prog.memory.byte_at(mosura::decompile::space::Address::new(e.space, entry + i)))
+                    .collect();
+                assert_eq!(got, want, "subject {id}: entry begins with the recorded bytes");
+            }
+        }
+        eprintln!("  [subject {id}] LE loader: objects + entry match the profile's ground truth");
     }
-    let data = std::fs::read(&path).unwrap();
-    // Bound DOS/4GW exe: e_lfanew is deliberately invalid, so the LE is found by scanning,
-    // not the standalone-dispatch path.
-    let le_off = loader::detect_le(&data).expect("embedded LE header detected");
-    assert_eq!(le_off, 0x37CF4, "LE header at the RE-confirmed file offset");
-
-    let prog = loader::load_le(&data).expect("LE load");
-    assert_eq!(prog.language_id, "x86:LE:32:default");
-    assert_eq!(prog.image_base.offset, 0x10000, "image base = first object's virtual base");
-
-    // The two objects (warcraft2-re ground truth): obj1 code _TEXT, obj2 data _DATA.
-    let blocks: Vec<_> = prog.memory.blocks().collect();
-    assert_eq!(blocks.len(), 2, "WAR2 LE has exactly two objects");
-    let code = blocks.iter().find(|b| b.is_execute()).expect("a code object");
-    assert_eq!(code.start().offset, 0x10000);
-    assert_eq!(code.end().offset, 0x10000 + 0x6c4a0 - 1, "code object virtual size 0x6C4A0");
-    assert!(code.is_read() && !code.is_write() && code.is_execute(), "code object R+X");
-    let dataobj = blocks.iter().find(|b| !b.is_execute()).expect("a data object");
-    assert_eq!(dataobj.start().offset, 0x80000);
-    assert_eq!(dataobj.end().offset, 0x80000 + 0x2b300 - 1, "data object virtual size 0x2B300");
-    assert!(dataobj.is_read() && dataobj.is_write() && !dataobj.is_execute(), "data object R+W");
-
-    // Entry = obj1 base + init-EIP = 0x10000 + 0x501F8 = 0x601F8 (Watcom _cstart_ thunk,
-    // first bytes `EB 76` jumping over an inline banner string — verified file bytes).
-    let entry = prog.entry_points.iter().find(|a| a.offset == 0x601f8).expect("entry 0x601F8");
-    assert_eq!(prog.symbol_table.primary_at(*entry).map(|s| s.symbol_type()), Some(SymbolType::Function));
-    let eb = prog.memory.byte_at(*entry);
-    let eb2 = prog.memory.byte_at(mosura::decompile::space::Address::new(entry.space, 0x601f9));
-    assert_eq!((eb, eb2), (Some(0xeb), Some(0x76)), "entry begins with the EB 76 jump thunk");
-    eprintln!("  [war2] LE loader: 2 objects + entry 0x601F8 match warcraft2-re ground truth");
+    if ran == 0 {
+        eprintln!("skip le_subjects_objects: no configured subject carries le.header_offset");
+    }
 }
 
 /// A4 — converged function-set parity. Every function mosura discovers must be a Ghidra
@@ -1124,13 +1154,13 @@ fn loader_detail_parity() {
     let goldens = analysis_goldens_dir();
     let mut detail = Tally::default();
     let mut evaluated = Vec::new();
-    for (name, path, mandatory) in corpus() {
+    for (name, path, mandatory, golden_path) in corpus() {
         if !path.exists() {
             assert!(!mandatory, "mandatory corpus binary missing: {}", path.display());
             continue;
         }
         let golden = snapshot::parse(
-            &std::fs::read_to_string(goldens.join(format!("{name}.loaded.snapshot")))
+            &std::fs::read_to_string(&golden_path)
                 .unwrap_or_else(|e| panic!("loader-stage golden for {name}: {e}")),
         );
         let p = analysis::analyze_binary(&path).unwrap_or_else(|e| panic!("analyze {name}: {e}"));
@@ -1149,6 +1179,6 @@ fn loader_detail_parity() {
         evaluated.push(name);
     }
     eprintln!("loader-detail parity: {detail} ({evaluated:?})");
-    assert!(evaluated.contains(&"freestanding") && evaluated.contains(&"basic"), "ELF corpus must run");
+    assert!(evaluated.iter().any(|n| n == "freestanding") && evaluated.iter().any(|n| n == "basic"), "ELF corpus must run");
     assert_eq!(detail.passed, detail.total, "every evaluated binary's loader detail must match its golden");
 }

@@ -76,7 +76,7 @@ fn function_start_pattern_files_resolve() {
         assert!(referenced > 0, "{} references no pattern file", cpath.display());
     }
 
-    // mosura's own (beyond-Ghidra) Watcom module — the one WAR2 lands on. See specs/patterns/.
+    // mosura's own (beyond-Ghidra) Watcom module — the one the subject lands on. See specs/patterns/.
     let mosura = paths::specs_dir().join("patterns");
     for f in ["patternconstraints.xml", "x86watcom_patterns.xml"] {
         assert!(

@@ -115,7 +115,7 @@ fn is_realistic(f: &Funcdata, vn: VarnodeId, seen: &mut HashSet<VarnodeId>) -> b
 /// movement: Ghidra walks the COPY chain only far enough to rule out an unaffected / non-direct-
 /// write input and then pops `PopSolid` WITHOUT entering whatever defines the chain's head. The
 /// flattened walk this replaces recursed through the COPY into the head's defining INDIRECT and
-/// applied the killed-by-call rejection there — dropping the argument (WAR2's FUN_00066da8: the
+/// applied the killed-by-call rejection there — dropping the argument (the subject's FUN_00066da8: the
 /// stack-buffer address passed to a call was judged no-use, and the body collapsed; the oracle
 /// keeps the argument).
 ///
@@ -860,7 +860,7 @@ fn return_trial_kept(f: &Funcdata, ret: OpId, slot: usize) -> bool {
 /// enumerates candidate return registers, and neither does mosura any more: this RETIRES
 /// `recover_return`, which appended hardcoded x86-64 `RAX:8`/`XMM0:8` varnodes to every RETURN
 /// pre-heritage. Those constants are correct only by coincidence on the x86-64 SysV corpus — under
-/// any 32-bit convention (WAR2's `__watcall`, which returns in `EAX:4`) neither candidate matched
+/// any 32-bit convention (the subject's `__watcall`, which returns in `EAX:4`) neither candidate matched
 /// any storage, no trial was ever usable, and EVERY function recovered a `void` return, deleting
 /// its return value as dead code.
 pub fn init_active_output(f: &mut Funcdata) {
@@ -1109,7 +1109,7 @@ pub fn init_active_input(f: &mut Funcdata) {
         // What the pre-built input buys beyond skipping the trials: the varnode is created at the
         // PROTOTYPE's width, pre-heritage, so the heritage range for the register is at least that
         // wide. Trials get their width from the heritaged range instead — the width of whatever
-        // the caller happens to read elsewhere. Measured on WAR2's `FUN_00015224` family: the
+        // the caller happens to read elsewhere. Measured on the subject's `FUN_00015224` family: the
         // caller's only EAX read is the callee's 1-byte return (`test al,al`), so the heritage
         // range is AL, the trial commits 1 byte, the caller's own parameter comes out `xunknown1`,
         // and Watcom materializes the byte with an `AND EAX,0xff` the original does not have. The
@@ -1143,7 +1143,7 @@ pub fn init_active_input(f: &mut Funcdata) {
 /// The varargs shape rather than the plain locked one, deliberately: a recovered prototype is
 /// USE-based — the callee's body is authoritative about the parameters it reads and blind to the
 /// ones it merely receives — so it UNDER-states. Locking to it drops arguments the caller plainly
-/// passes: measured on WAR2, the plain-locked form lost 25 functions, e.g.
+/// passes: measured on the subject, the plain-locked form lost 25 functions, e.g.
 /// `func_0x0004c978(0xbe6, 0x4921c)` truncated to one argument because the callee never touches
 /// its second parameter. The union (prototype as a floor, extras by evidence) is the monotone rule
 /// this campaign already measured, expressed through Ghidra's own varargs machinery.
@@ -1151,7 +1151,7 @@ pub fn init_active_input(f: &mut Funcdata) {
 /// What the pre-built input buys beyond the locked verdict: the varnode is created at the
 /// PROTOTYPE's width, pre-heritage, so the register's heritage range is at least that wide.
 /// Organic trials get their width from the heritaged range — the width of whatever the caller
-/// happens to read elsewhere. Measured on WAR2's `FUN_00015224` family: the caller's only EAX read
+/// happens to read elsewhere. Measured on the subject's `FUN_00015224` family: the caller's only EAX read
 /// is the callee's 1-byte return (`test al,al`), so the range was AL, the trial committed 1 byte,
 /// the caller's own parameter came out `xunknown1`, and Watcom materialized the byte with an
 /// `AND EAX,0xff` the original does not have. The prototype says 4; the pre-built input passes the
@@ -1690,7 +1690,7 @@ fn derive_input_map(f: &mut Funcdata, call: OpId) {
     // place the value. So a recovered list that is NARROWER than the convention's is missing
     // evidence rather than correcting it.
     //
-    // Measured over the 104 WAR2 functions whose verdict propagation changes: of the 26 it fixes,
+    // Measured over the 104 the subject functions whose verdict propagation changes: of the 26 it fixes,
     // 25 gain arguments; of the 78 it breaks, 43 LOSE arguments while only one of the wins does.
     // "Propagation removed an argument" is thus an almost perfect predictor of a regression.
     //
@@ -1730,7 +1730,7 @@ fn derive_input_map(f: &mut Funcdata, call: OpId) {
 /// Dropping them instead RENUMBERS the argument list. A call whose only real argument is the
 /// watcall SECOND one (EDX) was emitted as a one-argument call, so the recompiled code passes it in
 /// EAX — the original's `add edx,0x12 ; call` came back as `lea eax,[edx+0x12] ; call`. That shape
-/// is the single most common first divergence among WAR2's near-miss functions. It is the exact
+/// is the single most common first divergence among the subject's near-miss functions. It is the exact
 /// call-site twin of the signature defect fixed in `printc::rendered_param_slots`.
 fn build_input_from_trials(f: &mut Funcdata, call: OpId) {
     // fspec.cc:5703-5734 — the used trials, in trial order, each naming the slot it lives in.

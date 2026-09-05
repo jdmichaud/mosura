@@ -1,8 +1,8 @@
 //! LE (Linear Executable) loader gates that need no user-provided binary.
 //!
 //! **Why this file exists.** The LE loader is the oldest beyond-Ghidra loader in the tree and the
-//! one behind both WAR2 and Descent, but its only gates were `le_war2_objects` and
-//! `le_war2_analysis` in `analysis_parity.rs` — and those are skip-if-absent on a copyrighted
+//! one behind both the subject and Descent, but its only gates were `le_subjects_objects` and
+//! `le_subjects_analysis` in `analysis_parity.rs` — and those are skip-if-absent on a copyrighted
 //! binary. On a machine without it they "pass" in 0.00 s, so the loader had **no real coverage**,
 //! while the newer X-32 loader had seven binary-free tests (`x32_loader.rs`). This closes that
 //! asymmetry with the same synthetic-container discipline.
@@ -99,7 +99,7 @@ fn build_le(
 /// Both shapes exist in the wild and they take different paths through `loader::load_container`:
 /// a standalone LE is dispatched straight to `load_le` by `is_le_header(data, e_lfanew)`, while a
 /// bound one falls through to the 16-bit MZ stub and is only reachable via the opt-in native view.
-/// Real examples: Worms (1995) ships standalone LEs beside `DOS4GW.EXE`; WAR2 and Descent are
+/// Real examples: Worms (1995) ships standalone LEs beside `DOS4GW.EXE`; the subject and Descent are
 /// bound and set `e_lfanew` to garbage on purpose.
 fn build_le_standalone(
     stub_len: usize,
@@ -113,7 +113,7 @@ fn build_le_standalone(
     out
 }
 
-/// Two objects in WAR2's shape: code at 0x10000, data above it.
+/// Two objects in the subject's shape: code at 0x10000, data above it.
 fn two_objects(code_pages: u32, data_pages: u32) -> Vec<Object> {
     vec![
         Object { virtual_size: code_pages * PAGE, base: 0x10000, flags: 0x2045, pages: code_pages },
@@ -143,7 +143,7 @@ fn call_graph_pages(entry_off: u32, pages: u32) -> (Vec<u8>, [u32; 2]) {
     (p, [f1, f2])
 }
 
-/// Vary the stub length and the entry, so nothing may be hardcoded from WAR2 (whose LE sits at
+/// Vary the stub length and the entry, so nothing may be hardcoded from the subject (whose LE sits at
 /// 0x37CF4 with entry `obj1:0x501F8`).
 const CASES: &[(usize, u32)] = &[(0x200, 0x10), (0x1000, 0x120), (0x37c00, 0x20)];
 
@@ -216,7 +216,7 @@ fn maps_objects_at_their_relocation_bases() {
 #[test]
 fn entry_is_resolved_through_the_named_object() {
     // EIP is an offset *within* the EIP object, so pointing the entry at object 2 must land in
-    // object 2's range — the rule that makes WAR2's 0x10000 + 0x501F8 come out right.
+    // object 2's range — the rule that makes the subject's 0x10000 + 0x501F8 come out right.
     let (pages, _) = call_graph_pages(0x10, 3);
     let objs = two_objects(2, 1);
     let data = build_le(0x400, &objs, 2, 0x40, &pages);

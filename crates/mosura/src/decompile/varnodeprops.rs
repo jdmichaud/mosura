@@ -29,7 +29,7 @@
 //!   Watcom callee-save area: `ActionRestrictLocal` carves the saved-EBP slot, the carve
 //!   disconnects the save slots above it from every `&local` escape below, they classify
 //!   `nolocalalias`, `RuleIndirectCollapse` folds their call INDIRECTs, and the dead saves —
-//!   and the phantom register parameters read from them — vanish (WAR2 0x2a1b4: `maphdr_TYPE`
+//!   and the phantom register parameters read from them — vanish (the subject's 0x2a1b4: `maphdr_TYPE`
 //!   is 1 parameter, not 2). A varnode in an unowned range is Ghidra's no-symbol/not-inScope
 //!   branch (funcdata_varnode.cc:970): `isUnmappedUnaliased` (varmap.cc:494) — with no
 //!   parameter-area carve tracked (`maxParamOffset < minParamOffset`) it is unaliased outright.
@@ -52,7 +52,7 @@ use super::varnode::{flags, VarnodeId};
 /// `nolocalalias` (`fl = 0` for an unmapped varnode), so a call-guarded INDIRECT on a stack slot
 /// survives into the pass where the alias analysis can see the slot's address escaping; marking
 /// the flag unconditionally let `RuleIndirectCollapse` fold the guard in pass 0, before the
-/// `MOV EAX,ESP`-to-call escape was ever examined (WAR2's FUN_00066da8 collapse).
+/// `MOV EAX,ESP`-to-call escape was ever examined (the subject's FUN_00066da8 collapse).
 pub fn mark_addrtied(f: &mut Funcdata, unmapped_alias_check: bool) {
     let ram = f.spaces.by_name("ram");
     let stack = f.spaces.by_name("stack");
@@ -119,7 +119,7 @@ pub fn mark_addrtied(f: &mut Funcdata, unmapped_alias_check: bool) {
                     // `syncVarnodesWithSymbols`). This is the producer `RuleIndirectCollapse`'s
                     // live-call arm was waiting for (rules.rs documented it INERT): a call-guarded
                     // INDIRECT on a local no pointer can reach collapses, exactly Ghidra's 24
-                    // firings on the war2split fixture that mosura fired zero of.
+                    // firings on the subject-split fixture that mosura fired zero of.
                     f.vn_mut(id).flags &= !(flags::ADDRTIED | flags::ADDRFORCE);
                     f.vn_mut(id).flags |= flags::NOLOCALALIAS;
                 }

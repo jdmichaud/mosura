@@ -4,7 +4,7 @@
 //! (`ActionMarkExplicit::baseExplicit`, coreaction.cc:3015: `def->isCall()`), so the port prints
 //! the comma form; this compiler materializes the clause's boolean from that form (`SETZ AL ;
 //! AND EAX,0xff`) where the original — written with the call in the condition — branches on the
-//! flags (`TEST EAX,EAX ; JNZ`): WAR2 FUN_0004d0f8 (EXACT with the call inlined), FUN_000164cc,
+//! flags (`TEST EAX,EAX ; JNZ`): the subject's FUN_0004d0f8 (EXACT with the call inlined), FUN_000164cc,
 //! 50 functions on round f0 carry a comma-clause call and an extra `SETcc`. Value-identical: the
 //! call keeps its position (it is the clause's only statement) and its single use is the compare.
 //! The witness (`recovered.inline_call.sites`, from `buildconfig::inline_calls_from_evidence`

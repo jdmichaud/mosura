@@ -2,7 +2,7 @@
 //! source wrote, `x <= 0` for `x == 0` and `0 < x` for `x != 0`, where the ORIGINAL branches on
 //! the unsigned order flags (`TEST AX,AX ; JBE`, `CMP byte ptr [..],0 ; JA`) — Ghidra's
 //! `RuleLessEqual`/`RuleLess2Zero` fold an unsigned `x <= 0` to `x == 0` in the IR and this
-//! compiler then branches `JZ`/`JNZ` (WAR2 FUN_0003dd60's four `JBE`, FUN_000487cc; 14 functions
+//! compiler then branches `JZ`/`JNZ` (the subject's FUN_0003dd60's four `JBE`, FUN_000487cc; 14 functions
 //! carry the `JBE`→`JZ` / `JA`→`JNZ` row on round f1). Value-identical for an unsigned operand
 //! (`x <= 0` ⇔ `x == 0`). The witness (`recovered.zero_cmp.sites`, from
 //! `buildconfig::zero_cmps_from_evidence` over this arm's candidates): the original's branch at

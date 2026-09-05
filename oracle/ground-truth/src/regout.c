@@ -2,7 +2,7 @@
  *
  * mosura's x86-32 watcom cspec lists EBX <unaffected>, so a value returned in EBX is invisible:
  * the call's result is discarded and the caller keeps using its own pre-call value. Measured on
- * WAR2 — FUN_00074744 computes `ebx += eax*[g] + [h]` and returns it; its caller FUN_000748fd
+ * the subject — FUN_00074744 computes `ebx += eax*[g] + [h]` and returns it; its caller FUN_000748fd
  * does `mov BYTE PTR [ebx],al` with that pointer, and mosura emits
  *
  *     func_0x00074744(iStack00000008);      // result discarded
@@ -14,7 +14,7 @@
  *   1. `bump` lives in the .asm, NOT here. A caller/callee pair in one translation unit does not
  *      work: wcc386 INLINES the callee and no call survives (measured — the caller came back as
  *      `mov ecx,[g_dst]; mov [ecx+edx],al` with the callee gone). Assembly is also the faithful
- *      shape: the WAR2 functions in this class ARE hand-written asm with custom conventions,
+ *      shape: the subject functions in this class ARE hand-written asm with custom conventions,
  *      which is why no #pragma aux C source reproduces FUN_00074744's `mul`.
  *   2. the returned register is EBX — one the cspec declares <unaffected>. With a killedbycall
  *      register (EAX) the result is already visible and the test proves nothing.

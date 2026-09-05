@@ -324,7 +324,7 @@ fn snip_reads(f: &mut Funcdata, vn: VarnodeId, marked: &[OpId]) {
         // call/store it is indirect for), not after the INDIRECT itself — the INDIRECT sits
         // BEFORE that op, and a read placed between them precedes its def's cover point
         // (`getUIndex` maps an INDIRECT to its causing op), so the liveness walk wrapped the
-        // value across every predecessor. WAR2 FUN_0006c6f0: the global pointer's post-call
+        // value across every predecessor. the subject's FUN_0006c6f0: the global pointer's post-call
         // instance read "live" through the whole loop, and every `piRam + k` PTRADD in it
         // failed `checkImpliedCover` (named where Ghidra inlines `piRam[k]`).
         let afterop = if f.op(def).code() == OpCode::Indirect {

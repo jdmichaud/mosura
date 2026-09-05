@@ -598,13 +598,13 @@ mod tests {
     /// invisible: `recompile_check` sets flags PER UNIT from buildconfig, so the spec's list is
     /// only consulted for a unit that carries none. It would take a differently-compiled unit,
     /// somewhere, to notice. Pinned here rather than wiring the layers together, because the
-    /// duplication is the honest description: one is the WAR2 build profile, the other is this
+    /// duplication is the honest description: one is the subject build profile, the other is this
     /// compiler's default when a caller expresses no preference.
     #[test]
-    fn the_dos_spec_profile_matches_the_war2_build_profile() {
+    fn the_dos_spec_profile_matches_the_subject_build_profile() {
         let spec_flags = spec::watcom_10_0a_dos("").flags;
         let base = crate::recompile::buildconfig::watcom_10_0a().base;
-        assert_eq!(spec_flags, base, "the spec profile and the WAR2 build profile have drifted");
+        assert_eq!(spec_flags, base, "the spec profile and the subject build profile have drifted");
     }
 
 }

@@ -31,13 +31,13 @@
 //! return p; }` whose callers all drop the result) changes FORM, never values ONLY on an ABI that
 //! returns the struct through the CALLER'S MEMORY — gcc's i386 memory return, the case this arm is
 //! enabled for, where `local = fill(..)` performs the same stores into the same bytes. On a
-//! register-return convention it is a behaviour change: measured on WAR2/Watcom, where small
+//! register-return convention it is a behaviour change: measured on the subject/Watcom, where small
 //! structs come back in EAX, 9 functions carry the shape, NONE carries the callee-pop witness
 //! (slot 0 is a register, so `on_stack` is never true) and the one callers-witness firing is an
 //! out-parameter rewritten into a register return. Four of those nine are EXACT today, so widening
 //! this witness aims at EXACT rows; and the survey's TU assembly declares every callee
 //! `extern int func_0x...();`, so a struct-returning callee cannot even be called from another TU
-//! there. The axis is off for Watcom (docs/struct-return-arm.md, "Measured on WAR2").
+//! there. The axis is off for Watcom (docs/struct-return-arm.md, "Measured on the subject").
 use crate::analysis::sret::{self, SretShape};
 use crate::decompile::emit::arms::{Answer, Arm, Signature, Site, SiteKind, ValueSite};
 use crate::decompile::emit::{EmitChoices, StructReturn};

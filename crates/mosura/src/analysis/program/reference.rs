@@ -105,7 +105,7 @@ pub struct ReferenceManager {
     /// Ordered index of every reference **destination** `(space, offset)` — the backing for
     /// Ghidra's `getReferenceDestinationIterator` / `getReferenceCountTo`, which the address-table
     /// and pseudo-disassembler ports call once per candidate address. A linear scan of `refs`
-    /// there is quadratic on a real binary (WAR2 holds >20k references).
+    /// there is quadratic on a real binary (the subject holds >20k references).
     dests: std::collections::BTreeSet<(u32, u64)>,
     /// `(space, offset) -> indices into `refs`, in insertion order` for the reference SOURCE and
     /// DESTINATION — the backing for [`Self::refs_from`] / [`Self::refs_to`], Ghidra's
@@ -113,7 +113,7 @@ pub struct ReferenceManager {
     ///
     /// ⚠️ **These are not an optimisation, they are the difference between linear and quadratic.**
     /// `get_function_body` calls `refs_from` once per INSTRUCTION of every function, and a scan of
-    /// `refs` made that `O(instructions x references)`. On WAR2 that is ~387k instruction visits
+    /// `refs` made that `O(instructions x references)`. On the subject that is ~387k instruction visits
     /// against >20k references per whole-program body walk, and the walk runs once per analyzer
     /// invocation: measured at **98.0s of a 197.8s run**, against 1.0s for the constant
     /// propagation the walk exists to serve. Same class as the `dests` index above, on the other
@@ -217,7 +217,7 @@ impl ReferenceManager {
     /// ⚠️ **The early-out is load-bearing, not a micro-optimisation.** The caller asks
     /// unconditionally at every operand it claims, so the overwhelmingly common case is that there
     /// is nothing to remove — and every line below is O(references). Doing that work on a no-op
-    /// call put this function at **2.3% of a whole WAR2 run** in `perf`. `from_index` answers "is
+    /// call put this function at **2.3% of a whole the subject run** in `perf`. `from_index` answers "is
     /// there any such reference" in O(log n), so the miss now costs a lookup instead of four
     /// whole-table passes.
     pub fn remove(&mut self, from: Address, to: Address, ref_type: RefType) {

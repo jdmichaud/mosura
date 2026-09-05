@@ -951,7 +951,7 @@ pub struct ProtoModel {
     ///
     /// [`EXTRAPOP_UNKNOWN`] is NOT the same as zero: an unknown extrapop makes the stack pointer
     /// after the call indeterminate, which `ActionExtraPopSetup` models with an INDIRECT rather
-    /// than an add. WAR2's `__watcall` is exactly that (`extrapop="unknown"`); x86-64-gcc's
+    /// than an add. the subject's `__watcall` is exactly that (`extrapop="unknown"`); x86-64-gcc's
     /// `__stdcall` is `8`.
     pub extrapop: i32,
     /// Ghidra `ProtoModel::likelytrash` (fspec.hh:757), decoded from the cspec's `<likelytrash>`
@@ -1000,7 +1000,7 @@ impl ProtoModel {
     /// stack, locals live at NEGATIVE offsets — the top `999999` bytes of the stack space (`9999` /
     /// `99` for a 2-byte / 1-byte space). The window is expressed in the space's own wrapped offsets,
     /// so on a 4-byte stack it is `[0xfff0bdc1, 0xffffffff]` and every non-negative frame offset
-    /// falls OUTSIDE it. That is why Ghidra emits no `StackX_` name over WAR2's 1286 functions: the
+    /// falls OUTSIDE it. That is why Ghidra emits no `StackX_` name over the subject's 1286 functions: the
     /// caller-allocated marker in `ScopeLocal::buildVariableName` (varmap.cc:566) sits behind an
     /// `inRange` test this window cannot pass.
     pub fn default_local_range(spaces: &SpaceManager, stack_grows_negative: bool) -> RangeList {
@@ -1388,7 +1388,7 @@ pub struct CallSpec {
     /// identity COPY, the retaddr store materialized at its slot). Ghidra keeps the push in the
     /// IR, so its extrapop machinery restores the whole `+4`; mosura's pre-model has already
     /// restored it, and every later extrapop consumer must subtract this or the ret-pop is
-    /// counted twice — measured on WAR2 FUN_0003495c, where the unknown-extrapop solver's `+4`
+    /// counted twice — measured on the subject's FUN_0003495c, where the unknown-extrapop solver's `+4`
     /// guess on top of the neutralized push shifted every post-call stack resolution by +4,
     /// landing a call's return address inside the (correctly) aliased locals as
     /// `aiStack_18[0] = 0x34a6d;` and breaking the structure into gotos (the E1082 family).
@@ -1422,11 +1422,11 @@ pub struct CallSpec {
     /// `<unaffected>` is a property of the DEFAULT model, and in this binary it is a per-function
     /// property: Watcom's `modify` list is set per translation unit by `#pragma aux`, and hand
     /// written assembly obeys whatever contract its callers were built against. 264 functions
-    /// across 245 measured on WAR2 write EBX/ESI/EDI/EBP and never restore them.
+    /// across 245 measured on the subject write EBX/ESI/EDI/EBP and never restore them.
     ///
     /// Believing the default model at such a call site is wrong code, not a cosmetic difference:
     /// `guardCalls` emits no guard for an unaffected register, so the caller's PRE-call value
-    /// flows across untouched and every later use reads a stale value. Measured on WAR2
+    /// flows across untouched and every later use reads a stale value. Measured on the subject
     /// FUN_000748fd, whose callee returns a new pointer in EBX:
     ///
     /// ```text
@@ -1438,7 +1438,7 @@ pub struct CallSpec {
     /// isolation, so nothing inside the callee is visible while the caller is decompiled. Asked
     /// through the whole-image wrapper it emits the same truncated callee. This is therefore a
     /// deliberate `beyond-ghidra` extension, licensed by that measurement — see
-    /// war2-survey/PLAN-register-effects.md.
+    /// <subject-survey>/PLAN-register-effects.md.
     pub overwrites: Vec<(Address, u32)>,
 
     /// Every register offset the callee writes anywhere in its reachable body, or `None` when that
@@ -1792,7 +1792,7 @@ pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
     // The holes are an artefact of asking the WRONG LIST. When the evidence says this function
     // takes no register arguments (no register input is even a possible parameter) but does take a
     // stack one, the convention in force is the stack-based variant — Watcom spells it
-    // `#pragma aux ... parm []`, and warcraft2-re's proven sources use exactly that for these
+    // `#pragma aux ... parm []`, and the RE tracker's proven sources use exactly that for these
     // functions. Ask that list instead and there is no hole for the rule to fire on.
     //
     // Measured on the `stackarg` MVE (`mov eax,[esp+4] ; inc eax ; ret 4`), which came back
@@ -1809,7 +1809,7 @@ pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
     // FUN_00010ac2 takes BOTH its arguments this way (ESI and EDI) and came back `void f(void)`
     // with both pointers left as declared-but-never-assigned locals that the body then
     // dereferenced. FUN_00010010 is the mixed case: EAX and EDX by the convention, plus ESI/EDI as
-    // the operands of its `rep movs`, which the caller must have set. 603 emitted WAR2 TUs carry
+    // the operands of its `rep movs`, which the caller must have set. 603 emitted the subject TUs carry
     // such a local and none are byte-clean.
     //
     // STRICTLY ADDITIVE: it only ever ADDS storage the convention did not claim, never re-decides
@@ -1878,7 +1878,7 @@ pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
 
     let mut default_run = active.clone();
     pl.fillin_map(&mut default_run);
-    // INSTRUMENT (`MOSURA_PROTO=1`): 579 emitted WAR2 TUs declare a local that is never assigned
+    // INSTRUMENT (`MOSURA_PROTO=1`): 579 emitted the subject TUs declare a local that is never assigned
     // and none are byte-clean; several are DROPPED PARAMETERS (FUN_0004d95c uses EDX and EBX,
     // recovers only EAX). Which rule drops a trial is a measurement, not a guess.
     if crate::debug::on(crate::debug::Topic::Args) {
@@ -1904,7 +1904,7 @@ pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
     // varnode with actual reads. A present-but-inactive trial is an input varnode NOBODY READS:
     // heritage's call guards manufacture entry-value varnodes (a passthrough INDIRECT's `before`
     // at the first call IS the entry value), and a later-deleted chain leaves them floating with
-    // no descend. That is not evidence of a register argument. Measured on WAR2's FUN_0006c6f0
+    // no descend. That is not evidence of a register argument. Measured on the subject's FUN_0006c6f0
     // (1,963 B): its two stack arguments read throughout the body, its four register trials all
     // inactive -- and their mere presence kept this branch from firing, so the prototype came out
     // `void(void)` with the arguments declared as uninitialized locals (`iStack00000004`).
@@ -1947,7 +1947,7 @@ pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
     // FUN_00010ac2 is the specimen: its arguments arrive in ESI and EDI, neither of which is in
     // watcall's `<input>` list (EAX/EDX/EBX/ECX/stack), so it came back `void f(void)` with both
     // pointers left as declared-but-never-assigned locals whose garbage values the body then
-    // dereferenced. 603 emitted WAR2 TUs carry such a local and none are byte-clean.
+    // dereferenced. 603 emitted the subject TUs carry such a local and none are byte-clean.
     //
     // STRICTLY ADDITIVE, exactly like the stack-only branch: it may only ADD a prototype where the
     // convention recovered none, never re-decide one it already found. Ordered by register offset
@@ -2083,7 +2083,7 @@ pub fn create_placeholder(f: &mut Funcdata, call: OpId, spacebase: SpaceId) {
     // more slots high, every caller stack range translates below the parameter area, and the
     // trailing stack argument is silently dropped.
     //
-    // Measured on WAR2's `FUN_00023514` under the prototype pass: with the INDIRECT present the
+    // Measured on the subject's `FUN_00023514` under the prototype pass: with the INDIRECT present the
     // placeholder resolved off=-16 and recorded -20 (truth: -24); its 5th argument `PUSH 9`
     // vanished from the emitted call. Anchoring the placeholder before the INDIRECT restores the
     // same binding the no-INDIRECT graph produces, making the recorded offset invariant to whether
@@ -2101,7 +2101,7 @@ pub fn create_placeholder(f: &mut Funcdata, call: OpId, spacebase: SpaceId) {
     // the stack, so resolving the offset at its calls buys nothing -- and it costs: resolution
     // enables stack-range trials at the call, and the caller's own saved-register slots translate
     // into the parameter window and survive realism (they are written, and they trace to real
-    // inputs). Measured on WAR2's FUN_0001fdbc under the prototype pass: with the anchor applied
+    // inputs). Measured on the subject's FUN_0001fdbc under the prototype pass: with the anchor applied
     // at its 63 register-only memset calls, 59 of them grew phantom stack arguments from the
     // caller's save slots, EXACT -> 0.522.
     // The corrected binding applies where a recovered prototype names STACK storage (Ghidra's

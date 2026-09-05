@@ -319,7 +319,7 @@ build_watcom() {
 }
 # --- Open Watcom / LE column: the DOS-extender Linear Executable, mosura`s `load_le` path. -----
 #     `wlink format os2 le` emits a bound MZ+LE with a real fixup table — the same container
-#     family as WAR2.EXE, and the ONLY format in this corpus that carries relocation records.
+#     family as the subject binary, and the ONLY format in this corpus that carries relocation records.
 #     LE has no symbol table, so (like the z80 column) the truth comes from the LINKER MAP:
 #     wlink prints `SSSS:OOOOOOOO  name`, and the LE object table gives each segment`s base.
 #
@@ -394,10 +394,10 @@ print("\n".join(sorted(out)))'
 
 if [ -x "$WATROOT/binl/wcc386" ] && have objcopy; then
   build_watcom watprog
-  build_watcom narrowsw   # narrowed-switch decompiler-gap repro (war2-issues-become-source-tests)
-  build_watcom war2gates  # trimOpInput INDIRECT-panic repro (war2-issues-become-source-tests)
-  build_watcom forphi     # E1063 for-loop phi-init marker-leak repro (war2-issues-become-source-tests)
-  build_watcom switchcall # EMPTY SWITCH BODY repro -- recovered table, dropped case bodies (war2-issues-become-source-tests)
+  build_watcom narrowsw   # narrowed-switch decompiler-gap repro (issues-become-source-tests (subject-profile note))
+  build_watcom trimshape  # trimOpInput INDIRECT-panic repro (issues-become-source-tests (subject-profile note))
+  build_watcom forphi     # E1063 for-loop phi-init marker-leak repro (issues-become-source-tests (subject-profile note))
+  build_watcom switchcall # EMPTY SWITCH BODY repro -- recovered table, dropped case bodies (issues-become-source-tests (subject-profile note))
   build_watcom twoarg     # two-argument watcall call, second arg in EDX dropped
   build_watcom stackarg   # stack-passed parameter recovered as an uninitialised local
   build_watcom regmodify  # caller holds a value across a call the callee's modify list spares
@@ -407,8 +407,8 @@ if [ -x "$WATROOT/binl/wcc386" ] && have objcopy; then
   build_watcom callclob   # an indirect call must not clobber a callee-saved loop counter (cspec killedbycall)
   build_watcom globfnptr  # memory-indirect call through a global fn-pointer (call [mem])
   build_watcom regout     # a callee RETURNING in EBX, a register the cspec calls preserved
-  build_watcom datafnptr  # code reachable ONLY through a function pointer in DATA (war2 analysis-gap §7)
-  # inlineparam: the INLINE CALL PARAMETER thunk repro (docs/function-discovery-backlog.md §9 #5),
+  build_watcom datafnptr  # code reachable ONLY through a function pointer in DATA (the subject analysis-gap §7)
+  # inlineparam: the INLINE CALL PARAMETER thunk repro (<subject-profile>/notes/function-discovery-backlog.md §9 #5),
   # the blocker holding held-patches/listing-command-channel.patch. The whole fixture is the
   # `_cstart.asm` — the idiom needs a callee that pops its own return address and reads the word
   # the call is followed by, which C cannot express; the `.c` only supplies `main_` and the
@@ -433,7 +433,7 @@ if [ -x "$WATROOT/binl/wcc386" ] && have objcopy; then
   # under test (src/tailjmp.c property 1).
   # wprologue: the prologue-SHAPE spec for the watcom function-start patterns. `-of+`
   # (traceable stack frames) is REQUIRED — it is what makes wcc386 emit the `push ebp; mov ebp,esp`
-  # frame WAR2 is full of. Without it the compiler omits the frame pointer and addresses locals off
+  # frame the subject is full of. Without it the compiler omits the frame pointer and addresses locals off
   # ESP, producing prologues that look nothing like the target (measured: `53 51 83 ec` and
   # `53 51 52 56 b8`, no `89 e5` anywhere).
   build_watcom wprologue "-of+"
@@ -442,14 +442,14 @@ if [ -x "$WATROOT/binl/wcc386" ] && have objcopy; then
   # difference: it demands a *traceable* frame, pinning `55 89 e5` to offset 0; a frame needed only
   # for *addressing* (which `-od` forces, every local spilled) is emitted AFTER the register saves.
   # Result, measured on native Open Watcom v2: all 15 functions save-first, run lengths 2..5, e.g.
-  # p_leaf_ = `53 51 52 56 57 55 89 e5` — WAR2 0x16ed4's shape exactly. This is the only gate on
+  # p_leaf_ = `53 51 52 56 57 55 89 e5` — the subject's 0x16ed4's shape exactly. This is the only gate on
   # the save-first family, i.e. on 62 of the pattern file's 73 patterns.
   build_watcom wprologue_sf "-4r -fpi87 -od"
   # wprobe: §5 CELL 1 — stack checking. The SAME `-od` line as wprologue_sf with `-s` REMOVED
   # (third parameter ""), which makes wcc386 open every framed function with
   # `push <framesize>; call __CHK`. That shifts the true entry TEN BYTES ahead of what the
   # save-first family anchors on — the same class of defect that this pattern file was created
-  # to fix, reintroduced by a flag WAR2 happened to use and most binaries do not.
+  # to fix, reintroduced by a flag the subject happened to use and most binaries do not.
   build_watcom wprobe "-4r -fpi87 -od" ""
   build_watcom tailjmp ""
   # fnpattern: the FUNCTION START SEARCH repro (a function reachable by NOTHING — no call, no

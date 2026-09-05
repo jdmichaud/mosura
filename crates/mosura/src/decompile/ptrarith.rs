@@ -32,8 +32,8 @@
 //!     (rules.rs:738/741) — Ghidra calls it from three places (ruleaction.cc:131/133 and :6458) and
 //!     mosura ported the rule callers, not the `AddTreeState` one. What is deferred is
 //!     `AddTreeState`'s *use* of the distribution path — a WIRING decision, not a missing port.
-//!     **CENSUSED and INERT:** across the 79 datatests and WAR2's 1303 functions the path is a
-//!     candidate exactly **once** (one WAR2 function) and **declines zero times** — the
+//!     **CENSUSED and INERT:** across the 79 datatests and the subject's 1303 functions the path is a
+//!     candidate exactly **once** (one the subject function) and **declines zero times** — the
 //!     `preventDistribution` retry resolves it without the deferred code. So the original
 //!     parenthetical "(declined when needed)" describes something that has never once been needed.
 //!     `MOSURA_DISTRIB=1` counts both the candidate and the decline; a zero at the decline site
@@ -1225,7 +1225,7 @@ impl Rule for RulePtrsubUndo {
         // SIGN-EXTEND the offset. Stack locals live at NEGATIVE frame offsets, and the constant is
         // stored unsigned: reading `0xffffffe6` as 4294967270 instead of -26 makes the symbol
         // lookup miss, so a perfectly good PTRSUB is judged invalid, converted to an INT_ADD, and
-        // rebuilt by RulePtrArith on the next pass — the pool then never reaches a fixpoint (WAR2
+        // rebuilt by RulePtrArith on the next pass — the pool then never reaches a fixpoint (the subject
         // FUN_00024a88). Ghidra reads the same field into a SIGNED `int8` (ruleaction.cc:6935).
         let val = sext_const(data.vn(cvn).constant_value(), data.vn(cvn).size);
         let (extra, multiplier) = get_extra_offset(data, op);
@@ -1261,7 +1261,7 @@ impl Rule for RulePtrsubUndo {
 ///
 /// ⚠️ **THIS DOES NOT CLOSE A MEASURED GAP AND MUST NOT BE DESCRIBED AS DOING SO.** Measured
 /// read-only before it was written, with a rule-shaped probe in this exact pool slot: **0 firings
-/// across all 79 x86-64 datatests**, and on WAR2 **32 firings in 4 functions** (20 not-a-pointer,
+/// across all 79 x86-64 datatests**, and on the subject **32 firings in 4 functions** (20 not-a-pointer,
 /// 12 size-mismatch, **zero** constant-zero-index) — and all 4 functions are already among the 14
 /// the `ActionSetCasts` refit rewrites, a strict subset. Since that refit repairs these before
 /// printing, the rendered C may not move at all.
@@ -1356,7 +1356,7 @@ mod ptrsub_undo_tests {
 
     #[test]
     fn ptrsub_undo_declines_a_negative_stack_offset() {
-        // The WAR2 FUN_00024a88 shape: PTRSUB off the stack spacebase at a negative offset. Read
+        // The subject FUN_00024a88 shape: PTRSUB off the stack spacebase at a negative offset. Read
         // unsigned, the symbol lookup misses and the rule wrongly undoes a PTRSUB that
         // RulePtrArith rebuilds on the next pass — the pool then never converges.
         let (mut f, ram) = fd();

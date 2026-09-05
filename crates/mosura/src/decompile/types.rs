@@ -251,7 +251,7 @@ impl Datatype {
     /// ⭐ THE WORD "first" ABOVE WAS A TELL THAT A SET EXISTED, AND NOBODY ENUMERATED IT. The second
     /// casualty went unnoticed for four more type-layer commits: `cast_standard` matched the `Int`
     /// variant, so `Char` fell through its `_` catch-all and cast unconditionally — worth 302 casts
-    /// across 64 WAR2 functions and one corpus fixture stuck below 1.000 (fixed in `e517104`).
+    /// across 64 the subject functions and one corpus fixture stuck below 1.000 (fixed in `e517104`).
     ///
     /// THE SWEEP IS NOW COMPLETE AND ENUMERATED, so the next variant addition gets a checklist
     /// instead of an archaeology problem. Every site that must know `Char` is an int, verified:

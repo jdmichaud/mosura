@@ -34,9 +34,9 @@
 //! `x86:LE:32` + `watcom` the resolution short-circuits on the mosura-authored spec and costs
 //! ~1.14 ms, so a target on that configuration barely pays this at all.
 //!
-//! An earlier reading of this fixture was carried onto WAR2 — an `x86:LE:32`/`watcom` target — to
-//! explain a ~1.5 s per-invocation floor there. That explanation was **wrong**: WAR2's setup is
-//! ~1.7 ms per walk, ~22× smaller, and cannot produce 1.5 s from a one-range added set. **WAR2's
+//! An earlier reading of this fixture was carried onto the subject — an `x86:LE:32`/`watcom` target — to
+//! explain a ~1.5 s per-invocation floor there. That explanation was **wrong**: the subject's setup is
+//! ~1.7 ms per walk, ~22× smaller, and cannot produce 1.5 s from a one-range added set. **the subject's
 //! floor is unexplained and is not this.** The defect gated here is real and measured; its reach
 //! is not universal, and a number from one `(language, compiler spec)` pair says nothing about
 //! another until the pair is checked.

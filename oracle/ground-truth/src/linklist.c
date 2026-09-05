@@ -1,5 +1,5 @@
 /* Ground-truth corpus (era-style, 2026-08-23): an intrusive singly-linked list with a GLOBAL
- * head — push (the WAR2 FUN_0002cca0 shape: read old head, write new head, link), pop, find by
+ * head — push (the subject's FUN_0002cca0 shape: read old head, write new head, link), pop, find by
  * key, and a length/sum walk; nodes come from a static pool. Exercises global writes ordered
  * against stores through pointers (INDIRECT placement) and pointer phis. Freestanding + shim. */
 #include "shim.h"

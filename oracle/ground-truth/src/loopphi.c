@@ -20,10 +20,10 @@
  * mosura's `find_loop_phi` returned the FIRST head phi it met and `for_parts` then validated that
  * one, with no backtracking — so a single wrong candidate anywhere on the walk lost the `for`.
  *
- * The wrong candidate is easy to come by, and WAR2 supplies seven of them. When the loop BOUND is
+ * The wrong candidate is easy to come by, and the subject supplies seven of them. When the loop BOUND is
  * a global that the body modifies, the bound is heritaged, gets its own phi in the loop head, and
  * the operand DFS reaches it BEFORE the register induction variable — the condition is
- * `INT_LESS(i, load(bound))` and the walk pops the second operand first. Instrumenting the WAR2
+ * `INT_LESS(i, load(bound))` and the walk pops the second operand first. Instrumenting the subject
  * specimens printed the selected phi's storage and it was `space="ram"` every time:
  *
  *     FORPARTS3 @00026e78 phi_out space="ram" off=0x948b6   itercode=Multiequal
@@ -58,7 +58,7 @@ int cbound_hits;
  *      and the program would then legitimately print `for (cbound_limit = ...)` and test nothing.
  *   3. the bound is read in the condition, so the operand walk reaches its phi. It is the SECOND
  *      operand of the comparison and the walk is LIFO, so it is reached first — the same ordering
- *      as the WAR2 specimens.
+ *      as the subject specimens.
  *   4. ⭐ THERE IS NO CALL IN THE LOOP AT ALL, and that is a hard requirement rather than a
  *      simplification. mosura asks the CONTAINING function's model what a call kills rather than
  *      the call's own (the separate unported-ActionDefaultParams defect), so EVERY call — direct

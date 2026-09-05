@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# war2-verdicts.sh — verdict census and baseline comparison for recompile_check TSVs.
+# corpus-verdicts.sh — verdict census and baseline comparison for recompile_check TSVs.
 #
-#   scripts/war2-verdicts.sh <rec.tsv>                  census of one measurement
-#   scripts/war2-verdicts.sh <baseline.tsv> <cand.tsv>  census of both + per-function
+#   scripts/corpus-verdicts.sh <rec.tsv>                  census of one measurement
+#   scripts/corpus-verdicts.sh <baseline.tsv> <cand.tsv>  census of both + per-function
 #                                                       verdict flips + WGSS movement
-#   scripts/war2-verdicts.sh --loss <rec.tsv> [N]       WGSS-loss ranking: lost insn
+#   scripts/corpus-verdicts.sh --loss <rec.tsv> [N]       WGSS-loss ranking: lost insn
 #                                                       weight by dominant cause + the
 #                                                       top-N contributing functions
 #                                                       (default 20) with orig/cand

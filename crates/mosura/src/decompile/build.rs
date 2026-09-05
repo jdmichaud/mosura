@@ -748,9 +748,9 @@ mod tests {
         assert!(c.contains("case 0:") && c.contains("case 10:"), "expected grouped case labels:\n{c}");
     }
 
-    /// Stage 1 (WAR2): the analysis-path proto-model threading. The isolated datatest builders keep
+    /// Stage 1 (the subject): the analysis-path proto-model threading. The isolated datatest builders keep
     /// resolving the x86-64 SysV `<default_proto>` (RDI,RSI,RDX,RCX,R8,R9 integer args), while the
-    /// analysis bridge threads a `Program`'s own `(language_id, compiler_id)` — so a WAR2-style
+    /// analysis bridge threads a `Program`'s own `(language_id, compiler_id)` — so a subject-style
     /// Watcom LE binary resolves the beyond-Ghidra `__watcall` register model (EAX,EDX,EBX,ECX) and
     /// its recovery reads parameters instead of decompiling everything as `void(void)`. Asserts both
     /// the resolution and that the built `Funcdata::proto_model` actually carries the threaded model.
@@ -786,7 +786,7 @@ mod tests {
             "datatest default must stay x86-64 SysV"
         );
 
-        // Analysis path with WAR2's ids: Watcom __watcall (EAX,EDX,EBX,ECX).
+        // Analysis path with the subject's ids: Watcom __watcall (EAX,EDX,EBX,ECX).
         if crate::lang::resolve_cspec("x86:LE:32:default", "watcom").is_none() {
             eprintln!("skip: watcom cspec absent");
             return;

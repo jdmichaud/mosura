@@ -1,4 +1,4 @@
-/* Ground-truth corpus program (war2-issues-become-source-tests): the source-reduced repro of the
+/* Ground-truth corpus program (issues-become-source-tests (subject-profile note)): the source-reduced repro of the
  * ABOVE-FUNCTION GUARD mis-port fixed in `be85c85` — `checkAlreadyInFunctionAbove` must veto on
  * FALL-THROUGH, not on ADJACENCY, so a function whose prologue sits one byte past someone else's
  * `ret` is still a function. Compiled by Open Watcom `wcc386` into a freestanding ELF32
@@ -12,7 +12,7 @@
  *
  * `getFallThrough()` is null after a `ret`, so Ghidra does not veto. mosura tested only that an
  * instruction ENDED at the address, so it refused every pattern-proposed prologue that merely
- * FOLLOWED an epilogue. Measured on WAR2: 6 tracker functions sit immediately after a
+ * FOLLOWED an epilogue. Measured on the subject: 6 tracker functions sit immediately after a
  * `pop…pop; ret` with no function recognised above them, were proposed by the pattern set, and
  * were refused here; the fix moved the run 2900 -> 3018 functions, missing-vs-tracker 42 -> 12,
  * body intrusions unchanged at 3.

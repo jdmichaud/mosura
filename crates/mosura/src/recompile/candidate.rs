@@ -351,7 +351,7 @@ fn locate(module: &OmfModule, name: &str) -> Result<(usize, usize), String> {
             // code segment HAS publics and none matched, guessing is how a function with a
             // leading jump table got compared against its own table: Watcom emits a switch's
             // table at the FRONT of `_TEXT`, the function's public sits past it (offset 32 on
-            // WAR2's FUN_00069980), and the guessed slice [0..first_public] was 8 relocated
+            // the subject's FUN_00069980), and the guessed slice [0..first_public] was 8 relocated
             // table words decoded as code -- similarity 0.009 against a candidate that was
             // never the function. A miss among named symbols is an error, not a guess.
             if module.publics.iter().any(|(_, si, _)| *si == i + 1) {

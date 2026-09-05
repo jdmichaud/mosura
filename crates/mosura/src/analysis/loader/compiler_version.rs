@@ -145,7 +145,7 @@ fn metaware_id(data: &[u8]) -> Option<CompilerId> {
 /// The runtime banner gives the copyright **era** (year range) — verified to be the ceiling for
 /// the banner. For Watcom **PE** output, `wlink` additionally stamps its own version in the PE
 /// optional header (OW 2.0 → 2.18), a finer structural signal; DOS/4GW **LE** output (e.g.
-/// WAR2.EXE) has no such field — there the era plus the bound extender's version are the ceiling.
+/// the subject binary) has no such field — there the era plus the bound extender's version are the ceiling.
 fn watcom_id(data: &[u8]) -> Option<CompilerId> {
     let w = super::watcom::detect(data)?;
     let (y0, y1) = w.year_range;

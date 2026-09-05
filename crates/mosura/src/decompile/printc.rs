@@ -302,7 +302,7 @@ pub(crate) struct PrintC<'a> {
     /// EMISSION ARM (the explicit half of the int8-divide idiom, see the Subpiece arm): explicit
     /// wide locals that are nothing but an int-width extension feeding narrowed divides, declared
     /// and assigned at int width. Ghidra prints `iVar2 = (int8)iRam000a86a8; … (int4)(1000000 /
-    /// iVar2)` (WAR2 FUN_0006cfd0, the merge-cover landing's COMPILE_FAIL) and that int8 local is
+    /// iVar2)` (the subject's FUN_0006cfd0, the merge-cover landing's COMPILE_FAIL) and that int8 local is
     /// undeclarable on the 32-bit target; `iVar2 = iRam000a86a8; … 1000000 / iVar2` compiles to
     /// the IDIV the original executes. Members of a HighVariable qualify together.
     narrow_wide_locals: HashSet<VarnodeId>,
@@ -529,7 +529,7 @@ impl PrintC<'_> {
     /// The value a NARROWED return statement prints: a PIECE whose low bytes are exactly the
     /// declared width returns its low part alone — the high bytes are the register's leftovers
     /// (`return CONCAT31((int3)(uVar1 >> 8), byte)` under a `uint1` declaration recompiled the
-    /// concatenation, WAR2 FUN_000130ec 0.735 -> 0.326 in round e3); anything else is unchanged.
+    /// concatenation, the subject's FUN_000130ec 0.735 -> 0.326 in round e3); anything else is unchanged.
     fn narrow_return_low(&self, v: VarnodeId) -> VarnodeId {
         if !self.recovered.port.narrow_return {
             return v;
@@ -873,7 +873,7 @@ impl<'a> PrintC<'a> {
                     // database.cc:2495) and falls back to the literal `var` when the
                     // architecture names no register there. This was a hardcoded x86-64
                     // offset table that ignored the varnode's SIZE, so on a 32-bit target it
-                    // named `EAX` "RAX" (measured: 14 such names in the WAR2 corpus, where
+                    // named `EAX` "RAX" (measured: 14 such names in the subject corpus, where
                     // the oracle prints `extraout_ECX` / `extraout_CL`).
                     let r = self.f.register_name(vn.loc.offset, vn.size).unwrap_or("var");
                     return format!("extraout_{r}");
@@ -1646,7 +1646,7 @@ impl<'a> PrintC<'a> {
             // is not compilable there), but mosura already renders it with the symbol-style
             // `xStack_N` name — and a symbol-style name without a declaration is the worst of
             // both: `&xStack_4` passed as a call argument compiled to `E1011: Symbol 'xStack_4'
-            // has not been declared` (WAR2 FUN_0007b900, whose slot is address-taken and never
+            // has not been declared` (the subject's FUN_0007b900, whose slot is address-taken and never
             // otherwise read, so no other path declared it).
             None => {
                 let ty = Datatype::Unknown(1);
@@ -1666,7 +1666,7 @@ impl<'a> PrintC<'a> {
     /// synthesizers happened to disagree about the slot's stem (`iStack_ffffffe8` alongside
     /// `xStack_ffffffe8`). Naming from the Symbol collapsed the two names onto one and wcc386
     /// correctly rejected the redefinition — the disagreement had been MASKING the duplicate.
-    /// Measured: 3 WAR2 functions (FUN_00041290, FUN_000441ec, FUN_0004d794).
+    /// Measured: 3 the subject functions (FUN_00041290, FUN_000441ec, FUN_0004d794).
     pub(crate) fn declare_stack(&mut self, start: i64, name: &str, ty: Datatype) {
         // frame-fill (emit/arms/frame_fill.rs): a slot inside the frame declares the ONE aggregate
         // instead — the declarations seam
@@ -1910,7 +1910,7 @@ impl<'a> PrintC<'a> {
             // unless integer promotion already implies it (`isExtensionCastImplied`, cast.cc:249);
             // otherwise the functional `ZEXT<in><out>(x)`. (Formerly every ZEXT printed bare — the
             // 16-bit `iRam = (uint2)byte * 2` lost its cast and Watcom promoted to 32 bits:
-            // `XOR EAX,EAX` for the original's `XOR AH,AH`, WAR2 FUN_00019344/000207b8.)
+            // `XOR EAX,EAX` for the original's `XOR AH,AH`, the subject's FUN_00019344/000207b8.)
             OpCode::IntZext => {
                 let in0 = a(0);
                 let out = o.output.unwrap();
@@ -2328,7 +2328,7 @@ impl<'a> PrintC<'a> {
     /// The unusable candidate is not exotic. When the loop BOUND is a global the body modifies, the
     /// bound is heritaged, carries its own phi in the head, and — because the walk is LIFO over
     /// `INT_LESS(i, bound)` — is reached BEFORE the register induction variable. Instrumenting the
-    /// WAR2 specimens printed the selected phi's storage as `space="ram"` in all seven: mosura was
+    /// the subject specimens printed the selected phi's storage as `space="ram"` in all seven: mosura was
     /// validating `DAT_000948b6`, the loop bound, as the induction variable.
     ///
     /// The walk is Ghidra's bounded 4-deep DFS over operands (`path[4]`, `count == 3` refuses to
@@ -2870,7 +2870,7 @@ impl<'a> PrintC<'a> {
                 // Ghidra's `BlockIfGoto` wrapping a `BlockCondition` (block.cc:1799): the cut edge
                 // prints `if (cond) goto LAB;` with the WHOLE short-circuit condition. Its record
                 // sits on the condition's exit block, which the spine emit above never reaches —
-                // WAR2 0x4fbcc's `(p == 0xc || p == 0xd)` printed as an empty `else { }`, sending
+                // the subject's 0x4fbcc's `(p == 0xc || p == 0xd)` printed as an empty `else { }`, sending
                 // every value of 11..25 to the wrong target.
                 if let Some(eb) = exit_basic(s, idx) {
                     // taken out while the condition renders: the comma-rendered second block
@@ -3073,7 +3073,7 @@ impl<'a> PrintC<'a> {
                     // has exactly one out-edge (`BlockSwitch::addCase`, block.cc: `isexit =
                     // bl->sizeOut()==1`), and the last case needs none. Not "its exit basic ends in
                     // a RETURN": a case whose body is an if-with-return keeps its fall-out edge to
-                    // the switch tail (WAR2 0x2c00c case 13 — that heuristic dropped the break and
+                    // the switch tail (the subject's 0x2c00c case 13 — that heuristic dropped the break and
                     // the C fell through into case 14, wrong code; fixture x86_2c00c_switch.xml).
                     let is_exit = s.blocks[case].out_edges.len() == 1;
                     let is_last = ci + 2 == comps.len() && exit_bound.is_empty() && default_cuts.is_empty();
@@ -3601,7 +3601,7 @@ impl<'a> PrintC<'a> {
                         // reachable case is a void CALLOTHER (a `define pcodeop` with no result,
                         // e.g. the port write `out(0x21, val)`): side-effecting, kept live by
                         // dead-code's sink set, and previously DROPPED here because this arm
-                        // only emitted when an output existed — the whole I/O prologue of WAR2's
+                        // only emitted when an output existed — the whole I/O prologue of the subject's
                         // FUN_0005c5ec vanished from the C while the oracle prints all four
                         // `in()`/`out()` calls on the same bytes. The dead-check matters: mosura's
                         // block op lists retain removed ops (output cleared, inputs gutted), and
@@ -4033,9 +4033,9 @@ pub struct RenderedParam {
 /// signature: a function whose only argument arrives in EBX (watcall slot 3) printed as
 /// `f(uint4 param_3)` — one parameter, correctly NAMED but declared in POSITION 1. Recompiled,
 /// Watcom passes position 1 in EAX, so the argument lands in the wrong register and the function
-/// cannot be byte-identical. WAR2's `FUN_0001b750` is the minimal case: the original is
+/// cannot be byte-identical. the subject's `FUN_0001b750` is the minimal case: the original is
 /// `and ebx,0xff ; call [ebx*4+0x814b0]` and ours was `and eax,0xff ; call [eax*4+0x814b0]`.
-/// 432 of 3023 emitted WAR2 functions carried such a renumbered signature.
+/// 432 of 3023 emitted the subject functions carried such a renumbered signature.
 ///
 /// `addr` is Ghidra's `ParameterPieces::addr`, the true storage. Plain C text cannot express it, so
 /// a backend that must reproduce the original register assignment reads it here and declares it —
@@ -4241,7 +4241,7 @@ fn is_sext_cast(outtype: &Datatype, intype: &Datatype) -> bool {
 /// the return and settles on `bool`, which is true about the *value*; but the original function
 /// zero-extends it to 32 bits (`AND EAX,0xff`), which is what C does when the declared type is
 /// `int`. Emitting `bool` there loses that instruction in every such function — 86 of them in
-/// the WAR2 survey, 9 of which have no other defect at all.
+/// the subject survey, 9 of which have no other defect at all.
 ///
 /// The rule triggers only when the IR itself says the value is wider than its type, so a
 /// function that genuinely returns a byte (its returned Varnode *is* one byte) is untouched.
@@ -4308,7 +4308,7 @@ fn widen_to_storage(ty: &Datatype, width: u32) -> Datatype {
         Datatype::Uint(_) => Datatype::Uint(width),
         // `undefined<N>` is a value of KNOWN WIDTH and unknown interpretation, so widening it is
         // the same question as widening an integer and has the same answer. Excluding it made this
-        // choice inert on the type that dominates a stripped binary: across WAR2's 3023 functions
+        // choice inert on the type that dominates a stripped binary: across the subject's 3023 functions
         // the storage arm changed 4 translation units, because nearly every recovered return type
         // is `undefined<N>` and fell into the catch-all below.
         Datatype::Unknown(_) => Datatype::Unknown(width),
@@ -4533,7 +4533,7 @@ pub fn interleave_census(f: &Funcdata, insns: &[crate::recompile::insn::NormInsn
 /// PARKED groundwork (review R6, commit 3b): the blind form's switch (`MOSURA_ILV=1`) is gone — the
 /// allocator thread's lever 3 was measured 2026-08-22 as a loser — and the model-inverse variant would
 /// be its next caller. It stays exercised by the survey's interleave census (`--debug recover`,
-/// war2_survey.rs), which reports the orders this would apply next to the census; not dead code.
+/// corpus_emit.rs), which reports the orders this would apply next to the census; not dead code.
 pub fn interleave_orders(f: &Funcdata, insns: &[crate::recompile::insn::NormInsn]) -> std::collections::HashMap<OpId, Vec<OpId>> {
     let mut out = std::collections::HashMap::new();
     for stmts in ilv_block_stmts(f, insns) {
@@ -4834,7 +4834,7 @@ fn print_c_inner(
     // `out = CALLOTHER[swi](#3); CALLIND out` — Ghidra's reference C is that pair verbatim
     // (`pcVar = swi(3); (*pcVar)();`), which is not compilable C. Under `swi=int3` the CALLIND
     // prints as the target prelude's `__int3()` (`#pragma aux __int3 = 0xcc` — the literal
-    // breakpoint byte, WAR2's retail assert-trap idiom) and the CALLOTHER assign is suppressed.
+    // breakpoint byte, the subject's retail assert-trap idiom) and the CALLOTHER assign is suppressed.
     if choices.swi == super::emit::SwiForm::Int3 {
         for op in f.op_ids() {
             let o = f.op(op);
@@ -4900,7 +4900,7 @@ fn print_c_inner(
         // EVERY return site is a candidate (since round e3), not only those the IR already
         // narrowed: a function whose IR returns a full-width constant or expression still
         // returns a BYTE when the original's every return site writes only `AL` (`XOR AL,AL` /
-        // `MOV AL,1` / `MOV AL,DL` — WAR2's boolean-returning family, 0x2a16c and kin), and the
+        // `MOV AL,1` / `MOV AL,DL` — the subject's boolean-returning family, 0x2a16c and kin), and the
         // declared width is what makes this compiler write the byte. The witness reads the
         // width off the bytes (`narrow_return_from_evidence`).
         for id in f.op_ids() {
@@ -4916,7 +4916,7 @@ fn print_c_inner(
         let w = p.apply_narrow_return(f, vn, choices);
         // a NARROWED return retypes the returned variable itself: `xVar = 8; .. return xVar;`
         // under a byte declaration keeps `xVar` a byte (the original's `MOV AL,8`), where a
-        // full-width local materializes `MOV EDX,8` and truncates at the return (WAR2
+        // full-width local materializes `MOV EDX,8` and truncates at the return (the subject
         // FUN_00014114, round e4: SAME_SHAPE -> MISMATCH). Only a scalar, only narrower.
         if p.recovered.port.narrow_return && w < vn.size && !vn.is_constant() {
             p.narrow_ret_high = Some((p.high_of[v.0 as usize], w));
@@ -4976,12 +4976,12 @@ fn print_c_inner(
     // produces no goto, no compiler error, and a program that builds and is simply WRONG.
     //
     // `debug_assert` puts it on every corpus fixture and every unit test automatically. All 68 corpus
-    // scans are clean (MISSING=0), so this holds today on x86-64; the known failures are x86-32/WAR2
+    // scans are clean (MISSING=0), so this holds today on x86-64; the known failures are x86-32/the subject
     // functions, enumerated as an accepted baseline in task #5 and driven to zero under C1. The
     // assert is NOT scoped to only-clean functions to keep anything quiet — see
     // [`super::structure::reached_basic_blocks`].
     //
-    // Release builds compile the assert out, so the WAR2 survey does not abort; it records
+    // Release builds compile the assert out, so the subject survey does not abort; it records
     // `blocks_cfg`/`blocks_reached` per function instead, which is how the population is censused.
     // `MOSURA_BLOCKSET=1` enumerates the missing blocks in any build.
     if cfg!(debug_assertions) || crate::debug::on(crate::debug::Topic::Printc) {
@@ -5063,7 +5063,7 @@ fn print_c_inner(
                     });
                     // a byte load consumed at 16 bits (its single use a ZEXT to a width below
                     // int — a short global's store): the int-typed temp the original's
-                    // `XOR EAX,EAX ; MOV AL,[..]` shows (WAR2 FUN_00064a18 EXACT with the temp;
+                    // `XOR EAX,EAX ; MOV AL,[..]` shows (the subject's FUN_00064a18 EXACT with the temp;
                     // 28 functions carry the full-register zero against the recompile's
                     // `XOR AH,AH` on round f4). The same def-site witness decides.
                     let zext_to_narrow = {
@@ -5073,7 +5073,7 @@ fn print_c_inner(
                             // the byte's widened value must reach a narrow (< int) result and be
                             // used only where zero-extension preserves the meaning — NOT a
                             // division/remainder/arithmetic-shift, which the original does signed
-                            // (WAR2 FUN_000377a4: `XOR EDX,EDX ; MOV DL ; SAR EDX,0x1f ; IDIV` —
+                            // (the subject's FUN_000377a4: `XOR EDX,EDX ; MOV DL ; SAR EDX,0x1f ; IDIV` —
                             // the widened temp made an unsigned `DIV`, EXACT lost)
                             uo.code() == OpCode::IntZext
                                 && uo.output.is_some_and(|z| {
@@ -5335,7 +5335,7 @@ fn print_c_inner(
     // `PrintC::emitBlockGraph` (printc.cc:2746), reached from printc.cc:2660 with
     // `fd->getStructure()`: emit EVERY top-level component, not just the entry's. A collapse that
     // could not reduce the graph to a single node is normal (see [`Structured::roots`]); emitting
-    // only the first drops the others' whole subtrees, which is how WAR2 FUN_00077dcb lost four of
+    // only the first drops the others' whole subtrees, which is how the subject's FUN_00077dcb lost four of
     // its eight basic blocks and a live CALL while its siblings kept jumping to labels in them.
     for &root in &s.roots {
         if p.sparse_consumed.contains(&root) {
@@ -5517,10 +5517,10 @@ mod tests {
         assert_eq!(c.matches('{').count(), c.matches('}').count(), "balanced braces:\n{c}");
     }
 
-    /// Stage 2 (WAR2): a `CPUI_CALLOTHER` (user-defined p-code op) must render as its SLEIGH userop
+    /// Stage 2 (the subject): a `CPUI_CALLOTHER` (user-defined p-code op) must render as its SLEIGH userop
     /// name applied to the operands (Ghidra `PrintC::opCallother`, printc.cc:673), NOT leak the raw
     /// `CALLOTHER(...)` catch-all that the pre-fix printer emitted (the top COMPILE_FAIL feeder in
-    /// the WAR2 survey: `E1063 Missing operand` on the `...`). The userop index→name map is threaded
+    /// the subject survey: `E1063 Missing operand` on the `...`). The userop index→name map is threaded
     /// from the `.sla` (`Spec::userops`) onto the `Funcdata`.
     #[test]
     fn callother_renders_as_userop_name() {
@@ -5544,7 +5544,7 @@ mod tests {
         assert!(c2.contains("rdtsc()"), "CALLOTHER should render as `rdtsc()`:\n{c2}");
     }
 
-    /// WAR2 E1079/E1080: a pointer-typed value fed to an integral op (`&`, `-`, …) must be cast,
+    /// the subject E1079/E1080: a pointer-typed value fed to an integral op (`&`, `-`, …) must be cast,
     /// not left bare (`wcc386` rejects `ptr & -4` / `-ptr`). Ghidra's base `TypeOp::getInputCast`
     /// (`castStandard(reqtype, cur, false, true)`, care_ptr_uint=true) inserts the cast; mosura's
     /// render-time port must too. `mov %rdi,%rax ; and $0xf,%eax ; add (%rdi),%rax ; ret`

@@ -90,15 +90,15 @@ fn load_container(data: &[u8], knobs: &Knobs) -> Result<Program, LoadError> {
             }
             // A *standalone* Linear Executable: e_lfanew points at a valid "LE" header
             // (Ghidra has no LE loader; mosura loads its 32-bit objects natively — see
-            // `le.rs`). A DOS-extender-*bound* exe (DOS/4GW WAR2.EXE) sets e_lfanew invalid,
+            // `le.rs`). A DOS-extender-*bound* exe (DOS/4GW the subject binary) sets e_lfanew invalid,
             // so it does NOT match here and falls through to the 16-bit MZ stub — preserving
-            // the war2 Ghidra-parity gates, which compare against Ghidra's MZ interpretation.
+            // the subject Ghidra-parity gates, which compare against Ghidra's MZ interpretation.
             if le::is_le_header(data, off) {
                 return load_le_with(data, knobs);
             }
         }
         // A bare DOS MZ, or a bound DOS-extender stub whose `e_lfanew` is invalid/non-PE
-        // (e.g. DOS/4GW WAR2.EXE) — Ghidra loads the 16-bit MZ stub in both cases.
+        // (e.g. DOS/4GW the subject binary) — Ghidra loads the 16-bit MZ stub in both cases.
         return load_mz(data);
     }
     Err(LoadError::Unsupported("unrecognized container (not ELF/PE)".into()))

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Rank a WAR2 oracle sweep (war2_oracle_sweep sweep.tsv) joined with a recompile_check
-verdict table (for verdict + insn weight): usage: war2-osweep-rank.py <sweep.tsv> <rec.tsv>. lowest scores, largest
+"""Rank a subject oracle sweep (oracle_sweep sweep.tsv) joined with a recompile_check
+verdict table (for verdict + insn weight): usage: corpus-osweep-rank.py <sweep.tsv> <rec.tsv>. lowest scores, largest
 weighted divergence, and line-count ratios (dropped/duplicated code shows as a ratio)."""
 import sys, collections
 W = sys.argv[1] if len(sys.argv) > 1 else '/data/be2/osweep/sweep.tsv'

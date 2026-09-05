@@ -35,9 +35,9 @@
 # manifest = "../subject-survey/manifest.tsv"
 
 [binaries]
-# User-provided binaries (copyrighted, never committed; the gates that need them SKIP when absent).
-# Defaults are $HOME-relative as docs/dependencies.md promises; keys without a default skip unless set.
-# war2 = "~/WAR2.EXE"
+# User-provided sample binaries (copyrighted, never committed; the gates that need them SKIP when
+# absent). Defaults are $HOME-relative as docs/dependencies.md promises; keys without a default skip
+# unless set. The binaries under STUDY are not here: they are `[[subject]]` entries (below).
 # cnv = "~/cnv.exe"
 # comcom32 = "~/.local/share/comcom32/comcom32.exe"
 # msc16 = "~/msc16.exe"

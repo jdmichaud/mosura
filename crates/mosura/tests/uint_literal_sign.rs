@@ -2,7 +2,7 @@
 //! `TYPE_INT` (`push_integer(…, sign=true)`); `TYPE_UINT`/`TYPE_UNKNOWN` print unsigned. mosura's
 //! type-blind renderer printed every narrow high-bit constant as a negative, so a 1-byte unsigned
 //! compare `cmp al,0xfe ; jb` became `-3 < param_1` — which C's integer promotion folds to
-//! always-false: wrong code (60 sites / 20 WAR2 TUs, wc2src-reconcile). Now `0xfd < param_1`.
+//! always-false: wrong code (60 sites / 20 the subject TUs, wc2src-reconcile). Now `0xfd < param_1`.
 use mosura::decompile::printc::print_c;
 use mosura::decompile::{build, pipeline};
 use mosura::{datatest, paths};

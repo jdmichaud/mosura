@@ -249,7 +249,7 @@ fn default_search_path_includes_mosura_built_databases() {
 /// what it found. mosura returned `Option<String>` and dropped that, so a recognised-but-ambiguous
 /// function looked exactly like an unrecognised one.
 ///
-/// Measured on WAR2 when this was found: 3 functions sit in this state, two scoring 75.0 against
+/// Measured on the subject when this was found: 3 functions sit in this state, two scoring 75.0 against
 /// a pair of names (`__grab_int23_` / `__grab_int_ctrl_break_` — genuinely identical code).
 #[test]
 fn ambiguous_matches_leave_a_plate_comment_without_renaming() {

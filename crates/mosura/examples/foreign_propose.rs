@@ -141,7 +141,7 @@ fn main() {
 }
 
 /// One row of a `recompile_check --out` TSV — the corpus measurement the report joins against.
-/// Column contract (1-indexed, as `scripts/war2-verdicts.sh` states it): 2 va, 4 verdict, 7 sim,
+/// Column contract (1-indexed, as `scripts/corpus-verdicts.sh` states it): 2 va, 4 verdict, 7 sim,
 /// 9 orig_n. Rows the harness could not measure (no sim) are kept with sim 0 so their instruction
 /// weight still counts against the denominator, exactly as the census does.
 struct Row {

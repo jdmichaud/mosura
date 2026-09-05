@@ -267,7 +267,7 @@ fn default_dispatch_stays_on_the_ghidra_parity_path() {
 }
 
 /// Skip-if-absent extra on a real X-32 binary (`MOSURA_X32_EXE`). No Ghidra golden exists for
-/// this path, so the assertions are the clean-subset invariants `le_war2_analysis` uses.
+/// this path, so the assertions are the clean-subset invariants `le_subjects_analysis` uses.
 #[test]
 fn real_x32_binary_analyses_cleanly() {
     let path = mosura::paths::x32_exe();

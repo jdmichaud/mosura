@@ -176,7 +176,7 @@ fn ground_truth_parity() {
         // `nfprologue`'s three functions are UNREFERENCED — nothing calls them and their addresses
         // are stored nowhere — so the only route to them is a prologue byte pattern, and the shape
         // they carry is deliberately NOT covered (see specs/patterns/x86watcom_patterns.xml family
-        // (6): it was written, measured on WAR2 at a 26% terminator rate against a ~99.8% baseline,
+        // (6): it was written, measured on the subject at a 26% terminator rate against a ~99.8% baseline,
         // and backed out). This loop's recall assertion demands "call-reachable" functions, which
         // these are not — the truth classifier calls them `code` only because it has two classes
         // and they are not `dataptr`. Skipped here and gated by
@@ -288,8 +288,8 @@ fn ground_truth_parity() {
     eprintln!("ground-truth parity: {evaluated} binary(ies) vs source-derived oracle (not Ghidra)");
 }
 
-/// Narrowed-switch jump-table recovery — the source-reduced repro of the unrecovered WAR2.EXE
-/// protected-mode switch dispatches (`analysis_parity::le_war2_analysis`; sites 0x513a8 / 0x58afb
+/// Narrowed-switch jump-table recovery — the source-reduced repro of the unrecovered the subject binary
+/// protected-mode switch dispatches (`analysis_parity::le_subjects_analysis`; sites 0x513a8 / 0x58afb
 /// / 0x6af52 / 0x199b7). `narrowsw` (Open Watcom, `src/narrowsw.c`) is a differential pair Watcom
 /// compiles to jump tables — the ONLY difference is the sub-`int` narrowing of the switch variable
 /// between the guard and the table index. `sw_int` (`switch(int x)`) lowers to
@@ -350,14 +350,14 @@ fn narrow_switch_recovery_gap() {
     eprintln!("narrow-switch: sw_int and sw_short both recover 8 targets (gap closed)");
 }
 
-/// Shared-return TAIL-CALL function discovery — the source-reduced repro of the WAR2 auto-analysis
-/// gap (`war2-survey/analysis-gap/REPORT.md`): a function reachable ONLY by an unconditional `jmp`
+/// Shared-return TAIL-CALL function discovery — the source-reduced repro of the subject auto-analysis
+/// gap (`<subject-survey>/analysis-gap/REPORT.md`): a function reachable ONLY by an unconditional `jmp`
 /// is never created, and its whole call sub-tree is lost with it. `tailjmp` (Open Watcom,
 /// `src/tailjmp.c` + `src/tailjmp_cstart.asm`, built WITHOUT `-oc` so the `call X; ret` -> `jmp X`
 /// rewrite survives) carries both arms of Ghidra `SharedReturnAnalysisCmd.applyTo`'s
 /// `assumeContiguousFunctions` rule: `tail_lo_` reached by a BACKWARD jump past its caller's own
-/// entry (WAR2 0x69032->0x67f40, 0x77dc1->0x72301, 0x7a66b->0x79330), and `fwd_landing_` reached by
-/// a FORWARD jump over `gap_fn_`'s entry (WAR2 0x601f8->0x60270).
+/// entry (the subject's 0x69032->0x67f40, 0x77dc1->0x72301, 0x7a66b->0x79330), and `fwd_landing_` reached by
+/// a FORWARD jump over `gap_fn_`'s entry (the subject's 0x601f8->0x60270).
 ///
 /// Pre-fix (`b9d8466`) mosura missed BOTH — `ground_truth_parity` reported
 /// `tailjmp: mosura missed call-reachable functions: ["0804810f", "08048116"]`. The cause was an
@@ -417,10 +417,10 @@ fn tail_jump_shared_return() {
     );
 }
 
-/// DATA-POINTER function discovery — the source-reduced repro of the second WAR2 auto-analysis
-/// gap (`war2-survey/analysis-gap/REPORT.md` §7): code reachable ONLY through a function pointer
+/// DATA-POINTER function discovery — the source-reduced repro of the second the subject auto-analysis
+/// gap (`<subject-survey>/analysis-gap/REPORT.md` §7): code reachable ONLY through a function pointer
 /// stored in data is never disassembled, so neither it nor anything it calls ever becomes a
-/// function. On WAR2 that is 24.7% of the code object — 109,338 bytes in 23 regions >2KB whose
+/// function. On the subject that is 24.7% of the code object — 109,338 bytes in 23 regions >2KB whose
 /// only inbound edges from outside are `DATA` references, and 783 of 815 missing functions with
 /// no reference in mosura's reference set at all.
 ///
@@ -515,7 +515,7 @@ fn data_pointer_function_discovery() {
     assert!(
         prog.function_manager.function_at(at(deep)).is_some(),
         "deep_helper @ {deep:#x} must be recovered: it is called ONLY from tab_h0, which is \
-         itself reachable only through the data pointer table. This is the WAR2 shape — 1547 \
+         itself reachable only through the data pointer table. This is the subject shape — 1547 \
          UNCONDITIONAL_CALL references into functions mosura never decoded"
     );
     let callers: Vec<u64> = prog
@@ -811,21 +811,21 @@ fn computed_goto_table_is_refused_once_function_bodies_are_current() {
     eprintln!("compgoto collision gate: table at 00402fe0 correctly refused; 4 labels offcut");
 }
 
-/// WAR2 `Merge::trimOpInput` INDIRECT-panic regression — the source-reduced repro of the survey's
-/// DECOMPILE_FAIL class (all 117 WAR2 panics were this one bug: `merge.rs:1205` index-out-of-bounds,
-/// docs/decompiler-bug-merge-indirect-trim-panic.md, fixed in `b6ec467`). `war2gates` (Open Watcom,
-/// `src/war2gates.c`) mimics WAR2 `FUN_00011954`: `trim_shape` is three sequential register-arg
+/// the subject `Merge::trimOpInput` INDIRECT-panic regression — the source-reduced repro of the survey's
+/// DECOMPILE_FAIL class (all 117 the subject panics were this one bug: `merge.rs:1205` index-out-of-bounds,
+/// docs/decompiler-bug-merge-indirect-trim-panic.md, fixed in `b6ec467`). `trimshape` (Open Watcom,
+/// `src/trimshape.c`) mimics the subject's `FUN_00011954`: `trim_shape` is three sequential register-arg
 /// calls in one block with two global stores, whose chained call-guard INDIRECTs force merge-marker's
 /// non-MULTIEQUAL trim. Pre-fix mosura (`ef65486`) panics on exactly this compiled shape; the fixed
 /// pipeline decompiles it. This is the ground-truth (self-compiled Watcom, NOT Ghidra) gate for the
-/// panic, per `war2-issues-become-source-tests`. Skipped if the corpus binary is absent
+/// panic, per `issues-become-source-tests (subject-profile note)`. Skipped if the corpus binary is absent
 /// (regeneration-only toolchain).
 #[test]
-fn war2_trim_shape_no_panic() {
-    let bin = ground_truth_dir().join("war2gates.watcom-x86-32");
-    let truth_path = ground_truth_dir().join("war2gates.watcom-x86-32.truth");
+fn trim_shape_no_panic() {
+    let bin = ground_truth_dir().join("trimshape.watcom-x86-32");
+    let truth_path = ground_truth_dir().join("trimshape.watcom-x86-32.truth");
     if !bin.exists() || !truth_path.exists() {
-        eprintln!("skip war2_trim_shape_no_panic: {} absent", bin.display());
+        eprintln!("skip trim_shape_no_panic: {} absent", bin.display());
         return;
     }
     let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
@@ -836,7 +836,7 @@ fn war2_trim_shape_no_panic() {
         .map(|(a, _)| *a)
         .expect("truth lists trim_shape_");
 
-    let prog = analysis::analyze_file(&bin).expect("analyze war2gates");
+    let prog = analysis::analyze_file(&bin).expect("analyze trimshape");
     // decompile_function catches a pipeline panic and returns None (the A6 bridge's isolation,
     // faithful to Ghidra's DecompilerSwitchAnalyzer). Pre-fix this function panicked at
     // merge.rs:1205 (trimOpInput indexing in_edges[slot] for an INDIRECT in the entry block) → None;
@@ -844,13 +844,13 @@ fn war2_trim_shape_no_panic() {
     let f = decompile_function(&prog, Address::new(prog.default_space, trim_shape));
     assert!(
         f.is_some(),
-        "trim_shape (WAR2 FUN_00011954 repro @ {trim_shape:#x}) must decompile without panicking \
+        "trim_shape (the subject's FUN_00011954 repro @ {trim_shape:#x}) must decompile without panicking \
          — the merge.rs:1205 trimOpInput regression is back"
     );
-    eprintln!("war2 trim-panic gate: trim_shape @ {trim_shape:#x} decompiles cleanly (pre-fix: merge.rs:1205 OOB)");
+    eprintln!("the subject trim-panic gate: trim_shape @ {trim_shape:#x} decompiles cleanly (pre-fix: merge.rs:1205 OOB)");
 }
 
-/// WAR2 for-loop raw-marker leak regression — the source-reduced repro of the E1063 class the
+/// the subject for-loop raw-marker leak regression — the source-reduced repro of the E1063 class the
 /// survey exposed (e.g. FUN_0002bd14): a `for`-loop whose induction variable's entry value comes
 /// from a PHI (an earlier loop modified it), not from a def in the pre-loop block. mosura's
 /// for-recovery lacked Ghidra's `BlockWhileDo::findInitializer` (block.cc:3223) checks (a written
@@ -858,13 +858,13 @@ fn war2_trim_shape_no_panic() {
 /// it emitted the phi raw as the for-init — `for (n = MULTIEQUAL(...); ...)`, which wcc386/gcc
 /// reject. `forphi` (Open Watcom, `src/forphi.c`) `scan` reproduces the shape; pre-fix it leaks
 /// `MULTIEQUAL(...)`, the fix renders `for (; cond; iter)`. Ground-truth (self-compiled, NOT
-/// Ghidra) gate, per `war2-issues-become-source-tests`. Skipped if the corpus binary is absent.
+/// Ghidra) gate, per `issues-become-source-tests (subject-profile note)`. Skipped if the corpus binary is absent.
 #[test]
-fn war2_forphi_no_marker_leak() {
+fn forphi_no_marker_leak() {
     let bin = ground_truth_dir().join("forphi.watcom-x86-32");
     let truth_path = ground_truth_dir().join("forphi.watcom-x86-32.truth");
     if !bin.exists() || !truth_path.exists() {
-        eprintln!("skip war2_forphi_no_marker_leak: {} absent", bin.display());
+        eprintln!("skip forphi_no_marker_leak: {} absent", bin.display());
         return;
     }
     let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
@@ -881,7 +881,7 @@ fn war2_forphi_no_marker_leak() {
         !c.contains("MULTIEQUAL(") && !c.contains("INDIRECT("),
         "raw SSA marker leaked into C (findInitializer regression) — scan_ @ {scan:#x}:\n{c}"
     );
-    eprintln!("war2 forphi gate: scan_ renders its for-loop without a raw phi/marker init");
+    eprintln!("the subject forphi gate: scan_ renders its for-loop without a raw phi/marker init");
 }
 
 /// A while-condition that carries a STATEMENT must print inside the parentheses, not above the
@@ -1049,7 +1049,7 @@ fn for_comma_condition_inline() {
 /// `find_loop_phi` returned the first one and `for_parts` validated only that. A loop whose BOUND
 /// is a global the body modifies puts a wrong candidate first on the walk — the bound is
 /// heritaged, gets a head phi, and the LIFO operand walk reaches it before the register induction
-/// variable. Instrumenting the WAR2 specimens showed the selected phi was `space="ram"` (the
+/// variable. Instrumenting the subject specimens showed the selected phi was `space="ram"` (the
 /// bound) in all 7. `cbound_walk` (Open Watcom, `src/loopphi.c`) is the shape; its call is
 /// deliberately DIRECT so the separate indirect-call clobber defect cannot also decline the loop.
 #[test]
@@ -1086,7 +1086,7 @@ fn for_recovery_backtracks_past_wrong_phi() {
 /// CALL's. When that kills the induction variable's register, the loop-head MULTIEQUAL's tail
 /// input becomes an INDIRECT — a marker — and the real update, left with no consumer but the call
 /// argument it also feeds, is inlined and emitted as no statement at all. The loop then cannot
-/// terminate. WAR2's FUN_00057034 is the specimen; `walk` (Open Watcom, `src/callclob.c`) is the
+/// terminate. the subject's FUN_00057034 is the specimen; `walk` (Open Watcom, `src/callclob.c`) is the
 /// shape. NOTE the infinite-loop scan predicate cannot certify this — FUN_00057034's condition
 /// reads a global bound, inside that predicate's documented blind spot — so this reads the
 /// emitted loop directly.
@@ -1151,9 +1151,9 @@ fn regex_ident_before_lt(header: &str) -> Option<String> {
     if id.is_empty() { None } else { Some(id) }
 }
 
-/// FUNCTION-START BYTE-PATTERN discovery — the source-reduced repro of the WAR2 auto-analysis gap
+/// FUNCTION-START BYTE-PATTERN discovery — the source-reduced repro of the subject auto-analysis gap
 /// that Ghidra's four **Function Start Search** analyzers close (`FunctionStartAnalyzer` +
-/// `ghidra.util.bytesearch` + `Processors/x86/data/patterns/*.xml`; 243 functions on WAR2).
+/// `ghidra.util.bytesearch` + `Processors/x86/data/patterns/*.xml`; 243 functions on the subject).
 ///
 /// `fnpattern` (Open Watcom, `src/fnpattern.c`, built `-of+`) contains `orphan_fn_`: a function
 /// that NOTHING references — no call, no jump, no stored pointer — sitting between two
@@ -1231,7 +1231,7 @@ fn function_start_pattern_search() {
 
 
 /// THE ABOVE-FUNCTION GUARD MUST TEST FALL-THROUGH, NOT ADJACENCY — the local gate for `be85c85`
-/// (`FunctionStartAnalyzer.java:512`), whose only gate until now was a WAR2 run.
+/// (`FunctionStartAnalyzer.java:512`), whose only gate until now was a subject run.
 ///
 /// ```java
 /// Instruction instr = program.getListing().getInstructionContaining(addrBefore);
@@ -1240,7 +1240,7 @@ fn function_start_pattern_search() {
 ///
 /// `getFallThrough()` is null after a `ret`, so Ghidra does not veto a prologue that merely
 /// FOLLOWS an epilogue. mosura vetoed on any instruction ENDING at the address and so refused
-/// 6 WAR2 tracker functions outright (the fix moved that run 2900 -> 3018 functions, 42 -> 12
+/// 6 the subject tracker functions outright (the fix moved that run 2900 -> 3018 functions, 42 -> 12
 /// missing, body intrusions unchanged at 3).
 ///
 /// `retorphan` (Open Watcom, `src/retorphan.c`, built with the corpus default `-oc`) puts the
@@ -1484,7 +1484,7 @@ fn switch_case_bodies_are_inside_the_function_body() {
 ///
 /// A pattern family covering exactly these two follow-ons was written, recovered all three here,
 /// and was **backed out** — see `specs/patterns/x86watcom_patterns.xml` family (6) for the full
-/// account. On WAR2 it added 53 functions, recovered none of the entries it was written for, moved
+/// account. On the subject it added 53 functions, recovered none of the entries it was written for, moved
 /// `MATCHED` against the expert tracker by zero, and only **26%** of its additions ended in a
 /// terminator against a ~99.8% baseline from two other populations. The mechanism, measured: it
 /// also matches ordinary mid-function code (`push ecx,edx ; mov eax,[esp+8]` — stack arguments for
@@ -1496,7 +1496,7 @@ fn switch_case_bodies_are_inside_the_function_body() {
 /// re-adding the family — it is the record of a measured refutation, so the next person to notice
 /// the gap finds the reason before repeating the work. If you cover this shape, cover it with an
 /// anchor that distinguishes a prologue from mid-function code, and re-measure the terminator rate
-/// on WAR2 before believing it.
+/// on the subject before believing it.
 ///
 /// The deeper lesson, and the reason the fixture is kept rather than deleted: **the corpus could
 /// not see this defect.** Over the 16 committed Watcom binaries the family produced zero marks
@@ -1542,11 +1542,11 @@ fn no_frame_prologue_shape_is_uncovered() {
         // THE RECORDED GAP.
         assert!(
             prog.function_manager.function_at(at(*a)).is_none(),
-            "{name} @ {a:#x} IS now recovered — the no-frame shape has been covered by something.              That may be right, but it is a change of position: re-measure the WAR2 terminator              rate (the backed-out family scored 26% against a ~99.8% baseline) before keeping it,              and update this test deliberately rather than deleting the assertion"
+            "{name} @ {a:#x} IS now recovered — the no-frame shape has been covered by something.              That may be right, but it is a change of position: re-measure the subject terminator              rate (the backed-out family scored 26% against a ~99.8% baseline) before keeping it,              and update this test deliberately rather than deleting the assertion"
         );
     }
     eprintln!(
-        "nfprologue: 3/3 no-frame orphans deliberately NOT recovered (family (6) refuted on WAR2)"
+        "nfprologue: 3/3 no-frame orphans deliberately NOT recovered (family (6) refuted on the subject)"
     );
 }
 
@@ -1554,9 +1554,9 @@ fn no_frame_prologue_shape_is_uncovered() {
 /// (`specs/patterns/x86watcom_patterns.xml`). That file has no Ghidra oracle — Ghidra ships no
 /// Watcom compiler spec — so this fixture is its oracle.
 ///
-/// It exists because **precision is unmeasurable on WAR2**: the expert tracker covers 71.4% of the
+/// It exists because **precision is unmeasurable on the subject**: the expert tracker covers 71.4% of the
 /// code object, so a pattern hit in a gap may be a real function the tracker lacks or may be noise,
-/// and the binary cannot tell them apart. Tuning the pattern against WAR2's function count is
+/// and the binary cannot tell them apart. Tuning the pattern against the subject's function count is
 /// therefore chasing a number with no specification behind it. Here every function comes from the
 /// compiler's own symbol table, so both properties are decidable: the search must find **every**
 /// real entry (recall) and create **nothing else** (precision).
@@ -1564,9 +1564,9 @@ fn no_frame_prologue_shape_is_uncovered() {
 /// `wprologue` is built `-of+` on purpose — traceable stack frames. Without it wcc386 omits the
 /// frame pointer and addresses locals off ESP, emitting prologues (`53 51 83 ec`, `53 51 52 56 b8`)
 /// with no `89 e5` anywhere, which look nothing like the target. Note the fixture still cannot
-/// reproduce WAR2's exact shape: modern Open Watcom emits frame-FIRST (`55 89 e5` then the saves)
-/// where WAR2's Watcom 10.0a emits save-FIRST (saves then `55 89 e5`) — the artifact
-/// `warcraft2-re/analysis/function-boundary-correction.md` documents. It gates the pattern set's
+/// reproduce the subject's exact shape: modern Open Watcom emits frame-FIRST (`55 89 e5` then the saves)
+/// where the subject's Watcom 10.0a emits save-FIRST (saves then `55 89 e5`) — the artifact
+/// `the RE tracker/analysis/function-boundary-correction.md` documents. It gates the pattern set's
 /// precision on a fully-known binary, which is what it is for; the save-first shape is specified by
 /// the 2120 measured tracker entries instead.
 #[test]
@@ -1598,9 +1598,9 @@ fn watcom_prologue_shape_spec() {
 ///
 /// # Why this cell exists
 ///
-/// `-s` suppresses Watcom's stack-overflow probe. WAR2 was built with it; **most binaries are
+/// `-s` suppresses Watcom's stack-overflow probe. the subject was built with it; **most binaries are
 /// not, because it is not the default** — so this is the axis most likely to matter on a binary
-/// that is not WAR2, which is the standing scope rule's whole point. Without `-s`, wcc386 opens
+/// that is not the subject, which is the standing scope rule's whole point. Without `-s`, wcc386 opens
 /// every framed function with `push <framesize>; call __CHK`:
 ///
 /// ```text
@@ -1717,7 +1717,7 @@ fn watcom_stack_probe_shape_spec() {
 /// `noreturn::analyze` selects its name list from the memory map and returns early unless a
 /// `.dynsym`, `.plt` or `EXTERNAL` block exists (`noreturn.rs:128-137`). Every other artifact here
 /// is freestanding — the gcc columns link `-nostdlib -static`, the Watcom columns
-/// `option nodefaultlib` — and WAR2 is a DOS/4GW LE image with `objN_text`/`objN_data` objects.
+/// `option nodefaultlib` — and the subject is a DOS/4GW LE image with `objN_text`/`objN_data` objects.
 /// Measured on all of them: **`noreturn_functions` is empty**. So an entire analyzer had zero
 /// coverage on every target, and a test asserting any no-return behaviour would have passed
 /// whether or not the code beneath it worked. `src/noret.c` is built dynamically for this reason
@@ -1933,7 +1933,7 @@ fn watcom_save_first_shape_spec() {
 /// `checkAfterName`'s `"instruction"` and `"defined"` prerequisites
 /// (FunctionStartAnalyzer.java) ask the listing what is at an address. Where mosura creates a
 /// function whose bytes were never disassembled, every one of those queries answers `None` and
-/// the tool is silently blind in that region — which is how `docs/function-discovery-backlog.md`
+/// the tool is silently blind in that region — which is how `<subject-profile>/notes/function-discovery-backlog.md`
 /// §9 #2 and #3 came to be filed as two separate divergences when they are one symptom, and why
 /// the `retboundary` fixture could not fail.
 ///
@@ -1954,7 +1954,7 @@ fn watcom_save_first_shape_spec() {
 ///
 /// ⚠️ **`#[ignore]`d AND EXPECTED-RED — this is deliberate, do not "fix" it.** The fix exists
 /// (`held-patches/listing-command-channel.patch`), builds, and turns this green, but it is BLOCKED
-/// (see `docs/function-discovery-backlog.md` §9 #5). The test is committed in its FAILING state,
+/// (see `<subject-profile>/notes/function-discovery-backlog.md` §9 #5). The test is committed in its FAILING state,
 /// ignored so the workspace stays green, so that its ability to fail is proved **by git history**
 /// rather than by a revert-check someone has to trust. Un-ignore it in the same commit that lands
 /// the fix; it should drop by five in one visible step (the other three have their own cause and
@@ -2018,10 +2018,10 @@ fn watcom_save_first_shape_spec() {
 /// address at a time (`DisassembleCommand.java:235-266`).
 ///
 /// The two need separate commits: A changes which functions are DISCOVERED, B changes which
-/// bytes are DECODED, and bundling them makes a WAR2 delta unattributable per function.
+/// bytes are DECODED, and bundling them makes a subject delta unattributable per function.
 #[test]
 #[ignore = "expected-RED: the fix is held in held-patches/listing-command-channel.patch, \
-            blocked by docs/function-discovery-backlog.md §9 #5 (inline-parameter thunk)"]
+            blocked by <subject-profile>/notes/function-discovery-backlog.md §9 #5 (inline-parameter thunk)"]
 fn recovered_functions_are_in_the_listing() {
     let dir = ground_truth_dir();
     if !dir.exists() {
@@ -2118,9 +2118,9 @@ fn recovered_functions_are_in_the_listing() {
     );
 }
 
-/// §9 #5, the INLINE CALL PARAMETER thunk — `docs/function-discovery-backlog.md`. The gate for
+/// §9 #5, the INLINE CALL PARAMETER thunk — `<subject-profile>/notes/function-discovery-backlog.md`. The gate for
 /// the blocker that holds `held-patches/listing-command-channel.patch`, on the self-compiled
-/// `inlineparam.watcom-x86-32` rather than on the war2 MZ stub (directive 6: the survey binary
+/// `inlineparam.watcom-x86-32` rather than on the subject MZ stub (directive 6: the survey binary
 /// cannot be shipped, so a gate built on it dies with it).
 ///
 /// **The shape.** `src/inlineparam_cstart.asm` builds three thunks that each `call dispatch_` and
@@ -2135,8 +2135,8 @@ fn recovered_functions_are_in_the_listing() {
 /// 2. every one of the family's entries still has a code unit AT it — the over-decode must not
 ///    swallow a real instruction.
 ///
-/// (2) is the war2 wrong-code condition transplanted: there the destroyed instruction is
-/// `00013a56 POP BX`, which the committed Ghidra golden `war2.snapshot` has and mosura does not.
+/// (2) is the subject wrong-code condition transplanted: there the destroyed instruction is
+/// `00013a56 POP BX`, which the committed Ghidra golden `analysis.snapshot (subject profile)` has and mosura does not.
 /// Here it is `dispatch_`'s own `pop ebx`, destroyed the same way by the same mechanism — the
 /// parameter bytes `b8 11` start a 5-byte `mov eax,imm32` that runs 3 bytes past them.
 ///
@@ -2156,7 +2156,7 @@ fn recovered_functions_are_in_the_listing() {
 // GREEN since the `ClearFlowAndRepairCmd` port (`analyzers/clearflow.rs` +
 // `find_repair_locations`): the discovered no-return dispatch_ gets its call sites
 // overridden AND the wrong units already on the ground cleared + re-disassembled —
-// docs/function-discovery-backlog.md §9 #5, closed.
+// <subject-profile>/notes/function-discovery-backlog.md §9 #5, closed.
 #[test]
 fn inline_call_parameters_are_not_decoded_as_code() {
     let bin = ground_truth_dir().join("inlineparam.watcom-x86-32");
@@ -2212,7 +2212,7 @@ fn inline_call_parameters_are_not_decoded_as_code() {
 /// `analyzers::noreturn` ("Known"), which matches library names and is inert on every binary in
 /// this corpus.
 ///
-/// This is the half of `docs/function-discovery-backlog.md` §9 #5 that IS ported: discover the
+/// This is the half of `<subject-profile>/notes/function-discovery-backlog.md` §9 #5 that IS ported: discover the
 /// target, mark it, and apply `FlowOverride.CALL_RETURN` to every call site
 /// (`setNoFallThru`, FindNoReturnFunctionsAnalyzer.java:218). What is NOT ported is the repair
 /// (`repairDamagedLocations` -> `ClearFlowAndRepairCmd`, :139), so the wrong code unit already on
@@ -2268,9 +2268,9 @@ fn discovered_noreturn_marks_the_inline_parameter_dispatcher() {
 /// against the original's 7, so such a function cannot recompile byte-identically however
 /// correct its logic is.
 ///
-/// This is the largest single class in the WAR2 survey (the `indirect_call` smell covers 1193 of
+/// This is the largest single class in the subject survey (the `indirect_call` smell covers 1193 of
 /// the attributable mismatches). `dispatch` in `globfnptr.c` reproduces it in 7 bytes:
-/// `ff 15 <abs32>` + `c3`, byte-for-byte the same encoding as the smallest extent-verified WAR2
+/// `ff 15 <abs32>` + `c3`, byte-for-byte the same encoding as the smallest extent-verified the subject
 /// specimen.
 #[test]
 fn global_fnptr_call_is_not_a_value_cast() {
@@ -2341,11 +2341,11 @@ fn global_fnptr_call_is_not_a_value_cast() {
 /// must still be passed. `bump_` in `regout.watcom-x86-32` is `add ebx,eax ; ret`: a pointer in
 /// EBX, a count in EAX, the advanced pointer back in EBX, i.e. `parm caller [ebx] [eax] value
 /// [ebx]`. It is hand-written assembly precisely because wcc386 inlines a same-TU C definition and
-/// no call survives — which is also the faithful shape, since the WAR2 functions in this class ARE
+/// no call survives — which is also the faithful shape, since the subject functions in this class ARE
 /// assembly with custom conventions.
 ///
 /// Believing the default convention here is wrong code on BOTH sides of one call: the result is
-/// discarded and the caller stores through its STALE pre-call pointer. Measured on WAR2
+/// discarded and the caller stores through its STALE pre-call pointer. Measured on the subject
 /// FUN_00074744/FUN_000748fd, the class this reproduces. Ghidra emits the wrong form and cannot do
 /// otherwise — it recovers a prototype from one function in isolation, so nothing inside the
 /// callee is visible while the caller is decompiled. Recovering it is `caller-evidence prototypes`.
@@ -2378,7 +2378,7 @@ fn callee_register_return_is_recovered_with_its_argument() {
     assert!(
         !regex_lite_contains(&c, "= pxRam", ";"),
         "the call's result is discarded and the store goes through the caller's stale pre-call \
-         pointer — the WAR2 FUN_00074744 class. use_ @ {use_:#x}:\n{c}"
+         pointer — the subject's FUN_00074744 class. use_ @ {use_:#x}:\n{c}"
     );
 
     // AND the real property: mosura must reproduce the REFERENCE SOURCE — the C worked out from
@@ -2404,7 +2404,7 @@ fn callee_register_return_is_recovered_with_its_argument() {
     );
 }
 
-/// `void_proto` — the smell in every top-5 WAR2 mismatch cluster — is usually not a printing
+/// `void_proto` — the smell in every top-5 the subject mismatch cluster — is usually not a printing
 /// defect. A function that returns in a register the default model calls `<unaffected>` has NO
 /// consumer for the instruction that computes it, so the instruction is dead, it is removed, the
 /// only reads of its inputs go with it, and the prototype then collapses to `(void)`. The visible

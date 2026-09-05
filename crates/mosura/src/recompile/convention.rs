@@ -3,7 +3,7 @@
 //! A prototype says *where* the arguments are. It does not say **who removes them from the
 //! stack**, and that is not a free choice: it decides whether the function ends `RET` or `RET n`,
 //! and whether each of its callers carries an `ADD ESP,n` afterwards. Get it wrong and every such
-//! function is one instruction from exact, in both directions at once — measured on WAR2, 101
+//! function is one instruction from exact, in both directions at once — measured on the subject, 101
 //! functions carry a `RET`/`RET n` divergence, 13 of them with no other defect at all.
 //!
 //! Unlike the rendering choices in [`crate::decompile::emit`], this is not something to search:
@@ -56,7 +56,7 @@ pub fn own_pop_contract(insns: &[Instruction], sp: u64) -> OwnPopContract {
 /// (`Funcdata::ret_pop`, which is what every CALLER of this function uses).
 ///
 /// The walk is the fallback and never the override. It can leave the function through a shared
-/// epilogue and read a return belonging to someone else's contract — measured on WAR2: taking it
+/// epilogue and read a return belonging to someone else's contract — measured on the subject: taking it
 /// unconditionally put `RET 0x4`/`RET 0x8`/`RET 0x18` on 8 library functions whose originals end in
 /// a bare `RET`. So it answers only where the body is SILENT, which is exactly the tail-JMP case
 /// where the definition would otherwise fall back on the callee-pops default and contradict every
@@ -116,7 +116,7 @@ pub fn caller_stack_cleanup(insn: &Instruction, sp: u64) -> Option<u32> {
 
 /// The CALLER-side cleanup for the call whose fallthrough begins `window` — [`caller_stack_cleanup`]
 /// with the scheduler accounted for. Watcom's -onatx hoists the next statement's loads across the
-/// `ADD ESP,n` (WAR2 0x33ad0: `CALL sprintf ; MOV AH,[0x8127a] ; ADD ESP,0xc`), so the cleanup is
+/// `ADD ESP,n` (the subject's 0x33ad0: `CALL sprintf ; MOV AH,[0x8127a] ; ADD ESP,0xc`), so the cleanup is
 /// not always the first instruction after the call. Walk the window, skipping instructions that
 /// neither touch the stack pointer nor transfer control; stop — the evidence is absent, not merely
 /// displaced — at any flow op or any other stack-pointer use, so a cleanup is never claimed across
@@ -246,7 +246,7 @@ mod tests {
     /// own returns, and it never covers a boundary error.
     ///
     /// Both directions are pinned because taking the walk unconditionally was measurably wrong:
-    /// on WAR2 it put `RET 0x4`/`RET 0x8`/`RET 0x18` on 8 library functions whose originals end in
+    /// on the subject it put `RET 0x4`/`RET 0x8`/`RET 0x18` on 8 library functions whose originals end in
     /// a bare `RET`, the walk having left the function through a shared epilogue.
     #[test]
     fn the_walk_fills_a_silent_body_and_never_overrides_one_that_speaks() {
@@ -309,7 +309,7 @@ mod tests {
         assert_eq!(caller_stack_cleanup_scan(&lift("83c40c84e4"), esp()), Some(12));
     }
 
-    /// The scheduler shape that lost sprintf's arguments (WAR2 0x33ad0): a load interleaved
+    /// The scheduler shape that lost sprintf's arguments (the subject's 0x33ad0): a load interleaved
     /// between the call and its cleanup must be skipped, not treated as evidence-absent.
     #[test]
     fn scan_skips_a_scheduled_load_before_the_cleanup() {

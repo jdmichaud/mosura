@@ -3,7 +3,7 @@
 //! been redefined (`iVar3 = iVar3 + 1; *(..) = *puVar4;`), Ghidra keeps the POINTER explicit
 //! and inlines the load at its consumer; this compiler then hoists the array's address into a
 //! register (`LEA EBX,[EBP - 0x20]`) and indexes through it (`[EBX + EAX*2]`) where the
-//! original loaded the element straight from the frame (`MOV DX,[EBP + EAX*2 - 0x20]`, WAR2
+//! original loaded the element straight from the frame (`MOV DX,[EBP + EAX*2 - 0x20]`, the subject
 //! FUN_0002a75c and its two siblings). The other legal choice makes the VALUE explicit and the
 //! pointer implied — `uVar5 = auStack_28[iVar3]; iVar3 = iVar3 + 1; *(..) = uVar5;` — the load
 //! at its own position, the subscript folded into the access. Value-identical: the same load

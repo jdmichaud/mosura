@@ -22,13 +22,63 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 /// A user-provided binary under study (`[[subject]]`): its id (a digest or a short name), where
-/// it is, and the directory of everything that is ABOUT it (goldens, gates, expectations, notes)
-/// — the subject profile, outside the repository (plan WP8).
+/// it is, and the directory of everything that is ABOUT it — the SUBJECT PROFILE, outside the
+/// repository: the analysis goldens (`analysis.snapshot`, `analysis.loaded.snapshot`), the corpus
+/// gates (`corpus-gates.tsv`), the smoke sentinels (`smoke.expected.tsv`), the facts the tests
+/// assert (`expect.toml`, flat `section.key = "value"`), and `notes/`. The repository names no
+/// subject; a test that needs one iterates [`subjects`] and skips, saying so, when none carries
+/// the keys it needs (plan WP8, decision 14).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Subject {
     pub id: String,
     pub path: PathBuf,
     pub profile: Option<PathBuf>,
+}
+
+impl Subject {
+    /// A file of the profile, when the profile is configured and the file exists.
+    pub fn file(&self, rel: &str) -> Option<PathBuf> {
+        let p = self.profile.as_ref()?.join(rel);
+        p.exists().then_some(p)
+    }
+
+    /// The profile's `expect.toml`, parsed (empty when absent or malformed — a malformed file is
+    /// reported once as a warning, so a test does not silently pass on a typo).
+    pub fn expectations(&self) -> DevConfig {
+        let Some(p) = self.file("expect.toml") else { return DevConfig::default() };
+        match std::fs::read_to_string(&p).map_err(|e| e.to_string()).and_then(|t| DevConfig::parse(&t)) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("{}: {e} — no expectations taken", p.display());
+                DevConfig::default()
+            }
+        }
+    }
+    pub fn expect(&self, key: &str) -> Option<String> {
+        self.expectations().str(key).map(str::to_string)
+    }
+    /// A number: hex with `0x`, else decimal.
+    pub fn expect_u64(&self, key: &str) -> Option<u64> {
+        parse_u64(&self.expect(key)?)
+    }
+    /// A comma-separated list of numbers.
+    pub fn expect_list_u64(&self, key: &str) -> Option<Vec<u64>> {
+        parse_u64_list(&self.expect(key)?)
+    }
+}
+
+/// `0x..` hex or decimal.
+pub fn parse_u64(s: &str) -> Option<u64> {
+    let s = s.trim();
+    match s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        Some(h) => u64::from_str_radix(h, 16).ok(),
+        None => s.parse().ok(),
+    }
+}
+
+/// A comma-separated list of [`parse_u64`] values; `None` if any element fails to parse.
+pub fn parse_u64_list(s: &str) -> Option<Vec<u64>> {
+    s.split(',').map(str::trim).filter(|t| !t.is_empty()).map(parse_u64).collect()
 }
 
 /// The parsed file: flattened `section.key` → value, plus the subjects.
@@ -123,6 +173,19 @@ impl DevConfig {
     }
 }
 
+/// The configured subjects (`[[subject]]` blocks), in file order.
+pub fn subjects() -> &'static [Subject] {
+    get().subjects()
+}
+
+/// The configured subject whose binary is `path` (the same file, however spelled) — for a tool
+/// that receives the binary as an argument and wants its profile (the corpus gates, the smoke
+/// sentinels).
+pub fn subject_for(path: &std::path::Path) -> Option<&'static Subject> {
+    let want = std::fs::canonicalize(path).ok()?;
+    subjects().iter().find(|s| std::fs::canonicalize(&s.path).ok().as_deref() == Some(want.as_path()))
+}
+
 /// `<workspace>/dev-config.toml`.
 pub fn file() -> PathBuf {
     crate::paths::workspace_root().join("dev-config.toml")
@@ -178,7 +241,7 @@ pub fn watcom_wcc386() -> PathBuf {
     get().path("watcom.wcc386").unwrap_or_else(|| watcom_install().join("BINB/WCC386.EXE"))
 }
 
-/// A user-provided binary by its `[binaries]` key (`war2`, `cnv`, `comcom32`, `msc16`, `x32`,
+/// A user-provided binary by its `[binaries]` key (`the subject`, `cnv`, `comcom32`, `msc16`, `x32`,
 /// `vc6`, `vc5`, `vc4`, `bc45`, ..), with the dependency manifest's `$HOME`-relative default
 /// where one is promised; `None` for a key that is neither configured nor defaulted — the test
 /// then skips, saying which key to set.
@@ -187,7 +250,6 @@ pub fn binary(name: &str) -> Option<PathBuf> {
         return Some(p);
     }
     let default = match name {
-        "war2" => "WAR2.EXE",
         "msc16" => "msc16.exe",
         "x32" => "x32.exe",
         "cnv" => "cnv.exe",
@@ -264,7 +326,7 @@ mod tests {
         let c = DevConfig::parse(&uncommented).unwrap();
         const KNOWN: &[&str] = &[
             "ghidra_src", "oracle.ghidra_root", "oracle.ghidra_dist", "survey.manifest", "watcom.install", "watcom.wcc386", "gt.update_baseline",
-            "recompile.cache", "binaries.war2", "binaries.cnv", "binaries.comcom32", "binaries.msc16",
+            "recompile.cache", "binaries.cnv", "binaries.comcom32", "binaries.msc16",
             "binaries.x32", "binaries.vc6", "binaries.vc5", "binaries.vc4", "binaries.bc45",
             "toolchains.vc98", "toolchains.bc45",
         ];
@@ -275,12 +337,23 @@ mod tests {
     }
 
     #[test]
+    fn subject_expectations_parse_numbers_and_lists() {
+        assert_eq!(parse_u64("0x1f"), Some(0x1f));
+        assert_eq!(parse_u64(" 43 "), Some(43));
+        assert_eq!(parse_u64("zz"), None);
+        assert_eq!(parse_u64_list("0x1, 2,0x3"), Some(vec![1, 2, 3]));
+        assert_eq!(parse_u64_list("1,x"), None);
+        let s = Subject { id: "t".into(), path: PathBuf::from("/nonexistent"), profile: None };
+        assert!(s.file("anything").is_none() && s.expect("k").is_none(), "no profile: nothing, no panic");
+    }
+
+    #[test]
     fn defaults_hold_without_a_file() {
         let empty = DevConfig::default();
         assert_eq!(empty.path("ghidra_src"), None);
         assert!(binary("no-such-binary").is_none());
         assert!(binary("cnv").is_some(), "a manifest default exists for cnv");
-        let c = DevConfig::parse("[binaries]\nwar2 = \"~/x/WAR2.EXE\"\n").unwrap();
-        assert_eq!(c.path("binaries.war2"), Some(home().join("x/WAR2.EXE")), "`~/` expands");
+        let c = DevConfig::parse("[binaries]\ncnv = \"~/x/cnv.exe\"\n").unwrap();
+        assert_eq!(c.path("binaries.cnv"), Some(home().join("x/cnv.exe")), "`~/` expands");
     }
 }

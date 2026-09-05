@@ -29,14 +29,14 @@
 //! · `checkPointerIssues` (LOAD/STORE, coreaction.cc:2765) — **NOT GATED, AND MEASURED INERT.** It is
 //!   NOT a lattice consumer: it mutates no IR and inserts no cast, it only calls `data.warning()` for
 //!   a LOAD/STORE whose pointer type disagrees with the accessed size or address space. Everything it
-//!   needs (`Pointer`, `getPtrTo()->getSize()`) mosura already has. But over all 1286 WAR2 functions,
+//!   needs (`Pointer`, `getPtrTo()->getSize()`) mosura already has. But over all 1286 the subject functions,
 //!   Ghidra's own output contains **zero** of either warning it can emit — no "Load/Store size is
 //!   inaccurate", no "refers to '<space>' but pointer attribute is '<space>'". Porting it would add
 //!   code that provably does nothing on our target. Recorded as a certificate rather than built.
 //!   REVIVAL CONDITION: a target where those warnings appear in Ghidra's output.
 //!
 //! · PTRADD refit (`opUndoPtradd`, coreaction.cc:2740) — ⭐ **MEASURED: NOT GATED, AND NOT INERT.
-//!   THIS IS A LIVE UNPORTED GAP.** `MOSURA_PTRFIT=1` over all 1303 WAR2 functions: **3371
+//!   THIS IS A LIVE UNPORTED GAP.** `MOSURA_PTRFIT=1` over all 1303 the subject functions: **3371
 //!   PTRADD/PTRSUB ops reach this action (2835 + 536), and 59 PTRADDs meet Ghidra's refit guard** —
 //!   its pointee size differs from the element-size constant, so Ghidra undoes the PTRADD back to
 //!   plain arithmetic while mosura keeps it and renders pointer arithmetic instead.

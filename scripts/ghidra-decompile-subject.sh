@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Get GHIDRA's own decompilation of one or many WAR2.EXE functions.
+# Get GHIDRA's own decompilation of one or many the subject binary functions.
 #
-# ⚠️ WHY THIS DOES NOT IMPORT WAR2.EXE — DO NOT "FIX" IT TO.
-# WAR2.EXE is a DOS/4GW **LE** executable. Ghidra loads only the MZ stub, so `analyzeHeadless`
+# ⚠️ WHY THIS DOES NOT IMPORT the subject binary — DO NOT "FIX" IT TO.
+# the subject binary is a DOS/4GW **LE** executable. Ghidra loads only the MZ stub, so `analyzeHeadless`
 # on the .EXE cannot see a single byte of the protected-mode code we care about. That blocked
-# Ghidra-on-WAR2 for the whole byte-exact campaign.
+# Ghidra-on-the subject for the whole byte-exact campaign.
 #
 # The way around it: import the FUNCTION BYTES THEMSELVES as a raw binary based at their own VA
 # (BinaryLoader + x86:LE:32:default), then create + decompile the function there. Ghidra needs no
@@ -45,12 +45,12 @@
 # `func_0x...` with a default prototype and nothing changes):
 #
 #   GHIDRA_POSTSCRIPT=DecompileWithForcedParams.java GHIDRA_POSTSCRIPT_ARGS='63c35=EDX' \
-#     scripts/ghidra-decompile-war2.sh 63cbf 722c8 63c35 77dcb
+#     scripts/ghidra-decompile-subject.sh 63cbf 722c8 63c35 77dcb
 #
 # And to diff the PARTITIONS rather than the C — Ghidra's own `HighFunction::getBasicBlocks`, i.e. the
 # very `BlockBasic` list `CollapseStructure` runs on, plus per-block p-code:
 #
-#   GHIDRA_POSTSCRIPT=DumpBlocks.java scripts/ghidra-decompile-war2.sh 77dcb
+#   GHIDRA_POSTSCRIPT=DumpBlocks.java scripts/ghidra-decompile-subject.sh 77dcb
 #
 # Its mosura counterpart is `--debug structure`, which prints the same fields, so the two diff
 # line-for-line. Before these two scripts existed there was NO WAY to compare partitions at all — a
@@ -83,35 +83,36 @@
 # phantom 37 fns / 69 calls. With both fixed the deficit is exactly what was always reported (base
 # 28 fns / 60 calls; 4 / 9 after heritage Stage A, same functions, same per-function counts): the
 # gate was never wrong, only the surplus and the "% of Ghidra" totals. Fix and negative controls in
-# `scripts/war2-absolute-gauge.py` (TRAPs 3-4, `--selftest`).
+# `scripts/corpus-absolute-gauge.py` (TRAPs 3-4, `--selftest`).
 #
 # CONSEQUENCE FOR ANY NUMBER DERIVED FROM THIS SWEEP: a mosura DEFICIT against it is real evidence
 # (Ghidra had less and still found more). A mosura SURPLUS is NOT evidence of a mosura defect —
 # check the counter first, then the bytes. Never quote "% of Ghidra" as a quality claim; quote the
 # deficit, and state any surplus separately with its cause.
 #
-# SEPARATE, MOSURA-SIDE: the bytes handed to Ghidra are `[entry, next-entry)` (see war2_survey.rs),
+# SEPARATE, MOSURA-SIDE: the bytes handed to Ghidra are `[entry, next-entry)` (see corpus_emit.rs),
 # so if mosura's own flow runs PAST the next discovered function entry, Ghidra is given a shorter
 # slice and the comparison is not like-for-like. That is exactly 1 function today (FUN_0007baf0:
 # 512 bytes given, 1948 covered, +6 "surplus" calls that simply lie outside Ghidra's input). Check
 # `cov_hi - va` against `orig_len` in the manifest before attributing such a gap to the oracle.
 #
 # Bytes come from the survey manifest's `orig_hex` column, which is produced by
-# `cargo run --release --example war2_survey` (see docs/war2-recompile-remeasure.md).
+# `cargo run --release --example corpus_emit` (see docs/corpus-round-runbook.md).
 #
 # Usage:
-#   scripts/ghidra-decompile-war2.sh 1bd30 [1b8b8 ...]   # named functions
-#   scripts/ghidra-decompile-war2.sh --all               # every function in the manifest
-#   scripts/ghidra-decompile-war2.sh --file vas.txt      # one hex VA per line
+#   scripts/ghidra-decompile-subject.sh 1bd30 [1b8b8 ...]   # named functions
+#   scripts/ghidra-decompile-subject.sh --all               # every function in the manifest
+#   scripts/ghidra-decompile-subject.sh --file vas.txt      # one hex VA per line
 #
 # Output: `===== FUNC <va> =====` followed by Ghidra's C, on stdout.
 #
-# Env: WAR2_MANIFEST (default ../war2-survey/manifest.tsv), GHIDRA_DIST, OUT.
+# Config: survey.manifest (dev-config.toml) names the survey manifest; oracle.ghidra_dist the distribution; OUT overrides the output dir.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"                     # mosura/
 . "$HERE/scripts/devcfg.sh"
-MANIFEST="$(devcfg survey.manifest "$(cd "$HERE/.." && pwd)/war2-survey/manifest.tsv")"
+MANIFEST="$(devcfg survey.manifest "")"
+[ -n "$MANIFEST" ] || { echo "ERROR: set survey.manifest in dev-config.toml to the subject's survey manifest (the emit's manifest.tsv)" >&2; exit 1; }
 GHIDRA_SRC="$(devcfg ghidra_src "$(cd "$HERE/.." && pwd)/ghidra")"
 DIST="$(echo $(devcfg oracle.ghidra_dist "$GHIDRA_SRC/build/dist/ghidra_*_DEV"))"
 [ -d "$DIST" ] || DIST="$(echo "$GHIDRA_SRC"/build/dist/ghidra_*_DEV)"
@@ -126,7 +127,7 @@ POSTSCRIPT="${GHIDRA_POSTSCRIPT:-DecompileFunctions.java}"
 read -r -a POSTSCRIPT_ARGS <<<"${GHIDRA_POSTSCRIPT_ARGS:-}"
 
 [ -x "$HEADLESS" ] || { echo "ERROR: no analyzeHeadless at $HEADLESS (set GHIDRA_DIST)" >&2; exit 1; }
-[ -s "$MANIFEST" ] || { echo "ERROR: no manifest at $MANIFEST (set WAR2_MANIFEST); regenerate with the war2_survey example" >&2; exit 1; }
+[ -s "$MANIFEST" ] || { echo "ERROR: no manifest at $MANIFEST (set survey.manifest in dev-config.toml); regenerate with the corpus_emit example" >&2; exit 1; }
 
 WORK="$(mktemp -d)"; trap 'rm -rf "$WORK"' EXIT
 export LC_ALL=C.UTF-8 LANG=C.UTF-8

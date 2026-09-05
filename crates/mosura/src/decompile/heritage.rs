@@ -1320,7 +1320,7 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
         //
         // The adaptation this replaces spelled the slot `unaffected` on the strength of the
         // heritage-time alias probe alone — a probe that runs on a clone with dead code removed,
-        // BEFORE ActiveParam makes a `MOV EAX,ESP` the call's argument. WAR2's FUN_00066da8
+        // BEFORE ActiveParam makes a `MOV EAX,ESP` the call's argument. the subject's FUN_00066da8
         // stores a marker into a stack buffer, passes the buffer's address to a call, and tests
         // the buffer afterwards: the escape was invisible to the probe, no INDIRECT was made,
         // the pre-call store flowed through the call, the test constant-folded, and the whole
@@ -1340,7 +1340,7 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
     // (`nolocalalias`, from the restructure passes' alias boundary), after which its unread write
     // dies normally; an aliased slot keeps the chain and the write feeding it. The adaptation this
     // replaces gated `holdind` on the heritage-time alias probe (`aliased_stack`), which at a later
-    // pass has not yet seen an escape that `ActionActiveParam` binds only afterwards (WAR2 0x2dcd4:
+    // pass has not yet seen an escape that `ActionActiveParam` binds only afterwards (the subject's 0x2dcd4:
     // `LEA EAX,[EBP+0x70]` becomes the second call's argument after pass 2), so the INDIRECT of a
     // slot written between two calls was never addr-forced, the next deadcode removed it and the
     // store of the first call's result with it — `xStack_cc = func_0x000422b8(param_3, 1)` in
@@ -1357,7 +1357,7 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
     // (`0xffffffffffffffe8`), because the offsets are computed with wrapping arithmetic on `u64`
     // and only some paths mask afterwards. Two spellings are two `Address`es, so the trial created
     // under one never matches the varnode under the other and the argument is silently dropped at
-    // commit — measured on WAR2's FUN_00023514, whose fifth (stack) argument flickers in and out of
+    // commit — measured on the subject's FUN_00023514, whose fifth (stack) argument flickers in and out of
     // the trial container across rounds and is absent from the final one.
     //
     // Canonicalizing here rather than at each use is what makes the property hold: `addr`, the
@@ -1375,7 +1375,7 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
 
         // PER-CALL EFFECT OVERRIDE. `<unaffected>` is a property of the DEFAULT convention, and in
         // this binary it is a per-function property: a callee that overwrites a "preserved"
-        // register — measured on 245 WAR2 functions — leaves the caller's pre-call value stale,
+        // register — measured on 245 the subject functions — leaves the caller's pre-call value stale,
         // because an unaffected range gets NO guard here and flows across untouched. Where the
         // callee's own body says otherwise, that evidence wins over the model.
         let overwritten = f.call_specs.get(&call).is_some_and(|cs| {
@@ -1407,7 +1407,7 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
             // liveness (so correcting it kills the save/restore chain), while this per-call
             // override decides what a CALL clobbers. Keeping the optimism only where there is no
             // evidence — an indirect call, or a callee whose walk bailed — preserves the behaviour
-            // `indirect_call_does_not_clobber_loop_variable` pins (WAR2's FUN_00057034) without
+            // `indirect_call_does_not_clobber_loop_variable` pins (the subject's FUN_00057034) without
             // paying for it at every function entry.
             && (never_written || no_evidence)
             // NEVER downgrade the convention's RETURN storage. The evidence "this callee writes no
@@ -1456,7 +1456,7 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
                 Some(so) => trans_off = f.spaces.get(spc).wrap_offset(off.wrapping_sub(so)),
                 None => tryregister = false,
             }
-            // INSTRUMENT (`MOSURA_STACKARG=1`): 423 WAR2 functions pass call arguments on the
+            // INSTRUMENT (`MOSURA_STACKARG=1`): 423 the subject functions pass call arguments on the
             // stack (`push imm ; call ; add esp,4`) and only 5 are byte-clean, so whether a stack
             // range ever reaches the trial branch is a measurement, not a guess.
             debug!(crate::debug::Topic::Args,
@@ -1602,7 +1602,7 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
             // `fc->isOutputActive()` on the call's own output ParamActive; mosura's call-output
             // recovery is the `calls_awaiting_output` backward scan with no per-call active, so
             // the composition-faithful spelling of "output recovery still open" is "the call has
-            // no committed output varnode yet". Measured on WAR2 FUN_00011954: the EAX argument
+            // no committed output varnode yet". Measured on the subject's FUN_00011954: the EAX argument
             // of the third call is the second call's return, whose creation this gate keeps
             // walkable — without it the trial is marked definitely-not-used and BOTH arguments
             // (the return and the constant 0x2b behind it) are dropped from the emitted call.

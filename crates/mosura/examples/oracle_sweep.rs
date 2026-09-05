@@ -1,4 +1,4 @@
-//! WAR2 ORACLE SWEEP — every corpus function's bytes as a standalone fixture, Ghidra's own C
+//! the subject ORACLE SWEEP — every corpus function's bytes as a standalone fixture, Ghidra's own C
 //! (`oracle/capture --c`, cached by `oraclecache`) beside mosura's pure-pipeline C (the same
 //! bytes, no landed world, no recovered arms — apples to apples with the context-poor oracle),
 //! scored with `ccompare::similarity`. The output ranks the corpus by Ghidra-divergence so the
@@ -6,7 +6,7 @@
 //! time (the do-while condition port, zc29, was worth +181 insn-sim and was invisible until one
 //! function was compared by hand).
 //!
-//! Usage: war2_oracle_sweep <manifest.tsv> <workdir> [--limit N] [--only idx,idx,...]
+//! Usage: oracle_sweep <manifest.tsv> <workdir> [--limit N] [--only idx,idx,...]
 //!   writes <workdir>/fixtures/<idx>.xml, <workdir>/ghidra/<idx>.c, <workdir>/mosura/<idx>.c,
 //!   and <workdir>/sweep.tsv: idx  va  name  status  score  mosura_lines  ghidra_lines
 //!

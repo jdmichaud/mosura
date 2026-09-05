@@ -1,5 +1,5 @@
-; Ground-truth corpus program (war2-issues-become-source-tests): the self-compiled repro of
-; docs/function-discovery-backlog.md §9 #5 — the INLINE CALL PARAMETER thunk family. See
+; Ground-truth corpus program (issues-become-source-tests (subject-profile note)): the self-compiled repro of
+; <subject-profile>/notes/function-discovery-backlog.md §9 #5 — the INLINE CALL PARAMETER thunk family. See
 ; src/inlineparam.c for the full property list and the measured pre-fix behaviour; this file is
 ; where the whole fixture lives, because the idiom CANNOT BE WRITTEN IN C: it needs a callee that
 ; pops its own return address and reads the word the call is followed by.
@@ -8,7 +8,7 @@
 ; these labels stay in source order with no padding between them (`byte public` segment) — the
 ; adjacency is load-bearing (property 3).
 ;
-; THE SHAPE, byte for byte (war2 MZ 0x13a38..0x13a56 is the original):
+; THE SHAPE, byte for byte (the subject MZ 0x13a38..0x13a56 is the original):
 ;
 ;     thunk_a_:   e8 rel32          call dispatch_
 ;                 b8 11             <- 2-byte INLINE PARAMETER, read by dispatch_, NOT code
@@ -22,7 +22,7 @@
 ; The `b8 11` parameter bytes are chosen, not arbitrary. A linear decode starting at the
 ; parameter reads `b8 11 <first 3 bytes of the next label>` as a 5-byte `mov eax,imm32`, which
 ; runs 3 bytes PAST the parameter and SWALLOWS THE NEXT LABEL'S ENTRY. That is exactly what
-; mosura does to `00013a56 POP BX` on the war2 MZ stub — a real instruction destroyed, not merely
+; mosura does to `00013a56 POP BX` on the subject MZ stub — a real instruction destroyed, not merely
 ; extra code — and it is what makes this a wrong-code gate rather than a tolerance question.
 ; Any other parameter bytes that decode short would leave the next entry intact and the fixture
 ; would measure nothing (property 2).

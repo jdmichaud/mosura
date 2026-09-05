@@ -1,6 +1,6 @@
 /* Ground-truth repro: a TWO-argument __watcall call where mosura recovers only the first.
  *
- * Measured on WAR2 FUN_00011920, the largest byte-delta bucket's representative:
+ * Measured on the subject's FUN_00011920, the largest byte-delta bucket's representative:
  *
  *     a1 6c120800    mov eax,[g]          <- argument 1
  *     31 d2          xor edx,edx          <- argument 2 (EDX is watcall's SECOND arg register)
@@ -18,7 +18,7 @@
  * Properties this program depends on — do not "simplify" them away:
  *   1. TWO integer arguments, so the second lands in EDX. With one argument the EAX-only path
  *      (which already works) is what gets tested.
- *   2. the second argument is a CONSTANT, matching the WAR2 shape where it is materialised by
+ *   2. the second argument is a CONSTANT, matching the subject shape where it is materialised by
  *      `xor edx,edx` immediately before the call — the form most easily mistaken for scratch.
  *   3. the callee READS both, so both are genuinely arguments and not merely live registers.
  *   4. `add2` is in the .asm, not here: wcc386 inlines a same-TU C definition and no call survives.
@@ -38,7 +38,7 @@ void feed(void) {
 }
 
 /* Same call shape, but the callee BRANCHES — so the straight-line scan claims nothing and the
- * call's parameters must come from the convention. This is the WAR2 shape. */
+ * call's parameters must come from the convention. This is the subject shape. */
 extern int add2b(int a, int b);
 #pragma aux add2b parm caller [eax] [edx] value [eax] modify [eax];
 
@@ -46,7 +46,7 @@ void feedb(void) {
     g_val = add2b(g_val, 0);
 }
 
-/* THE WAR2 SHAPE. The second argument is ALSO USED AFTER the call — FUN_00011920 does
+/* THE the subject SHAPE. The second argument is ALSO USED AFTER the call — FUN_00011920 does
  * `xor edx,edx ; call ; mov [g],edx`, storing the very value it passed. A value that is both an
  * argument and a later use is not "used solely to feed this call", which is the test that decides
  * whether a trial stays active. */

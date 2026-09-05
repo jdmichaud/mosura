@@ -150,7 +150,7 @@ impl CompilerSpec {
     }
 }
 
-/// Watcom C/C++32 10.0a, hosted under dosemu2 — WAR2's own compiler, the recompile baseline.
+/// Watcom C/C++32 10.0a, hosted under dosemu2 — the subject's own compiler, the recompile baseline.
 ///
 /// The details here are all measured, not guessed: the batch file must be CRLF or COMMAND.COM
 /// does not parse it; the source must be 8.3 and is written upper-case; the object comes back
@@ -166,7 +166,7 @@ pub fn watcom_10_0a_dos(prelude: impl Into<String>) -> CompilerSpec {
             .map(|s| s.to_string())
             .collect(),
         prelude: prelude.into(),
-        // WAR2's profile (buildconfig::watcom_10_0a). `-d1+` is added per-unit where the original
+        // the subject's profile (buildconfig::watcom_10_0a). `-d1+` is added per-unit where the original
         // has a frame prologue, so it is not part of the default set.
         flags: ["-5r", "-fpi87", "-s", "-onatx"].iter().map(|s| s.to_string()).collect(),
         log_name: Some("WCCOUT.TXT".into()),

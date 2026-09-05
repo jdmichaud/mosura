@@ -12,7 +12,7 @@
 //! `true` it only records a parse conflict; `processInstruction` (:1073) still runs and
 //! `block.addInstruction(inst)` (:1254) still adds it. The block ends afterwards, on
 //! `block.hasInstructionError()` (:1076). So a limit of 16 admits **17** instructions — which is
-//! exactly what the committed war2 golden shows, and getting it backwards would leave the last
+//! exactly what the committed the subject golden shows, and getting it backwards would leave the last
 //! filler instruction undecoded on every such run.
 
 /// The byte value repeated across every byte of `bytes`, or `None` if they vary
@@ -87,7 +87,7 @@ mod tests {
 
     /// ⭐ THE OFF-BY-ONE THAT MATTERS. A limit of 16 admits SEVENTEEN instructions, because the
     /// counter is pre-incremented and compared with `>`, and because the tripping instruction is
-    /// still added to the block by the caller. Measured against the committed war2 golden: the
+    /// still added to the block by the caller. Measured against the committed the subject golden: the
     /// zero-fill run starting at `00018f04` keeps `00018f04`..`00018f24` — 17 instructions — and
     /// `00018f26` is the first address Ghidra does not decode.
     #[test]
