@@ -3,14 +3,20 @@
 //! Rust without FFI, but nothing outside `mosura-capi` links it, and it promises nothing. The
 //! library reads no environment variable and no configuration file; it receives values.
 
+pub mod ctx;
 pub mod error;
+pub mod fingerprint;
+pub mod key;
 pub mod options;
 pub mod render;
 pub mod schema;
 pub mod table;
 pub mod tbl;
 
+pub use ctx::{Context, ContextConfig};
 pub use error::{Error, Result};
+pub use fingerprint::Stage;
+pub use key::Key;
 pub use options::{Affects, OptType, OptionSpec, Options};
 pub use render::{render, Format};
 pub use schema::{ColHint, ColType, Column, Schema, SchemaRef};
