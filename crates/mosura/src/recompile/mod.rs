@@ -37,6 +37,7 @@ pub mod gates;
 pub mod insn;
 pub mod mve;
 pub mod recovery;
+pub mod round;
 pub mod report;
 pub mod toolchain;
 pub mod function;

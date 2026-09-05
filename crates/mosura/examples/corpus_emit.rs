@@ -23,6 +23,7 @@ use mosura::recompile::function;
 use mosura::recompile::pragma::{self, WatcomRegs};
 use mosura::recompile::manifest;
 use mosura::recompile::passes;
+use mosura::recompile::round;
 use mosura::recompile::upgrade;
 
 /// The subject's language. the subject is a 32-bit protected-mode DOS image.
@@ -702,65 +703,21 @@ fn main() {
             // The whole recovered rendering, as a function of the Funcdata, so the shared-return
             // arm below can render an alternative decompile of the same world under identical
             // per-site decisions and choose between the two texts.
-            let render = |f: &Funcdata| -> String {
-            let insns = mosura::recompile::insn::normalize(
-                SURVEY_LANG,
-                &region,
-                *va,
-                &mosura::recompile::insn::NoReloc,
-            )
-            .unwrap_or_default();
-            // PER-FUNCTION RECOVERY (recompile::recovery, review R5 commit a): the report pass, the
-            // `*_from_evidence` witnesses over this function's instructions and the second evidence
-            // round, one library fn shared with the gcc ground-truth oracle. The argument-order
-            // derivation stays here as the closure: it reads the survey's cross-function tables
-            // (site_orders, order_excluded, arg_reg_offs, watreg) and fills `order_parms`.
-            let mut order_parms: std::collections::BTreeMap<u64, String> = Default::default();
-            let recovered = mosura::recompile::recovery::recover(&f, &insns, &arms[0], &rec_arm, |report| {
-                let (perms, parms) = pragma::call_arg_orders(report, *va, &orders, &regs);
-                order_parms = parms;
-                perms
-            });
-            let recovered = {
-                let mut r = recovered;
-                for a in &arms_off {
-                    r.switch_off(a).expect("--arms-off names were checked at startup");
-                }
-                r
+            let inputs = round::RenderInputs {
+                lang: SURVEY_LANG,
+                region: &region,
+                va: *va,
+                name,
+                choices: &arms[0],
+                rec_arm: &rec_arm,
+                arms_off: &arms_off,
+                orders: &orders,
+                regs: &regs,
+                knobs: &knobs,
+                gsizes: &gsizes,
+                contract: contract.as_deref(),
             };
-            // the interleave census (was `MOSURA_ILV_CENSUS`): a diagnostic, so under the facility's
-            // `recover` topic like its siblings (review R6, commit 3b); it also reports the orders the
-            // parked lever would apply -- printc::interleave_orders keeps its caller here since the
-            // blind form's switch went
-            if mosura::debug::on(mosura::debug::Topic::Recover) {
-                for (pa, pb, k) in mosura::decompile::printc::interleave_census(&f, &insns) {
-                    mosura::debug!(mosura::debug::Topic::Recover, "ilv {name} {pa:#x} {pb:#x} {k}");
-                }
-                let mut orders: Vec<_> = mosura::decompile::printc::interleave_orders(&f, &insns).into_iter().collect();
-                orders.sort_by_key(|(op, _)| op.0);
-                for (op, order) in orders {
-                    mosura::debug!(mosura::debug::Topic::Recover, "ilv {name} order at op {} -> {:?}", op.0, order.iter().map(|o| o.0).collect::<Vec<_>>());
-                }
-            }
-            let rc = mosura::decompile::printc::print_c_recovered(&f, &rec_arm, &recovered);
-            // VOLATILE RECOVERY: globals whose original store sites show the blocked order
-            // (see buildconfig::volatile_globals_from_evidence) declare volatile in this TU.
-            let volatiles =
-                mosura::recompile::buildconfig::volatile_globals_from_evidence(&insns);
-            let vararg_callees = pragma::callee_pragmas(&f, &insns, &regs, knobs.on(Switch::CalleeClobbers), &order_parms);
-            let (rc, aggregates) = aggregate_ram_globals(&rc, &insns, &gsizes, &volatiles, knobs.on(Switch::Agg));
-            if mosura::debug::on(mosura::debug::Topic::Survey) && !aggregates.is_empty() {
-                for (_, d) in &aggregates {
-                    mosura::debug!(mosura::debug::Topic::Survey, "agg {name}: {d}");
-                }
-            }
-            let (rtu, _) = build_tu(&rc, *va, false, &gsizes, &volatiles, &vararg_callees, &aggregates);
-            let rtu = with_contract(name, contract.as_deref(), rtu);
-            // The permuted argument order is value-identical only under its pragma — the two
-            // are one decision, emitted together (see call_arg_orders above).
-            // order_parms are folded into the per-callee pragma inside build_tu now.
-            rtu
-            };
+            let render = |f: &Funcdata| -> String { round::render_recovered(f, &inputs) };
             let rtu = render(&f);
             // SHARED-RETURN ARM (allocator thread; re-earns the ActionReturnSplit doctrine
             // trade): where Ghidra's split fired, render the same world WITHOUT the split and
