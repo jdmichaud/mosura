@@ -193,10 +193,13 @@ FID data are embedded with a `--data-dir` override (`crate::resources`); `tests/
 - Per-Ghidra-class port status: `docs/coverage.md`.
 - Debug-information track (DWARF/PDB/CodeView/Go/PEF; phases `D0`–`D12`, not started):
   `docs/debug-info-port-plan.md`.
-- **"What is this file?"** — `cargo run --release --example identify -- <binary>
-  [--native|--le] [--cspec <id>]` prints container, which loader claims it, the compiler
-  evidence in the bytes, the resolved language/cspec, and what FID identified. Reach for it
-  before writing a throwaway.
+- **"What is this file?"** — `cargo run -q -p mosura-cli -- identify <binary>` prints the
+  container, which loader claims it, the compiler evidence in the bytes, the resolved
+  language/cspec and the FID databases that apply (`-o load.loader=native|le`,
+  `-o load.cspec-x86-32=<id>` to test a hypothesis). The same binary is the product's command
+  line: `mosura -S <dir> add <bin>`, `analyze`, `functions`, `decompile <fn>`, `emit <fn>`,
+  `lift <hex>`, `disasm --bytes <hex>`, `read <addr> <len>`, and `mosura call <op>` for every
+  operation (`mosura ops`). Reach for it before writing a throwaway.
 - Detailed per-feature notes and gotchas: `.claude/memory/mosura-project.md`.
 - Superseded (approximation-era, kept for history): `docs/decompiler-plan.md`,
   `floats-plan.md`, `switches-plan.md`, `type-system-plan.md`.

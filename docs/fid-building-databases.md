@@ -113,7 +113,7 @@ from the workspace in a developer build and embedded only with `--features fid-g
 and an override directory laid out as `<dir>/fid/<name>.mfid.gz` is resolved first:
 
 ```sh
-cargo run --example identify -- <binary> --data-dir /path/to/override   # any front-end takes --data-dir
+cargo run -q -p mosura-cli -- identify <binary> --data-dir /path/to/override   # every front-end takes --data-dir
 cargo xtask data-export /path/to/override --what fid                     # jump-start it with the embedded databases
 cargo xtask data-list --data-dir /path/to/override                       # what is in effect, and from where
 ```

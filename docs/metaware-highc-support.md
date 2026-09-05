@@ -15,7 +15,7 @@ decision point) checks MetaWare first and accepts `highc` as a declared override
 caller tests a compiler hypothesis on a linked image.
 
 Verified end to end on a real object compiled by the real toolchain. Reproduce with the committed
-identification tool (`cargo run --release --example identify -- <file> [--cspec highc]`) — no
+identification command (`cargo run -q -p mosura-cli -- identify <file> [-o load.cspec-x86-32=highc]`) — no
 throwaway needed; `examples/dump*.rs` remains gitignored because `identify` is the committed answer:
 
 ```
