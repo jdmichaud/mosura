@@ -12,6 +12,16 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+/// The language directory a `.ldefs` resource belongs to — `Some(dir)` only for a file DIRECTLY
+/// in a `data/languages` directory, which is what Ghidra's `SleighLanguageProvider` reads (the
+/// module's language directory, not its subdirectories: `RISCV/data/languages/old/
+/// riscv_deprecated.ldefs` redefines `RISCV:LE:32:default` and would sort before the live file).
+/// An absolute path (a test's on-disk tree) qualifies by the same rule.
+fn language_dir_of_ldefs(name: &str) -> Option<&str> {
+    let (dir, _) = name.strip_suffix(".ldefs")?.rsplit_once('/')?;
+    if dir.ends_with("/data/languages") { Some(dir) } else { None }
+}
+
 /// Resolve a language id to its `(.sla, .pspec)` paths. Accepts the bare 4-part id
 /// (`proc:endian:size:variant`) or one with a trailing `:cspec` (the goldens carry
 /// the compiler-spec suffix); only the language part is used.
@@ -39,12 +49,9 @@ fn resolve_language_paths(lang_id: &str) -> Option<(PathBuf, PathBuf)> {
     // directory, or the workspace's vendored tree): the names are RELATIVE resource names.
     let res = crate::resources::get();
     for name in res.list("ghidra/Processors/") {
-        if !name.ends_with(".ldefs") {
-            continue;
-        }
+        let Some(langs) = language_dir_of_ldefs(&name) else { continue };
         let Some(text) = res.read_string(&name) else { continue };
         let Ok(doc) = roxmltree::Document::parse(&text) else { continue };
-        let langs = name.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
         for l in doc.descendants().filter(|n| n.tag_name().name() == "language") {
             if l.attribute("id") == Some(id4.as_str()) {
                 let sla = l.attribute("slafile")?;
@@ -139,12 +146,9 @@ fn resolve_cspec_path(lang_id: &str, compiler_spec_id: &str) -> Option<PathBuf> 
     let id4: String = lang_id.split(':').take(4).collect::<Vec<_>>().join(":");
     let res = crate::resources::get();
     for name in res.list("ghidra/Processors/") {
-        if !name.ends_with(".ldefs") {
-            continue;
-        }
+        let Some(langs) = language_dir_of_ldefs(&name) else { continue };
         let Some(text) = res.read_string(&name) else { continue };
         let Ok(doc) = roxmltree::Document::parse(&text) else { continue };
-        let langs = name.rsplit_once('/').map(|(d, _)| d).unwrap_or("");
         for l in doc.descendants().filter(|n| n.tag_name().name() == "language") {
             if l.attribute("id") != Some(id4.as_str()) {
                 continue;
@@ -266,7 +270,7 @@ pub fn default_pspec_for_sla(sla: &Path) -> Option<PathBuf> {
     let res = crate::resources::get();
     let mut fallback: Option<PathBuf> = None;
     for name in res.list(&format!("{langs}/")) {
-        if !name.ends_with(".ldefs") {
+        if language_dir_of_ldefs(&name) != Some(langs) {
             continue;
         }
         let Some(text) = res.read_string(&name) else { continue };
@@ -353,6 +357,25 @@ pub fn load_cached(lang_id: &str) -> Option<Language> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Only a `.ldefs` DIRECTLY in a `data/languages` directory is a language definition — the
+    /// walk reads what Ghidra's language provider reads. Pinned because the vendored tree carries
+    /// `RISCV/data/languages/old/riscv_deprecated.ldefs`, which redefines `RISCV:LE:32:default`
+    /// and sorts before the live `riscv.ldefs`; reading it would resolve the default RISCV
+    /// language to a deprecated table in any build that lists the workspace tree.
+    #[test]
+    fn only_ldefs_directly_in_a_language_dir_count() {
+        assert_eq!(
+            language_dir_of_ldefs("ghidra/Processors/RISCV/data/languages/riscv.ldefs"),
+            Some("ghidra/Processors/RISCV/data/languages")
+        );
+        assert_eq!(language_dir_of_ldefs("ghidra/Processors/RISCV/data/languages/old/riscv_deprecated.ldefs"), None);
+        assert_eq!(language_dir_of_ldefs("/abs/Processors/x86/data/languages/x86.ldefs"), Some("/abs/Processors/x86/data/languages"));
+        assert_eq!(language_dir_of_ldefs("ghidra/Processors/x86/data/languages/x86.pspec"), None);
+        let (sla, pspec) = resolve("RISCV:LE:32:default").expect("the vendored tree has RISCV");
+        assert!(!sla.to_string_lossy().contains("/old/") && !pspec.to_string_lossy().contains("/old/"), "{sla:?} {pspec:?}");
+        assert!(sla.to_string_lossy().ends_with("RISCV/data/languages/riscv.ilp32d.sla"), "{sla:?}");
+    }
 
     /// The x86 `.pspec` declares the direction flag as a tracked register at 0 (`<tracked_set>`),
     /// and it resolves to `(DF offset, size 1, value 0)` against the sleigh register table.
