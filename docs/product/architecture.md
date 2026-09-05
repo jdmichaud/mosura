@@ -6,10 +6,13 @@ document decides the shape; the numbered phases at the end are the order to buil
 
 ## 0. What this document decides
 
-1. **Four crates.** `mosura-core` (today's `crates/mosura`, the Ghidra-shaped internals, free to
-   keep moving), `mosura-api` (the product surface: sessions, operations, options, tables),
-   `mosura-capi` (a mechanical `extern "C"` projection of `mosura-api`, shipped as
-   `libmosura` + `mosura.h`), `mosura-cli` (the `mosura` binary, porcelain over `mosura-api`).
+1. **Five crates, one public surface.** `mosura-core` (today's `crates/mosura`, the
+   Ghidra-shaped internals, free to keep moving), `mosura-api` (internal: sessions, operations,
+   options, tables — Rust-testable, not a promised surface), `mosura-capi` (the **one public
+   surface**: `extern "C"` one-liners over `mosura-api`, shipped as `libmosura` + `mosura.h`),
+   `mosura` (the safe Rust binding over the C ABI, the same thing a Python binding is), and
+   `mosura-cli` (the `mosura` binary, porcelain written against that binding). The CLI reaches
+   nothing except through the C ABI, so C coverage is structural (§6.6).
 2. **One extensibility spine: an operation registry with schema-described parameters and
    results.** Adding a capability registers one operation; the CLI, the C API, a future daemon,
    and a future wasm build all dispatch over the same registry and get it for free. The C symbol
@@ -26,7 +29,8 @@ document decides the shape; the numbered phases at the end are the order to buil
 6. **Environment variables are gone from the library.** Every knob is an option key in a
    registry; the CLI reads flags and config files; a wasm host passes a config struct.
 7. **Spec data is embedded** in the library (the vendored Ghidra subset, our `specs/`, the FID
-   databases), with an override directory resolved first — JD's TODO item on vendoring.
+   databases), with an override directory resolved first, and `mosura data export <dir>` dumps
+   the embedded data into that directory to jump-start it — JD's decision, 2026-09-05.
 
 ## 1. Where we start from
 
@@ -85,25 +89,30 @@ not so that we promise not to. Replacing the review discipline: an operation bod
 core calls and decides nothing about renderings or facts; those stay in core under the existing
 rules.
 
-## 3. The shape: four crates and one store
+## 3. The shape: five crates and one store
 
 ```
-                 ┌───────────── front-ends: own interaction, own NO state ─────────────┐
-                 │  mosura-cli (porcelain)   [later: mosura serve, wasm module, bindings]  │
-                 └───────────────┬────────────────────────────────────┬─────────────────┘
-                                 │ Rust                               │ C ABI (any language)
-                          ┌──────▼───────┐                     ┌──────▼───────┐
-                          │  mosura-api  │◄────────────────────┤ mosura-capi  │  one-liners, cbindgen → mosura.h
-                          │ sessions, ops│                     └──────────────┘
-                          │ options,     │
-                          │ tables, store│
-                          └──────┬───────┘
-                                 │ Rust, internal types
-                          ┌──────▼───────┐        ┌──────────────────────────────┐
-                          │ mosura-core  │        │ session store (a directory)   │
-                          │ the port     │        │ immutable content-addressed  │
-                          └──────────────┘        │ .tbl files, mmap-able         │
-                                                  └──────────────────────────────┘
+      ┌──────────────── front-ends: own interaction, own NO state ────────────────────────┐
+      │  mosura-cli (porcelain)      [later: mosura serve, wasm module]      python, C, … │
+      └───────────┬──────────────────────────────────────────────────────────────┬────────┘
+                  │ safe Rust                                                     │
+           ┌──────▼──────┐                                                        │
+           │   mosura    │  the Rust binding: handles → structs, status → Result  │
+           └──────┬──────┘                                                        │
+                  │ C ABI ───────────────────────────────────────────────────────┘
+           ┌──────▼──────┐
+           │ mosura-capi │  THE public surface: extern "C" one-liners, panic/pointer boundary,
+           └──────┬──────┘  cbindgen → mosura.h, libmosura.{so,a}
+                  │ Rust, internal
+           ┌──────▼──────┐
+           │ mosura-api  │  sessions, operation registry, options registry, tables, store
+           └──────┬──────┘
+                  │ Rust, internal types
+           ┌──────▼──────┐        ┌──────────────────────────────┐
+           │ mosura-core │        │ session store (a directory)   │
+           │  the port   │        │ immutable content-addressed  │
+           └─────────────┘        │ .tbl files, mmap-able         │
+                                  └──────────────────────────────┘
 ```
 
 **`mosura-core`** is today's crate. Its public Rust surface (`mosura::decompile::…`) remains the
@@ -112,17 +121,25 @@ outside callers. Domain logic promoted out of the examples (the TU synthesis, th
 passes, the round metrics) lands *here*, not in the api crate, because it decides renderings and
 facts and therefore belongs under the port's review rules.
 
-**`mosura-api`** is the product. It owns: the session store, the operation registry, the options
-registry, the table/schema machinery, and the operation bodies (orchestration). It exposes a
-safe Rust API — the Rust binding of the product — and is the only thing the CLI links.
+**`mosura-api`** owns the session store, the operation registry, the options registry, the
+table/schema machinery, and the operation bodies (orchestration). It is **internal**: `pub` so
+that it is unit-tested in Rust without FFI, but nothing outside `mosura-capi` links it, and it
+promises nothing. Keeping it separate from `mosura-capi` is what keeps the C layer one-liners.
 
-**`mosura-capi`** is `extern "C"` one-liners over `mosura-api` plus the memory/error/panic
-boundary. `cbindgen` produces `mosura.h`; the crate builds `libmosura.{so,a}`. A parity test
-requires every registered operation and every api entry point to have its C twin, so the C API
-cannot lag (§6.6).
+**`mosura-capi`** is the product surface, and the only one. `extern "C"` one-liners over
+`mosura-api` plus the memory/error/panic boundary; `cbindgen` produces `mosura.h`; the crate
+builds `libmosura.{so,a}`.
 
-**`mosura-cli`** is porcelain: a hand-designed command tree over operations, plus the plumbing
-command `mosura call <op>` that reaches every operation with no porcelain at all.
+**`mosura`** is the safe Rust binding over the C ABI: handle types with `Drop` calling
+`mosura_release`, `mosura_status` mapped to `Result`, views mapped to borrowed slices with the
+handle's lifetime. Mechanical (~1–2k lines), the same shape a Python or Zig binding takes, and it
+is what a Rust user of the shipped library depends on. It calls the capi functions as ordinary
+Rust functions (the crate is a dependency), so the CLI build involves no dynamic linking; the
+`.so` path is exercised by the C smoke test.
+
+**`mosura-cli`** is porcelain over the binding: a hand-designed command tree, plus the plumbing
+command `mosura call <op>` that reaches every operation with no porcelain at all. Because it can
+only call what the C ABI exposes, anything the CLI can do, every language can do (§6.6).
 
 The store is not a crate; it is a *format* (§5) that `mosura-api` reads and writes, and that any
 language can read directly because it is flat.
@@ -160,8 +177,8 @@ a fold over pure operations and is itself not cached.
 
 Typed convenience entry points exist beside the generic call for the handful of hot paths where
 per-call overhead matters or where a handle is the natural object (open a program, decompile a
-function, read bytes). They are thin: each is also a registered operation, so the parity test
-(§6.6) has one list to check.
+function, read bytes). They are thin: each is also a registered operation, so `mosura ops` lists
+everything and `mosura call` reaches everything.
 
 ### 4.2 Options
 
@@ -420,7 +437,13 @@ same SoA + CSR form (constructors, decision trees as a node table, templates, sy
 
 `build.rs` freezes the vendored subset and embeds it (`include_bytes!`), so `mosura_ctx_new`
 needs no path and pays no parse. A custom spec directory (JD's TODO) is resolved first and
-frozen into the session's `specs/` on first use.
+frozen into the session's `specs/` on first use. **Jump start (JD, 2026-09-05):**
+`mosura data export <dir>` (C: `mosura_ctx_export_data`) writes the embedded data — the
+`.ldefs`/`.sla`/`.pspec`/`.cspec` tree, our `specs/`, the FID databases — into the override
+directory as the source files they were built from, byte-identical to the vendored originals, so
+a user edits a copy rather than authoring from nothing. The exported tree then wins over the
+embedded one exactly as any override does; `mosura data list` shows which files are in effect
+and where each came from.
 
 ### 5.8 Parallelism and processes
 
@@ -430,6 +453,60 @@ function with no daemon and no shared memory. The one process that wants to stay
 DOS-hosted compiler under dosemu, ~1 s per session — is already amortized by *batching within
 one invocation* (`Cached` groups 200 units), which is where it belongs: a toolchain-driver
 concern, not an architecture concern.
+
+### 5.9 What option 2 costs, stated plainly
+
+The agreement above is with **flat at rest**; the pushback went against **flat everywhere**
+(§5.1). Here is the bill for the part that is agreed.
+
+**Rewrite: none of the existing logic; new code only.**
+
+| piece | what is written | touches existing code? | rough size |
+| --- | --- | --- | --- |
+| table framework: schemas, `.tbl` writer/reader, TSV/JSON/TEXT renderers | new | no | ~2k lines |
+| `Program::freeze/thaw` | one table per collection (§5.6), thaw rebuilds the maps | adds two methods; the struct and every loader/analyzer are untouched | ~2–3k lines incl. schemas |
+| `Spec` freeze/thaw | SoA + CSR of the nested constructor/decision/template structs | adds two functions; the engine is untouched | ~1.5–2k lines |
+| per-function products | rows written from what is already text or TSV today | no | small |
+| frozen IR record (tier B, optional) | a projection at the end of the pipeline | no | ~1–2k lines |
+
+Against the 130k-line rewrite that flat-everywhere would be, this is a contained addition.
+
+**Performance: no degradation anywhere that runs hot.** The translation JD asks about is the
+thaw, and it runs once per load, linearly:
+
+- A `Program` thaw rebuilds hash indexes over ~10^5 rows (WAR2's listing holds over 100k
+  instructions). A hash insert costs tens of nanoseconds; the thaw is on the order of 10 ms. The
+  analysis it replaces is tens of seconds to minutes. Today there is no persistence at all, so
+  every invocation pays the minutes.
+- A `Spec` thaw allocates today's structs from arrays, single-digit milliseconds, against the
+  0.5–1 s parse it replaces.
+- The hot loops — decode, heritage, the rule pool, the printer — run on today's structures,
+  unchanged, because the working representation is not flattened.
+- The freeze runs once per producing operation and is a linear pass over data the operation
+  already holds; it is invisible next to the operation.
+
+Zero-copy "read in place", where today's code would read the mapped tables directly with no
+thaw at all, is the step that *would* require adapters throughout the engine and the analysis;
+it is listed as optional in §5.7 and is not needed for either speed or the product.
+
+**The price that is real: format discipline.** An on-disk format outlives the process that wrote
+it, so every schema becomes a compatibility decision — append-only columns, versions in headers,
+readers tolerant of unknown schemas (§4.3). A daemon has no such cost because its state dies
+with it. This is the genuine trade of option 2, and it is worth paying because "a session I can
+pick up tomorrow, from another process, in another language" is the feature.
+
+**Invalidation granularity, or the development loop.** Keying every cached table on the whole
+build id (§5.4) is correct and simple, but it means editing the printer re-runs the analysis
+(a minute or two on WAR2) on the next invocation — the loop this project most wants fast. The
+fix is Zig's per-unit fingerprint applied per stage: each operation declares which **stage
+fingerprint** it depends on — `analysis` (a hash of the analysis modules' sources), `decompile`
+(the decompiler's), `emit`, `recompile` — and the key uses those instead of the whole build id.
+A printer edit then invalidates `functions/` and `rounds/` and keeps `program/`. The fingerprints
+are computed in `build.rs` from the file list of each module tree; the whole build id remains in
+every manifest for provenance.
+
+**Disk.** Sessions grow with rounds (per-function products × rounds). `mosura cache gc` is not
+optional, and the `/data` hygiene rules apply to session directories as they do to build trees.
 
 ## 6. CLI architecture
 
@@ -475,6 +552,7 @@ mosura round run <name> [--toolchain …] [--baseline NAME]                     
 mosura round compare <a> <b>                                                      (today's war2-verdicts.sh: EXACT, WGSS, ups/downs)
 mosura gates <round> [--baseline NAME]                                            (corpus-gates.tsv, text + verdict gates)
 mosura fid identify | fid build …
+mosura data export <dir> | data list                                              (dump the embedded spec/FID data into the override dir; what is in effect)
 mosura cache explain <key> | cache gc
 mosura ops [--dev] | schema <table> | call <op> [--key value …]                   (discoverability + plumbing)
 mosura dev …                                                                      (dev tier: oracle captures, censuses, probes)
@@ -495,11 +573,22 @@ config file; the library never reads the environment.
 
 ### 6.4 The dev tier
 
-The Ghidra oracle captures, the sweep, the censuses, the MVE fixture generators, the perf
-harness: registered as operations with `tier: Dev`, hidden from top-level help, reachable as
-`mosura dev <op>`. Same registry, same tables, same store — a census that used to write its own
-TSV now returns a table. They stay in the product binary (they are small and shell out to the
-oracle tools; nothing links Ghidra), which keeps one build and one parity list.
+"Dev tooling" means the tools that exist to develop mosura against its oracles, not to use
+mosura: the Ghidra oracle captures and the rule-trace diff, the divergence censuses over the WAR2
+corpus, the oracle sweep, the MVE fixture generators (compile a small C program under dosemu to
+make a test fixture), the gcc ground-truth runs, the perf harness. About half of today's 45
+examples are this kind, and they are also where the filesystem and process-spawning code of the
+core concentrates (`oraclecache`, `groundtruth`, `twin`, `datatest`, `golden`).
+
+They become operations with `tier: Dev` — same registry, same tables, same store, so a census
+that used to re-derive everything in its own 4,000 lines reads the session the product wrote —
+but they live in their own crate, `mosura-dev-ops`, which registers into the same registry and
+is compiled into the CLI only under a cargo feature (`dev-tools`). A release build of `mosura`
+has no dev tier at all; a developer build has `mosura dev <op>`. One binary name, one registry,
+one command tree, and the product library never compiles the oracle code — which is also
+precisely the code the wasm build must exclude (§8, phase 5). The alternative, a separate
+`mosura-dev` binary, buys the same separation at the cost of a second target to keep in step; the
+feature flag is the smaller mechanism for the same result.
 
 ### 6.5 The corpus round through the CLI
 
@@ -519,20 +608,32 @@ a time per install directory, enforced by a lock on the install path).
 
 ### 6.6 What "exercise the API" means here
 
-The CLI is the API's first client, and it must not be able to cheat. Two ways to guarantee that:
+The CLI is the API's first client, and it must not be able to cheat. **Decision (JD,
+2026-09-05): the CLI is written against the C ABI**, through the safe Rust binding (`mosura`, §3),
+the way any other language would use the library.
 
-- **Strict:** write the CLI against the C ABI through a safe wrapper, the way a third-party Rust
-  user would. Completeness of the C API is then structural. Cost: FFI plumbing on every CLI
-  feature, a third surface (the wrapper) to maintain, worse debugging.
-- **Recommended:** the CLI uses `mosura-api` (Rust). `mosura-capi` is one-liners over the same
-  crate, and a **parity test** asserts that every registered operation and every public api entry
-  point has its C twin — the compile-enforced-boundary style the arms registry already uses. The
-  C ABI *mechanics* (pointers, lengths, ownership) are exercised by what they exist for: a
-  foreign-language client. A C smoke program and a Python `ctypes` script in-tree run the same
-  scenario as the CLI's integration tests (identify → load → analyze → decompile → tables).
+Why this and not a Rust API with a parity test (the first draft's recommendation): a parity
+test proves that a C twin *exists*, not that it carries everything the Rust function carries,
+and not that it is pleasant to use. A CLI that can only reach the C ABI proves both, every day,
+by the people who most want it to work — completeness by construction, and maintenance pressure
+on the C surface that no test provides. The advantages the Rust route had were real but small:
+Rust types inside the CLI, panics surfacing as panics, no binding to maintain. Each has an
+answer:
 
-The recommended route gives the API's *design* the same exercise (the CLI can only do what the
-api crate offers, and the api crate is the C API modulo syntax) without slowing the CLI with FFI.
+- The binding is mechanical and is itself a deliverable: it is the Rust binding of the product,
+  and writing it is the first ergonomics test of the C ABI.
+- The CLI depends on `mosura-capi` as an ordinary crate and calls its `extern "C"` functions
+  directly, so there is no dynamic-linking step in the CLI build; the `.so` path is covered by
+  the C smoke test.
+- For development, `mosura_ctx_config.abort_on_panic = 1` makes the boundary re-raise instead
+  of catching, so a decompiler panic dies with its backtrace exactly as it does today; the
+  release CLI leaves it off and reports `MOSURA_ERR_INTERNAL`.
+- Anything the C ABI cannot express — a closure parameter, a borrowed Rust struct — is a design
+  smell surfaced early, which is the point: it has to become data or stay internal.
+
+The C ABI *mechanics* across a real foreign boundary are still exercised by what they exist for:
+a C smoke program and a Python `ctypes` script in-tree run the same scenario as the CLI's
+integration tests (identify → load → analyze → decompile → tables).
 
 ## 7. Migration
 
@@ -589,16 +690,17 @@ session store with `Program::freeze/thaw`, and the first operations: `identify`,
 `program.analyze`, the program tables, `sleigh.disassemble/lift`, `function.decompile`,
 `function.emit`. `Snapshot` v1 becomes the TEXT rendering (gate: `analysis_parity` unchanged).
 
-**Phase 2 — `mosura-cli` and `mosura-capi` together.** The command tree of §6.2 for the phase-1
-operations; the C header generated; the parity test; the C smoke and Python clients. Retire the
-`dump*`/`identify`/`lift` examples (their outputs become CLI integration goldens).
+**Phase 2 — `mosura-capi`, the `mosura` binding, and `mosura-cli`, in that order.** The C
+header generated; the binding; the command tree of §6.2 for the phase-1 operations, written
+against the binding; the C smoke and Python clients. Retire the `dump*`/`identify`/`lift`
+examples (their outputs become CLI integration goldens).
 
 **Phase 3 — recompile through the CLI.** Toolchains, the compile cache in the store, `verify`,
 `round run/compare`, `gates`. Retire `recompile_check`, `war2_survey`, and the round scripts.
 From here the corpus rounds are CLI runs — the "more systemic approach" JD asked for.
 
-**Phase 4 — dev tier.** The censuses, oracle sweep, ground-truth and MVE tools as `dev`
-operations; delete the spent ones.
+**Phase 4 — dev tier.** The `mosura-dev-ops` crate behind the `dev-tools` feature: the
+censuses, oracle sweep, ground-truth and MVE tools as `dev` operations; delete the spent ones.
 
 **Phase 5 — later.** Frozen specs at build time (start-up), the frozen IR record (tier B), the
 type intern table, `mosura serve`, the wasm build (three seams: the resource provider, the
@@ -607,14 +709,22 @@ type intern table, `mosura serve`, the wasm build (three seams: the resource pro
 
 ## 9. Decisions for JD, and assumptions made here
 
-Decisions that are genuinely the owner's:
+Decided 2026-09-05, in discussion:
 
-1. **CLI → `mosura-api` with an enforced C parity test (recommended, §6.6), or CLI → C ABI.**
-2. **Sessions hold several inputs** (recommended) or one binary per session.
-3. **Dev tooling in the product binary under `mosura dev`** (recommended) or a separate
-   `mosura-dev` binary.
-4. **Embedded spec data with an override directory** (recommended) or an installed data directory
-   located by the machine config.
+1. **The CLI is written against the C ABI** through the safe Rust binding (§6.6). The Rust-API
+   route with a parity test was the draft's recommendation; JD's argument — coverage by
+   construction, and maintenance pressure on the C surface over time — is the better one.
+3. **Dev tooling: same registry, own crate, behind a cargo feature** (§6.4); the release binary
+   has no dev tier. Proposed as the resolution of the pros and cons; JD to confirm.
+4. **Embedded spec data + override directory + `mosura data export`** to jump-start the
+   override directory (§5.7).
+
+Still the owner's:
+
+2. **Sessions hold several inputs** (recommended) or one binary per session. A session is the
+   folder mosura keeps its work in; several inputs means one folder can hold WAR2 next to the
+   ground-truth programs, or two builds of one game, sharing the compile cache and the specs.
+   With one input the commands never need to name it.
 5. **Names.** `libmosura` / `mosura.h`; session directory `.mosura`; option keys as dotted
    lower-case.
 

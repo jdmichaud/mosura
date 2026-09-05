@@ -119,12 +119,25 @@ typedef struct mosura_ctx_config {
     const char *cache_dir;
     mosura_log_fn log;
     void *log_user;
+    /** Development aid: non-zero makes the boundary re-raise an internal panic (the process dies
+     *  with its backtrace, as the examples do today) instead of catching it into
+     *  MOSURA_ERR_INTERNAL. Release clients leave it 0. */
+    int abort_on_panic;
 } mosura_ctx_config;
-#define MOSURA_CTX_CONFIG_INIT { (uint32_t)sizeof(mosura_ctx_config), 1, NULL, 0, NULL, 0, NULL, NULL, NULL }
+#define MOSURA_CTX_CONFIG_INIT { (uint32_t)sizeof(mosura_ctx_config), 1, NULL, 0, NULL, 0, NULL, NULL, NULL, 0 }
 
 /** Create the library context. Thread-safe once created; everything derived from it is not,
  *  unless stated. */
 mosura_status mosura_ctx_new(const mosura_ctx_config *config, mosura_ctx **out);
+
+/** Write the EMBEDDED data into `dir` as the source files it was built from, byte-identical to
+ *  the vendored originals: `what` = "specs" (the `.ldefs`/`.sla`/`.pspec`/`.cspec` tree and our
+ *  own `specs/`), "fid" (the FID databases), or "all". The jump start for an override directory
+ *  (architecture.md §5.7): point `spec_dirs`/`fid_dirs` at `dir` afterwards and edit copies.
+ *  Existing files are not overwritten unless `overwrite` is non-zero. Reports the files written. */
+mosura_status mosura_ctx_export_data(mosura_ctx *ctx, const char *dir, const char *what, int overwrite, mosura_table **out);
+/** What is in effect after overrides: file, kind, source(embedded|<dir>), digest. */
+mosura_status mosura_ctx_data_list(mosura_ctx *ctx, mosura_table **out);
 
 /* ────────────────────────────────────────────────────────────────────────────────────────── */
 /* §4  Options — the ONLY way a knob reaches the library (architecture.md §4.2)                */
