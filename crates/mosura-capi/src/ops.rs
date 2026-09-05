@@ -7,7 +7,7 @@ use crate::boundary::guard;
 use crate::ctx::{ctx_of, mosura_ctx, mosura_progress_fn};
 use crate::mem::{cstr, out_ptr};
 use crate::options::{mosura_options, options_of};
-use crate::session::{mosura_session, session_of};
+use crate::session::{mosura_session, session_of, SessionCell};
 use crate::status::mosura_status;
 use crate::table::{mosura_table, new_table};
 use mosura_api::ops::{self, Progress, Tier};
@@ -45,13 +45,36 @@ pub(crate) fn merged_params(session: &Session, op: &str, params: Option<&Options
     Ok(o)
 }
 
-/// Run one operation on a session (shared by `mosura_call` and the typed entry points).
-pub(crate) unsafe fn call(s: *mut mosura_session, op: &str, params: Option<&Options>, progress: mosura_progress_fn, user: *mut c_void) -> Result<Table> {
-    let cell = session_of(s)?;
+/// Run one operation on a session's shared cell (the typed entry points hold a clone of it).
+pub(crate) fn call_on(cell: &SessionCell, op: &str, params: Option<&Options>, progress: mosura_progress_fn, user: *mut c_void) -> Result<Table> {
     let mut session = cell.session.lock().unwrap_or_else(|p| p.into_inner());
     let merged = merged_params(&session, op, params)?;
     let mut prog = CProgress { f: progress, user };
     ops::dispatch(&cell.ctx, &mut session, op, &merged, &mut prog)
+}
+
+/// Run one operation on a session handle.
+pub(crate) unsafe fn call(s: *mut mosura_session, op: &str, params: Option<&Options>, progress: mosura_progress_fn, user: *mut c_void) -> Result<Table> {
+    call_on(session_of(s)?, op, params, progress, user)
+}
+
+/// The text of a one-row `text` table (what the text-answering operations return).
+pub(crate) fn text_of(t: &Table) -> Result<String> {
+    mosura_api::render(t, mosura_api::Format::Text)
+}
+
+/// The keys of `from` that `op` accepts, as a fresh option set (a program's load/analysis options
+/// carried into its function operations, for example).
+pub(crate) fn keys_for(op: &str, from: &Options) -> Options {
+    let mut o = Options::new();
+    if let Some(spec) = ops::lookup(op) {
+        for (k, v) in from.explicit() {
+            if ops::accepts(spec, k) {
+                let _ = o.set(k, v);
+            }
+        }
+    }
+    o
 }
 
 /// The operation registry as a table: name, tier, since, cache, params, result, doc. `include_dev`

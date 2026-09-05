@@ -15,6 +15,7 @@ mosura-core = { path = "../mosura-core" }
 blake3 = "1"
 memmap2 = "0.9"
 serde_json = "1"
+roxmltree.workspace = true
 
 [build-dependencies]
 blake3 = "1"

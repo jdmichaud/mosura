@@ -10,10 +10,13 @@
 
 pub mod boundary;
 pub mod ctx;
+pub mod function;
 pub mod handle;
+pub mod language;
 pub mod mem;
 pub mod ops;
 pub mod options;
+pub mod program;
 pub mod session;
 pub mod status;
 pub mod table;
@@ -24,9 +27,12 @@ use std::sync::OnceLock;
 // every C-named type and every `extern "C"` function at the crate root: `use mosura_capi::*` is the
 // whole ABI (the binding and the tests read it that way; cbindgen reads the modules)
 pub use ctx::*;
+pub use function::*;
+pub use language::*;
 pub use mem::*;
 pub use ops::*;
 pub use options::*;
+pub use program::*;
 pub use session::*;
 pub use status::*;
 pub use table::*;

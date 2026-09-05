@@ -22,6 +22,7 @@ pub struct mosura_session {
 
 /// The handle's payload: the session shared with the program and function handles derived from
 /// it (so releasing the session first is safe), and the context that runs its operations.
+#[derive(Clone)]
 pub(crate) struct SessionCell {
     pub ctx: Arc<Context>,
     pub session: Arc<Mutex<Session>>,

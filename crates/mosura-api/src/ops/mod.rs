@@ -7,6 +7,7 @@
 pub mod emit;
 pub mod function;
 pub mod identify;
+pub mod language;
 pub mod program;
 pub mod schemas;
 pub mod sleigh;
