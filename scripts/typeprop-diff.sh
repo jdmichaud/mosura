@@ -12,7 +12,7 @@
 #   ghidra : oracle/capture_typeprop  -> ActionInferTypes::propagationDebug (coreaction.cc:4980),
 #            whose main call site is inside propagateTypeEdge at the typeOrder comparison
 #            (coreaction.cc:5105) — i.e. every ACCEPTED type decision, with the op+slot it came from
-#   mosura : MOSURA_TYPEPROP=1       -> infertypes.rs propagation_debug(), the same tuple
+#   mosura : MOSURA_DEBUG=types      -> infertypes.rs propagation_debug() (debug topic `types`), the same tuple
 #
 # Neither needs a special build: types.h:88-91 auto-defines TYPEPROP_DEBUG from CPUI_DEBUG, exactly
 # like OPACTION_DEBUG, so the hook is already in the libdecomp_dbg.a the oracle links. Only the
@@ -30,7 +30,10 @@
 # inference to the sub-variable narrowing UPSTREAM of it.
 #
 # Usage:   scripts/typeprop-diff.sh <fixture-stem>
-# Env:     GHIDRA_SRC   pinned Ghidra checkout (default: <workspace>/ghidra)
+# Env:     GHIDRA_SRC   a Ghidra root for capture_typeprop — the pinned checkout or a distribution
+#                       (default: <workspace>/ghidra)
+#          DATATESTS    the datatests directory (default: the vendored third_party/ghidra/datatests,
+#                       which cargo test reads too, so the script needs no checkout for the fixture)
 #          KEEP=1       keep the raw traces instead of a temp dir
 #
 set -euo pipefail
@@ -40,7 +43,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOSURA_DIR="$(dirname "$SCRIPT_DIR")"
 WORKSPACE="$(dirname "$MOSURA_DIR")"
 GHIDRA_SRC="${GHIDRA_SRC:-$WORKSPACE/ghidra}"
-FIXTURE="$GHIDRA_SRC/Ghidra/Features/Decompiler/src/decompile/datatests/$STEM.xml"
+FIXTURE="${DATATESTS:-$MOSURA_DIR/third_party/ghidra/datatests}/$STEM.xml"
 TOOL="$MOSURA_DIR/oracle/capture_typeprop"
 
 [ -x "$TOOL" ] || { echo "missing $TOOL — run scripts/setup-oracle.sh" >&2; exit 1; }
@@ -56,8 +59,18 @@ if (cd "$MOSURA_DIR" && ! git diff --quiet -- crates/ 2>/dev/null); then sha="${
 grev="$(cd "$GHIDRA_SRC" && git rev-parse --short HEAD 2>/dev/null || echo PINNED)"
 
 "$TOOL" "$GHIDRA_SRC" "$FIXTURE" --typeprop 2>/dev/null > "$OUT/ghidra.typeprop"
-( cd "$MOSURA_DIR" && MOSURA_TYPEPROP=1 cargo run -q --release --example trace -- "$STEM" 2>&1 >/dev/null \
-    | grep '^TYPEPROP ' > "$OUT/mosura.typeprop" ) || true
+# The debug facility prints the propagation trace under the `types` topic as `[types] <line>`;
+# typeprop-diff.py reads the pre-R6 spelling `TYPEPROP <line>`, so the prefix is rewritten here.
+( cd "$MOSURA_DIR" && MOSURA_DEBUG=types cargo run -q --release --example trace -- "$STEM" 2>&1 >/dev/null \
+    | sed -n 's/^\[types\] /TYPEPROP /p' > "$OUT/mosura.typeprop" ) || true
+# POSITIVE CONTROL (2026-09-05): this script set a variable the code stopped reading when the debug
+# topics landed (`MOSURA_TYPEPROP` -> topic `types`), and silently diffed an EMPTY mosura side for
+# weeks. An instrument's silence must read as a failure, never as "no decisions".
+if [ ! -s "$OUT/mosura.typeprop" ] && [ -s "$OUT/ghidra.typeprop" ]; then
+  echo "ERROR: the mosura trace is EMPTY while Ghidra's has $(wc -l < "$OUT/ghidra.typeprop") decisions —" >&2
+  echo "       the instrument is silent (is 'types' still the debug topic behind propagation_debug()?)" >&2
+  exit 1
+fi
 
 echo "=== ghidra: rev=$grev fixture=$STEM   ($(wc -l < "$OUT/ghidra.typeprop") decisions)"
 echo "=== mosura: sha=$sha fixture=$STEM   ($(wc -l < "$OUT/mosura.typeprop") decisions)"

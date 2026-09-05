@@ -40,7 +40,7 @@ GHIDRA_POSTSCRIPT=DumpBlocks.java scripts/ghidra-decompile-war2.sh 77dcb   # Ghi
 ```
 
 `DumpBlocks.java` prints Ghidra's own `HighFunction::getBasicBlocks` — the `BlockBasic` list
-`CollapseStructure` runs on — and `MOSURA_CFG=1` prints the same fields, so the two partitions
+`CollapseStructure` runs on — and `MOSURA_DEBUG=structure` prints the same fields, so the two partitions
 diff line-for-line. Full ledger of the recipe's limits in `scripts/ghidra-decompile-war2.sh`'s
 header. **Note the bias direction, because it is what made this survive:** the pruning makes
 *Ghidra's* output look better structured, so it reads as our bug.
@@ -242,7 +242,7 @@ invalidated, the hypothesis comes back:
   **different function**. The conclusion survived; the evidence did not.
 
 **Corollary — a per-specimen instrument must filter by function, or the operator must.** A bare
-`MOSURA_STRUCT=1` / `MOSURA_CFG=1` dump interleaves *every* function `analyze_le_file`
+`MOSURA_DEBUG=structure` dump interleaves *every* function `analyze_le_file`
 decompiles, callees included. Segment by the header before reading a line.
 
 ### Measure a rule where the rule runs
@@ -441,3 +441,31 @@ prints a `!! FOREIGN-EXCLUDED SERIES` line when it sees one. **The canonical WAR
 FULL denominator (no `--exclude-foreign`)** until JD decides otherwise; a foreign-excluded number
 is only ever reported *next to* the full one (both-numbers), never as the headline. Do not compare
 a stamped TSV against an unstamped one.
+
+## 10. The identity gate — proving a change moved nothing
+
+A refactor, a knob relocation, a rename, a comment sweep: none of these may change what the
+survey emits, and "it obviously can't" is not evidence (2026-09-05: a knob read as `env::var_os`
+sat outside the switches table and changed trees unstamped for a day). The gate is cheap and
+mechanical, and it is the same measurement the switches commit (6b504a5) used to land:
+
+1. **Emit the baseline** once from the pre-change tree — the release `war2_survey` binary built
+   at `CARGO_TARGET_DIR=/data/mosura-target`, run over the subject binary into a fresh directory
+   (a tree is ~38 MB; check `df -h /data` first — the floor is 4 GB). An existing tree emitted by
+   the same code state (e.g. the last round's) serves as the baseline.
+2. **Emit the candidate** the same way, from the changed tree.
+3. **Compare the canonical rendering and the stamp:**
+
+   ```sh
+   diff -rq <base>/recovered <cand>/recovered | wc -l        # must print 0
+   grep '^# arms:' <base>/manifest.tsv <cand>/manifest.tsv   # must be identical
+   ```
+
+4. For a switch that must still work, run a `--only` probe with `--arms-off <name>` and quote the
+   `arms (recovered emit): …; off: <name>` stderr line.
+
+No compile step is involved (the emit alone decides identity), so the gate never conflicts with a
+running Watcom round. Report the two numbers — differing units and stamp equality — in the commit
+message. A tree that differs is not landed until the difference is either explained and intended
+(then it is not an identity change: it needs the full round and the verdict comparison of the
+runbook) or fixed.

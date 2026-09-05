@@ -286,8 +286,8 @@ fn record_callee_effects(
     // ECX/EDX/stack are vetoed), and it is NOT the call's output shadowing the input — the call
     // still has `out=None` at that point, so `resolve_call_output` has not run yet.
     //
-    // Both halves of the per-call prototype are live and the pass is ON. `MOSURA_CALLEE_EFFECTS=0`
-    // disables it.
+    // Both halves of the per-call prototype are live and the pass is ON. `--arms-off callee-effects`
+    // (the `Switch::CalleeEffects` knob) disables it.
     //
     // The gap that kept this gated is closed. It was not a representational impossibility, as three
     // successive readings claimed: pass-correlating the verdicts showed `check_input_trial_use`
@@ -305,7 +305,10 @@ fn record_callee_effects(
     //
     // which is the source: `p = bump(g_dst, n); *p = v` — both arguments, in the order
     // `parm caller [ebx] [eax]` declares, and the result consumed by the store.
-    if std::env::var_os("MOSURA_CALLEE_EFFECTS").is_some_and(|v| v == "0") {
+    // `--arms-off callee-effects` (the `MOSURA_CALLEE_EFFECTS=0` of before the switches table): the
+    // measurement switch that renders the tree WITHOUT callee effects. A tree knob, so it is
+    // stamped (review item, 2026-09-05: it used to be a raw `env::var_os` read the guard missed).
+    if !crate::switches::on(crate::switches::Switch::CalleeEffects) {
         return;
     }
     let Some(reg) = f.spaces.by_name("register") else { return };

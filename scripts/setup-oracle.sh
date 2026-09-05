@@ -146,7 +146,7 @@ build_capture_merge() {
 
 build_capture_typeprop() {
   # The TYPE-PROPAGATION trace tool (task #11): emits Ghidra's TYPEPROP_DEBUG
-  # "<varnode> : <type> from <op> slot=<n>" log, to diff against mosura's own (MOSURA_TYPEPROP=1)
+  # "<varnode> : <type> from <op> slot=<n>" log, to diff against mosura's own (MOSURA_DEBUG=types)
   # via scripts/typeprop-diff.sh.
   #
   # WHY IT IS SEPARATE FROM capture_trace: that tool drives OPACTION_DEBUG, which is a p-code-OP

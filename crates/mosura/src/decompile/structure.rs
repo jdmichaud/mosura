@@ -3176,7 +3176,7 @@ pub fn reached_basic_blocks(s: &Structured) -> HashSet<usize> {
     reached
 }
 
-/// `MOSURA_CFG=1` — dump the basic-block partition handed to the structurer: per block its
+/// `MOSURA_DEBUG=structure` — dump the basic-block partition handed to the structurer: per block its
 /// address span, live op count, in/out edges, and terminating opcode. The counterpart of
 /// `oracle/ghidra_scripts/DumpBlocks.java`, which prints the same fields from Ghidra's
 /// `HighFunction::getBasicBlocks`, so the two partitions diff line-for-line. Answers "do we cut
@@ -3213,7 +3213,7 @@ pub fn structure(f: &Funcdata) -> Structured {
     // on WAR2), the trace lines carry only block numbers, and block numbers repeat across
     // functions — so a per-specimen question could only be answered by correlating against the
     // dump ORDER, which is exactly the kind of guess this project treats as a fabricated
-    // measurement. `MOSURA_CFG` already prints `CFG <name>`; this is the same key for the other
+    // measurement. The `structure` topic already prints `CFG <name>`; this is the same key for the other
     // half of the pair, so the two dumps segment identically.
     debug!(crate::debug::Topic::Structure, "{} nblocks={}", f.name, f.num_blocks());
     let blocks: Vec<FlowBlock> = (0..f.num_blocks())

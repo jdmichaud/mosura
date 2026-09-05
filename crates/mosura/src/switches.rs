@@ -62,6 +62,13 @@ pub enum Switch {
     /// The caller-side clobber witness: a register this function saves without touching is added to
     /// its callees' declared `modify`. Rewrites the recovered CONTRACT, not a rendering.
     CalleeClobbers,
+    /// Callee-effects modelling in the analysis→decompiler bridge
+    /// (`analysis::decompiler::record_callee_effects`): each direct call's recovered reads and
+    /// writes, applied at the call. Review item of 2026-09-05: `MOSURA_CALLEE_EFFECTS=0` switched it
+    /// off — CHANGING THE TREE — while escaping `every_emit_knob_is_registered`, because the site
+    /// read it with `env::var_os` and the guard only matched `env::var(`. Registered here; the guard
+    /// now matches both spellings.
+    CalleeEffects,
 }
 
 impl Switch {
@@ -77,6 +84,7 @@ impl Switch {
         Switch::Agg,
         Switch::ArgumentCarry,
         Switch::CalleeClobbers,
+        Switch::CalleeEffects,
     ];
 
     /// The switch's name, as `--arms-off` and the stamp spell it.
@@ -93,6 +101,7 @@ impl Switch {
             Switch::Agg => "frame-agg",
             Switch::ArgumentCarry => "argument-carry",
             Switch::CalleeClobbers => "callee-clobbers",
+            Switch::CalleeEffects => "callee-effects",
         }
     }
 
@@ -109,6 +118,7 @@ impl Switch {
             Switch::ProtoPass => ("MOSURA_PROTO_PASS", "0"),
             Switch::RetSplit => ("MOSURA_RETSPLIT", "0"),
             Switch::Agg => ("MOSURA_AGG", "0"),
+            Switch::CalleeEffects => ("MOSURA_CALLEE_EFFECTS", "0"),
             Switch::ArgumentCarry | Switch::CalleeClobbers => return None,
         })
     }
@@ -162,6 +172,62 @@ pub fn non_default() -> Vec<&'static str> {
     Switch::ALL.iter().copied().filter(|s| m & s.bit() != 0).map(|s| s.name()).collect()
 }
 
+/// Every raw `MOSURA_*` environment read in `src`, as `(1-based line, variable name)`. Both
+/// spellings — `env::var("MOSURA_..")` and `env::var_os("MOSURA_..")` — because the guard that
+/// matched only the first let `MOSURA_CALLEE_EFFECTS` change trees unstamped (review, 2026-09-05).
+/// A function of the text so the guard's own eyesight is testable.
+pub fn raw_env_reads(src: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    for (i, line) in src.lines().enumerate() {
+        for needle in ["env::var(\"MOSURA_", "env::var_os(\"MOSURA_"] {
+            let mut rest = line;
+            while let Some(pos) = rest.find(needle) {
+                let after = &rest[pos + needle.len()..];
+                if let Some(name) = after.split('"').next() {
+                    out.push((i + 1, format!("MOSURA_{name}")));
+                }
+                rest = after;
+            }
+        }
+    }
+    out
+}
+
+/// What a raw read is, for the guard: a registered switch's legacy variable (must go through
+/// [`on`]), a known diagnostic (a print, a trace, a watch — nothing that reaches the emitted text),
+/// or neither.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReadClass {
+    SwitchLegacy,
+    Diagnostic,
+    Unregistered,
+}
+
+/// The diagnostics the guard tolerates as raw reads (each is a print/trace/watch, never a tree).
+pub const DIAGNOSTIC_READS: &[&str] = &[
+    "MOSURA_DEBUG",
+    "MOSURA_TRACE",
+    "MOSURA_TRACE_FUNC",
+    "MOSURA_WATCH_CALL",
+    "MOSURA_MERGE_WATCH",
+    "MOSURA_OPACTION",
+    "MOSURA_GT_RAW",
+    "MOSURA_AOU_PC",
+    "MOSURA_RECOVER_FIXPOINT",
+    "MOSURA_PROBE_FULL",
+    "MOSURA_CONS_PROBE",
+];
+
+pub fn classify_read(name: &str) -> ReadClass {
+    if DIAGNOSTIC_READS.contains(&name) {
+        ReadClass::Diagnostic
+    } else if Switch::ALL.iter().any(|s| s.legacy().is_some_and(|(v, _)| v == name)) {
+        ReadClass::SwitchLegacy
+    } else {
+        ReadClass::Unregistered
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,7 +241,7 @@ mod tests {
             seen.push(s.name());
             assert_eq!(Switch::by_name(s.name()), Some(*s));
         }
-        assert_eq!(Switch::ALL.len(), 11);
+        assert_eq!(Switch::ALL.len(), 12);
         assert!(Switch::by_name("no-such-switch").is_none());
     }
 
@@ -183,21 +249,35 @@ mod tests {
     /// how the tree was built. This is the guard that keeps the class from growing back: it scans
     /// the emit path for raw environment reads and fails on any that is not a known DIAGNOSTIC
     /// (a print, a trace, a watch — nothing that reaches the emitted text) or this file's own.
+    /// The guard's eyesight, pinned (review item, 2026-09-05): a read spelled `env::var_os` is a
+    /// read. Before this test the scanner matched `env::var("MOSURA_` only, and
+    /// `MOSURA_CALLEE_EFFECTS` — which changes the emitted tree — sat unregistered and unstamped
+    /// behind a `var_os`. Both spellings, several per line, and the classification of each class.
+    #[test]
+    fn the_scanner_sees_both_spellings_and_classifies() {
+        let src = "let a = std::env::var(\"MOSURA_FOO\");\n\
+                   let b = std::env::var_os(\"MOSURA_BAR\").is_some();\n\
+                   let c = 1;\n\
+                   env::var(\"MOSURA_X\"); env::var_os(\"MOSURA_Y\");\n";
+        let reads = raw_env_reads(src);
+        assert_eq!(
+            reads,
+            vec![
+                (1, "MOSURA_FOO".to_string()),
+                (2, "MOSURA_BAR".to_string()),
+                (4, "MOSURA_X".to_string()),
+                (4, "MOSURA_Y".to_string()),
+            ],
+            "the var_os read on line 2 is the one the old guard missed"
+        );
+        assert_eq!(classify_read("MOSURA_DEBUG"), ReadClass::Diagnostic);
+        assert_eq!(classify_read("MOSURA_CALLEE_EFFECTS"), ReadClass::SwitchLegacy);
+        assert_eq!(classify_read("MOSURA_RETSPLIT"), ReadClass::SwitchLegacy);
+        assert_eq!(classify_read("MOSURA_NO_SUCH_KNOB"), ReadClass::Unregistered);
+    }
+
     #[test]
     fn every_emit_knob_is_registered() {
-        const DIAGNOSTIC: &[&str] = &[
-            "MOSURA_DEBUG",
-            "MOSURA_TRACE",
-            "MOSURA_TRACE_FUNC",
-            "MOSURA_WATCH_CALL",
-            "MOSURA_MERGE_WATCH",
-            "MOSURA_OPACTION",
-            "MOSURA_GT_RAW",
-            "MOSURA_AOU_PC",
-            "MOSURA_RECOVER_FIXPOINT",
-            "MOSURA_PROBE_FULL",
-            "MOSURA_CONS_PROBE",
-        ];
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
         let mut files: Vec<std::path::PathBuf> = Vec::new();
         let mut stack = vec![root.join("src"), root.join("examples")];
@@ -225,25 +305,19 @@ mod tests {
                 continue;
             }
             let Ok(src) = std::fs::read_to_string(&p) else { continue };
-            for (i, line) in src.lines().enumerate() {
-                let Some(rest) = line.split("env::var(\"MOSURA_").nth(1) else { continue };
-                let Some(name) = rest.split('"').next() else { continue };
-                let full = format!("MOSURA_{name}");
-                if DIAGNOSTIC.contains(&full.as_str()) {
-                    continue;
-                }
-                if Switch::ALL.iter().any(|s| s.legacy().is_some_and(|(v, _)| v == full)) {
-                    unregistered.push(format!(
+            for (line, full) in raw_env_reads(&src) {
+                match classify_read(&full) {
+                    ReadClass::Diagnostic => {}
+                    ReadClass::SwitchLegacy => unregistered.push(format!(
                         "{}:{} reads {full} directly — call switches::on() instead",
                         p.display(),
-                        i + 1
-                    ));
-                } else {
-                    unregistered.push(format!(
+                        line
+                    )),
+                    ReadClass::Unregistered => unregistered.push(format!(
                         "{}:{} reads {full}, which is neither a switch nor a known diagnostic",
                         p.display(),
-                        i + 1
-                    ));
+                        line
+                    )),
                 }
             }
         }

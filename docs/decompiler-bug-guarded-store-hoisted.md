@@ -16,7 +16,7 @@ if ((_DAT_000a8770[0xb] == 0) ||
 ```
 
 mosura's IR and partition were CORRECT the whole time — the store sat in its own basic block
-between the two CBRANCHes, the same graph Ghidra has (verified with `--raw` + `MOSURA_CFG=1`
+between the two CBRANCHes, the same graph Ghidra has (verified with `--raw` + `MOSURA_DEBUG=structure`
 against the oracle's `DumpBlocks` fields). The defect was purely in printing, and the merge of
 the two conditions was never the problem — Ghidra merges them too.
 

@@ -855,8 +855,8 @@ pub fn recover_scope(f: &Funcdata) -> Vec<StackSymbol> {
         MapState::new(&f.spaces, stack, map_state_range(f), &f.proto_model.localrange);
     state.gather_varnodes(f);
     state.gather_open(f);
-    // `MOSURA_VARMAP=1` dumps the window, the gathered hints and the resulting Symbols, keyed by
-    // function — the counterpart to `MOSURA_CFG`. Frame-layout divergences are otherwise only
+    // `MOSURA_DEBUG=varmap` dumps the window, the gathered hints and the resulting Symbols, keyed by
+    // function — the counterpart to the `structure` topic's CFG dump. Frame-layout divergences are otherwise only
     // visible as their third-order symptom (a declared array of the wrong length, hence a wrong
     // `sub esp,N`), which is how the FUN_0005118c over-extension went unnoticed.
     if crate::debug::on(crate::debug::Topic::Varmap) {

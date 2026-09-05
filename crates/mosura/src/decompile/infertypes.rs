@@ -740,7 +740,8 @@ impl<'a> TypeInfer<'a> {
 
 /// Ghidra `ActionInferTypes::propagationDebug` (coreaction.cc:4980, `#ifdef TYPEPROP_DEBUG`): log
 /// every accepted type push — `<varnode> : <newtype> from <op> slot=<inslot>`, or `init` for a
-/// local-type seed. Gated on `MOSURA_TYPEPROP` (Ghidra's `TypeFactory::propagatedbg_on`), so it
+/// local-type seed. Gated on the `types` debug topic (`MOSURA_DEBUG=types`; Ghidra's
+/// `TypeFactory::propagatedbg_on`), so it
 /// costs nothing when off. This is the instrument that NAMES the edge behind a mis-typing instead
 /// of chaining source-reading guesses.
 ///
