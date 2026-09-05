@@ -541,3 +541,15 @@ landed between the previous gt-arms run (2026-08-28: arms-32 14 / 0 / 13, no fin
 [port.widen_local_pcs]` warnings (`FUN_08049000`, `FUN_08049050`), also present on the base.
 Structval's plain-FAIL/arms-PASS line is unchanged. The rest of the 32-bit column is as on
 2026-08-28 (13 NOLINK on `func_0x…` callee names).
+
+**Resolved (2026-09-05, later the same day, `769f2cc`).** The witness accepted any `MOV`/`ADD r32,imm`
+whose immediate equalled the constant — true of every additive constant. It now also requires the
+base to be an address the original's image maps (`Funcdata::is_loaded`, threaded through
+`recovery::derive`); the fixed-point `0x20000` is not, so `lerp.constprop.0` prints `iVar1 + 0x20000`
+again and `fixed` links and PASSes arm-enabled: gt-arms 27 programs, 0 findings. The same defect
+was live on the subject in 8 units that the identity emit surfaced (`aRamffffffff + x` for `x + -1`,
+`aRamfefefeff + x` for the zero-byte-scan constant — fake tables at unmapped addresses, linking only
+because the corpus build defines every `aRam` symbol); they now print the literal. Round `tb` vs
+`f7`: 0 verdict flips, 1031 EXACT unchanged, 2 functions up / 0 down (`FUN_00075147` +0.027),
+WGSS 0.6443 → +0.00004; the 7 guard sets stay EXACT. Pinned by
+`buildconfig::tests::table_base_witness_requires_a_mapped_base` (both directions).
