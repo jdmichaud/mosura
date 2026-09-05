@@ -23,6 +23,7 @@ use mosura::switches::{Knobs, Switch};
 use mosura::recompile::tu::{aggregate_ram_globals, build_prelude, build_tu, contract_violations, with_contract};
 use mosura::recompile::pragma::{nondefault_parm_regs, own_contract, WatcomRegs};
 use mosura::recompile::manifest;
+use mosura::recompile::passes;
 
 /// The subject's language. the subject is a 32-bit protected-mode DOS image.
 const SURVEY_LANG: &str = "x86:LE:32:default";
@@ -876,75 +877,17 @@ fn main() {
         {
             None
         } else {
-            let entry_offs: std::collections::BTreeSet<u64> =
-                prog.function_manager.functions().map(|f| f.entry.offset).collect();
-            let mut scope: std::collections::HashSet<u64> = only.iter().copied().collect();
-            for &va in &only {
-                let end = entry_offs.range(va + 1..).next().copied().unwrap_or(va + 0x1000);
-                let region = prog
-                    .memory
-                    .read_window(Address::new(prog.default_space, va), (end - va) as usize);
-                let insns = mosura::recompile::insn::normalize(
-                    SURVEY_LANG,
-                    &region,
-                    va,
-                    &mosura::recompile::insn::NoReloc,
-                )
-                .unwrap_or_default();
-                scope.extend(
-                    insns
-                        .iter()
-                        .filter(|i| i.is_call)
-                        .filter_map(|i| i.target)
-                        .filter(|t| entry_offs.contains(t)),
-                );
-            }
-            Some(scope)
+            Some(analysis::interface::probe_scope(&prog, SURVEY_LANG, &only))
         };
-        // TAIL RETURN WRITE MARK (`Program::tail_return_writes`, decided from every
-        // function's own bytes ahead of its decompile — a pre-pipeline mark, unlike the
-        // post-decompile ones below): every return path writes EAX from a register right
-        // before the epilogue (`buildconfig::tail_return_write_from_evidence`).
-        {
-            let entry_offs: std::collections::BTreeSet<u64> =
-                prog.function_manager.functions().map(|f| f.entry.offset).collect();
-            for &va in &entry_offs {
-                // the function's OWN body (its recorded extent), never the gap to the next
-                // entry: a neighbour's returns would veto the mark
-                let next = entry_offs.range(va + 1..).next().copied().unwrap_or(va + 0x1000);
-                let end = prog
-                    .function_manager
-                    .function_at(Address::new(prog.default_space, va))
-                    .and_then(|f| f.body().max_address())
-                    .map_or(next, |a| (a.offset + 1).min(next))
-                    .max(va + 1);
-                let region = prog
-                    .memory
-                    .read_window(Address::new(prog.default_space, va), (end - va) as usize);
-                let insns = mosura::recompile::insn::normalize(
-                    SURVEY_LANG,
-                    &region,
-                    va,
-                    &mosura::recompile::insn::NoReloc,
-                )
-                .unwrap_or_default();
-                if mosura::recompile::buildconfig::tail_return_write_from_evidence(&insns) {
-                    prog.tail_return_writes.insert(va);
-                }
-                if only.contains(&va) {
-                    let tail: Vec<&str> = insns.iter().rev().take(6).map(|x| x.text.as_str()).collect();
-                    eprintln!("[survey] tail-return-write {va:#x}: {} — last insns (reversed): {tail:?}", prog.tail_return_writes.contains(&va));
-                }
-            }
-            eprintln!("[survey] tail-return-write mark: {} functions", prog.tail_return_writes.len());
+        let marks = analysis::interface::mark_tail_return_writes(&mut prog, SURVEY_LANG, &only);
+        for (va, marked, tail) in &marks.probed {
+            eprintln!("[survey] tail-return-write {va:#x}: {marked} — last insns (reversed): {tail:?}");
         }
-        prog.recovered_protos = match &probe_scope {
-            None => analysis::interface::recover_prototypes(&prog),
-            Some(scope) => analysis::interface::recover_prototypes_for(&prog, scope),
-        };
+        eprintln!("[survey] tail-return-write mark: {} functions", marks.marked);
+        let n_protos = analysis::interface::install_prototypes(&mut prog, probe_scope.as_ref());
         eprintln!(
             "prototype pass: {} functions in {:.1}s{}",
-            prog.recovered_protos.len(),
+            n_protos,
             t.elapsed().as_secs_f64(),
             if probe_scope.is_some() { " (probe scope: direct callees only)" } else { "" }
         );
@@ -959,23 +902,7 @@ fn main() {
     // scheduler model keeps every call-bearing window of the original a fixed point under
     // the candidate declarations, and (b) the function's OWN parameter signature is
     // unchanged (its definition-side row stays the landed one).
-    let prog_pp: Option<analysis::program::Program> = if prog.recovered_protos.is_empty() {
-        None
-    } else {
-        let base = prog.clone(); // carries the recovered prototypes
-        prog.recovered_protos = std::collections::HashMap::new(); // the landed world
-        Some(base)
-    };
-    let prog = prog;
-    // The surgical-injection world (memory `consistency-over-score`): the LANDED program plus
-    // the recovered prototypes, consulted only through `proto_scope` — set per forced function
-    // to exactly its contradicted callees, cleared after each use.
-    let mut prog_cons: Option<analysis::program::Program> = prog_pp.as_ref().map(|pp| {
-        let mut c = prog.clone();
-        c.recovered_protos = pp.recovered_protos.clone();
-        c.proto_scope = Some(std::collections::HashSet::new()); // consult NOTHING until scoped
-        c
-    });
+    let passes::Worlds { landed: prog, pp: prog_pp, cons: mut prog_cons } = passes::Worlds::split(prog);
     let ram = prog.default_space;
     eprintln!("{} functions", prog.function_manager.function_count());
 
@@ -995,51 +922,9 @@ fn main() {
     }));
     let _ = &default_hook; // keep silent; we record instead of print
 
-    let mut entries: Vec<(u64, String)> =
-        prog.function_manager.functions().map(|f| (f.entry.offset, f.name().to_string())).collect();
-    entries.sort_by_key(|e| e.0);
-    // Next-entry map (same code object) → function byte extent [entry, next_entry).
-    let entry_offs: Vec<u64> = entries.iter().map(|e| e.0).collect();
-
-    // The decompiler-independent bounds on a function's extent.
-    //
-    // `next` is the upper bound: the next function's entry, or the end of the memory block
-    // containing it, whichever comes first. Both are facts the loader established.
-    //
-    // This replaces three invented constants, each of which would have truncated silently:
-    //   * `.min(*va + 8192)` -- no function may exceed 8 KB. Nothing checks this, and a larger
-    //     function would simply have been compared against its first 8 KB and reported as a
-    //     decompiler failure. Zero functions in the subject reach it, so it never fired; it was a
-    //     tripwire waiting for a bigger subject.
-    //   * `.min(0x7_c4a0)` -- this binary's code-section end, hardcoded into a tool that is
-    //     supposed to work on any binary. Correct here by coincidence, wrong everywhere else.
-    //   * `.unwrap_or(*va + 512)` -- an arbitrary extent for the LAST function, which has no
-    //     next entry. the subject's last function is 207 bytes, so this never fired either.
-    //
-    // The block end answers the same question the constants were guessing at, and answers it
-    // for whatever binary is loaded.
-    //
-    // The second bound is the function manager's own recorded body end, when it has one.
-    //
-    // Factored out of the OK path so the DECOMPILE_FAIL row records a real extent too: a
-    // failed function still weighs its full size in any corpus-level aggregate (the global
-    // similarity), and a recorded 0 reads as "excluded" downstream.
-    let extent_bounds = |va: u64| -> (u64, Option<u64>) {
-        let block_end = prog.memory.block_at(Address::new(ram, va)).map(|b| b.end().offset + 1);
-        let next_entry = entry_offs.iter().copied().find(|&o| o > va);
-        let next = match (next_entry, block_end) {
-            (Some(n), Some(b)) => n.min(b),
-            (Some(n), None) => n,
-            (None, Some(b)) => b,
-            (None, None) => va + 1,
-        };
-        let body_end = prog
-            .function_manager
-            .function_at(Address::new(ram, va))
-            .and_then(|f| f.body().max_address())
-            .map(|a| a.offset + 1);
-        (next, body_end)
-    };
+    let ents = passes::Entries::of(&prog);
+    let entries: Vec<(u64, String)> = ents.list.clone();
+    let extent_bounds = |va: u64| -> (u64, Option<u64>) { ents.extent_bounds(&prog, va) };
 
     let mut mf: std::io::BufWriter<Box<dyn std::io::Write>> = std::io::BufWriter::new(if probing {
         Box::new(std::io::sink())
@@ -1100,7 +985,6 @@ fn main() {
     // mechanisms must not both claim it. The exclusion needs each such callee's decompile,
     // which its own emit will repeat — a few seconds of duplicate work over ~a hundred callees.
     let arg_reg_offs: Vec<u64> = regs.arg_reg_offs.clone();
-    let mut order_excluded: std::collections::HashSet<u64> = Default::default();
     // The evidence is a pure function of the ORIGINAL binary and the code that reads it, so
     // it is cached beside the manifest keyed by the emit stamp. The exclusion set costs a
     // mini-decompile of every claimed callee (~170 on the subject — minutes), which a full emit
@@ -1108,126 +992,32 @@ fn main() {
     // single-function probe at five minutes. A probe at the same stamp now loads in
     // milliseconds; a stamp change re-derives.
     let order_cache = out.join(format!("param-orders.{stamp}.tsv"));
-    let cached_orders: Option<(
-        std::collections::HashMap<u64, Vec<u64>>,
-        std::collections::HashSet<u64>,
-        std::collections::HashSet<u64>,
-    )> =
-        std::fs::read_to_string(&order_cache).ok().map(|s| {
-            let mut m = std::collections::HashMap::new();
-            let mut ex = std::collections::HashSet::new();
-            let mut net = std::collections::HashSet::new();
-            for line in s.lines() {
-                let mut it = line.split('\t');
-                match (it.next(), it.next()) {
-                    (Some("X"), Some(va)) => {
-                        if let Ok(v) = u64::from_str_radix(va, 16) {
-                            ex.insert(v);
-                            net.insert(v);
-                        }
+    let orders = match std::fs::read_to_string(&order_cache).ok().map(|s| passes::ParamOrders::parse(&s)) {
+        Some(po) => {
+            eprintln!("param-order evidence: {} sites (cached at {stamp})", po.site_orders.len());
+            po
+        }
+        None => {
+            let t = std::time::Instant::now();
+            match passes::ParamOrders::collect(&prog, SURVEY_LANG, &ents, &regs) {
+                Some(po) => {
+                    eprintln!(
+                        "param-order evidence: {} sites with a recovered nondefault declaration order \
+                         ({} callees excluded: nondefault storage or no decompile) in {:.1}s",
+                        po.site_orders.len(),
+                        po.excluded.len(),
+                        t.elapsed().as_secs_f64()
+                    );
+                    if !probing || !order_cache.exists() {
+                        let _ = std::fs::write(&order_cache, po.render());
                     }
-                    // "C\t<callee>" — an order-claimed callee (the upgrade gate's network;
-                    // rows added when the zap checker landed, re-derived on stamp change).
-                    (Some("C"), Some(va)) => {
-                        if let Ok(v) = u64::from_str_radix(va, 16) {
-                            net.insert(v);
-                        }
-                    }
-                    (Some(addr), Some(rest)) => {
-                        if let Ok(a) = u64::from_str_radix(addr, 16) {
-                            let p: Vec<u64> = rest
-                                .split(',')
-                                .filter_map(|x| u64::from_str_radix(x, 16).ok())
-                                .collect();
-                            m.insert(a, p);
-                        }
-                    }
-                    _ => {}
+                    po
                 }
-            }
-            (m, ex, net)
-        });
-    let mut order_networked: std::collections::HashSet<u64> = std::collections::HashSet::new();
-    let site_orders: std::collections::HashMap<u64, Vec<u64>> = if let Some((m, ex, net)) = cached_orders {
-        order_excluded = ex;
-        order_networked = net;
-        eprintln!("param-order evidence: {} sites (cached at {stamp})", m.len());
-        m
-    } else if arg_reg_offs.len() == 4 {
-        let t = std::time::Instant::now();
-        let entry_set: std::collections::HashSet<u64> = entries.iter().map(|e| e.0).collect();
-        let mut sites = Vec::new();
-        for (va, _) in &entries {
-            let (next, body_end) = extent_bounds(*va);
-            let end = match body_end {
-                Some(b) => next.min(b),
-                None => next,
-            }
-            .max(*va + 1);
-            let region = prog.memory.read_window(Address::new(ram, *va), (end - *va) as usize);
-            let insns = mosura::recompile::insn::normalize(
-                SURVEY_LANG,
-                &region,
-                *va,
-                &mosura::recompile::insn::NoReloc,
-            )
-            .unwrap_or_default();
-            sites.extend(
-                mosura::recompile::buildconfig::call_setup_sites(&insns, &arg_reg_offs)
-                    .into_iter()
-                    .filter(|s| entry_set.contains(&s.callee)),
-            );
-        }
-        let mut orders = mosura::recompile::buildconfig::param_orders_from_evidence(&sites);
-        // An order that IS the convention's slot order renders identically — drop the no-ops.
-        orders.retain(|_, p| p.as_slice() != &arg_reg_offs[..p.len().min(arg_reg_offs.len())]);
-        // The callees still claimed by at least one site, for the nondefault exclusion.
-        let claimed: std::collections::HashSet<u64> = sites
-            .iter()
-            .filter(|s| orders.contains_key(&s.call_addr))
-            .map(|s| s.callee)
-            .collect();
-        order_networked.extend(claimed.iter().copied());
-        // excluded callees are equally order-networked (their storage is nondefault)
-        for callee in claimed {
-            let nondefault = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                decompile_function(&prog, Address::new(ram, callee))
-            }))
-            .ok()
-            .flatten()
-            .map(|f| nondefault_parm_regs(&f, &watreg).is_some())
-            .unwrap_or(true);
-            if nondefault {
-                order_excluded.insert(callee);
+                None => Default::default(),
             }
         }
-        eprintln!(
-            "param-order evidence: {} sites with a recovered nondefault declaration order \
-             ({} callees excluded: nondefault storage or no decompile) in {:.1}s",
-            orders.len(),
-            order_excluded.len(),
-            t.elapsed().as_secs_f64()
-        );
-        if !probing || !order_cache.exists() {
-            let mut body = String::new();
-            for (a, p) in &orders {
-                let hx: Vec<String> = p.iter().map(|x| format!("{x:x}")).collect();
-                body.push_str(&format!("{a:x}\t{}\n", hx.join(",")));
-            }
-            for x in &order_excluded {
-                body.push_str(&format!("X\t{x:x}\n"));
-            }
-            for c in &order_networked {
-                if !order_excluded.contains(c) {
-                    body.push_str(&format!("C\t{c:x}\n"));
-                }
-            }
-            let _ = std::fs::write(&order_cache, body);
-        }
-        orders
-    } else {
-        Default::default()
     };
+    let passes::ParamOrders { site_orders, excluded: order_excluded, networked: order_networked } = orders;
 
     // GLOBAL WIDTHS FROM THE ORIGINAL'S OWN INSTRUCTIONS (the `global-width` switch, on by default).
     //
@@ -1254,45 +1044,14 @@ fn main() {
     let global_width_arm = knobs.on(Switch::GlobalWidth);
     let (ram_store_w, ram_read_w) = if global_width_arm {
         let t = std::time::Instant::now();
-        let mut sw: HashMap<u64, u32> = HashMap::new();
-        let mut rw: HashMap<u64, u32> = HashMap::new();
-        for (va, _) in &entries {
-            let (next, body_end) = extent_bounds(*va);
-            let end = match body_end {
-                Some(b) => next.min(b),
-                None => next,
-            }
-            .max(*va + 1);
-            let region = prog.memory.read_window(Address::new(ram, *va), (end - *va) as usize);
-            let insns = mosura::recompile::insn::normalize(
-                SURVEY_LANG,
-                &region,
-                *va,
-                &mosura::recompile::insn::NoReloc,
-            )
-            .unwrap_or_default();
-            for x in &insns {
-                for op in &x.sem {
-                    if let Some(mosura::recompile::insn::SemArg::Mem(_, a, sz)) = &op.out {
-                        let e = sw.entry(*a).or_insert(0);
-                        *e = (*e).max(*sz);
-                    }
-                    for i in &op.ins {
-                        if let mosura::recompile::insn::SemArg::Mem(_, a, sz) = i {
-                            let e = rw.entry(*a).or_insert(0);
-                            *e = (*e).max(*sz);
-                        }
-                    }
-                }
-            }
-        }
+        let gw = passes::GlobalWidths::collect(&prog, SURVEY_LANG, &ents);
         eprintln!(
             "global-width witness: {} stored addresses, {} read, in {:.1}s",
-            sw.len(),
-            rw.len(),
+            gw.store_w.len(),
+            gw.read_w.len(),
             t.elapsed().as_secs_f64()
         );
-        (sw, rw)
+        (gw.store_w, gw.read_w)
     } else {
         (HashMap::new(), HashMap::new())
     };
@@ -1302,11 +1061,7 @@ fn main() {
     let (mut ok, mut fail) = (0usize, 0usize);
     // Sorted-entry extents for the zap checker's ORIGINAL-instruction windows (the gap to
     // the next entry, the pre-pass's own fallback extent).
-    let next_entry: HashMap<u64, u64> = entries
-        .windows(2)
-        .map(|w| (w[0].0, w[1].0))
-        .chain(entries.last().map(|l| (l.0, l.0 + 0x1000)))
-        .collect();
+    let next_entry: HashMap<u64, u64> = ents.next.clone();
     // Memoized landed-world answer to "does this callee declare NONDEFAULT parameter
     // storage?" — the definition-side network the caller-side parm post-pass keys on. An
     // upgraded arg list at such a callee can flip that post-pass's arity/width gates

@@ -40,6 +40,7 @@ pub mod recovery;
 pub mod report;
 pub mod toolchain;
 pub mod manifest;
+pub mod passes;
 pub mod pragma;
 pub mod tu;
 pub mod twin;

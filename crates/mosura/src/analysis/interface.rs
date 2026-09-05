@@ -16,6 +16,7 @@
 //!
 //! See `docs/interface-recovery-plan.md`.
 
+use std::collections::HashSet;
 use crate::decompile::fspec::{FuncProto, ProtoSlot, recover_input_params};
 use crate::decompile::funcdata::Funcdata;
 use std::collections::HashMap;
@@ -170,4 +171,93 @@ fn return_storage(f: &Funcdata) -> Option<ProtoSlot> {
         .and_then(|op| f.op(op).input(1))?;
     let vn = f.vn(ret);
     Some(ProtoSlot { addr: vn.loc, size: f.output_storage_size.unwrap_or(vn.size).max(vn.size) })
+}
+
+/// The probe scope of a `--only` emit: the probed functions plus their DIRECT STATIC CALLEES
+/// (see [`recover_prototypes_for`]) — each probed extent's original bytes scanned for CALL targets
+/// that are known function entries. The probed functions themselves are included (harmless, and a
+/// probed function calling another probed one is covered regardless of scan order).
+pub fn probe_scope(prog: &Program, lang: &str, only: &[u64]) -> HashSet<u64> {
+    let entry_offs: std::collections::BTreeSet<u64> =
+        prog.function_manager.functions().map(|f| f.entry.offset).collect();
+    let mut scope: std::collections::HashSet<u64> = only.iter().copied().collect();
+    for &va in only {
+        let end = entry_offs.range(va + 1..).next().copied().unwrap_or(va + 0x1000);
+        let region = prog
+            .memory
+            .read_window(crate::decompile::space::Address::new(prog.default_space, va), (end - va) as usize);
+        let insns = crate::recompile::insn::normalize(
+            lang,
+            &region,
+            va,
+            &crate::recompile::insn::NoReloc,
+        )
+        .unwrap_or_default();
+        scope.extend(
+            insns
+                .iter()
+                .filter(|i| i.is_call)
+                .filter_map(|i| i.target)
+                .filter(|t| entry_offs.contains(t)),
+        );
+    }
+    scope
+}
+
+/// What [`mark_tail_return_writes`] decided: how many functions carry the mark, and, for the
+/// probed functions, the mark with the last six original instructions (reversed) behind it.
+pub struct TailReturnMarks {
+    pub marked: usize,
+    pub probed: Vec<(u64, bool, Vec<String>)>,
+}
+
+/// TAIL RETURN WRITE MARK (`Program::tail_return_writes`, decided from every function's own bytes
+/// ahead of its decompile — a pre-pipeline mark): every return path writes EAX from a register
+/// right before the epilogue (`buildconfig::tail_return_write_from_evidence`). The function's OWN
+/// body (its recorded extent), never the gap to the next entry: a neighbour's returns would veto
+/// the mark.
+pub fn mark_tail_return_writes(prog: &mut Program, lang: &str, probe: &[u64]) -> TailReturnMarks {
+    let mut probed = Vec::new();
+
+        let entry_offs: std::collections::BTreeSet<u64> =
+            prog.function_manager.functions().map(|f| f.entry.offset).collect();
+        for &va in &entry_offs {
+            // the function's OWN body (its recorded extent), never the gap to the next
+            // entry: a neighbour's returns would veto the mark
+            let next = entry_offs.range(va + 1..).next().copied().unwrap_or(va + 0x1000);
+            let end = prog
+                .function_manager
+                .function_at(crate::decompile::space::Address::new(prog.default_space, va))
+                .and_then(|f| f.body().max_address())
+                .map_or(next, |a| (a.offset + 1).min(next))
+                .max(va + 1);
+            let region = prog
+                .memory
+                .read_window(crate::decompile::space::Address::new(prog.default_space, va), (end - va) as usize);
+            let insns = crate::recompile::insn::normalize(
+                lang,
+                &region,
+                va,
+                &crate::recompile::insn::NoReloc,
+            )
+            .unwrap_or_default();
+            if crate::recompile::buildconfig::tail_return_write_from_evidence(&insns) {
+                prog.tail_return_writes.insert(va);
+            }
+            if probe.contains(&va) {
+                let tail: Vec<String> = insns.iter().rev().take(6).map(|x| x.text.clone()).collect();
+                probed.push((va, prog.tail_return_writes.contains(&va), tail));
+            }
+        }
+        TailReturnMarks { marked: prog.tail_return_writes.len(), probed }
+}
+
+/// Install the whole-program prototypes on the program (`Program::recovered_protos`): every
+/// function's, or the probe scope's only. Returns how many.
+pub fn install_prototypes(prog: &mut Program, scope: Option<&HashSet<u64>>) -> usize {
+    prog.recovered_protos = match scope {
+        None => recover_prototypes(prog),
+        Some(scope) => recover_prototypes_for(prog, scope),
+    };
+    prog.recovered_protos.len()
 }
