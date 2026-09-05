@@ -183,6 +183,53 @@ pub fn analyze_native_file_with(path: &Path, knobs: &Knobs) -> Result<Program, A
     )))
 }
 
+/// Which loader a caller asks for when loading BYTES (the product's one load entry point,
+/// [`load_bytes_with`]). `Default` is the container dispatch of [`analyze_file`] (a `.com` extension
+/// on the file name selects the CP/M loader, as [`loader::load_path_with`] does); `Native` the first
+/// beyond-Ghidra loader that claims the bytes; `Le`/`X32`/`Com` name one loader; `Raw` is a flat
+/// image at `base` for `language`; `Xml` a Ghidra `<binaryimage>` datatest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Loader<'a> {
+    Default,
+    Native,
+    Le,
+    X32,
+    Com,
+    Raw { language: &'a str, base: u64 },
+    Xml,
+}
+
+/// Load bytes with the named loader under explicit [`Knobs`] — every loader of this module behind
+/// one signature, for a caller that holds the input as bytes (a session store) rather than a path.
+/// Composes the existing entry points; the compiler-version refinement and the knobs are applied
+/// exactly as [`analyze_file_with`] / [`analyze_le_file_with`] apply them.
+pub fn load_bytes_with(data: &[u8], filename: Option<&str>, which: Loader<'_>, knobs: &Knobs) -> Result<Program, loader::LoadError> {
+    let program = match which {
+        Loader::Default => {
+            return match filename {
+                Some(f) => loader::load_path_with(Path::new(f), data, knobs),
+                None => loader::load_with(data, knobs),
+            };
+        }
+        Loader::Native => match NATIVE_LOADERS.iter().find(|(_, claims, _)| claims(data)) {
+            Some((_, _, load)) => load(data, knobs)?,
+            None => {
+                return Err(loader::LoadError::Unsupported(
+                    "no native (beyond-Ghidra) loader claims this input; the default dispatch handles it".into(),
+                ))
+            }
+        },
+        Loader::Le => loader::load_le_with(data, knobs)?,
+        Loader::X32 => loader::load_x32_with(data, knobs)?,
+        Loader::Com => loader::load_com(data)?,
+        Loader::Raw { language, base } => loader::raw::load_raw(data, language, base)?,
+        Loader::Xml => loader::raw::load_datatest_bytes(data)?,
+    };
+    let mut program = loader::with_compiler_version(data, program);
+    program.knobs = knobs.clone();
+    Ok(program)
+}
+
 /// Which native loader claims `data`, without loading it — for a CLI that wants to warn that the
 /// default view does not cover the file's real content.
 pub fn native_loader_name(data: &[u8]) -> Option<&'static str> {

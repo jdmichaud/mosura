@@ -9,6 +9,7 @@ pub mod store;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use crate::error::{Error, Result};
@@ -21,6 +22,7 @@ use crate::table::builder::TableBuilder;
 use crate::table::Table;
 use crate::tbl;
 use lock::Lock;
+use mosura_core::analysis::program::Program;
 
 /// The on-disk session format; a session written by another version is refused (D6).
 pub const FORMAT_VERSION: u32 = 1;
@@ -79,6 +81,8 @@ pub struct Session {
     mem_inputs: BTreeMap<[u8; 32], Vec<u8>>,
     inputs: Vec<InputRow>,
     config: BTreeMap<String, String>,
+    /// The last program thawed or loaded (its key), reused by every operation on it.
+    pub last_program: Option<(Key, Arc<Program>)>,
 }
 
 fn hex(d: &[u8; 32]) -> String {
@@ -88,7 +92,7 @@ fn hex(d: &[u8; 32]) -> String {
 impl Session {
     /// Open (creating when absent) the session at `dir`, or an in-memory session for `None`.
     pub fn open(dir: Option<&Path>) -> Result<Session> {
-        let mut s = Session { dir: dir.map(Path::to_path_buf), mem_sets: BTreeMap::new(), mem_inputs: BTreeMap::new(), inputs: Vec::new(), config: BTreeMap::new() };
+        let mut s = Session { dir: dir.map(Path::to_path_buf), mem_sets: BTreeMap::new(), mem_inputs: BTreeMap::new(), inputs: Vec::new(), config: BTreeMap::new(), last_program: None };
         let Some(dir) = dir else { return Ok(s) };
         for sub in ["", "program", "functions", "inputs"] {
             let d = dir.join(sub);
@@ -267,6 +271,24 @@ impl Session {
         match self.set_dir(kind, key) {
             Some(d) => store::read_set_dir(&d),
             None => self.mem_sets.get(&(kind, key.hex())).map(|(s, _)| s.clone()).ok_or_else(|| Error::NotFound(format!("set {}/{}", kind.dir_name(), key.hex()))),
+        }
+    }
+
+    /// The keys of every set of one kind (disk: the directories; memory: the map).
+    pub fn set_keys(&self, kind: SetKind) -> Result<Vec<Key>> {
+        match &self.dir {
+            Some(dir) => {
+                let d = dir.join(kind.dir_name());
+                let mut keys: Vec<Key> = fs::read_dir(&d)
+                    .map_err(|e| Error::io(e, d.clone()))?
+                    .flatten()
+                    .filter(|e| e.path().join("manifest.tbl").is_file())
+                    .filter_map(|e| Key::from_hex(&e.file_name().to_string_lossy()))
+                    .collect();
+                keys.sort_by_key(|k| k.0);
+                Ok(keys)
+            }
+            None => Ok(self.mem_sets.keys().filter(|(k, _)| *k == kind).filter_map(|(_, h)| Key::from_hex(h)).collect()),
         }
     }
 

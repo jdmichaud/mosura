@@ -14,6 +14,7 @@ pub mod pe;
 pub mod read;
 pub mod rel;
 pub mod pe_opinion;
+pub mod raw;
 pub mod watcom;
 pub mod x32;
 
