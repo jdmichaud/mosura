@@ -17,16 +17,20 @@
 //! is PRINTED to stderr is a [`crate::debug`] topic; a knob that only widens a `--only` probe
 //! (`MOSURA_PROBE_FULL`, `MOSURA_CONS_PROBE`) never produces a tree and stays where it is.
 //!
-//! Registering is the whole job: [`Switch::ALL`] gives the name to `--arms-off`, [`on`] answers at
-//! the site, and [`non_default`] puts it in the stamp — so a registered knob cannot be silently
-//! unstamped, and `tests::every_emit_knob_is_registered` fails on a raw `env::var("MOSURA_..")`
-//! read outside this file that is not a known diagnostic.
+//! Registering is the whole job: [`Switch::ALL`] gives the name to `--arms-off`, [`Knobs::on`]
+//! answers at the site, and [`Knobs::stamp_parts`] puts it in the stamp — so a registered knob
+//! cannot be silently unstamped, and `tests::every_emit_knob_is_registered` fails on a raw
+//! `env::var("MOSURA_..")` / `env::var_os("MOSURA_..")` read outside the facility files that is not
+//! a known diagnostic.
 //!
-//! LEGACY NAMES are kept: each switch answers to the environment variable it was read from before,
-//! with that site's own off-value, so the round scripts that set `MOSURA_GLOBAL_WIDTH=recovered`
-//! keep working. New knobs should use `--arms-off <name>` and add no variable at all.
-use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::OnceLock;
+//! THE KNOBS ARE A VALUE, NOT A PROCESS STATE (2026-09-05, the environment-variable removal): a
+//! front-end builds one [`Knobs`] from its flags (`--arms-off`, `--cspec`, `--disable-analyzers`),
+//! the loader and the analysis carry it on the [`Program`](crate::analysis::Program), and every
+//! [`Funcdata`](crate::decompile::Funcdata) decompiled from that program carries a copy — so a
+//! knob is read where it applies and nowhere else. No environment variable is read for any knob,
+//! and none is kept as a fallback: the process-global bitmask and the thread-local overrides this
+//! replaced both existed to work around environment reads racing parallel tests, and a value
+//! passed down needs no workaround.
 
 /// One knob that changes an emitted tree. The render arms are NOT here — they are the arm
 /// registry's own list ([`crate::decompile::emit::arms::registry::Recovered::ARMS`]), which owns a
@@ -105,24 +109,6 @@ impl Switch {
         }
     }
 
-    /// The variable this knob was read from before the table, and the value that meant OFF there.
-    /// Kept so existing round scripts keep working; `None` for a switch that never had one.
-    fn legacy(self) -> Option<(&'static str, &'static str)> {
-        Some(match self {
-            Switch::GlobalWidth => ("MOSURA_GLOBAL_WIDTH", "recovered"),
-            Switch::ConsReach => ("MOSURA_CONS_REACH", "0"),
-            Switch::KernelNet => ("MOSURA_KERNEL_NET", "0"),
-            Switch::KernelStackApp => ("MOSURA_KERNEL_STACKAPP", "0"),
-            Switch::SharedRet => ("MOSURA_SHARED_RET", "0"),
-            Switch::Consistency => ("MOSURA_CONSISTENCY", "0"),
-            Switch::ProtoPass => ("MOSURA_PROTO_PASS", "0"),
-            Switch::RetSplit => ("MOSURA_RETSPLIT", "0"),
-            Switch::Agg => ("MOSURA_AGG", "0"),
-            Switch::CalleeEffects => ("MOSURA_CALLEE_EFFECTS", "0"),
-            Switch::ArgumentCarry | Switch::CalleeClobbers => return None,
-        })
-    }
-
     fn bit(self) -> u32 {
         1 << (self as u8 as u32)
     }
@@ -134,42 +120,69 @@ impl Switch {
     }
 }
 
-/// Switched off by the environment — resolved ONCE, like `MOSURA_DEBUG`.
-static ENV_OFF: OnceLock<u32> = OnceLock::new();
-/// Switched off by `--arms-off`, which the caller applies while parsing its arguments.
-static CLI_OFF: AtomicU32 = AtomicU32::new(0);
+/// The result-affecting knobs of one run, as a value: which switches are off, which analyzers
+/// are disabled, which x86-32 compiler spec is declared. Built by the front-end from its flags,
+/// carried on the [`Program`](crate::analysis::Program) from the loader on (the compiler-spec
+/// decision is made while loading, so the loader takes it too), copied onto every
+/// [`Funcdata`](crate::decompile::Funcdata) the program decompiles. `Default` is every switch ON,
+/// nothing disabled, nothing declared — the product's own behaviour; an off value is always a
+/// deliberate measurement, and [`Self::stamp_parts`] puts it in the manifest.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Knobs {
+    off: u32,
+    /// Analyzer names the manager skips, comma-separated as the flag spells them — Ghidra's
+    /// per-analyzer enablement option, the ablation instrument that attributes a discovery to
+    /// the analyzer that made it (`ground_truth_parity`'s attribution assertions).
+    pub disabled_analyzers: Option<String>,
+    /// The x86-32 compiler spec to DECLARE instead of detecting (`watcom` | `gcc` | `highc`): a
+    /// caller with out-of-band knowledge (a build recipe, a project file, a hypothesis under
+    /// test) states the compiler the image itself does not reveal.
+    pub x86_32_cspec: Option<String>,
+}
 
-fn env_off() -> u32 {
-    *ENV_OFF.get_or_init(|| {
-        let mut m = 0;
-        for s in Switch::ALL {
-            if let Some((var, off)) = s.legacy() {
-                if std::env::var(var).as_deref() == Ok(off) {
-                    m |= s.bit();
-                }
-            }
+impl Knobs {
+    /// Declare the x86-32 compiler spec (builder form; the field is public too).
+    pub fn with_x86_32_cspec(mut self, id: Option<&str>) -> Self {
+        self.x86_32_cspec = id.map(str::to_string);
+        self
+    }
+
+    /// Disable analyzers by name, comma-separated (builder form; the field is public too).
+    pub fn with_disabled_analyzers(mut self, list: Option<&str>) -> Self {
+        self.disabled_analyzers = list.map(str::to_string);
+        self
+    }
+
+    /// Whether the knob is ON — i.e. its code runs.
+    pub fn on(&self, s: Switch) -> bool {
+        self.off & s.bit() == 0
+    }
+
+    /// Switch one off by name (`--arms-off`). Errors on an unknown name rather than ignoring it.
+    pub fn turn_off(&mut self, name: &str) -> Result<(), String> {
+        let s = Switch::by_name(name).ok_or_else(|| format!("unknown switch `{name}`"))?;
+        self.off |= s.bit();
+        Ok(())
+    }
+
+    /// Every switch not in its default state.
+    pub fn non_default(&self) -> Vec<&'static str> {
+        Switch::ALL.iter().copied().filter(|s| self.off & s.bit() != 0).map(|s| s.name()).collect()
+    }
+
+    /// Everything off its default, as the manifest's `arms:` stamp spells it: the switch names,
+    /// then `cspec=<id>` for a declared compiler spec, then `disabled-analyzers=<list>`. A tree
+    /// built under any of these differs from the baseline, so the stamp must say so.
+    pub fn stamp_parts(&self) -> Vec<String> {
+        let mut parts: Vec<String> = self.non_default().into_iter().map(str::to_string).collect();
+        if let Some(c) = &self.x86_32_cspec {
+            parts.push(format!("cspec={c}"));
         }
-        m
-    })
-}
-
-/// Whether the knob is ON — i.e. its code runs. Every switch defaults ON: this table holds the
-/// adaptations the product emits, and an off value is always a deliberate measurement.
-pub fn on(s: Switch) -> bool {
-    (env_off() | CLI_OFF.load(Ordering::Relaxed)) & s.bit() == 0
-}
-
-/// Switch one off by name (`--arms-off`). Errors on an unknown name rather than ignoring it.
-pub fn turn_off(name: &str) -> Result<(), String> {
-    let s = Switch::by_name(name).ok_or_else(|| format!("unknown switch `{name}`"))?;
-    CLI_OFF.fetch_or(s.bit(), Ordering::Relaxed);
-    Ok(())
-}
-
-/// Every switch not in its default state, for the manifest stamp — the whole point of the table.
-pub fn non_default() -> Vec<&'static str> {
-    let m = env_off() | CLI_OFF.load(Ordering::Relaxed);
-    Switch::ALL.iter().copied().filter(|s| m & s.bit() != 0).map(|s| s.name()).collect()
+        if let Some(d) = &self.disabled_analyzers {
+            parts.push(format!("disabled-analyzers={d}"));
+        }
+        parts
+    }
 }
 
 /// Every raw `MOSURA_*` environment read in `src`, as `(1-based line, variable name)`. Both
@@ -193,12 +206,11 @@ pub fn raw_env_reads(src: &str) -> Vec<(usize, String)> {
     out
 }
 
-/// What a raw read is, for the guard: a registered switch's legacy variable (must go through
-/// [`on`]), a known diagnostic (a print, a trace, a watch — nothing that reaches the emitted text),
-/// or neither.
+/// What a raw read is, for the guard: a known diagnostic (a print, a trace, a watch — nothing
+/// that reaches the emitted text), or not — and a knob is never read from the environment at all,
+/// so anything that is not a diagnostic is a defect.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReadClass {
-    SwitchLegacy,
     Diagnostic,
     Unregistered,
 }
@@ -221,8 +233,6 @@ pub const DIAGNOSTIC_READS: &[&str] = &[
 pub fn classify_read(name: &str) -> ReadClass {
     if DIAGNOSTIC_READS.contains(&name) {
         ReadClass::Diagnostic
-    } else if Switch::ALL.iter().any(|s| s.legacy().is_some_and(|(v, _)| v == name)) {
-        ReadClass::SwitchLegacy
     } else {
         ReadClass::Unregistered
     }
@@ -271,9 +281,32 @@ mod tests {
             "the var_os read on line 2 is the one the old guard missed"
         );
         assert_eq!(classify_read("MOSURA_DEBUG"), ReadClass::Diagnostic);
-        assert_eq!(classify_read("MOSURA_CALLEE_EFFECTS"), ReadClass::SwitchLegacy);
-        assert_eq!(classify_read("MOSURA_RETSPLIT"), ReadClass::SwitchLegacy);
+        // The former switch variables are not a class any more: a knob is never read from the
+        // environment, so a read of one is exactly as unregistered as a made-up name.
+        assert_eq!(classify_read("MOSURA_CALLEE_EFFECTS"), ReadClass::Unregistered);
+        assert_eq!(classify_read("MOSURA_RETSPLIT"), ReadClass::Unregistered);
         assert_eq!(classify_read("MOSURA_NO_SUCH_KNOB"), ReadClass::Unregistered);
+    }
+
+    /// The value semantics the knobs exist for: independent instances, `Default` = all on, the
+    /// stamp spells every non-default part, and an unknown name is an error rather than a no-op.
+    #[test]
+    fn knobs_are_a_value_with_a_stamp() {
+        let all_on = Knobs::default();
+        assert!(Switch::ALL.iter().all(|s| all_on.on(*s)));
+        assert!(all_on.stamp_parts().is_empty());
+        let mut k = Knobs::default();
+        k.turn_off("ret-split").unwrap();
+        k.turn_off("callee_effects").unwrap(); // `_` accepted like `-`
+        assert!(!k.on(Switch::RetSplit) && !k.on(Switch::CalleeEffects) && k.on(Switch::Agg));
+        assert!(all_on.on(Switch::RetSplit), "another instance is untouched");
+        assert!(k.turn_off("no-such-switch").is_err());
+        k.x86_32_cspec = Some("watcom".into());
+        k.disabled_analyzers = Some("Function Start Search".into());
+        assert_eq!(
+            k.stamp_parts(),
+            vec!["ret-split", "callee-effects", "cspec=watcom", "disabled-analyzers=Function Start Search"]
+        );
     }
 
     #[test]
@@ -294,27 +327,18 @@ mod tests {
         }
         let mut unregistered: Vec<String> = Vec::new();
         for p in files {
-            // The FACILITY files: each owns a documented accessor for its own class of knob and is
-            // the one place its variables are read — `debug` the diagnostic topics, `paths` the
-            // tree locations, `overrides` the analysis overrides (a forced cspec, a disabled
-            // analyzer), which change a tree and are therefore stamped, but carry VALUES rather
-            // than being on/off and so live with their own thread-scoped guard rather than here.
-            if p.file_name().is_some_and(|n| {
-                n == "switches.rs" || n == "debug.rs" || n == "paths.rs" || n == "overrides.rs"
-            }) {
+            // The FACILITY files still owning environment reads: `debug` the diagnostic topics
+            // (until the caller configures them — WP3), `paths` the tree locations (until the
+            // resource provider and the developer config — WP4/WP5). This file reads nothing.
+            if p.file_name().is_some_and(|n| n == "switches.rs" || n == "debug.rs" || n == "paths.rs") {
                 continue;
             }
             let Ok(src) = std::fs::read_to_string(&p) else { continue };
             for (line, full) in raw_env_reads(&src) {
                 match classify_read(&full) {
                     ReadClass::Diagnostic => {}
-                    ReadClass::SwitchLegacy => unregistered.push(format!(
-                        "{}:{} reads {full} directly — call switches::on() instead",
-                        p.display(),
-                        line
-                    )),
                     ReadClass::Unregistered => unregistered.push(format!(
-                        "{}:{} reads {full}, which is neither a switch nor a known diagnostic",
+                        "{}:{} reads {full} from the environment — a knob is a `Knobs` value, a print a debug topic",
                         p.display(),
                         line
                     )),

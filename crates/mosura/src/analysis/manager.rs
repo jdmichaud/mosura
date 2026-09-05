@@ -245,17 +245,16 @@ impl AutoAnalysisManager {
     /// **Enablement** is Ghidra's own model: every analyzer has an on/off option under
     /// `Program.ANALYSIS_PROPERTIES` keyed by its name (`AbstractAnalyzer.setDefaultEnablement`),
     /// and that is how `analyzeHeadless` is told to skip one — a `-preScript` that flips the
-    /// option. mosura has no per-program options database, so the same switch is read from
-    /// `MOSURA_DISABLE_ANALYZERS`, a comma-separated list of analyzer names. It exists for the
-    /// same reason Ghidra's does: measuring one analyzer's contribution means running with it off.
-    /// Read through [`overrides`](crate::analysis::overrides) so an in-process caller sets it for
-    /// its own thread; the environment variable remains the fallback.
+    /// option. mosura has no per-program options database, so the same switch is the program's
+    /// [`Knobs::disabled_analyzers`](crate::switches::Knobs), a comma-separated list of analyzer
+    /// names. It exists for the same reason Ghidra's does: measuring one analyzer's contribution
+    /// means running with it off.
     pub fn add_analyzer(&mut self, analyzer: Box<dyn Analyzer>, program: &Program) {
         if !analyzer.can_analyze(program) {
             return;
         }
-        // Per-thread (see `analysis::overrides`): `std::env` here raced concurrent tests.
-        if let Some(list) = crate::analysis::overrides::disabled_analyzers() {
+        // A value on the program, never the environment (which raced concurrent tests).
+        if let Some(list) = program.knobs.disabled_analyzers.as_deref() {
             if list.split(',').any(|n| n.trim() == analyzer.name()) {
                 return;
             }

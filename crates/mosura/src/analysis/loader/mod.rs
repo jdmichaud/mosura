@@ -18,30 +18,46 @@ pub mod watcom;
 pub mod x32;
 
 pub use com::load_com;
-pub use elf::{load_elf, LoadError};
-pub use le::{detect_le, load_le};
-pub use x32::{detect_x32, is_x32_image, load_x32};
+pub use elf::{load_elf, load_elf_with, LoadError};
+pub use le::{detect_le, load_le, load_le_with};
+pub use x32::{detect_x32, is_x32_image, load_x32, load_x32_with};
 pub use mz::load_mz;
 pub use pe::load_pe;
 
 use std::path::Path;
 
 use crate::analysis::program::Program;
+use crate::switches::Knobs;
 
 /// Dispatch to a loader using the file path as well as its bytes. A raw CP/M `.COM` has no
 /// container magic (it is a flat Z80 image), so — like Ghidra, which needs the format chosen
 /// manually for a raw binary — it is selected by its `.com` extension; every other format is
 /// detected by magic via [`load`].
 pub fn load_path(path: &Path, data: &[u8]) -> Result<Program, LoadError> {
+    load_path_with(path, data, &Knobs::default())
+}
+
+/// [`load_path`] under explicit [`Knobs`]: the declared x86-32 compiler spec reaches the loader's
+/// cspec decision, and the loaded program carries the knobs for the analysis and every decompile.
+pub fn load_path_with(path: &Path, data: &[u8], knobs: &Knobs) -> Result<Program, LoadError> {
     if path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("com")) {
-        return Ok(with_compiler_version(data, com::load_com(data)?));
+        let mut program = with_compiler_version(data, com::load_com(data)?);
+        program.knobs = knobs.clone();
+        return Ok(program);
     }
-    load(data)
+    load_with(data, knobs)
 }
 
 /// Load `data` by container, then refine it with the beyond-Ghidra compiler-**version** marker.
 pub fn load(data: &[u8]) -> Result<Program, LoadError> {
-    Ok(with_compiler_version(data, load_container(data)?))
+    load_with(data, &Knobs::default())
+}
+
+/// [`load`] under explicit [`Knobs`] (see [`load_path_with`]).
+pub fn load_with(data: &[u8], knobs: &Knobs) -> Result<Program, LoadError> {
+    let mut program = with_compiler_version(data, load_container(data, knobs)?);
+    program.knobs = knobs.clone();
+    Ok(program)
 }
 
 /// Record the embedded compiler-version marker (`compiler_version::detect` — container-agnostic,
@@ -56,7 +72,7 @@ pub(crate) fn with_compiler_version(data: &[u8], mut program: Program) -> Progra
 
 /// Detect the container format by magic and dispatch to the matching loader, mirroring
 /// Ghidra's loader-opinion selection for the formats we support.
-fn load_container(data: &[u8]) -> Result<Program, LoadError> {
+fn load_container(data: &[u8], knobs: &Knobs) -> Result<Program, LoadError> {
     // OMF object modules (`THEADR`/`LHEADR`). Ghidra has an `OmfLoader`; ours covers the
     // slice FID's library ingest needs — see `loader::omf`. Checked before ELF/PE/MZ because
     // an object file carries none of their magics.
@@ -64,7 +80,7 @@ fn load_container(data: &[u8]) -> Result<Program, LoadError> {
         return omf::load_omf_object(data);
     }
     if data.starts_with(&[0x7f, b'E', b'L', b'F']) {
-        return load_elf(data);
+        return load_elf_with(data, knobs);
     }
     if data.starts_with(b"MZ") {
         // MZ stub: a PE if it carries a "PE\0\0" signature at e_lfanew, else a DOS MZ.
@@ -78,7 +94,7 @@ fn load_container(data: &[u8]) -> Result<Program, LoadError> {
             // so it does NOT match here and falls through to the 16-bit MZ stub — preserving
             // the war2 Ghidra-parity gates, which compare against Ghidra's MZ interpretation.
             if le::is_le_header(data, off) {
-                return load_le(data);
+                return load_le_with(data, knobs);
             }
         }
         // A bare DOS MZ, or a bound DOS-extender stub whose `e_lfanew` is invalid/non-PE

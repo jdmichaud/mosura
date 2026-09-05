@@ -491,10 +491,10 @@ impl Action for ActionReturnSplit {
         // through `node_split`'s own `structure_reset`. (A `take()` without restore here made
         // every fullloop round consume the cache, whose rebuild then counted as a change — an
         // infinite fullloop.)
-        // MOSURA_RETSPLIT=0: measurement switch for the shared-return arm investigation
+        // `--arms-off ret-split`: measurement switch for the shared-return arm investigation
         // (renders the pre-41a1665 unsplit shape); NOT a doctrine change — the action stays
         // on by default.
-        if !crate::switches::on(crate::switches::Switch::RetSplit) || SKIP_RETURN_SPLIT.with(|c| c.get()) {
+        if !data.knobs.on(crate::switches::Switch::RetSplit) || SKIP_RETURN_SPLIT.with(|c| c.get()) {
             return 0;
         }
         let Some(s) = data.structure.as_ref() else {

@@ -56,7 +56,7 @@ decoding one, which halves the search space before any WAR2 run.
 
 ## Part B — provenance by ablation (attribution, not magnitude)
 
-`MOSURA_DISABLE_ANALYZERS` already exists and takes a comma-separated list. For each seeding
+`Knobs::disabled_analyzers` (`--disable-analyzers`) already exists and takes a comma-separated list. For each seeding
 analyzer, re-run and diff the **instruction-start set**:
 
 ```

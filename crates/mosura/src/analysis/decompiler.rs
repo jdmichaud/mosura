@@ -106,6 +106,8 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
             &program.compiler_spec_id,
         );
         f.readonly_ranges = readonly_ranges.clone();
+        // The knobs travel with the function: a pipeline action reads its switch here.
+        f.knobs = program.knobs.clone();
         // the survey's tail-return-write MARK (see `Program::tail_return_writes`)
         f.tail_return_write = program.tail_return_writes.contains(&entry.offset);
         // The uninitialized blocks (`.bss`) are loaded memory too — a constant inside one is a
@@ -305,10 +307,10 @@ fn record_callee_effects(
     //
     // which is the source: `p = bump(g_dst, n); *p = v` — both arguments, in the order
     // `parm caller [ebx] [eax]` declares, and the result consumed by the store.
-    // `--arms-off callee-effects` (the `MOSURA_CALLEE_EFFECTS=0` of before the switches table): the
+    // `--arms-off callee-effects` (an environment variable before the switches table): the
     // measurement switch that renders the tree WITHOUT callee effects. A tree knob, so it is
     // stamped (review item, 2026-09-05: it used to be a raw `env::var_os` read the guard missed).
-    if !crate::switches::on(crate::switches::Switch::CalleeEffects) {
+    if !f.knobs.on(crate::switches::Switch::CalleeEffects) {
         return;
     }
     let Some(reg) = f.spaces.by_name("register") else { return };

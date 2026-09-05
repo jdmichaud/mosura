@@ -44,7 +44,7 @@ a function whose body has already been deleted — right signature, empty body, 
 
 **THE PASS-THROUGH ARGUMENT GAP (found 2026-08-11 via the `regmodify` MVE).** `f(x){ g(x); }`
 loses the argument: mosura emits `func_0xNNN()`, Ghidra emits `func_0xNNN(param_2)`. Verified
-pre-existing (identical with `MOSURA_CALLEE_EFFECTS=0`), so it is not from the callee-effects work.
+pre-existing (identical with the callee-effects switch off, today `--arms-off callee-effects`), so it is not from the callee-effects work.
 
 Mechanism, read from Ghidra's source rather than guessed: `AncestorRealistic::execute`
 (funcdata_varnode.cc:2205) returns false when the trial varnode `isInput()`, with the comment

@@ -930,7 +930,7 @@ corpus links `option nodefaultlib` with a hand-written `_cstart_`, so **no groun
 carries the banner and every one detects as `cspec=gcc`** (measured: `wprologue`, `wprologue_sf`,
 `fnpattern`). Until §4 this meant `specs/patterns/x86watcom_patterns.xml` had **zero fixture
 coverage of any kind**, and any gate written against a Watcom-compiled fixture was silently
-measuring Ghidra's `x86gcc_patterns.xml`. `MOSURA_X86_32_CSPEC=watcom|gcc` routes one binary
+measuring Ghidra's `x86gcc_patterns.xml`. `--cspec watcom|gcc` (`Knobs::x86_32_cspec`) routes one binary
 through both; it is inert when unset. Every new cell needs the same routing, or a linked CRT.
 
 **(b) A cell needs an orphan, or its recall proves nothing.** If every function is call-reachable,

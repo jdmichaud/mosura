@@ -1279,7 +1279,7 @@ pub fn resolve_call_args(f: &mut Funcdata) -> u32 {
         // mark: it FREES THE DATAFLOW, setting the input slot to a constant 0 (fspec.cc:5650-5651).
         // Re-marking a trial cannot restore a varnode that has been replaced by a constant.
         //
-        // Measured on `FUN_00013c50` with `MOSURA_PROTO_PASS=1`. Heritage binds the argument
+        // Measured on `FUN_00013c50` with the `proto-pass` switch on. Heritage binds the argument
         // correctly to `r0x0:4(0x13c5e:12)` — the output of the call five instructions earlier,
         // which is the value the original passes by doing nothing at all. That value has other
         // readers, so `ancestorOpUse` cannot say "used only to feed this call", the trial is freed,

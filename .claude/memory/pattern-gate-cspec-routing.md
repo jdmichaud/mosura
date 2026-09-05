@@ -17,7 +17,7 @@ metadata:
    hand-written `_cstart_`, so **no fixture carries the banner and every Watcom ELF reports
    `cspec=gcc`**. Result: `specs/patterns/x86watcom_patterns.xml` had ZERO fixture coverage, and
    any gate written against a Watcom-compiled fixture was measuring `x86gcc_patterns.xml`.
-   `MOSURA_X86_32_CSPEC=watcom|gcc` (added `cd70db7`) routes one binary through both.
+   `--cspec watcom|gcc` / `Knobs::x86_32_cspec` (added `cd70db7` as an environment variable, a value since 2026-09-05) routes one binary through both.
 2. **Call-reachable recall.** If every function in the fixture is called from `main`, the
    reference-driven analyzers recover them all and the pattern set is never load-bearing.
    Measured on `wprologue_sf` before the orphan existed: **15/15 recall and 0 spurious with the
@@ -29,7 +29,7 @@ is a self-compiled binary where every function is known — never WAR2 (its trac
 a hit in a gap is undecidable). See [[war2-per-function-ghidra-oracle]] for the WAR2 side.
 
 **How to apply:** before believing any function-start number, print `prog.compiler_spec_id` and
-re-run with `MOSURA_DISABLE_ANALYZERS` set to the four byte-pattern analyzers. If the number does
+re-run with `Knobs::disabled_analyzers` (`--disable-analyzers`) naming the four byte-pattern analyzers. If the number does
 not move, the gate is not measuring the pattern set. This is [[oracle-same-question-not-just-same-tool]]
 in a new place: reading a green test is not enough, verify it was asked the right question.
 

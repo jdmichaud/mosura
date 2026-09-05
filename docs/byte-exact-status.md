@@ -41,7 +41,7 @@ decompile of every function and a second compile round, and buys 18 functions.
 | configuration | EXACT |
 | --- | --- |
 | default, single pass | **585** |
-| prototype pass alone (`MOSURA_PROTO_PASS=1`) | 560 |
+| prototype pass alone (the `proto-pass` switch) | 560 |
 | both, best-of per function (`recompile_select`) | **593** |
 
 (The default's 539 -> 564 is the function-extent fix -- a measurement correction, recorded in
@@ -1114,7 +1114,7 @@ changes which values survive calls, the allocator reaches for ESI/EDI, and a `PU
 the original lacks cascades. Structurally outside a scheduler model (order, not
 allocation); the honest next unlock is an allocation-aware gate, a new modeling pile.
 Parked per pre-registration at +6/−6; the machinery lands env-gated
-(`MOSURA_PROTO_PASS=1`), default-off, landed tree untouched (sentinels + default smoke
+(the `proto-pass` switch), default-off, landed tree untouched (sentinels + default smoke
 prove byte-identity).
 
 **743 → 743 landed / 746 measured behind the gate (zc2): the register-allocator model,
@@ -1156,7 +1156,7 @@ not necessarily overlapping the live-in), the known conservatism a full
 Corpus, one pre-registered round: **746 EXACT — +3 (`FUN_0003b00c`, `FUN_0005f33b`,
 `FUN_0003adec`), ZERO losses of any kind, +1 MISMATCH → SAME_SHAPE** — the first
 arity-recovery configuration to clear the zero-regression bar. 364 TUs upgraded. The
-prototype pass is now DEFAULT-ON in the survey (`MOSURA_PROTO_PASS=0` restores the bare
+prototype pass is now DEFAULT-ON in the survey (`--arms-off proto-pass` restores the bare
 landed world); per-emit cost roughly doubles (the pass ~97s + per-TU dual decompiles +
 gate walks) — the runbook cost model updated.
 
@@ -1359,7 +1359,7 @@ thread 1. 996 missing `ADD ESP,K` rows across 354 functions are the caller-side 
 ## Open thread 1 — the propagated-prototype argument, RE-DIAGNOSED
 
 Whole-program prototype recovery is built (`analysis::interface`, `Program::recovered_protos`,
-bound at every direct call). It is OFF by default (`MOSURA_PROTO_PASS=1`). Measured on WAR2 with
+bound at every direct call). It was OFF by default then (today the `proto-pass` switch, on by default). Measured on WAR2 with
 the corrected instrument: `missing` 1157 → 1081, but `extra` 467 → 603 and COMPILE_FAIL 75 → 96,
 so EXACT goes 421 → 394. The prototypes are right; the pass loses on spurious arguments.
 
@@ -1832,7 +1832,7 @@ without a corpus round; the switch stays, default pointer-only.
 
 ### zc28 (2026-08-22): the shared-return arm lands — 765 EXACT / WGSS 0.4802
 
-Re-earns the ActionReturnSplit doctrine trade. The toggle (`MOSURA_RETSPLIT=0`) flips the six
+Re-earns the ActionReturnSplit doctrine trade. The toggle (`--arms-off ret-split`) flips the six
 trade members symmetrically, so the discriminator had to come from the renderings: the three
 gains' unsplit forms carry gotos the split repairs; the two clean-unsplit losses are pure
 deformation; 4d0f8 is the separate do-while structuring gap. The arm re-decompiles the same
@@ -2189,7 +2189,7 @@ JD's call, made on the D2c evidence ("if it's a lottery, byte-exactness today is
 luck and should not prevent us from doing the right thing"): a callee whose recovered
 register prototype declares N parameters gets N arguments at every call site — the emitted
 corpus must be self-consistent — and score losses are CLASSIFIED (lottery vs bug) instead
-of vetoing. Memory `consistency-over-score`; MOSURA_CONSISTENCY=0 restores the pure gates.
+of vetoing. Memory `consistency-over-score`; `--arms-off consistency` restores the pure gates.
 
 The road there was four rounds, each loss class fixed rather than accepted:
 

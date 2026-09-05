@@ -252,6 +252,11 @@ fn check_no_fixups_in_flat(data: &[u8], l: &X32Layout) -> Result<(), LoadError> 
 
 /// Parse an X-32 image and build the [`Program`]: its single flat 32-bit block and its entry.
 pub fn load_x32(data: &[u8]) -> Result<Program, LoadError> {
+    load_x32_with(data, &crate::switches::Knobs::default())
+}
+
+/// [`load_x32`] under explicit [`Knobs`](crate::switches::Knobs) (see `load_le_with`).
+pub fn load_x32_with(data: &[u8], knobs: &crate::switches::Knobs) -> Result<Program, LoadError> {
     let l = detect_x32(data)
         .ok_or_else(|| LoadError::Unsupported("no X-32 container found".into()))?;
     check_no_fixups_in_flat(data, &l)?;
@@ -282,9 +287,10 @@ pub fn load_x32(data: &[u8]) -> Result<Program, LoadError> {
     // The compiler question is the ordinary detection path's: X-32 was a general-purpose
     // extender that several toolchains linked against, so the container says nothing about who
     // compiled the program (docs/x32-loader-notes.md).
-    let cspec = super::watcom::compiler_spec_id(data);
+    let cspec = super::watcom::compiler_spec_id(data, knobs.x86_32_cspec.as_deref());
     let mut program =
         Program::new(spaces, ram, "x86:LE:32:default", cspec, image_base, false, 32);
+    program.knobs = knobs.clone();
     program.memory = memory;
     if let Some(w) = super::watcom::detect(data) {
         program.compiler = w.compiler_label();

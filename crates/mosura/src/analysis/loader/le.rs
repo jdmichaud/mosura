@@ -139,6 +139,12 @@ pub fn is_le_header(data: &[u8], off: usize) -> bool {
 
 /// Parse an LE image and build the [`Program`] memory map (its 32-bit objects + entry).
 pub fn load_le(data: &[u8]) -> Result<Program, LoadError> {
+    load_le_with(data, &crate::switches::Knobs::default())
+}
+
+/// [`load_le`] under explicit [`Knobs`](crate::switches::Knobs): a declared x86-32 compiler spec
+/// replaces the banner detection, and the program carries the knobs.
+pub fn load_le_with(data: &[u8], knobs: &crate::switches::Knobs) -> Result<Program, LoadError> {
     let base = detect_le(data).ok_or_else(|| LoadError::Unsupported("no LE header found".into()))?;
     let f = |rel: usize| u32le(data, base + rel).ok_or(LoadError::Unsupported("truncated LE header".into()));
 
@@ -291,9 +297,10 @@ pub fn load_le(data: &[u8]) -> Result<Program, LoadError> {
     // generic `gcc` placeholder, so prototype recovery uses the right convention. 32-bit i386
     // protected mode (`x86:LE:32:default`).
     let watcom = super::watcom::detect(data);
-    let compiler_spec_id = super::watcom::compiler_spec_id(data);
+    let compiler_spec_id = super::watcom::compiler_spec_id(data, knobs.x86_32_cspec.as_deref());
     let mut program =
         Program::new(spaces, ram, "x86:LE:32:default", compiler_spec_id, image_base, false, 32);
+    program.knobs = knobs.clone();
     program.memory = memory;
     if let Some(w) = watcom {
         program.compiler = w.compiler_label(); // the `Compiler` info property (era)

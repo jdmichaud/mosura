@@ -92,7 +92,7 @@ fn banner_regex() -> &'static Regex {
 /// passes arguments in EAX/EDX/EBX/ECX and preserves every register but EAX, while `__cdecl`
 /// passes on the stack, so prototype recovery and the entire call-effect model differ.
 ///
-/// # `MOSURA_X86_32_CSPEC` — the test hook, and why it has to exist
+/// # The declared compiler spec (`Knobs::x86_32_cspec`) — the hook, and why it has to exist
 ///
 /// The banner is a **run-time** string: it is in the C run-time the linker pulls in, not in
 /// anything the compiler emits per translation unit. The ground-truth corpus links
@@ -112,14 +112,14 @@ fn banner_regex() -> &'static Regex {
 /// so a typo cannot select a nonexistent spec; anything else falls through to detection. When
 /// unset — which is every non-test path — behaviour is bit-for-bit what it was.
 ///
-/// Read through [`overrides`](crate::analysis::overrides), which is **per thread**. It was read
-/// from `std::env` directly and that raced: `cargo test` runs a binary's tests on parallel
-/// threads in one process, so one test's routing leaked into another test's analysis and two
-/// unrelated tests failed. Verifying the hook was inert *when unset* did not catch it, because
-/// the hazard was concurrent mutation rather than the unset case.
-pub fn compiler_spec_id(data: &[u8]) -> &'static str {
-    if let Some(forced) = crate::analysis::overrides::x86_32_cspec() {
-        match forced.as_str() {
+/// `forced` is the caller's declaration ([`Knobs::x86_32_cspec`](crate::switches::Knobs)),
+/// passed down as a value. It was once read from `std::env`, which raced: `cargo test` runs a
+/// binary's tests on parallel threads in one process, so one test's routing leaked into another
+/// test's analysis and two unrelated tests failed; a per-thread override fixed the race, and a
+/// value passed down removes the need for either.
+pub fn compiler_spec_id(data: &[u8], forced: Option<&str>) -> &'static str {
+    if let Some(forced) = forced {
+        match forced {
             "watcom" => return "watcom",
             "gcc" => return "gcc",
             // `highc` = specs/x86-32-highc.cspec (MetaWare High C 386). Declaring it is how a

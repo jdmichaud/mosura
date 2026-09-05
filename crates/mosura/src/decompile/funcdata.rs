@@ -32,6 +32,10 @@ pub struct Funcdata {
     /// by the spec-driven builder. Empty on a hand-built `Funcdata`, which then names
     /// registers Ghidra's no-name way (`var`).
     pub reg_names: std::collections::HashMap<(u64, u32), String>,
+    /// The result-affecting knobs this function is decompiled under ([`crate::switches::Knobs`]),
+    /// copied from the program by the analysis→decompiler bridge; `Default` (everything on) on a
+    /// hand-built `Funcdata`. A pipeline action reads its switch here, never from the environment.
+    pub knobs: crate::switches::Knobs,
     varnodes: Vec<Varnode>,
     ops: Vec<PcodeOp>,
     blocks: Vec<BlockBasic>,
@@ -407,6 +411,7 @@ impl Funcdata {
         let proto_model = super::fspec::ProtoModel::with_default_ranges(&spaces);
         Funcdata {
             reg_names: std::collections::HashMap::new(),
+            knobs: Default::default(),
             name: name.into(),
             addr,
             spaces,

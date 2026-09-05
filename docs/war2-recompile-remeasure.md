@@ -196,7 +196,7 @@ does any commit that changes what it tests: the gt oracle, the emit plan or an a
 
 | variable | effect |
 | --- | --- |
-| `MOSURA_PROTO_PASS=1` | whole-program callee prototype recovery before the emit |
+| the `proto-pass` switch (on by default; `--arms-off proto-pass` disables) | whole-program callee prototype recovery before the emit |
 | `MOSURA_ARG_DEBUG=1` | per-call argument trials, with the full CALL input list |
 | `MOSURA_OPACTION=<action>` | rule/action trace; `<action>` or `1` for all |
 | `MOSURA_RAW_IR=1` | post-pipeline IR alongside the C (with `--only`) |
@@ -207,7 +207,7 @@ the changed op in the `MOSURA_OPACTION` trace.
 
 ## Gotchas that have cost real time
 
-- `--only` is read-only, but with `MOSURA_PROTO_PASS=1` it still runs the whole-program prototype
+- `--only` is read-only, but with the `proto-pass` switch on (the default) it still runs the whole-program prototype
   pass first, so debug output covers **every** function. Filter on the call address.
 - **`git checkout` reverts the source and leaves the built binary.** Every measurement here runs
   binaries by path (`$EX/war2_survey`), not through `cargo run`, so nothing rebuilds them for you.

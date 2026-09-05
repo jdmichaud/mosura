@@ -186,6 +186,10 @@ pub struct Program {
     /// (cycle detection).
     pub contract_cache:
         std::sync::Arc<std::sync::Mutex<std::collections::HashMap<u64, CalleeContract>>>,
+    /// The result-affecting knobs this program was loaded and analysed under
+    /// ([`crate::switches::Knobs`]): set by the loader from the caller's value, copied onto every
+    /// `Funcdata` the program decompiles. Never read from the environment.
+    pub knobs: crate::switches::Knobs,
 }
 
 impl Program {
@@ -232,6 +236,7 @@ impl Program {
             defined_data: Vec::new(),
             flow_overrides: std::collections::HashMap::new(),
             contract_cache: Default::default(),
+            knobs: Default::default(),
         }
     }
 

@@ -13,7 +13,7 @@ implies nothing about the second.** (2026-08-06, agreed formulation.)
 
 ## What it cost
 
-A test hook read `MOSURA_X86_32_CSPEC` / `MOSURA_DISABLE_ANALYZERS` from `std::env` at the point of
+A test hook read the forced-cspec and disabled-analyzer variables (retired 2026-09-05 for the `Knobs` value) from `std::env` at the point of
 use, and tests set them with `set_var`. It was reviewed, and the review verified the hook was
 **inert when unset** (unset vs explicitly empty, both bit-identical). That was true, and
 irrelevant.

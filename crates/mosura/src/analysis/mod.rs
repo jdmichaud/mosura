@@ -25,7 +25,6 @@ pub mod flowtype;
 pub mod foreign;
 pub mod loader;
 pub mod manager;
-pub mod overrides;
 pub mod priority;
 pub mod program;
 pub mod pseudo_disassembler;
@@ -38,6 +37,8 @@ pub use program::Program;
 pub use snapshot::Snapshot;
 
 use std::path::Path;
+
+use crate::switches::Knobs;
 
 /// An error from [`analyze_binary`].
 #[derive(Debug)]
@@ -81,8 +82,14 @@ pub fn analyze_binary(path: &Path) -> Result<Snapshot, AnalysisError> {
 /// Load a binary and run the full auto-analysis pipeline ([`analyze`]), returning the
 /// converged [`Program`].
 pub fn analyze_file(path: &Path) -> Result<Program, AnalysisError> {
+    analyze_file_with(path, &Knobs::default())
+}
+
+/// [`analyze_file`] under explicit [`Knobs`]: a declared x86-32 compiler spec, disabled
+/// analyzers, switches off — the value the loader, the analysis and every decompile read.
+pub fn analyze_file_with(path: &Path, knobs: &Knobs) -> Result<Program, AnalysisError> {
     let data = std::fs::read(path)?;
-    let mut program = loader::load_path(path, &data)?;
+    let mut program = loader::load_path_with(path, &data, knobs)?;
     analyze(&mut program);
     Ok(program)
 }
@@ -104,11 +111,11 @@ pub fn analyze_file(path: &Path) -> Result<Program, AnalysisError> {
 /// image, and this is the entry point that lets it.
 ///
 /// Not a test-only hook: declaring a known compiler spec is a legitimate thing for any caller with
-/// out-of-band knowledge (a build system, a project file, a user override). The switch is scoped
-/// to this call on this thread — see [`overrides`] for why that matters.
+/// out-of-band knowledge (a build system, a project file, a user override). The declaration is a
+/// value on this call's [`Knobs`] — nothing per-thread, nothing per-process. Shorthand for
+/// [`analyze_file_with`] with only the compiler spec set.
 pub fn analyze_file_as(path: &Path, x86_32_cspec: Option<&str>) -> Result<Program, AnalysisError> {
-    let _guard = overrides::force_x86_32_cspec(x86_32_cspec);
-    analyze_file(path)
+    analyze_file_with(path, &Knobs::default().with_x86_32_cspec(x86_32_cspec))
 }
 
 /// Load a DOS/4GW-bound Linear Executable via the **native LE loader** and run the full
@@ -118,10 +125,15 @@ pub fn analyze_file_as(path: &Path, x86_32_cspec: Option<&str>) -> Result<Progra
 /// against the warcraft2-re RE ground truth (Ghidra has no LE loader). The CLI flag + warning
 /// that select this land later with the CLI; today it is a library entry point.
 pub fn analyze_le_file(path: &Path) -> Result<Program, AnalysisError> {
+    analyze_le_file_with(path, &Knobs::default())
+}
+
+/// [`analyze_le_file`] under explicit [`Knobs`] (see [`analyze_file_with`]).
+pub fn analyze_le_file_with(path: &Path, knobs: &Knobs) -> Result<Program, AnalysisError> {
     let data = std::fs::read(path)?;
     // Same compiler-version refinement as every `loader::load` path — LE is Watcom's home
     // container (the one with no header version field), so the banner-era marker matters most here.
-    let mut program = loader::with_compiler_version(&data, loader::load_le(&data)?);
+    let mut program = loader::with_compiler_version(&data, loader::load_le_with(&data, knobs)?);
     analyze(&mut program);
     Ok(program)
 }
@@ -135,10 +147,11 @@ pub fn analyze_le_file(path: &Path) -> Result<Program, AnalysisError> {
 /// Each entry is `(name, claims, load)`. `claims` must be strict: a container that guesses wrong
 /// is worse than one that declines, because the caller's fallback is the Ghidra-parity view,
 /// which is always correct even when it is only the 16-bit stub.
-type NativeLoader = (&'static str, fn(&[u8]) -> bool, fn(&[u8]) -> Result<Program, loader::LoadError>);
+type NativeLoader =
+    (&'static str, fn(&[u8]) -> bool, fn(&[u8], &Knobs) -> Result<Program, loader::LoadError>);
 const NATIVE_LOADERS: &[NativeLoader] = &[
-    ("LE", |d| loader::detect_le(d).is_some(), loader::load_le),
-    ("X-32", loader::is_x32_image, loader::load_x32),
+    ("LE", |d| loader::detect_le(d).is_some(), loader::load_le_with),
+    ("X-32", loader::is_x32_image, loader::load_x32_with),
 ];
 
 /// Load a binary with the **native** (beyond-Ghidra) loader that claims it, and run the full
@@ -152,10 +165,15 @@ const NATIVE_LOADERS: &[NativeLoader] = &[
 /// so a caller asking for the native view of a file that has none is told, rather than silently
 /// handed the stub.
 pub fn analyze_native_file(path: &Path) -> Result<Program, AnalysisError> {
+    analyze_native_file_with(path, &Knobs::default())
+}
+
+/// [`analyze_native_file`] under explicit [`Knobs`] (see [`analyze_file_with`]).
+pub fn analyze_native_file_with(path: &Path, knobs: &Knobs) -> Result<Program, AnalysisError> {
     let data = std::fs::read(path)?;
     for (_name, claims, load) in NATIVE_LOADERS {
         if claims(&data) {
-            let mut program = loader::with_compiler_version(&data, load(&data)?);
+            let mut program = loader::with_compiler_version(&data, load(&data, knobs)?);
             analyze(&mut program);
             return Ok(program);
         }

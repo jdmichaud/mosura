@@ -1179,9 +1179,9 @@ pub fn default_workers() -> usize {
 /// read-only caches (the language/cspec/spec caches behind `OnceLock` + `Mutex`, the regexes, the
 /// debug topics) and its `thread_local!`s are per-run scratch set and read within one decompile
 /// (the merge phase, the return-split arm's flag, the analyzers' body cache, the perf accumulator,
-/// the trace suppressor) — with one exception: the `analysis::overrides` hooks are per-thread
-/// configuration, so a caller that sets them must run serially (`workers = 1`), which the tests do
-/// not (they read the environment, visible from every thread). `workers = 1` is the serial order.
+/// the trace suppressor). The analysis knobs travel as a value on the program
+/// (`switches::Knobs`), so nothing is per-thread configuration any more; `workers = 1` is simply
+/// the serial order.
 pub fn recompile_programs(
     srcs: &[PathBuf],
     workdir: &Path,

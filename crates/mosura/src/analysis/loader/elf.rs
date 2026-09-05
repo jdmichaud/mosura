@@ -137,15 +137,22 @@ impl Geom {
 /// class (32- vs 64-bit) into the generic [`load_elf_inner`]; both classes share every
 /// step, parameterized by [`Geom`] geometry and the file's endianness.
 pub fn load_elf(data: &[u8]) -> Result<Program, LoadError> {
+    load_elf_with(data, &crate::switches::Knobs::default())
+}
+
+/// [`load_elf`] under explicit [`Knobs`](crate::switches::Knobs): a declared x86-32 compiler spec
+/// replaces the detection for an i386 image.
+pub fn load_elf_with(data: &[u8], knobs: &crate::switches::Knobs) -> Result<Program, LoadError> {
+    let forced = knobs.x86_32_cspec.as_deref();
     match FileKind::parse(data) {
-        Ok(FileKind::Elf32) => load_elf_inner::<elf::FileHeader32<Endianness>>(data),
-        Ok(FileKind::Elf64) => load_elf_inner::<elf::FileHeader64<Endianness>>(data),
+        Ok(FileKind::Elf32) => load_elf_inner::<elf::FileHeader32<Endianness>>(data, forced),
+        Ok(FileKind::Elf64) => load_elf_inner::<elf::FileHeader64<Endianness>>(data, forced),
         Ok(other) => Err(LoadError::Unsupported(format!("not an ELF file: {other:?}"))),
         Err(e) => Err(LoadError::Parse(e)),
     }
 }
 
-fn load_elf_inner<H>(data: &[u8]) -> Result<Program, LoadError>
+fn load_elf_inner<H>(data: &[u8], forced_x86_32_cspec: Option<&str>) -> Result<Program, LoadError>
 where
     H: FileHeader<Endian = Endianness>,
 {
@@ -186,7 +193,7 @@ where
         // to "gcc" decompiled every one of those programs under a convention they were not
         // compiled with.
         (elf::EM_386, false, false) => {
-            Some(("x86:LE:32:default", super::watcom::compiler_spec_id(data)))
+            Some(("x86:LE:32:default", super::watcom::compiler_spec_id(data, forced_x86_32_cspec)))
         }
         (elf::EM_AARCH64, false, true) => Some(("AARCH64:LE:64:v8A", "default")),
         (elf::EM_RISCV, false, true) => Some(("RISCV:LE:64:default", "gcc")),

@@ -67,7 +67,7 @@ called for a "designed representation"; that too was unverified.
 
 **GATED** by `callee_register_return_is_recovered_with_its_argument` (ground_truth_parity, 24
 tests now), against `expected/regout.use_.c` — a reference proven byte-faithful by
-`verify-expected.py` (22b). VERIFIED IT CAN FAIL: `MOSURA_CALLEE_EFFECTS=0` turns it RED. That
+`verify-expected.py` (22b). VERIFIED IT CAN FAIL: the callee-effects switch off (today `--arms-off callee-effects`) turns it RED. That
 needed one comparator fix — `mask()` covered `a1` (mov eax,[abs32]) but not `8b1d`, the modrm form
 used whenever the destination is not EAX; same relocation argument, same mask.
 

@@ -1,5 +1,11 @@
 # The `MOSURA_*` environment names: every one classified (review R6, commit 3)
 
+> **2026-09-05 — the knobs are no longer environment variables.** Every behaviour knob in this
+> inventory became a `switches::Knobs` value (`--arms-off <switch>`, `--cspec <id>`,
+> `--disable-analyzers <list>`), carried on the `Program` and every `Funcdata`; the rows below are
+> the R6-era inventory with each retirement noted. The diagnostics move next (plan WP3), the
+> locations after (WP4/WP5); the plan is `docs/product/plan-2026-09-05.md`.
+
 *The inventory at a531553 (before R6): 81 names, 208 `eprintln!` in crates/mosura/src, 141 `std::env::var` reads outside paths.rs. Four kinds: a DEBUG PRINT gate (read at the print site — migrated to `crate::debug`, `MOSURA_DEBUG=topic,..`), a BEHAVIOUR KNOB (changes what the decompiler, the survey or an oracle does — decided one by one: an axis/option with a doc, or deleted with its branch), a PATH (configuration, paths.rs, untouched), a TEST HOOK / INSTRUMENT (kept, documented). The emit-layer decisions are executed in R6; the others are listed for the ledger. Evidence: the read sites at a531553.*
 
 | name | kind | sites (file:line at a531553) | decision |
@@ -10,7 +16,7 @@
 | `MOSURA_ARG_DEBUG` | debug print gate | analysis/decompiler.rs:470 analysis/decompiler.rs:491 decompile/build.rs:213 decompile/heritage.rs:1545 | MIGRATED, R6 commit 4 -> `MOSURA_DEBUG=args` (commit 4a, 4b, 4c) -- done |
 | `MOSURA_BLOCKSET` | debug print gate (emit) | decompile/printc.rs:4810 decompile/printc.rs:4811 decompile/printc.rs:4830 decompile/printc.rs:4841 decompile/structure. | MIGRATED, R6 commit 2 -> `MOSURA_DEBUG=printc` -- done |
 | `MOSURA_CALLARGS` | debug print gate (emit) | decompile/printc.rs:2175 | MIGRATED, R6 commit 2 -> `MOSURA_DEBUG=printc` -- done |
-| `MOSURA_CALLEE_EFFECTS` | behaviour knob (analysis) | analysis/decompiler.rs:289 analysis/decompiler.rs:308 | DECIDE later (not emit): `=0` disables a landed pass (callee effects) -- an A/B switch; becomes an analysis option next to DISABLE_ANALYZERS or goes -- listed |
+| `MOSURA_CALLEE_EFFECTS` | behaviour knob (analysis) | analysis/decompiler.rs:289 analysis/decompiler.rs:308 | DECIDE later (not emit): `=0` disables a landed pass (callee effects) -- an A/B switch; becomes an analysis option next to DISABLE_ANALYZERS or goes -- listed — RETIRED 2026-09-05 → `Switch::CalleeEffects`, `--arms-off callee-effects` (WP0/WP2). |
 | `MOSURA_CFG` | debug print gate (emit) | decompile/varmap.rs:859 decompile/structure.rs:3167 decompile/structure.rs:3196 decompile/structure.rs:3204 | MIGRATED, R6 commit 2 -> `MOSURA_DEBUG=structure` -- done |
 | `MOSURA_CNV_EXE` | path | paths.rs:179 paths.rs:182 analysis/loader/pe.rs:248 | paths.rs configuration, untouched |
 | `MOSURA_COLLAPSE` | debug print gate (emit) | decompile/structure.rs:3377 | MIGRATED, R6 commit 2 -> `MOSURA_DEBUG=structure` -- done |
@@ -23,7 +29,7 @@
 | `MOSURA_CP_PROBE` | debug print gate | analysis/analyzers/mod.rs:957 | MIGRATED, R6 commit 4 -> `MOSURA_DEBUG=analysis` (commit 4a) -- done |
 | `MOSURA_DEADCODE_DEBUG` | debug print gate | decompile/deadcode.rs:30 decompile/deadcode.rs:33 | MIGRATED, R6 commit 4 -> `MOSURA_DEBUG=pipeline` (commit 4d) -- done |
 | `MOSURA_DEBUG` | facility |  | the facility itself (`crate::debug`, R6 commit 1): `topic,..|all`, read once |
-| `MOSURA_DISABLE_ANALYZERS` | analysis option | analysis/manager.rs:249 analysis/overrides.rs:3 analysis/overrides.rs:48 analysis/overrides.rs:58 | KEEP, documented: Ghidra's per-analyzer switch (`analyzeHeadless -preScript`), thread override + env fallback (`analysis::overrides`) -- listed |
+| `MOSURA_DISABLE_ANALYZERS` | analysis option | analysis/manager.rs:249 analysis/overrides.rs:3 analysis/overrides.rs:48 analysis/overrides.rs:58 | KEEP, documented: Ghidra's per-analyzer switch (`analyzeHeadless -preScript`), thread override + env fallback (`analysis::overrides`) -- listed — RETIRED 2026-09-05 → `Knobs::disabled_analyzers`, `--disable-analyzers` (WP2). |
 | `MOSURA_DISTRIB` | debug print gate | decompile/ptrarith.rs:39 decompile/ptrarith.rs:492 decompile/ptrarith.rs:870 decompile/ptrarith.rs:1314 decompile/ptrari | MIGRATED, R6 commit 4 -> `MOSURA_DEBUG=pointers` (commit 4d) -- done |
 | `MOSURA_EFFECTS_DEBUG` | debug print gate | analysis/decompiler.rs:314 analysis/decompiler.rs:590 analysis/decompiler.rs:642 | MIGRATED, R6 commit 4 -> `MOSURA_DEBUG=effects` (commit 4a) -- done |
 | `MOSURA_EMIT_DEBUG` | debug print gate (emit) | recompile/recovery.rs:9 recompile/recovery.rs:123 | MIGRATED, R6 commit 2 -> `MOSURA_DEBUG=recover` -- done |
@@ -49,10 +55,10 @@
 | `MOSURA_PERF` | debug print gate | decompile/action.rs:86 decompile/action.rs:102 decompile/action.rs:105 | MIGRATED, R6 commit 4 -> `MOSURA_DEBUG=perf` (commit 4f) -- done |
 | `MOSURA_PLACEHOLDER` | debug print gate | decompile/fspec.rs:1796 decompile/fspec.rs:1801 | MIGRATED, R6 commit 4 -> `MOSURA_DEBUG=args` (commit 4b) -- done |
 | `MOSURA_PROTO` | debug print gate | decompile/fspec.rs:1676 decompile/fspec.rs:1679 | MIGRATED, R6 commit 4 -> `MOSURA_DEBUG=args` (commit 4b) -- done |
-| `MOSURA_PROTO_PASS` | doc-only | decompile/recover.rs:1283 | a comment mentions it; no read -- drop the mention -- listed |
+| `MOSURA_PROTO_PASS` | doc-only | decompile/recover.rs:1283 | a comment mentions it; no read -- drop the mention -- listed — RETIRED 2026-09-05 → the `proto-pass` switch (WP2). |
 | `MOSURA_PTRFIT` | debug print gate | decompile/setcasts.rs:39 decompile/setcasts.rs:84 decompile/setcasts.rs:139 decompile/setcasts.rs:157 | MIGRATED, R6 commit 4 -> `MOSURA_DEBUG=pointers` (commit 4d) -- done |
 | `MOSURA_RESTART_DEBUG` | debug print gate | analysis/decompiler.rs:198 decompile/heritage.rs:2513 decompile/heritage.rs:2638 | MIGRATED, R6 commit 4 -> `MOSURA_DEBUG=heritage` (commit 4a, 4c) -- done |
-| `MOSURA_RETSPLIT` | behaviour knob (decompile) | decompile/blockjoin.rs:500 decompile/blockjoin.rs:503 | DECIDE later (not emit): `=0` disables ActionReturnSplit ("NOT a doctrine change") -- an A/B switch; same treatment as CALLEE_EFFECTS -- listed |
+| `MOSURA_RETSPLIT` | behaviour knob (decompile) | decompile/blockjoin.rs:500 decompile/blockjoin.rs:503 | DECIDE later (not emit): `=0` disables ActionReturnSplit ("NOT a doctrine change") -- an A/B switch; same treatment as CALLEE_EFFECTS -- listed — RETIRED 2026-09-05 → `Switch::RetSplit`, `--arms-off ret-split` (WP2). |
 | `MOSURA_RETSPLIT_DEBUG` | debug print gate | decompile/blockjoin.rs:395 decompile/blockjoin.rs:499 decompile/blockjoin.rs:537 | MIGRATED, R6 commit 4 -> `MOSURA_DEBUG=ret-split` (commit 4e) -- done |
 | `MOSURA_RSDEBUG` | debug print gate | decompile/stackvars.rs:127 decompile/stackvars.rs:192 | MIGRATED, R6 commit 4 -> `MOSURA_DEBUG=stack-vars` (commit 4c) -- done |
 | `MOSURA_SAVEDSLOT` | debug print gate | decompile/heritage.rs:1533 | MIGRATED, R6 commit 4 -> `MOSURA_DEBUG=heritage` (commit 4c) -- done |
@@ -84,7 +90,7 @@
 | `MOSURA_WATCH_CALL` | debug print with a value | decompile/funcdata.rs:2148 decompile/funcdata.rs:2149 decompile/funcdata.rs:2180 decompile/funcdata.rs:2182 | DECIDE later (not emit): watches one call's input edits; a `debug::param` candidate -- since R6 (4d) the print it selects is under `MOSURA_DEBUG=pipeline` as well; the value filter stays -- listed |
 | `MOSURA_WATCOM_DIR` | path | paths.rs:186 paths.rs:190 | paths.rs configuration, untouched |
 | `MOSURA_X32_EXE` | path | paths.rs:172 paths.rs:176 | paths.rs configuration, untouched |
-| `MOSURA_X86_32_CSPEC` | test hook | analysis/overrides.rs:5 analysis/overrides.rs:50 analysis/overrides.rs:63 analysis/overrides.rs:111 analysis/loader/watc | KEEP, documented: the forced x86-32 cspec (`analysis::overrides`, loader/watcom.rs explains why it must exist) -- listed |
+| `MOSURA_X86_32_CSPEC` | test hook | analysis/overrides.rs:5 analysis/overrides.rs:50 analysis/overrides.rs:63 analysis/overrides.rs:111 analysis/loader/watc | KEEP, documented: the forced x86-32 cspec (`analysis::overrides`, loader/watcom.rs explains why it must exist) -- listed — RETIRED 2026-09-05 → `Knobs::x86_32_cspec`, `--cspec` (WP2). |
 | `MOSURA_ZAP_DEBUG` | debug print gate | recompile/watsched.rs:644 (+ examples/war2_survey.rs, the zapcheck driver) | MIGRATED, R6 commit 4 -> `MOSURA_DEBUG=watsched` (commit 4g, 4h) -- done |
 | `MOSURA_KERNEL_SHADOW` | debug print gate (survey) | examples/war2_survey.rs | MIGRATED, R6 commit 4h -> `MOSURA_DEBUG=survey` (the survey's own diagnostics; its normal output stays plain) -- done |
 | `MOSURA_SHARED_RET_DEBUG` | debug print gate (survey) | examples/war2_survey.rs | MIGRATED, R6 commit 4h -> `MOSURA_DEBUG=survey` (the survey's own diagnostics; its normal output stays plain) -- done |

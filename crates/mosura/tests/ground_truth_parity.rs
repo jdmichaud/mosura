@@ -14,7 +14,7 @@
 use std::collections::BTreeSet;
 
 use mosura::analysis::{self, decompiler::decompile_function, program::RefType};
-use mosura::analysis::overrides;
+use mosura::switches::Knobs;
 use mosura::decompile::printc::print_c;
 use mosura::decompile::space::Address;
 use mosura::paths::ground_truth_dir;
@@ -70,6 +70,13 @@ fn parse_truth(text: &str) -> Truth {
 }
 
 /// The four Function Start Search analyzers, by the names the manager registers them under.
+/// The ablation as a value: analyse with the byte-pattern analyzers off (and optionally a declared
+/// x86-32 compiler spec) through `Knobs`, which the loader, the analysis and every decompile read
+/// from the program — nothing per-thread, nothing per-process (see `mosura::switches::Knobs`).
+fn patterns_off(x86_32_cspec: Option<&str>) -> Knobs {
+    Knobs::default().with_disabled_analyzers(Some(BYTE_PATTERN_ANALYZERS)).with_x86_32_cspec(x86_32_cspec)
+}
+
 const BYTE_PATTERN_ANALYZERS: &str = "Function Start Pre Search,Function Start Search,\
 Function Start Search After Code,Function Start Search After Data";
 
@@ -109,13 +116,13 @@ fn byte_pattern_carve_out(
     }
     // Which of these does the byte-pattern search account for? Re-analyze with it off.
     let without: BTreeSet<u64> = {
-        // Per-thread, NOT `std::env` — see `analysis::overrides`. Mutating the process
-        // environment here leaked into whatever another test was analysing in parallel.
-        let _guard = overrides::disable_analyzers(BYTE_PATTERN_ANALYZERS);
+        // A value on the program, never the environment (mutating the process environment here
+        // once leaked into whatever another test was analysing in parallel).
+        let knobs = patterns_off(None);
         let p = if bin.extension().is_some_and(|x| x == "watcom-le") {
-            analysis::analyze_le_file(bin).expect("analyze")
+            analysis::analyze_le_file_with(bin, &knobs).expect("analyze")
         } else {
-            analysis::analyze_file(bin).expect("analyze")
+            analysis::analyze_file_with(bin, &knobs).expect("analyze")
         };
         p.function_manager.functions().map(|f| f.entry_point().offset).collect()
     };
@@ -1209,8 +1216,7 @@ fn function_start_pattern_search() {
     // (3) THE ATTRIBUTION — with the byte-pattern analyzers off it goes back to missing, so the
     // recovery is theirs and not some other pass's.
     let without = {
-        let _guard = overrides::disable_analyzers(BYTE_PATTERN_ANALYZERS);
-        analysis::analyze_file(&bin).expect("analyze fnpattern")
+        analysis::analyze_file_with(&bin, &patterns_off(None)).expect("analyze fnpattern")
     };
     assert!(
         without.function_manager.function_at(at(orphan)).is_none(),
@@ -1361,8 +1367,7 @@ fn above_function_guard_tests_fall_through() {
     // the decoded-but-not-a-function state above it survives. That splits the two mechanisms: the
     // decode is the address table's, the function is the pattern search's.
     let without = {
-        let _guard = overrides::disable_analyzers(BYTE_PATTERN_ANALYZERS);
-        analysis::analyze_file_as(&bin, Some("watcom")).expect("analyze retorphan")
+        analysis::analyze_file_with(&bin, &patterns_off(Some("watcom"))).expect("analyze retorphan")
     };
     assert!(
         without.function_manager.function_at(at(orphan)).is_none(),
@@ -1638,10 +1643,14 @@ fn watcom_stack_probe_shape_spec() {
     let run = |analyzers_off: bool| -> BTreeSet<u64> {
         // The corpus cannot reach the `watcom` pattern file on its own — no ground-truth binary
         // carries a Watcom run-time banner. See `watcom_save_first_shape_spec` for the detail.
-        // Per-thread overrides, NOT `std::env`: see `analysis::overrides`.
-        let _a = analyzers_off.then(|| overrides::disable_analyzers(BYTE_PATTERN_ANALYZERS));
-        let p = analysis::analyze_file_as(&bin, Some("watcom")).expect("analyze wprobe");
-        assert_eq!(p.compiler_spec_id, "watcom", "MOSURA_X86_32_CSPEC did not take effect");
+        // The knobs are a value on this call, not process or thread state.
+        let knobs = if analyzers_off {
+            patterns_off(Some("watcom"))
+        } else {
+            Knobs::default().with_x86_32_cspec(Some("watcom"))
+        };
+        let p = analysis::analyze_file_with(&bin, &knobs).expect("analyze wprobe");
+        assert_eq!(p.compiler_spec_id, "watcom", "the declared compiler spec did not take effect");
         p.function_manager.functions().map(|f| f.entry_point().offset).collect()
     };
 
@@ -1845,8 +1854,8 @@ fn watcom_save_first_shape_spec() {
 
     // Route the binary through a compiler spec, run the analysis, return the function set.
     let entries = |cspec: Option<&str>, analyzers_off: bool| -> (BTreeSet<u64>, String) {
-        let _a = analyzers_off.then(|| overrides::disable_analyzers(BYTE_PATTERN_ANALYZERS));
-        let p = analysis::analyze_file_as(&bin, cspec).expect("analyze wprologue_sf");
+        let knobs = if analyzers_off { patterns_off(cspec) } else { Knobs::default().with_x86_32_cspec(cspec) };
+        let p = analysis::analyze_file_with(&bin, &knobs).expect("analyze wprologue_sf");
         let cspec = p.compiler_spec_id.clone();
         (p.function_manager.functions().map(|f| f.entry_point().offset).collect(), cspec)
     };
