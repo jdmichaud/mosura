@@ -25,10 +25,20 @@ embedded into the library at build time, so a bare clone builds and runs with a 
 (rustup) alone — no Ghidra checkout, no environment variable:
 
 ```sh
-cargo run -q --example dumpc -- modulo        # decompiled C of a bundled x86-64 fixture
-cargo run -q --example dump  -- modulo --ir   # disassembly + p-code IR
-cargo test                                    # self-contained
+cargo run -q -p mosura-cli -- identify <binary>            # what is this file? (container, loader, compiler, language, FID)
+cargo run -q -p mosura-cli -- -S work add <binary>         # a session is a directory; the input is content-addressed
+cargo run -q -p mosura-cli -- -S work analyze              # auto-analysis, cached by content + options
+cargo run -q -p mosura-cli -- -S work functions            # tables: functions symbols refs blocks listing … (--format text|tsv|json)
+cargo run -q -p mosura-cli -- -S work decompile main       # C (--as raw for the IR); `emit <fn>` = the compilable Watcom TU
+cargo run -q -p mosura-cli -- lift 5589e5c3                # raw bytes → p-code; `disasm --bytes …`
+cargo run -q -p mosura-cli -- ops                          # every operation; `call <op> key=value` reaches each one
+cargo run -q --example dumpc -- modulo                     # decompiled C of a bundled x86-64 fixture (dev grounding tool)
+cargo test                                                 # self-contained
 ```
+
+The library behind the command line is a C API: `cargo xtask dist` stages `dist/{libmosura.so,
+libmosura.a, mosura.h, mosura}` (the header is `include/mosura.h`, generated and committed); the
+`mosura` crate is the Rust binding over it, and `docs/product/architecture.md` is the design.
 
 An override directory is consulted first, file by file (`--data-dir <dir>` on every front-end);
 `cargo xtask data-export <dir>` writes the embedded data out to jump-start one.
@@ -46,8 +56,9 @@ scripts/setup-oracle.sh     # additionally build the Ghidra C++ oracle tools
 Machine-specific locations (the checkout, toolchains, user-provided binaries) live in the
 gitignored `dev-config.toml`; `dev-config.example.toml` lists every key with its default.
 
-mosura is early-stage: it currently decompiles the bundled Ghidra datatest fixtures
-rather than arbitrary binaries.
+mosura is early-stage: it loads ELF, PE, MZ, LE/LX, X-32, CP/M `.com` and raw images, analyzes
+them to convergence and decompiles their functions; the recovered-emission and recompilation
+pipeline targets Watcom x86-32.
 
 ## Developer quick start
 
