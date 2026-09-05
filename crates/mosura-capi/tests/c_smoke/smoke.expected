@@ -1,0 +1,10 @@
+sizeof(mosura_ctx_config) 72
+abi 0.1
+language x86:LE:64:default
+functions 15
+main 0x401168
+c xunknown8 FUN_00401168(void)
+release(foreign) refused
+rows(wrong kind) 0 named
+bad option 1 doc
+ok
