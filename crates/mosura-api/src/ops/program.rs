@@ -95,7 +95,7 @@ pub fn program_of(s: &mut Session, o: &Options) -> Result<(Key, Arc<Program>)> {
 
 // ── program.load / program.analyze ──
 
-fn summary_of_set(k: &Key, set: &TableSet) -> Result<Table> {
+pub fn summary_of_set(k: &Key, set: &TableSet) -> Result<Table> {
     let pt = set.table("program")?;
     let listing = set.table("listing")?;
     let mut insns = 0u64;
@@ -136,9 +136,8 @@ fn load_or_analyze(s: &mut Session, o: &Options, p: &mut dyn Progress, analyze: 
         }
         analysis::analyze(&mut program);
     }
-    let settings = o.decompile_settings()?;
-    program.global_scope_all_loaded = settings.global_scope_all_loaded;
-    program.proto_scope = settings.proto_scope.clone();
+    // the decompile-time settings (global scope, proto scope) are OPTIONS applied at thaw, not
+    // program state: the set carries none
     let set = freeze(&program, &o.tag());
     s.write_set(SetKind::Program, &k, &set, &Provenance { stage: Stage::Analysis, op: op.name, inputs: &[digest], tag: &o.tag(), label: filename.as_deref().unwrap_or("") })?;
     s.last_program = Some((k, Arc::new(program)));

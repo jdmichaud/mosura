@@ -23,6 +23,7 @@ use crate::table::Table;
 use crate::tbl;
 use lock::Lock;
 use mosura_core::analysis::program::Program;
+use mosura_core::recompile::round::EmitState;
 
 /// The on-disk session format; a session written by another version is refused (D6).
 pub const FORMAT_VERSION: u32 = 1;
@@ -83,6 +84,8 @@ pub struct Session {
     config: BTreeMap<String, String>,
     /// The last program thawed or loaded (its key), reused by every operation on it.
     pub last_program: Option<(Key, Arc<Program>)>,
+    /// The emit state (P0's `EmitState`) built for one passes set under one options tag.
+    pub emit_state: Option<(Key, String, EmitState)>,
 }
 
 fn hex(d: &[u8; 32]) -> String {
@@ -92,7 +95,7 @@ fn hex(d: &[u8; 32]) -> String {
 impl Session {
     /// Open (creating when absent) the session at `dir`, or an in-memory session for `None`.
     pub fn open(dir: Option<&Path>) -> Result<Session> {
-        let mut s = Session { dir: dir.map(Path::to_path_buf), mem_sets: BTreeMap::new(), mem_inputs: BTreeMap::new(), inputs: Vec::new(), config: BTreeMap::new(), last_program: None };
+        let mut s = Session { dir: dir.map(Path::to_path_buf), mem_sets: BTreeMap::new(), mem_inputs: BTreeMap::new(), inputs: Vec::new(), config: BTreeMap::new(), last_program: None, emit_state: None };
         let Some(dir) = dir else { return Ok(s) };
         for sub in ["", "program", "functions", "inputs"] {
             let d = dir.join(sub);

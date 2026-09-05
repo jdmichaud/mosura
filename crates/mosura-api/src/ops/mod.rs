@@ -4,6 +4,7 @@
 //! parameters against the registry, runs the body under `catch_unwind` (unless the context says
 //! abort) and hands back one table. New capability = one more entry in `REGISTRY`.
 
+pub mod emit;
 pub mod function;
 pub mod identify;
 pub mod program;
@@ -74,10 +75,12 @@ impl Op {
 /// Every operation, sorted by name (a test pins order and uniqueness).
 pub static REGISTRY: &[&Op] = &[
     &function::DECOMPILE,
+    &emit::EMIT,
     &identify::IDENTIFY,
     &program::ANALYZE,
     &program::DISASSEMBLE,
     &program::LOAD,
+    &emit::PASSES,
     &program::READ,
     &program::TABLES,
     &sleigh::DISASSEMBLE,

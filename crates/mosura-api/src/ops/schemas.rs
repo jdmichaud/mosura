@@ -16,7 +16,10 @@ pub static PROTOTYPE: Schema = Schema { name: "prototype", version: 1, columns: 
 pub static JUMPTABLES: Schema = Schema { name: "jumptables", version: 1, columns: &[C::hex("op_addr", T::U64), C::new("idx", T::U32), C::hex("target", T::U64), C::new("label", T::I64), C::new("is_default", T::Bool)] };
 pub static CALLS: Schema = Schema { name: "calls", version: 1, columns: &[C::hex("op_pc", T::U64), C::hex("target", T::U64), C::new("has_static_target", T::Bool)] };
 
-pub static ALL: &[&Schema] = &[&OPS, &SCHEMA, &IDENTIFY, &PROGRAM_SUMMARY, &TABLES, &BYTES, &INSTRUCTIONS, &PCODE, &PROTOTYPE, &JUMPTABLES, &CALLS];
+pub static GLOBAL_WIDTHS: Schema = Schema { name: "global_widths", version: 1, columns: &[C::hex("addr", T::U64), C::new("store_w", T::U32), C::new("read_w", T::U32)] };
+pub static EMIT_REPORT: Schema = Schema { name: "emit_report", version: 1, columns: &[C::new("key", T::Str), C::new("value", T::Str)] };
+
+pub static ALL: &[&Schema] = &[&OPS, &SCHEMA, &IDENTIFY, &PROGRAM_SUMMARY, &TABLES, &BYTES, &INSTRUCTIONS, &PCODE, &PROTOTYPE, &JUMPTABLES, &CALLS, &GLOBAL_WIDTHS, &EMIT_REPORT];
 
 pub fn by_name(name: &str) -> Option<&'static Schema> {
     ALL.iter().copied().find(|s| s.name == name)
