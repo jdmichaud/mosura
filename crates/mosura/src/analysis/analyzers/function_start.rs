@@ -281,22 +281,22 @@ impl PatternFactory for Factory {
 
 /// `Application.findModuleSubDirectories("data/patterns")` (Patterns.java:42) — every module's
 /// pattern directory. Ghidra walks its installed modules; mosura's equivalents are the SLEIGH
-/// processor tree (`<processors>/<proc>/data/patterns`) and its own `specs/patterns`, which is
-/// where the beyond-Ghidra Watcom mapping lives (see the module note).
+/// processor tree (`ghidra/Processors/<proc>/data/patterns`) and its own `specs/patterns`, which
+/// is where the beyond-Ghidra Watcom mapping lives (see the module note). Both come from the
+/// resource provider ([`crate::resources`]), so the directories are RELATIVE resource names.
 fn pattern_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(crate::paths::processors_dir()) {
-        let mut procs: Vec<PathBuf> = rd
-            .flatten()
-            .map(|e| e.path().join("data/patterns"))
-            .filter(|p| p.is_dir())
-            .collect();
-        procs.sort();
-        dirs.extend(procs);
+    let res = crate::resources::get();
+    let mut procs: Vec<PathBuf> = Vec::new();
+    for name in res.list("ghidra/Processors/") {
+        let Some((dir, _)) = name.rsplit_once('/') else { continue };
+        if dir.ends_with("/data/patterns") && procs.iter().all(|d| d.to_str() != Some(dir)) {
+            procs.push(PathBuf::from(dir));
+        }
     }
-    let mosura = crate::paths::specs_dir().join("patterns");
-    if mosura.is_dir() {
-        dirs.push(mosura);
+    procs.sort();
+    let mut dirs = procs;
+    if !res.list("specs/patterns/").is_empty() {
+        dirs.push(PathBuf::from("specs/patterns"));
     }
     dirs
 }
@@ -334,11 +334,12 @@ fn find_pattern_files_for(
     compiler_spec_id: &str,
     constraints_file: &str,
 ) -> Vec<PathBuf> {
+    let res = crate::resources::get();
     let dirs = pattern_dirs();
     let mut names: Vec<String> = Vec::new();
     for dir in &dirs {
         let path = dir.join(constraints_file);
-        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        let Some(text) = res.read_string(path.to_str().unwrap_or("")) else { continue };
         let Ok(doc) = roxmltree::Document::parse(&text) else { continue };
         for lang in doc.root_element().children().filter(|n| n.is_element()) {
             if lang.tag_name().name() != "language" {
@@ -374,7 +375,7 @@ fn find_pattern_files_for(
     // `Patterns.getPatternFile(patternDirs, name)` (:88) — first directory that has it wins.
     let mut out = Vec::new();
     for name in names {
-        if let Some(p) = dirs.iter().map(|d| d.join(&name)).find(|p| p.is_file()) {
+        if let Some(p) = dirs.iter().map(|d| d.join(&name)).find(|p| res.exists(p.to_str().unwrap_or(""))) {
             if !out.contains(&p) {
                 out.push(p);
             }
@@ -464,10 +465,10 @@ fn build_patterns(
         let mut factory = Factory::default();
         let mut patterns: Vec<Pattern<Action>> = Vec::new();
         for f in &files {
-            let Ok(text) = std::fs::read_to_string(f) else { continue };
+            let Some(text) = crate::resources::get().read_string(f.to_str().unwrap_or("")) else { continue };
             if let Err(e) = read_patterns(&text, &mut patterns, &mut factory) {
                 // Ghidra `readPatterns` (:938) logs and returns null — the analyzer is disabled.
-                eprintln!("mosura: pattern file error ({}): {e}", f.display());
+                crate::warn!("pattern file error ({}): {e}", f.display());
                 return None;
             }
         }
