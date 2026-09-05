@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/mosura-core", "crates/mosura-api", "crates/xtask"]
+members = ["crates/mosura-core", "crates/mosura-api", "crates/mosura-capi", "crates/xtask"]
 
 [workspace.package]
 edition = "2021"

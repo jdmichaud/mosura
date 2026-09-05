@@ -1,0 +1,15 @@
+[package]
+name = "mosura-capi"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "The mosura C API: extern \"C\" one-liners over mosura-api behind a pointer/panic boundary (libmosura)"
+
+[lib]
+name = "mosura_capi"
+crate-type = ["rlib", "cdylib", "staticlib"]
+
+[dependencies]
+mosura-api = { path = "../mosura-api" }
+mosura-core = { path = "../mosura-core" }
