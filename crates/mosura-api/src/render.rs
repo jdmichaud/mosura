@@ -6,7 +6,7 @@
 use std::fmt::Write as _;
 
 use crate::error::Result;
-use crate::schema::{ColHint, ColType};
+use crate::schema::{ColHint, ColType, Column, Schema};
 use crate::table::Table;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,7 +18,19 @@ pub enum Format {
 }
 
 /// The schema name whose single `text` column prints bare in TEXT.
+use crate::table::builder::TableBuilder;
 pub const TEXT_SCHEMA: &str = "text";
+
+/// The one-column text schema: a table whose TEXT rendering is its rows, bare (a C listing, a
+/// snapshot, a raw IR dump). Every op that answers "text" answers a table of this schema.
+pub static TEXT: Schema = Schema { name: TEXT_SCHEMA, version: 1, columns: &[Column::new("text", ColType::Str)] };
+
+/// One text as a `text` table (one row).
+pub fn text_table(s: &str) -> Table {
+    let mut b = TableBuilder::new(&TEXT);
+    b.row().str(s);
+    b.finish(false)
+}
 
 /// One cell as a string, the way TSV and TEXT show it: hex (no `0x`) for a Hex-hinted number,
 /// decimal otherwise; `true`/`false`; strings with tabs and newlines escaped; bytes as hex; lists
@@ -137,7 +149,6 @@ mod tests {
     use crate::table::builder::TableBuilder;
 
     static FNS: Schema = Schema { name: "test.fns", version: 1, columns: &[Column::hex("entry", ColType::U64), Column::new("name", ColType::Str), Column::new("blocks", ColType::U32), Column::new("ok", ColType::Bool), Column::hex("callees", ColType::ListU64)] };
-    static TEXT: Schema = Schema { name: TEXT_SCHEMA, version: 1, columns: &[Column::new("text", ColType::Str)] };
 
     fn fns() -> Table {
         let mut b = TableBuilder::new(&FNS);

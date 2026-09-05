@@ -41,7 +41,7 @@ fn main() {
         let in_recompile = rel.starts_with("recompile/");
         let emit_consults = rel == "decompile/printc.rs"
             || matches!(rel.as_str(), "recompile/recovery.rs" | "recompile/buildconfig.rs" | "recompile/insn.rs" | "recompile/watsched.rs");
-        let mut feed = |h: &mut blake3::Hasher| {
+        let feed = |h: &mut blake3::Hasher| {
             h.update(&(rel.len() as u32).to_le_bytes());
             h.update(rel.as_bytes());
             h.update(&(bytes.len() as u64).to_le_bytes());

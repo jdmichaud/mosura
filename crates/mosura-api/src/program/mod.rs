@@ -806,3 +806,9 @@ pub fn snapshot_text(set: &TableSet) -> Result<String> {
     let p = thaw(set, Knobs::default(), &DecompileSettings { global_scope_all_loaded: true, proto_scope: None })?;
     Ok(p.snapshot().render())
 }
+
+/// The snapshot as a `text` table — `program.tables` serves it under the virtual name
+/// `snapshot`, and `render(TEXT)` prints the golden format bare.
+pub fn snapshot_table(set: &TableSet) -> Result<Table> {
+    Ok(crate::render::text_table(&snapshot_text(set)?))
+}
