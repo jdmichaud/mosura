@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use clap::{Parser, Subcommand, ValueEnum};
 use mosura::Format;
 
-use app::{split_arms_off, usage, App, Res};
+use app::{split_arms_off, usage, App, Fail, Res};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum FormatArg {
@@ -198,6 +198,112 @@ enum Cmd {
     },
     /// Library and ABI versions
     Version,
+    /// Toolchains: the specs, add one (spec + this machine's install), list, check
+    Toolchain {
+        #[command(subcommand)]
+        sub: ToolchainCmd,
+    },
+    /// Emit → compile → verify one function (or every function) through a toolchain
+    Recompile {
+        func: Option<String>,
+        #[arg(long)]
+        all: bool,
+        #[arg(long, value_name = "NAME")]
+        toolchain: String,
+        /// The install location for this run only (else the machine config)
+        #[arg(long, value_name = "DIR")]
+        install: Option<String>,
+        /// Print the aligned instruction diff
+        #[arg(long)]
+        verbose: bool,
+    },
+    /// Verify a compiled object file against the original function
+    Verify { func: String, object: PathBuf },
+    /// Corpus rounds: run, compare, list, show, export, import
+    Round {
+        #[command(subcommand)]
+        sub: RoundCmd,
+    },
+    /// The verdict gates of a stored round
+    Gates {
+        round: String,
+        #[arg(long, value_name = "ROUND")]
+        baseline: Option<String>,
+        /// The subject profile's corpus-gates.tsv
+        #[arg(long, value_name = "FILE")]
+        gates: Option<String>,
+        /// A smoke expectation file (idx va name expected)
+        #[arg(long, value_name = "FILE")]
+        expect: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum ToolchainCmd {
+    Specs,
+    Add {
+        name: String,
+        #[arg(long, value_name = "SPEC")]
+        spec: String,
+        #[arg(long, value_name = "DIR")]
+        install: String,
+    },
+    List,
+    Check {
+        name: String,
+        #[arg(long, value_name = "DIR")]
+        install: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum RoundCmd {
+    Run {
+        name: String,
+        #[arg(long, value_name = "NAME")]
+        toolchain: String,
+        #[arg(long, value_name = "DIR")]
+        install: Option<String>,
+        #[arg(long, value_name = "ROUND")]
+        baseline: Option<String>,
+        #[arg(long, value_name = "user|all|list")]
+        scope: Option<String>,
+        #[arg(long = "scope-file", value_name = "FILE")]
+        scope_file: Option<String>,
+        #[arg(long, value_name = "FILE")]
+        expect: Option<String>,
+        #[arg(long = "exclude-foreign", value_name = "FILE")]
+        exclude_foreign: Option<String>,
+        #[arg(long, value_name = "FILE")]
+        gates: Option<String>,
+        #[arg(long, value_name = "TEXT")]
+        label: Option<String>,
+    },
+    Compare { a: String, b: String },
+    List,
+    Show {
+        name: String,
+        #[arg(long, value_name = "manifest|verdicts|divergences|gates")]
+        table: Option<String>,
+    },
+    Export {
+        name: String,
+        #[arg(long, value_name = "FILE")]
+        out: Option<PathBuf>,
+        #[arg(long, value_name = "FILE")]
+        divergences: Option<PathBuf>,
+    },
+    Import {
+        name: String,
+        #[arg(long, value_name = "FILE")]
+        verdicts: PathBuf,
+        #[arg(long, value_name = "FILE")]
+        divergences: Option<PathBuf>,
+        #[arg(long, value_name = "FILE")]
+        manifest: Option<PathBuf>,
+        #[arg(long, value_name = "TEXT")]
+        label: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -248,6 +354,7 @@ fn run(cli: Cli) -> Res<()> {
     let mut app = App::new(cli.data_dirs.clone(), cli.abort_on_panic, format, cli.progress, &cli.session)?;
     let machine = config::load(cli.config.as_deref()).map_err(usage)?;
     app.apply_machine_config(&machine)?;
+    app.machine_config = cli.config.clone().or_else(config::default_path);
     for kv in &cli.set {
         let (k, v) = kv.split_once('=').ok_or_else(|| usage(format!("`-o {kv}`: expected KEY=VALUE")))?;
         app.opts.set(k.trim(), v.trim())?;
@@ -375,40 +482,44 @@ fn run(cli: Cli) -> Res<()> {
                     app.opts.set("knobs.off", &switches)?;
                 }
             }
-            let entries = targets(&mut app, func, all)?;
-            if let Some(dir) = &out {
-                std::fs::create_dir_all(dir).map_err(|e| usage(format!("{}: {e}", dir.display())))?;
-            }
-            let (mut ok, mut failed) = (0usize, 0usize);
-            for e in &entries {
-                let entry = format!("{e:#x}");
-                let fmt = if report { "table:report" } else { "tu" };
-                let t = match app.call("function.emit", &[("entry", &entry), ("format", fmt)]) {
-                    Ok(t) => t,
-                    Err(f) if out.is_some() && f.code == 4 => {
-                        eprintln!("{entry}: {}", f.message);
+            if all {
+                // the whole emission in one operation — the survey's `recovered/` tree after the
+                // caller-side pragma post-pass; files named by the emit index like the survey's
+                let em = app.call("program.emit", &[])?;
+                if report {
+                    return app.show(&em);
+                }
+                let (mut ok, mut failed) = (0usize, 0usize);
+                if let Some(dir) = &out {
+                    std::fs::create_dir_all(dir).map_err(|e| usage(format!("{}: {e}", dir.display())))?;
+                }
+                for r in 0..em.rows() {
+                    let status = em.str(r, 3)?;
+                    if status != "OK" {
                         failed += 1;
+                        if out.is_none() {
+                            println!("/* ===== {:#010x} {} ===== */", em.u64(r, 1)?, status);
+                        }
                         continue;
                     }
-                    Err(f) => return Err(f),
-                };
-                match &out {
-                    None => app.show(&t)?,
-                    Some(dir) => {
-                        // the survey's file names: the emit index of the function, five digits
-                        let rep = app.call("function.emit", &[("entry", &entry), ("format", "table:report")])?;
-                        let idx = (0..rep.rows()).find(|&r| rep.str(r, 0).map(|k| k == "idx").unwrap_or(false)).map(|r| rep.str(r, 1).unwrap_or("0").to_string()).unwrap_or_else(|| "0".into());
-                        let idx: usize = idx.parse().unwrap_or(0);
-                        let text = t.render(Format::MOSURA_FMT_TEXT)?;
-                        std::fs::write(dir.join(format!("{idx:05}.c")), text).map_err(|e| usage(format!("{}: {e}", dir.display())))?;
-                        ok += 1;
+                    ok += 1;
+                    match &out {
+                        Some(dir) => std::fs::write(dir.join(format!("{:05}.c", em.u64(r, 0)?)), em.str(r, 6)?).map_err(|e| usage(format!("{}: {e}", dir.display())))?,
+                        None => {
+                            println!("/* ===== {:05} {:#010x} {} ===== */", em.u64(r, 0)?, em.u64(r, 1)?, em.str(r, 2)?);
+                            print!("{}", em.str(r, 6)?);
+                        }
                     }
                 }
+                if let Some(dir) = &out {
+                    eprintln!("emit: {ok} written to {}, {failed} not emitted (decompile failed)", dir.display());
+                }
+                return Ok(());
             }
-            if let Some(dir) = &out {
-                eprintln!("emit: {ok} written to {}, {failed} failed", dir.display());
-            }
-            Ok(())
+            let entry = targets(&mut app, func, false)?[0];
+            let fmt = if report { "table:report" } else { "tu" };
+            let t = app.call("function.emit", &[("entry", &format!("{entry:#x}")), ("format", fmt)])?;
+            app.show(&t)
         }
         Cmd::Snapshot => {
             let t = app.call("program.tables", &[("table", "snapshot")])?;
@@ -484,6 +595,148 @@ fn run(cli: Cli) -> Res<()> {
         },
         Cmd::Version => {
             println!("mosura {} (abi {}.{})", mosura::version(), mosura::abi_version() >> 16, mosura::abi_version() & 0xffff);
+            Ok(())
+        }
+        Cmd::Toolchain { sub } => match sub {
+            ToolchainCmd::Specs => {
+                let t = app.ctx.toolchain_specs()?;
+                app.show(&t)
+            }
+            ToolchainCmd::Add { name, spec, install } => {
+                // the CHOICE is the session's (it affects results), the LOCATION this machine's
+                app.call("session.config.set", &[("key", &format!("toolchains.{name}.spec")), ("value", &spec)])?;
+                let path = app.machine_config.clone().ok_or_else(|| usage("no machine config path (no home directory): pass --config <file>"))?;
+                config::set(&path, &format!("toolchains.{name}.install"), &install).map_err(usage)?;
+                app.toolchain_installs.insert(name.clone(), install.clone());
+                println!("toolchain {name}: spec {spec} (session config), install {install} ({})", path.display());
+                Ok(())
+            }
+            ToolchainCmd::List => {
+                let cfg = app.session_config()?;
+                println!("name	spec	install");
+                for (k, spec) in &cfg {
+                    if let Some(name) = k.strip_prefix("toolchains.").and_then(|r| r.strip_suffix(".spec")) {
+                        println!("{name}	{spec}	{}", app.toolchain_installs.get(name).map(String::as_str).unwrap_or("(no install on this machine)"));
+                    }
+                }
+                Ok(())
+            }
+            ToolchainCmd::Check { name, install } => {
+                app.open_toolchain(&name, None, install.as_deref())?;
+                let t = app.call("toolchain.check", &[("toolchain", &name)])?;
+                app.show(&t)?;
+                if !t.bool(0, 1)? {
+                    return Err(Fail { code: 1, message: format!("toolchain {name}: the probe did not compile") });
+                }
+                Ok(())
+            }
+        },
+        Cmd::Recompile { func, all, toolchain, install, verbose } => {
+            app.open_toolchain(&toolchain, None, install.as_deref())?;
+            let entries = targets(&mut app, func.clone(), all)?;
+            let mut not_exact = 0usize;
+            for e in &entries {
+                let entry = format!("{e:#x}");
+                let t = app.call("function.recompile", &[("entry", &entry), ("toolchain", &toolchain)])?;
+                app.show(&t)?;
+                if t.str(0, 3)? != "EXACT" {
+                    not_exact += 1;
+                }
+                if verbose {
+                    let d = app.call("function.recompile", &[("entry", &entry), ("toolchain", &toolchain), ("format", "table:diff")])?;
+                    app.show(&d)?;
+                }
+            }
+            // one named function that is not EXACT fails the command: usable as a gate
+            if func.is_some() && not_exact > 0 {
+                return Err(Fail { code: 1, message: "not EXACT".into() });
+            }
+            Ok(())
+        }
+        Cmd::Verify { func, object } => {
+            let data = std::fs::read(&object).map_err(|e| usage(format!("{}: {e}", object.display())))?;
+            let label = object.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "object".into());
+            app.session()?.add_input(&data, &label)?;
+            let entry = app.resolve_function(&func)?;
+            let t = app.call("function.verify", &[("entry", &format!("{entry:#x}")), ("object", &label)])?;
+            app.show(&t)
+        }
+        Cmd::Round { sub } => match sub {
+            RoundCmd::Run { name, toolchain, install, baseline, scope, scope_file, expect, exclude_foreign, gates, label } => {
+                app.open_toolchain(&toolchain, None, install.as_deref())?;
+                let mut extra: Vec<(&str, String)> = vec![("round", name.clone()), ("toolchain", toolchain.clone())];
+                for (k, v) in [("round.baseline", baseline), ("round.scope", scope), ("round.scope-file", scope_file), ("round.expect", expect), ("round.exclude-foreign", exclude_foreign), ("gates.baseline", gates), ("label", label)] {
+                    if let Some(v) = v {
+                        extra.push((k, v));
+                    }
+                }
+                let pairs: Vec<(&str, &str)> = extra.iter().map(|(k, v)| (*k, v.as_str())).collect();
+                let t = app.call("round.run", &pairs)?;
+                app.show(&t)?;
+                let gates_t = app.call("round.show", &[("round", &name), ("table", "gates")])?;
+                let failed: Vec<String> = (0..gates_t.rows()).filter(|&r| gates_t.str(r, 1).map(|o| o == "FAIL").unwrap_or(false)).map(|r| gates_t.str(r, 0).unwrap_or("").to_string()).collect();
+                if !failed.is_empty() {
+                    return Err(Fail { code: 1, message: format!("round {name}: gate(s) failed: {}", failed.join(", ")) });
+                }
+                Ok(())
+            }
+            RoundCmd::Compare { a, b } => {
+                let t = app.call("round.compare", &[("a", &a), ("b", &b)])?;
+                app.show(&t)
+            }
+            RoundCmd::List => {
+                let t = app.call("round.list", &[])?;
+                app.show(&t)
+            }
+            RoundCmd::Show { name, table } => {
+                let mut extra = vec![("round", name.as_str())];
+                if let Some(tb) = &table {
+                    extra.push(("table", tb.as_str()));
+                }
+                let t = app.call("round.show", &extra)?;
+                app.show(&t)
+            }
+            RoundCmd::Export { name, out, divergences } => {
+                let mut extra: Vec<(&str, String)> = vec![("round", name.clone())];
+                if let Some(o) = &out {
+                    extra.push(("out", o.to_string_lossy().into_owned()));
+                }
+                if let Some(d) = &divergences {
+                    extra.push(("divergences", d.to_string_lossy().into_owned()));
+                }
+                let pairs: Vec<(&str, &str)> = extra.iter().map(|(k, v)| (*k, v.as_str())).collect();
+                let t = app.call("round.export", &pairs)?;
+                app.show(&t)
+            }
+            RoundCmd::Import { name, verdicts, divergences, manifest, label } => {
+                let mut extra: Vec<(&str, String)> = vec![("round", name.clone()), ("verdicts", verdicts.to_string_lossy().into_owned())];
+                if let Some(d) = &divergences {
+                    extra.push(("divergences", d.to_string_lossy().into_owned()));
+                }
+                if let Some(m) = &manifest {
+                    extra.push(("manifest", m.to_string_lossy().into_owned()));
+                }
+                if let Some(l) = &label {
+                    extra.push(("label", l.clone()));
+                }
+                let pairs: Vec<(&str, &str)> = extra.iter().map(|(k, v)| (*k, v.as_str())).collect();
+                let t = app.call("round.import", &pairs)?;
+                app.show(&t)
+            }
+        },
+        Cmd::Gates { round, baseline, gates, expect } => {
+            let mut extra: Vec<(&str, String)> = vec![("round", round.clone())];
+            for (k, v) in [("round.baseline", baseline), ("gates.baseline", gates), ("round.expect", expect)] {
+                if let Some(v) = v {
+                    extra.push((k, v));
+                }
+            }
+            let pairs: Vec<(&str, &str)> = extra.iter().map(|(k, v)| (*k, v.as_str())).collect();
+            let t = app.call("round.gates", &pairs)?;
+            app.show(&t)?;
+            if (0..t.rows()).any(|r| t.str(r, 1).map(|o| o == "FAIL").unwrap_or(false)) {
+                return Err(Fail { code: 1, message: format!("round {round}: a gate failed") });
+            }
             Ok(())
         }
     }

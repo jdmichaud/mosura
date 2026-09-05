@@ -35,6 +35,11 @@ pub struct App {
     diagnostic_keys: BTreeSet<String>,
     session_dir: Option<PathBuf>,
     session: Option<Session>,
+    /// `toolchains.<name>.install` from the machine config — where each named toolchain lives here.
+    pub toolchain_installs: BTreeMap<String, String>,
+    /// The machine config file `toolchain add` writes to.
+    pub machine_config: Option<PathBuf>,
+    opened: BTreeSet<String>,
 }
 
 impl App {
@@ -58,7 +63,7 @@ impl App {
             Some("-") | Some("mem") => None,
             _ => Some(session.to_path_buf()),
         };
-        Ok(App { ctx, format, progress, opts, op_params, diagnostic_keys, session_dir, session: None })
+        Ok(App { ctx, format, progress, opts, op_params, diagnostic_keys, session_dir, session: None, toolchain_installs: BTreeMap::new(), machine_config: None, opened: BTreeSet::new() })
     }
 
     /// Apply the machine config: only `Environment` keys may live there (none in this version).
@@ -69,6 +74,11 @@ impl App {
             affects.insert(reg.str(r, 0)?.to_string(), reg.str(r, 5)?.to_string());
         }
         for (k, v) in cfg {
+            // the CLI's own keys: where each named toolchain is installed on this machine
+            if let Some(name) = k.strip_prefix("toolchains.").and_then(|r| r.strip_suffix(".install")) {
+                self.toolchain_installs.insert(name.to_string(), v.clone());
+                continue;
+            }
             match affects.get(k).map(String::as_str) {
                 Some("environment") => self.opts.set(k, v)?,
                 Some(_) => return Err(usage(format!("machine config: `{k}` affects results and belongs in the session config (`mosura config set {k}={v}`)"))),
@@ -121,6 +131,37 @@ impl App {
             true
         };
         Ok(s.call(op, Some(&params), if progress { Some(&mut report) } else { None })?)
+    }
+
+    /// The session config as a map (the `session.config` table).
+    pub fn session_config(&mut self) -> Res<BTreeMap<String, String>> {
+        let t = self.call("session.config", &[])?;
+        let mut m = BTreeMap::new();
+        for r in 0..t.rows() {
+            m.insert(t.str(r, 0)?.to_string(), t.str(r, 1)?.to_string());
+        }
+        Ok(m)
+    }
+
+    /// Open the named toolchain in the session (once per process): its spec from `--spec` or the
+    /// session config (`toolchains.<name>.spec`, written by `toolchain add`), its install from
+    /// `--install` or the machine config (`toolchains.<name>.install`).
+    pub fn open_toolchain(&mut self, name: &str, spec: Option<&str>, install: Option<&str>) -> Res<()> {
+        if self.opened.contains(name) {
+            return Ok(());
+        }
+        let cfg = self.session_config()?;
+        let spec = match spec {
+            Some(s) => s.to_string(),
+            None => cfg.get(&format!("toolchains.{name}.spec")).cloned().ok_or_else(|| usage(format!("toolchain `{name}` has no spec: `mosura toolchain add {name} --spec <spec> --install <dir>` (see `mosura toolchain specs`)")))?,
+        };
+        let install = match install {
+            Some(i) => i.to_string(),
+            None => self.toolchain_installs.get(name).cloned().ok_or_else(|| usage(format!("toolchain `{name}`: no install location on this machine — `mosura toolchain add {name} --spec {spec} --install <dir>` writes it to the machine config, or pass --install")))?,
+        };
+        self.call("toolchain.open", &[("toolchain", name), ("toolchain.spec", &spec), ("toolchain.install", &install)])?;
+        self.opened.insert(name.to_string());
+        Ok(())
     }
 
     /// Remember the current program in the session config (the default `program` of every op).
