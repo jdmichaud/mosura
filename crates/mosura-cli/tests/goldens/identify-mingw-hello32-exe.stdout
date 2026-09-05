@@ -32,4 +32,9 @@ entry	0x4013f0
 functions	1	loader-stage
 symbols	2	loader-stage
 relocations	0	
-fid.records	0	no database matches this language and spec
+fid.database	vs2012_x86	80059 records, 2 libraries
+fid.database	vs2015_x86	88502 records, 2 libraries
+fid.database	vs2017_x86	47465 records, 2 libraries
+fid.database	vs2019_x86	64373 records, 2 libraries
+fid.database	vsOlder_x86	216946 records, 10 libraries
+fid.records	497345	

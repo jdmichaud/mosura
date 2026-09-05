@@ -20,6 +20,41 @@ fn goldens_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/goldens")
 }
 
+/// A data directory that deterministically supplies the Ghidra FID databases under the `fid`
+/// prefix, for the `identify` goldens. Without it their FID-database rows depend on build-feature
+/// unification: a plain `-p mosura-cli` build is embedded-only (`resources::default_for_process`
+/// since the dev-tier split), while a full `cargo test` / `--workspace` build unifies core's `dev`
+/// feature (via `mosura-dev-ops`) and mounts the workspace. `--data-dir <this>` mounts the same
+/// committed databases in every configuration, so the goldens are stable. Skips silently if the
+/// databases are absent (the identify output then simply lists none — the goldens are recorded
+/// with them present).
+fn fid_data_dir() -> PathBuf {
+    let d = workspace().join("target").join("cli-golden-data");
+    let fid = d.join("fid");
+    let _ = std::fs::create_dir_all(&fid);
+    let src = workspace().join("third_party/ghidra-data/FunctionID");
+    // a real `fid` directory of per-file links to the committed databases (the resource walk does
+    // not follow a symlinked directory, but a real directory of file links is fine; links avoid an
+    // 80 MB copy on the same filesystem)
+    if let Ok(entries) = std::fs::read_dir(&src) {
+        for e in entries.flatten() {
+            let name = e.file_name();
+            if !name.to_string_lossy().ends_with(".fidb") {
+                continue;
+            }
+            let dst = fid.join(&name);
+            if dst.exists() {
+                continue;
+            }
+            if std::fs::hard_link(e.path(), &dst).is_err() {
+                #[cfg(unix)]
+                let _ = std::os::unix::fs::symlink(e.path(), &dst);
+            }
+        }
+    }
+    d
+}
+
 struct Case {
     name: &'static str,
     /// Commands run first on the case's session (each a list of args), output discarded.
@@ -74,7 +109,14 @@ fn run_case(c: &Case) -> String {
         assert!(o.status.success(), "{}: setup {step:?} failed: {}", c.name, String::from_utf8_lossy(&o.stderr));
     }
     let args: Vec<String> = c.args.iter().map(|a| absolute(a)).collect();
-    let o = Command::new(bin()).arg("-S").arg(&session).args(&args).output().unwrap();
+    // the identify goldens list the FID databases the resource provider holds; pin that data so
+    // the output does not depend on which cargo build produced the binary (see fid_data_dir)
+    let mut pre: Vec<String> = Vec::new();
+    if c.name.starts_with("identify") {
+        pre.push("--data-dir".into());
+        pre.push(fid_data_dir().to_string_lossy().into_owned());
+    }
+    let o = Command::new(bin()).arg("-S").arg(&session).args(&pre).args(&args).output().unwrap();
     assert!(o.status.success(), "{}: {:?} failed: {}", c.name, c.args, String::from_utf8_lossy(&o.stderr));
     let _ = std::fs::remove_dir_all(&session);
     String::from_utf8(o.stdout).unwrap()
