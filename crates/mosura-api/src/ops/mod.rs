@@ -7,6 +7,7 @@
 pub mod identify;
 pub mod program;
 pub mod schemas;
+pub mod sleigh;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -77,6 +78,8 @@ pub static REGISTRY: &[&Op] = &[
     &program::LOAD,
     &program::READ,
     &program::TABLES,
+    &sleigh::DISASSEMBLE,
+    &sleigh::LIFT,
 ];
 
 pub fn registry() -> &'static [&'static Op] {

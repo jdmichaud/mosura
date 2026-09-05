@@ -563,6 +563,14 @@ impl Spec {
 
     /// Build a context-register word array from named context-variable settings
     /// (e.g. the `.pspec` `<context_set>` defaults: `longMode=1`, `addrsize=2`…).
+    /// The names of the context variables this language declares (`addrsize`, `opsize`, … for x86)
+    /// — what [`Self::context_from_sets`] accepts; a name outside this set is ignored there.
+    pub fn context_var_names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.context_vars.keys().map(String::as_str).collect();
+        names.sort_unstable();
+        names
+    }
+
     pub fn context_from_sets(&self, sets: &[(&str, u64)]) -> Vec<u32> {
         let mut ctx = vec![0u32; self.context_words.max(1)];
         for (name, val) in sets {

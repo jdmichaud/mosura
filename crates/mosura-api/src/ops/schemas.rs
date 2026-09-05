@@ -10,7 +10,9 @@ pub static TABLES: Schema = Schema { name: "tables", version: 1, columns: &[C::n
 pub static BYTES: Schema = Schema { name: "bytes", version: 1, columns: &[C::hex("addr", T::U64), C::new("bytes", T::Bytes)] };
 pub static INSTRUCTIONS: Schema = Schema { name: "instructions", version: 1, columns: &[C::hex("addr", T::U64), C::new("len", T::U32), C::new("bytes", T::Bytes), C::new("mnemonic", T::Str), C::new("operands", T::Str), C::new("flow_kind", T::Str), C::new("ends_flow", T::Bool), C::new("has_call_target", T::Bool), C::hex("call_target", T::U64), C::hex("flows", T::ListU64)] };
 
-pub static ALL: &[&Schema] = &[&OPS, &SCHEMA, &IDENTIFY, &PROGRAM_SUMMARY, &TABLES, &BYTES, &INSTRUCTIONS];
+pub static PCODE: Schema = Schema { name: "pcode", version: 1, columns: &[C::hex("addr", T::U64), C::new("seq", T::U32), C::new("opcode", T::U32), C::new("mnemonic", T::Str), C::new("has_out", T::Bool), C::new("out_space", T::Str), C::hex("out_offset", T::U64), C::new("out_size", T::U32), C::new("in_spaces", T::Str), C::hex("in_offsets", T::ListU64), C::new("in_sizes", T::ListU32), C::new("text", T::Str)] };
+
+pub static ALL: &[&Schema] = &[&OPS, &SCHEMA, &IDENTIFY, &PROGRAM_SUMMARY, &TABLES, &BYTES, &INSTRUCTIONS, &PCODE];
 
 pub fn by_name(name: &str) -> Option<&'static Schema> {
     ALL.iter().copied().find(|s| s.name == name)
