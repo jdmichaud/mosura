@@ -14,14 +14,13 @@ use std::sync::Mutex;
 
 use mosura::analysis::{self, decompiler::decompile_function};
 use mosura::decompile::funcdata::Funcdata;
-use mosura::decompile::op::flags;
-use mosura::decompile::opcode::OpCode;
 use mosura::decompile::emit::EmitChoices;
 use mosura::decompile::printc::print_c_with;
 use mosura::decompile::space::Address;
 use mosura::switches::{Knobs, Switch};
 use mosura::recompile::tu::{aggregate_ram_globals, build_prelude, build_tu, contract_violations, with_contract};
-use mosura::recompile::pragma::{self, own_contract, WatcomRegs};
+use mosura::recompile::function;
+use mosura::recompile::pragma::{self, WatcomRegs};
 use mosura::recompile::manifest;
 use mosura::recompile::passes;
 use mosura::recompile::upgrade;
@@ -296,7 +295,6 @@ fn main() {
 
     // The stack pointer's register-space offset, from the language tables rather than a constant.
     let regs = WatcomRegs::for_lang(SURVEY_LANG);
-    let esp_off = regs.esp_off;
     // Functions whose own returns disagree about the pop — a region-boundary symptom, counted so
     // it cannot be silent. Zero is the expected reading; a nonzero one is a finding to chase.
     let mut cleanup_undecided = 0usize;
@@ -434,7 +432,6 @@ fn main() {
     // with the comma condition against the original's 27, and all 27 — instruction for
     // instruction — with this on.
     mosura::decompile::structure::set_force_loop_overflow(true);
-    let watreg = regs.table.clone();
 
     // PARAMETER-ORDER EVIDENCE, a pre-pass over the ORIGINAL bytes (docs/byte-exact-families.md,
     // the permutation family). The compiler materializes register arguments in REVERSE declared
@@ -508,7 +505,7 @@ fn main() {
     // `--arms-off global-width` restores the narrowest-access declaration, the way
     // `--arms-off kernel-net` and `--arms-off cons-reach` restore theirs.
     let global_width_arm = knobs.on(Switch::GlobalWidth);
-    let (ram_store_w, ram_read_w) = if global_width_arm {
+    let widths = if global_width_arm {
         let t = std::time::Instant::now();
         let gw = passes::GlobalWidths::collect(&prog, SURVEY_LANG, &ents);
         eprintln!(
@@ -517,9 +514,9 @@ fn main() {
             gw.read_w.len(),
             t.elapsed().as_secs_f64()
         );
-        (gw.store_w, gw.read_w)
+        gw
     } else {
-        (HashMap::new(), HashMap::new())
+        passes::GlobalWidths { store_w: HashMap::new(), read_w: HashMap::new() }
     };
 
     let t0 = std::time::Instant::now();
@@ -594,52 +591,7 @@ fn main() {
         };
         ok += 1;
 
-        // Decompiler-covered extent (cross-check only): live-op ram instruction starts.
-        let mut cov_lo = u64::MAX;
-        let mut cov_hi = 0u64;
-        for id in f.op_ids() {
-            let op = f.op(id);
-            if op.flags & (flags::DEAD | flags::MARKER) != 0 {
-                continue;
-            }
-            let pc = op.seqnum.pc;
-            if pc.space != ram {
-                continue;
-            }
-            let len = match prog.listing.code_unit_at(pc) {
-                Some(mosura::analysis::program::CodeUnit::Instruction { length, .. }) => *length as u64,
-                _ => 1,
-            };
-            cov_lo = cov_lo.min(pc.offset);
-            cov_hi = cov_hi.max(pc.offset + len);
-        }
-        if cov_lo == u64::MAX {
-            cov_lo = *va;
-            cov_hi = *va;
-        }
-
-        // The function's extent is mosura's OWN recorded body, not the gap to the next entry.
-        //
-        // `[entry, next-entry)` attributes to a function everything the linker happened to place
-        // after it, and what follows a function is very often DATA. Measured on the subject: the body is
-        // smaller than the gap for 2140 of 3023 functions, totalling 49,359 bytes of data counted
-        // as code. The worst is `FUN_00075801` -- a 48-byte comparator followed by a 7,727-byte
-        // table -- which was compared as 2591 instructions against the 20 it really has, and read
-        // as a catastrophic decompiler failure when the decompilation is exactly right.
-        //
-        // The body is clamped on both sides rather than trusted outright, because neither bound is
-        // free:
-        //   * never past `next` -- 11 functions have bodies that run beyond the following entry,
-        //     which would make two functions claim the same bytes;
-        //   * never below `cov_hi` -- if body computation ever UNDER-states a function, truncating
-        //     the original would hide a real failure by comparing against less than the function.
-        // Both bounds are facts already established above, so this only ever pulls the end IN from
-        // the heuristic, never pushes it out.
-        let (next, body_end) = extent_bounds(*va);
-        let mut end = match body_end {
-            Some(b) => next.min(b.max(cov_hi)).max(*va + 1),
-            None => next.max(*va + 1),
-        };
+        let function::Extent { cov_lo, cov_hi, end_untrimmed, body_end, region, .. } = function::extent(&prog, &ents, &f, *va);
         // INSTRUMENT (`MOSURA_EXTENT=1`): the three candidate answers to "where does this
         // function end" -- the next-entry heuristic actually used, mosura's own recorded body, and
         // the decompiler's instruction coverage -- so the choice between them is a measurement.
@@ -647,26 +599,10 @@ fn main() {
             println!(
                 "EXTENT\t{:08x}\t{}\t{}\t{}",
                 *va,
-                end - *va,
+                end_untrimmed - *va,
                 body_end.map(|b| b.saturating_sub(*va) as i64).unwrap_or(-1),
                 cov_hi.saturating_sub(*va)
             );
-        }
-        let mut region = prog.memory.read_window(Address::new(ram, *va), (end - *va) as usize);
-        // Trim trailing padding, but NEVER below the end of the last decoded instruction. The
-        // trimmer used to strip any trailing 0x00/0x90/0xcc, and the last byte of a real operand is
-        // very often 0x00 — `e9 0c610100` (a 5-byte `jmp rel32` tail-call shim) came back as 4
-        // bytes with its displacement cut, and `b0 01 c2 0400` (`mov al,1 ; ret 4`) likewise. The
-        // function was then compared against a truncated original, and the row read as a decompiler
-        // failure. Measured against the tracker's true sizes: 39 extents short, 28 of them by
-        // exactly one byte.
-        //
-        // `cov_hi` is the end of the highest instruction the decompiled function actually covers,
-        // so it is the floor for trimming: padding is what lies AFTER the code, never inside it.
-        let floor = cov_hi.max(*va + 1);
-        while end > floor && region.last().is_some_and(|&b| b == 0x00 || b == 0x90 || b == 0xcc) {
-            region.pop();
-            end -= 1;
         }
         let orig_len = region.len();
         // DROPPED PARAMETERS (a convention fact from the function's own saves, applied by the
@@ -677,14 +613,7 @@ fn main() {
         let f = {
             let mut f = f;
             let insns = mosura::recompile::insn::normalize(SURVEY_LANG, &region, *va, &mosura::recompile::insn::NoReloc).unwrap_or_default();
-            f.dropped_params = mosura::recompile::buildconfig::phantom_params_from_evidence(&f, &insns);
-            // a `RETF` return declares the function `far`; a `RET n` popping slots no parameter
-            // reads declares the popped slots as unused stack parameters
-            f.far_return = mosura::recompile::buildconfig::far_return_from_evidence(&insns);
-            // a parameter the original copies into a byte register at entry and the IR only
-            // masks is declared at that width
-            f.narrow_params = mosura::recompile::buildconfig::narrow_params_from_evidence(&f, &insns);
-            f.extra_stack_params = mosura::recompile::buildconfig::dummy_stack_params(&f);
+            function::apply_marks(&mut f, &insns);
             f
         };
 
@@ -697,24 +626,6 @@ fn main() {
         //     ir_calls == rendered  -> the shortfall is upstream of the emitter (decompiler)
         //     ir_calls >  rendered  -> the emitter lost a recovered call
         // Counted the same way the gauge counts: live CALL/CALLIND ops only.
-        let ir_calls = f
-            .op_ids()
-            .filter(|&id| {
-                let op = f.op(id);
-                op.flags & (flags::DEAD | flags::MARKER) == 0
-                    && matches!(op.code(), OpCode::Call | OpCode::Callind)
-            })
-            .count();
-
-        // BLOCKS: how many basic blocks the CFG has vs how many the structured tree REACHES.
-        // `reached < cfg` means blocks are never emitted — wrong code, and the ONLY gate that sees the
-        // silent case (a dropped block with no surviving in-edge produces no dangling goto and no
-        // compiler error; the C just compiles the wrong program). See
-        // `decompile::structure::reached_basic_blocks`.
-        let blocks_cfg = f.num_blocks();
-        let blocks_reached =
-            mosura::decompile::structure::reached_basic_blocks(&mosura::decompile::structure::structure(&f))
-                .len();
 
         // Decompiling is θ-independent and dominates the cost, so every rendering the caller asked
         // for is printed from this one Funcdata. That is what makes a multi-arm emit cost a print
@@ -725,110 +636,14 @@ fn main() {
         }
 
         // Synthesize a standalone TU and detect decompiler-artifact "smells".
-        let thunk = matches!(region.first(), Some(0xe9) | Some(0xeb)) && orig_len <= 8;
+        let function::Metrics { ir_calls, blocks_cfg, blocks_reached, thunk } = function::metrics(&f, &region);
         // GLOBAL WIDTHS, from the decompiler rather than from the name. The emitter used to pick a
         // Ram global's C type from its name prefix alone, which carries kind but not SIZE, so every
         // scalar global came out `int`. A one-byte global then compiles to a 4-byte store:
         // FUN_0003ca48's original is `mov [0x95435],al` (`a2`), and `int xRam00095435;` turns that
         // into a dword store — wrong opcode, wrong length. 3083 globals are declared `int` today.
         // The decompiled function knows each varnode's width, so ask it.
-        let ram_dec = f.spaces.by_name("ram");
-        let mut gsizes: std::collections::HashMap<u64, u32> = std::collections::HashMap::new();
-        // ram addresses THIS FUNCTION STORES, read from its OWN BYTES.  Two IR-side tests were
-        // tried and both failed: `is_written()` is true for a purely read global (heritage gives it
-        // an INDIRECT across every call and a phi at every join), and excluding INDIRECT/MULTIEQUAL
-        // defs still let the return-guard COPY through -- 54 read-only TUs were widened either way.
-        // The instruction stream has no such ambiguity: a store is a memory operand in the output.
-        let own_norm = if global_width_arm {
-            mosura::recompile::insn::normalize(SURVEY_LANG, &region, *va, &mosura::recompile::insn::NoReloc).unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        let gwrote: std::collections::HashSet<u64> = own_norm
-            .iter()
-            .flat_map(|x| x.sem.iter())
-            .filter_map(|op| match &op.out {
-                Some(mosura::recompile::insn::SemArg::Mem(_, a, _)) => Some(*a),
-                _ => None,
-            })
-            .collect();
-        // the widest GENUINE read of each absolute address in this function's own bytes: a
-        // dword read followed by `SAR r,0x10` is this compiler's sign-extension of the SHORT two
-        // bytes above (the dword trick), not a four-byte object at that address (measured: the
-        // trick's reads widened three array bases to `int`, round e28)
-        let mut own_read_w: std::collections::HashMap<u64, u32> = Default::default();
-        for (k, x) in own_norm.iter().enumerate() {
-            // the trick's `SAR` may sit a couple of instructions after its load (scheduled)
-            let trick = x.text.strip_prefix("MOV E").and_then(|r| r.split(',').next()).is_some_and(|reg| {
-                let sar = format!("SAR E{reg},0x10");
-                own_norm[k + 1..(k + 4).min(own_norm.len())].iter().any(|y| y.text == sar)
-            });
-            if trick {
-                continue;
-            }
-            for op in &x.sem {
-                for arg in &op.ins {
-                    if let mosura::recompile::insn::SemArg::Mem(_, a, sz) = arg {
-                        let e = own_read_w.entry(*a).or_insert(0);
-                        *e = (*e).max(*sz);
-                    }
-                }
-            }
-        }
-        let mut gsizes_max: std::collections::HashMap<u64, u32> = std::collections::HashMap::new();
-        for i in 0..f.num_varnodes() as u32 {
-            let vn = f.vn(mosura::decompile::varnode::VarnodeId(i));
-            // `Processor` covers ram AND register, so select the data space by NAME — the
-            // decompiler's space ids differ from the analysis Program's and must not be carried
-            // across that boundary.
-            if Some(vn.loc.space) != ram_dec {
-                continue;
-            }
-            // Narrowest access wins: a byte store is what fixes the declaration, and a wider
-            // access at the same address is a different (adjacent or overlapping) object.
-            gsizes
-                .entry(vn.loc.offset)
-                .and_modify(|e| *e = (*e).min(vn.size))
-                .or_insert(vn.size);
-            gsizes_max
-                .entry(vn.loc.offset)
-                .and_modify(|e| *e = (*e).max(vn.size))
-                .or_insert(vn.size);
-        }
-        // ARM (the `global-width` switch): the narrowest-access rule above truncates a
-        // store the original makes wide whenever one function touches an address at two widths.
-        // Widen back to the original's own STORE width, but only where the image also READS it
-        // wider than we would store -- the wrong-code criterion, and the condition that keeps this
-        // off addresses that are merely accessed at two widths.  Never narrows: `max` only.
-        //
-        // AND ONLY WHERE THIS FUNCTION WRITES THE ADDRESS.  Measured on the first armed emit: without
-        // this the arm widened the declaration in every TU that merely READS the global, and the
-        // widened type then propagated through type inference into local declarations and even
-        // comparison rendering -- 138 TUs changed where only 27 had a truncated store to fix.  A
-        // read-only TU has nothing to repair: its byte read of a byte it uses is already right.
-        if global_width_arm {
-            for (a, w) in gsizes.iter_mut() {
-                // A READ-ONLY global this function reads at two IR widths, its own bytes reading
-                // it at the wider one (`MOV BX,word ptr [g]` for the divisor, `MOV AL,[g]` for the
-                // byte factor, the subject's FUN_000377a4): declared at the wider width, the narrower reads
-                // print as casts of the same bytes — probed EXACT. The same-function two-width
-                // gate keeps this off the 138 read-only TUs the blanket widening moved.
-                if let (Some(&mx), Some(&rw)) = (gsizes_max.get(a), own_read_w.get(a)) {
-                    if mx > *w && rw >= mx && !gwrote.contains(a) {
-                        *w = mx;
-                        continue;
-                    }
-                }
-                if !gwrote.contains(a) {
-                    continue;
-                }
-                let sw = ram_store_w.get(a).copied().unwrap_or(0);
-                let rw = ram_read_w.get(a).copied().unwrap_or(0);
-                if sw > *w && rw > *w {
-                    *w = sw;
-                }
-            }
-        }
+        let gsizes = function::global_widths(&f, SURVEY_LANG, &region, *va, &widths, global_width_arm);
         // STACK-BASED CONVENTION. A function whose recovered parameters all live on the STACK is
         // not using default __watcall — Watcom spells that `#pragma aux <name> parm []`, and
         // the RE tracker's proven sources use exactly that form. Without the declaration the emitted
@@ -842,56 +657,11 @@ fn main() {
         //
         // `parm []` and not `parm caller []`: the caller-pop form leaves a bare `ret`, and the
         // callee-pop default is what produces the `ret N` these functions carry.
-        let proto = mosura::decompile::fspec::recover_func_proto(&f);
-        let stack_convention = (!proto.params.is_empty()
-            && proto.params.iter().all(|p| {
-                f.spaces.get(p.addr.space).kind == mosura::decompile::space::SpaceKind::Spacebase
-            }))
-            || f.extra_stack_params > 0;
-        // The callee's stack-cleanup contract, read from its own return instruction — and read
-        // the SAME WAY THE CALLERS READ IT, which is the whole point of using `ret_pop` here.
-        //
-        // This used to lift the function's own byte region and scan it linearly for a `RET`. A
-        // caller decides the same fact with `analysis::decompiler::callee_cleanup`, which walks
-        // the callee's CFG from its entry — so for a function whose epilogue is a tail `JMP` into
-        // a SHARED epilogue the two disagreed: the linear scan finds no return at all and the
-        // callee-pops DEFAULT stood, while the walk follows the jump, finds the bare `RET`, and
-        // the caller emits `parm caller []` plus its `ADD ESP,n`. BOTH SIDES THEN POP, and every
-        // such call unbalances the stack by 4n bytes — emitted wrong code, in 55 of the 77
-        // functions declaring `parm []` (152 caller TUs), unanimous per callee.
-        //
-        // `Funcdata::ret_pop` is that same CFG walk's answer for THIS function, already computed
-        // in the decompile that just ran — so consulting it closes the disagreement at its source.
-        //
-        // But the walk is the FALLBACK, not the replacement, and that ordering is measured rather
-        // than assumed. Reading `ret_pop` alone also flipped 8 functions the other way, and their
-        // originals end in a bare `RET` while the walk had them popping: `FUN_00069980` got
-        // `RET 0x4`, `FUN_0006cfd0` `RET 0x8`, `FUN_00079130` `RET 0x18`. All 8 are shared-epilogue
-        // library code, where following control flow out of the function reaches a return that is
-        // not this function's contract. A return in the function's OWN body is direct evidence and
-        // outranks it.
-        //
-        // So: the function's own returns decide when it has any; the walk answers only when the
-        // body is SILENT, which is exactly the tail-JMP case that produced the defect. The two
-        // sides can then still differ in principle — but only where the definition has evidence the
-        // caller's reading lacks, which is the direction that is safe.
-        //
-        // SILENT is not the same as UNDECIDED, and the difference is load-bearing.
-        // `callee_stack_cleanup` answers `None` both for a body with no return at all and for one
-        // whose returns DISAGREE — and a single function has a single pop-contract, so disagreement
-        // is not two contracts, it is the region boundary having swallowed a neighbour's `RET`.
-        // That is the same boundary error that made the walk wrong above, so it must not fall
-        // through to the walk: an undecided body declares nothing and is counted, which turns a
-        // silent mis-attribution into a visible one.
-        let own = esp_off
-            .zip(mosura::sleigh::disassemble(SURVEY_LANG, &region, *va).ok())
-            .map(|(sp, insns)| mosura::recompile::own_pop_contract(&insns, sp))
-            .unwrap_or(mosura::recompile::OwnPopContract::Silent);
-        if own == mosura::recompile::OwnPopContract::Undecided {
+        let oc = function::own_contract(&f, &region, *va, SURVEY_LANG, &regs);
+        if oc.own == mosura::recompile::OwnPopContract::Undecided {
             cleanup_undecided += 1;
         }
-        let cleanup = mosura::recompile::declared_pop_contract(own, f.ret_pop);
-        let contract = own_contract(&f, &watreg, stack_convention, cleanup);
+        let function::OwnContract { proto, contract, stack_decl, .. } = oc;
         // CALLER-SIDE REGISTER CONTRACTS, definition-side truth. The `parm [..]` pragma
         // below tells Watcom the callee's true argument registers — but only in the callee's
         // own TU; a caller compiles against a bare `extern int func_0xNNN();` and Watcom
@@ -913,7 +683,6 @@ fn main() {
         // `parm caller []` comes from its own call spec (`cs.caller_cleans`), so only the
         // callee-pops form is propagated here — the existing-clause rule in the post-pass keeps a
         // caller-cleaned line as it is.
-        let stack_decl = (stack_convention && !matches!(cleanup, Some(0))).then(|| "[]".to_string());
         contracts.record(*va, &f, &regs, stack_decl);
 
         // Arms past the first: same function, same declarations, a different rendering of the body.

@@ -39,6 +39,7 @@ pub mod mve;
 pub mod recovery;
 pub mod report;
 pub mod toolchain;
+pub mod function;
 pub mod manifest;
 pub mod passes;
 pub mod pragma;
