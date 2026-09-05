@@ -5,9 +5,11 @@ it is located, how it is pinned, and what breaks without it. Move #1 of the
 dependency-hardening line (#15).
 
 **Portability rule (hard constraint).** This manifest contains **no absolute paths** — nothing
-machine-specific like `/home/<user>/…`. Every dependency is located through an **environment
-variable** with a sensible **relative default**, so a reader can place a dependency anywhere
-and point the var at it. The two anchors used below:
+machine-specific like `/home/<user>/…`. Every dependency is located through a **key in
+`dev-config.toml`** (gitignored; every key and default in `dev-config.example.toml`, read by
+`crates/mosura/src/devcfg.rs` and `scripts/devcfg.sh`) with a sensible **relative default**, so a
+reader can place a dependency anywhere and name it there. No environment variable is read
+(2026-09-05). The two anchors used below:
 
 - **`$REPO`** — the mosura repo/worktree root (the directory containing `crates/`, `oracle/`,
   `goldens/`, `specs/`, `scripts/`, `docs/`). The code derives it automatically from
@@ -27,7 +29,7 @@ goldens and fixtures, and is never touched by `cargo test`. The user-provided-bi
 Two tiers, made explicit:
 
 - **BUILD/TEST** — needed by `cargo test`. In practice: the Rust toolchain, the Ghidra
-  processor **data** (via `GHIDRA_SRC`, with the `.sla` compiled once), and the committed
+  processor **data** (via `ghidra_src`, with the `.sla` compiled once), and the committed
   in-repo test data. That's the entire shipping/testing surface.
 - **DEV-ORACLE** — needed **only** to regenerate goldens/fixtures, **not** by `cargo test`:
   `oracle/capture`(+`_trace`), `decomp_dbg`/`decomp_test_dbg`, `analyzeHeadless`, the
@@ -36,7 +38,7 @@ Two tiers, made explicit:
 
 ## Inventory
 
-Locator column reads `ENV_VAR → default` where the default is `$REPO`- or `$HOME`-relative.
+Locator column reads `dev-config key → default` where the default is `$REPO`- or `$HOME`-relative.
 `n/a` = a host toolchain resolved from `PATH`, not a repo-configured location.
 
 ### BUILD/TEST tier — `cargo test` needs these
@@ -44,9 +46,9 @@ Locator column reads `ENV_VAR → default` where the default is `$REPO`- or `$HO
 | Dependency | Locator (env → default) | Pin / version | Source |
 | --- | --- | --- | --- |
 | Rust + Cargo toolchain | `n/a` (PATH / rustup) | edition per `Cargo.toml`; stable | rustup / distro |
-| **Ghidra processor data** (`.slaspec`/`.pspec`/`.cspec`/`.ldefs`/`.opinion`) | `GHIDRA_SRC → $REPO/../ghidra` | tag `Ghidra_12.0.3_build`, commit `09f14c92d3da6e5d5f6b7dea115409719db3cce1` | git `github.com/NationalSecurityAgency/ghidra` |
-| Compiled `.sla` (what mosura's engine loads) | under `GHIDRA_SRC/Ghidra/Processors/*/data/languages/` | built from the pinned `.slaspec` | produced once by `sleigh_opt` (see below) |
-| `sleigh_opt` (compiles `.slaspec → .sla`, one-time) | built in-place in `GHIDRA_SRC` by `scripts/setup-oracle.sh` | from the pinned Ghidra cpp source | Ghidra source + g++/bison/flex/libbfd |
+| **Ghidra processor data** (`.slaspec`/`.pspec`/`.cspec`/`.ldefs`/`.opinion`) | `ghidra_src → $REPO/../ghidra` | tag `Ghidra_12.0.3_build`, commit `09f14c92d3da6e5d5f6b7dea115409719db3cce1` | git `github.com/NationalSecurityAgency/ghidra` |
+| Compiled `.sla` (what mosura's engine loads) | under `<ghidra_src>/Ghidra/Processors/*/data/languages/` | built from the pinned `.slaspec` | produced once by `sleigh_opt` (see below) |
+| `sleigh_opt` (compiles `.slaspec → .sla`, one-time) | built in-place in `<ghidra_src>` by `scripts/setup-oracle.sh` | from the pinned Ghidra cpp source | Ghidra source + g++/bison/flex/libbfd |
 | In-repo committed test data (goldens + fixtures + corpus + repo cspec) | in `$REPO` (committed) | tracked in git | this repo — see [In-repo test data](#in-repo-test-data-committed-not-external) |
 
 Notes on the Ghidra BUILD/TEST dependency:
@@ -54,7 +56,7 @@ Notes on the Ghidra BUILD/TEST dependency:
   subset the tests read (the used processors' `data/languages` incl. compiled `.sla`, and the
   decompiler datatests) is committed at `third_party/ghidra/` (~9.5 MB, Apache-2.0 with Ghidra's
   LICENSE/NOTICE alongside; provenance in its README). Resolution order (`paths.rs`):
-  `GHIDRA_SRC` env → the sibling checkout → the vendored copy, so a developer's checkout wins
+  `ghidra_src` (dev-config) → the sibling checkout → the vendored copy, so a developer's checkout wins
   when present and a bare clone needs **no fetch and no sleigh compile**.
   `scripts/verify-vendored-ghidra.sh` proves the vendored copy byte-identical to the pin
   (`--refresh` re-copies after a pin bump), and the `sleigh_canary` test **fails loudly** —
@@ -64,7 +66,7 @@ Notes on the Ghidra BUILD/TEST dependency:
   golden regeneration).
 - **One-command acquisition (the pin).** `scripts/setup-ghidra.sh` fetches this dependency
   reproducibly: it shallow-clones `github.com/NationalSecurityAgency/ghidra` at the pinned tag
-  into `GHIDRA_SRC` (default `$REPO/../ghidra`), **verifies `HEAD` == the pinned commit
+  into `<ghidra_src>` (default `$REPO/../ghidra`), **verifies `HEAD` == the pinned commit
   `09f14c92…`** (a git commit id is a content hash, so this is the checksum), and compiles the
   `.sla`. It is idempotent (an existing checkout at the pin is reused, never clobbered) and has
   a `--verify-only` mode (assert the pin without fetching — for CI). A **fetch script, not a git
@@ -86,8 +88,8 @@ Notes on the Ghidra BUILD/TEST dependency:
 | Dependency | Locator (env → default) | Pin / version | Regenerates |
 | --- | --- | --- | --- |
 | `oracle/capture` + `oracle/capture_trace` | `$REPO/oracle/capture[_trace]` (built) | links Ghidra `libdecomp_dbg.a`, `-DCPUI_DEBUG -D__TERMINAL__` | `goldens/disasm/*.golden` (`cargo xtask baseline`); rule-trace diffs |
-| `decomp_dbg` / `decomp_test_dbg` (Ghidra C++ oracle) | built in `GHIDRA_SRC` by `setup-oracle.sh` | pinned Ghidra source | raw-p-code cross-check; runs Ghidra's own datatests |
-| `analyzeHeadless` (built Ghidra **distribution**) | `GHIDRA_DIST → GHIDRA_SRC/build/dist/ghidra_*_DEV` | built from the pinned source by `scripts/build-ghidra-dist.sh` | `goldens/analysis/*.snapshot` (`scripts/capture-analysis.sh`) |
+| `decomp_dbg` / `decomp_test_dbg` (Ghidra C++ oracle) | built in `<ghidra_src>` by `setup-oracle.sh` | pinned Ghidra source | raw-p-code cross-check; runs Ghidra's own datatests |
+| `analyzeHeadless` (built Ghidra **distribution**) | `oracle.ghidra_dist → <ghidra_src>/build/dist/ghidra_*_DEV` | built from the pinned source by `scripts/build-ghidra-dist.sh` | `goldens/analysis/*.snapshot` (`scripts/capture-analysis.sh`) |
 | JDK (to build the Ghidra dist) | `n/a` (PATH / `JAVA_HOME`) | OpenJDK **21** (tested 21.0.11) | prerequisite of `build-ghidra-dist.sh` |
 | Host `gcc`/`g++` | `n/a` (PATH) | Debian gcc **14.2.0** | `freestanding/basic/switchtab/cppsym.elf` (x86-64) |
 | aarch64 cross-gcc | `n/a` (PATH: `aarch64-linux-gnu-gcc`) | apt `gcc-14-aarch64-linux-gnu` **14.2.0-19cross1** | `aarch64.elf` |
@@ -128,15 +130,15 @@ against.
 
 | Binary | Locator (env → default) | sha256 / size | Used by | What it validates |
 | --- | --- | --- | --- | --- |
-| `WAR2.EXE` (DOS/4GW-bound Watcom LE) | `MOSURA_WAR2_EXE → $HOME/WAR2.EXE` | `4789987d1c4f4c3d02ad28cd20377d58d54f51c1fd2976d842ac33861eed0f63` / 878119 B | `le_war2_analysis`, `le_war2_objects`, `watcom_detection` | native-LE analysis + Watcom detection ground truth |
-| `cnv.exe` (Clang PE) | `MOSURA_CNV_EXE → $HOME/cnv.exe` | `132b8d5c005cc0cdb6c5e7f91d326eb1339f4faf97c132c94552bc6d65dd9903` / 1075200 B | `pe_compiler_opinion` | `PeLoader.CompilerOpinion` → `clangwindows`/`clang:unknown` |
-| `msc16.exe` (16-bit Microsoft C DOS program) | `MOSURA_MSC16_EXE → $HOME/msc16.exe` | `bf6cef92ae8606180b907c4f901734470699b9bb999fed23a744e27eb19644ea` / 162012 B | `fid_msc_identify` | 16-bit real-mode analysis + the `msc-7.0-*` FID columns and the 16-bit MS run-time banner (`docs/flashback-corpus-notes.md`) |
-| `x32.exe` (FlashTek X-32 / X-32VM-bound 32-bit DOS exe) | `MOSURA_X32_EXE → $HOME/x32.exe` | `2e22dab11d4ae283acf89ce16944b83f9c4e88ba510fe09608f1e6685a4cf294` / 325075 B | `x32_loader::real_x32_binary_analyses_cleanly` | native X-32 analysis ground truth (`docs/x32-loader-notes.md`); the synthetic gates in that file need no binary |
-| `comcom32.exe` (DJGPP MZ) | `MOSURA_COMCOM32_EXE → $HOME/.local/share/comcom32/comcom32.exe` | `e079ab24ef15a2855fde282c4a2fc020b09fc720487e67b82ec2f2f0c98cea56` / 219648 B | `watcom_detection` | Watcom no-false-positive (non-Watcom MZ → `unknown`) |
+| `WAR2.EXE` (DOS/4GW-bound Watcom LE) | `binaries.war2 → $HOME/WAR2.EXE` | `4789987d1c4f4c3d02ad28cd20377d58d54f51c1fd2976d842ac33861eed0f63` / 878119 B | `le_war2_analysis`, `le_war2_objects`, `watcom_detection` | native-LE analysis + Watcom detection ground truth |
+| `cnv.exe` (Clang PE) | `binaries.cnv → $HOME/cnv.exe` | `132b8d5c005cc0cdb6c5e7f91d326eb1339f4faf97c132c94552bc6d65dd9903` / 1075200 B | `pe_compiler_opinion` | `PeLoader.CompilerOpinion` → `clangwindows`/`clang:unknown` |
+| `msc16.exe` (16-bit Microsoft C DOS program) | `binaries.msc16 → $HOME/msc16.exe` | `bf6cef92ae8606180b907c4f901734470699b9bb999fed23a744e27eb19644ea` / 162012 B | `fid_msc_identify` | 16-bit real-mode analysis + the `msc-7.0-*` FID columns and the 16-bit MS run-time banner (`docs/flashback-corpus-notes.md`) |
+| `x32.exe` (FlashTek X-32 / X-32VM-bound 32-bit DOS exe) | `binaries.x32 → $HOME/x32.exe` | `2e22dab11d4ae283acf89ce16944b83f9c4e88ba510fe09608f1e6685a4cf294` / 325075 B | `x32_loader::real_x32_binary_analyses_cleanly` | native X-32 analysis ground truth (`docs/x32-loader-notes.md`); the synthetic gates in that file need no binary |
+| `comcom32.exe` (DJGPP MZ) | `binaries.comcom32 → $HOME/.local/share/comcom32/comcom32.exe` | `e079ab24ef15a2855fde282c4a2fc020b09fc720487e67b82ec2f2f0c98cea56` / 219648 B | `watcom_detection` | Watcom no-false-positive (non-Watcom MZ → `unknown`) |
 
 > **Implemented (task #6).** These three env vars are live, resolved by
 > `crates/mosura/src/paths.rs::{war2_exe, cnv_exe, comcom32_exe}` (env override, else the
-> `$HOME`-relative default above — the same convention as `GHIDRA_SRC`/`GHIDRA_DIST`). The
+> `$HOME`-relative default above — the same convention as `ghidra_src`). The
 > tests (`analysis_parity.rs`, `analysis/loader/{pe,mz}.rs`, `analysis/mod.rs`) and
 > `scripts/capture-analysis.sh` + `scripts/ci-clean-clone.sh` all honor them; no absolute path
 > is baked into code, tests, or scripts.
@@ -184,7 +186,7 @@ Watcom banner→version table (`watcom_detection`); the resulting fixtures + gol
 **committed**, so `cargo test` never needs any of this. All of it is a beyond-Ghidra /
 WAR2-recompilation aid, not a build/test dependency.
 
-- **Toolchain archives** live outside the repo at `MOSURA_TOOLS → $HOME/projects/tools`
+- **Toolchain archives** live outside the repo (the `[toolchains]` keys; e.g. `$HOME/projects/tools`)
   (env-var-located, `$HOME`-relative default — no absolute path). Three families, each as raw
   `.7z`/ISO archives, **extracted on demand** (`7z x …`) into the scratch workspace:
   `watcom/` (9.5b, 10.0 LA preprod, 10.0a, 10.5, 10.6, 11.0, 11.0a — see `watcom/README.md`),
@@ -233,7 +235,7 @@ package.
   **Open Watcom** build is pinned and present, but it emits the *Open Watcom Contributors*
   banner, not the classic *WATCOM International Corp.* one — a different era fingerprint — so
   it does not substitute for 10.0a as the fixture source.) Follow-up: task #14.
-- **`MOSURA_*_EXE` env vars are implemented** (task #6) — `paths.rs::{war2_exe,cnv_exe,comcom32_exe}`;
+- **The `[binaries]` locators are implemented** (task #6; dev-config since 2026-09-05) — `paths.rs::{war2_exe,cnv_exe,comcom32_exe}`;
   tests + scripts honor them with `$HOME`-relative defaults (no hard-coded absolute paths).
 - **dosemu2 is a source/PPA build**, not a distro package, so its pin is the build-string
   version rather than an `apt` version.
@@ -243,7 +245,7 @@ package.
 ## Reproduction entry points (for context)
 
 - Bootstrap the BUILD/TEST tier from a clean clone: `scripts/setup-ghidra.sh` (fetch + pin the
-  Ghidra source, compile the `.sla`), then `cargo test`. `GHIDRA_SRC` overrides the location;
+  Ghidra source, compile the `.sla`), then `cargo test`. `ghidra_src` in `dev-config.toml` overrides the location;
   `scripts/setup-ghidra.sh --verify-only` asserts an existing checkout is at the pin.
 - Prove/guard the clean-clone split: `scripts/ci-clean-clone.sh` — fetches the pinned Ghidra
   then runs the FULL suite with none of the regeneration-only tooling present, so the BUILD/TEST

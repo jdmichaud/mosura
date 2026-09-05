@@ -17,7 +17,8 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"           # mosura-analysis/
-GHIDRA_SRC="${GHIDRA_SRC:-$(cd "$HERE/.." && pwd)/ghidra}"
+. "$HERE/scripts/devcfg.sh"
+GHIDRA_SRC="$(devcfg ghidra_src "$(cd "$HERE/.." && pwd)/ghidra")"
 VENDORED="$HERE/third_party/ghidra"
 PIN="09f14c92d3da6e5d5f6b7dea115409719db3cce1"                    # Ghidra_12.0.3_build
 PROCESSORS=(x86 AARCH64 RISCV 68000 Z80 ARM 6502 MIPS PowerPC)

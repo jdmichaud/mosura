@@ -44,23 +44,26 @@ done
 
 # The regeneration-only artifacts that the test surface must NOT require. In real CI they are
 # simply absent. --hermetic moves the in-repo oracle tools aside (gitignored build artifacts,
-# restored on exit) — these have no locator var. The user binaries are NOT moved: --hermetic
-# points their MOSURA_*_EXE locator vars at $ABSENT instead (see below).
+# restored on exit), together with the developer's own dev-config.toml, and writes a dev-config
+# that points the user binaries at $ABSENT (see below). The user binaries themselves are NOT moved.
 HIDE_PATHS=(
   "$REPO/oracle/capture"
   "$REPO/oracle/capture_trace"
   "$REPO/build/oracle-cache"
+  "$REPO/dev-config.toml"
 )
+WROTE_CFG=0
 
-# A guaranteed-absent location for the user-binary locator vars in --hermetic mode. Unsetting
-# them would fall back to the $HOME defaults — exactly where the files are — so the gates would
-# still run; pointing them at a nonexistent path is what makes the gates skip, without touching
+# A guaranteed-absent location for the user binaries in --hermetic mode. Leaving them unset would
+# fall back to the $HOME defaults — exactly where the files are — so the gates would still run;
+# a dev-config pointing them at a nonexistent path is what makes the gates skip, without touching
 # the user's real files. Under $REPO/build (gitignored), so no absolute path is baked in.
 ABSENT="$REPO/build/hermetic-absent"
 
 HIDDEN=()
 restore() {
   local p
+  if [ "$WROTE_CFG" = 1 ]; then rm -f "$REPO/dev-config.toml"; fi
   for p in "${HIDDEN[@]}"; do
     if [ -e "$p.ci-hidden" ]; then mv -f "$p.ci-hidden" "$p"; fi
   done
@@ -98,20 +101,26 @@ fi
 # 2. Hermetic: reproduce CI's absence — move the in-repo oracle tools aside, and point the
 #    user-binary locator vars at $ABSENT (no touching the user's files).
 if [ "$HERMETIC" -eq 1 ]; then
-  log "hermetic mode: hiding in-repo oracle tools + pointing MOSURA_*_EXE at an absent path"
+  log "hermetic mode: hiding in-repo oracle tools + the dev-config; writing one that points the user binaries at an absent path"
   hide
-  export MOSURA_WAR2_EXE="$ABSENT/WAR2.EXE"
-  export MOSURA_CNV_EXE="$ABSENT/cnv.exe"
-  export MOSURA_COMCOM32_EXE="$ABSENT/comcom32.exe"
+  cat > "$REPO/dev-config.toml" <<EOF
+# written by scripts/ci-clean-clone.sh --hermetic; the real file is dev-config.toml.ci-hidden until the run ends
+[binaries]
+war2 = "$ABSENT/WAR2.EXE"
+cnv = "$ABSENT/cnv.exe"
+comcom32 = "$ABSENT/comcom32.exe"
+EOF
+  WROTE_CFG=1
 fi
 
 # 3. Report the environment the suite will actually see: the oracle tools + the resolved
-#    MOSURA_*_EXE user-binary locations (the hermetic overrides if set, else the $HOME defaults).
+#    user-binary locations (the hermetic dev-config if written, else the real one / $HOME defaults).
+. "$SCRIPT_DIR/devcfg.sh"
 log "environment for the test run (regeneration-only tooling should be absent):"
 for p in "${HIDE_PATHS[@]}" \
-         "${MOSURA_WAR2_EXE:-$HOME/WAR2.EXE}" \
-         "${MOSURA_CNV_EXE:-$HOME/cnv.exe}" \
-         "${MOSURA_COMCOM32_EXE:-$HOME/.local/share/comcom32/comcom32.exe}"; do
+         "$(devcfg binaries.war2 "$HOME/WAR2.EXE")" \
+         "$(devcfg binaries.cnv "$HOME/cnv.exe")" \
+         "$(devcfg binaries.comcom32 "$HOME/.local/share/comcom32/comcom32.exe")"; do
   if [ -e "$p" ]; then echo "   PRESENT: $p"; else echo "   absent:  $p"; fi
 done
 

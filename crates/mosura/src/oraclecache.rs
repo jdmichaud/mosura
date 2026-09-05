@@ -57,7 +57,7 @@ pub fn capture(fixture: &Path, args: &[&str]) -> Option<String> {
             t.hash(&mut h);
         }
     }
-    hash_ghidra_root(&paths::ghidra_src(), &mut h);
+    hash_ghidra_root(&paths::oracle_root(), &mut h);
     fixture_bytes.hash(&mut h);
     args.hash(&mut h);
     let stem = fixture.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
@@ -66,7 +66,7 @@ pub fn capture(fixture: &Path, args: &[&str]) -> Option<String> {
     if let Ok(cached) = std::fs::read_to_string(&key) {
         return Some(cached);
     }
-    let out = Command::new(&capture).arg(paths::ghidra_src()).arg(fixture).args(args).output().ok()?;
+    let out = Command::new(&capture).arg(paths::oracle_root()).arg(fixture).args(args).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
     // only cache a successful, non-empty run — a failed spawn shouldn't poison future runs
     if out.status.success() && !text.trim().is_empty() {

@@ -35,7 +35,8 @@ GHIDRA_REPO="https://github.com/NationalSecurityAgency/ghidra.git"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOSURA_DIR="$(dirname "$SCRIPT_DIR")"
 WORKSPACE="$(dirname "$MOSURA_DIR")"
-GHIDRA_SRC="${GHIDRA_SRC:-$WORKSPACE/ghidra}"
+. "$SCRIPT_DIR/devcfg.sh"
+GHIDRA_SRC="$(devcfg ghidra_src "$WORKSPACE/ghidra")"
 
 log() { printf '\033[1;34m[ghidra]\033[0m %s\n' "$*"; }
 err() { printf '\033[1;31m[ghidra:error]\033[0m %s\n' "$*" >&2; }

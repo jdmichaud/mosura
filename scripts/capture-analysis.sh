@@ -10,8 +10,9 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"          # mosura/
-GHIDRA_SRC="${GHIDRA_SRC:-$(cd "$HERE/.." && pwd)/ghidra}"
-DIST="${GHIDRA_DIST:-$(echo "$GHIDRA_SRC"/build/dist/ghidra_*_DEV)}"
+. "$HERE/scripts/devcfg.sh"
+GHIDRA_SRC="$(devcfg ghidra_src "$(cd "$HERE/.." && pwd)/ghidra")"
+DIST="$(echo $(devcfg oracle.ghidra_dist "$GHIDRA_SRC/build/dist/ghidra_*_DEV"))"
 HEADLESS="$DIST/support/analyzeHeadless"
 CORPUS="$HERE/oracle/analysis-corpus"
 SCRIPTS="$HERE/oracle/ghidra_scripts"
@@ -63,12 +64,12 @@ for com in "$CORPUS"/*.com; do
   echo "  wrote $name.snapshot + $name.loaded.snapshot"
 done
 
-# User-provided binaries (not committed): capture only if present. Located by the MOSURA_*_EXE
-# env vars with $HOME-relative defaults (docs/dependencies.md; matches paths.rs). No absolute paths.
-: "${MOSURA_CNV_EXE:=$HOME/cnv.exe}"
-: "${MOSURA_COMCOM32_EXE:=$HOME/.local/share/comcom32/comcom32.exe}"
-: "${MOSURA_WAR2_EXE:=$HOME/WAR2.EXE}"
-for ext in "cnv:$MOSURA_CNV_EXE" "comcom32:$MOSURA_COMCOM32_EXE" "war2:$MOSURA_WAR2_EXE"; do
+# User-provided binaries (not committed): capture only if present. Located by their `[binaries]`
+# keys in dev-config.toml with $HOME-relative defaults (docs/dependencies.md; matches devcfg.rs).
+CNV_EXE="$(devcfg binaries.cnv "$HOME/cnv.exe")"
+COMCOM32_EXE="$(devcfg binaries.comcom32 "$HOME/.local/share/comcom32/comcom32.exe")"
+WAR2_EXE="$(devcfg binaries.war2 "$HOME/WAR2.EXE")"
+for ext in "cnv:$CNV_EXE" "comcom32:$COMCOM32_EXE" "war2:$WAR2_EXE"; do
   name="${ext%%:*}"; path="${ext#*:}"
   if [ -f "$path" ]; then
     # cnv's converged snapshot is ~3MB (174k instructions) — too large to commit, so it

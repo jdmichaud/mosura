@@ -26,7 +26,8 @@
 #     BEFORE setup-oracle.sh.
 set -euo pipefail
 
-GHIDRA_SRC="${GHIDRA_SRC:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/ghidra}"
+. "$(dirname "${BASH_SOURCE[0]}")/devcfg.sh"
+GHIDRA_SRC="$(devcfg ghidra_src "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/ghidra")"
 # buildGhidra is the canonical target. It runs `assembleAll` (assembles EVERY module — incl.
 # the RuntimeScripts launcher scripts that become support/analyzeHeadless) then
 # createInstallationZip. `assembleDistribution` ALONE only copies the top-level

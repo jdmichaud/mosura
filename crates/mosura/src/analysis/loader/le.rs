@@ -508,12 +508,10 @@ mod lx_tests {
     /// could not open the toolchain it is being validated against.
     ///
     /// Skips when the compiler is absent — it is proprietary and not committed (same rule as the
-    /// VC6/BC45 fixtures). `WATCOM_WCC386` overrides the path.
+    /// VC6/BC45 fixtures). `watcom.wcc386` in dev-config.toml names the file.
     #[test]
     fn loads_an_lx_executable() {
-        let path = std::env::var("WATCOM_WCC386").unwrap_or_else(|_| {
-            "/home/jd/projects/warcraft2-re/tmp/watcom-experiments/watcom_10.0a/WATCOM/BINB/WCC386.EXE".into()
-        });
+        let path = crate::devcfg::watcom_wcc386().display().to_string();
         let Ok(data) = std::fs::read(&path) else {
             eprintln!("skip loads_an_lx_executable: {path} absent");
             return;

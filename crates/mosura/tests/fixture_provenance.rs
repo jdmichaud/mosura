@@ -8,7 +8,7 @@
 //! x86_32c00's prologue + memcpy pair coincides with WAR2 for 34 bytes by construction — but never
 //! a whole lifted function, and the header the generator writes is text anyone can paste above
 //! lifted bytes, so it raises the bar rather than waiving it. The test needs the binary to compare
-//! against and SKIPS (with a note) when it is absent — `WAR2_EXE` or the default path below — so
+//! against and SKIPS (with a note) when it is absent — `binaries.war2` in dev-config.toml or its default — so
 //! the suite stays third-party-free on machines without it.
 //!
 //! The generator is the source of truth for its products: before landing anything that touches a
@@ -91,7 +91,7 @@ fn window_detection_is_exact() {
 
 #[test]
 fn no_fixture_carries_a_window_of_the_war2_text() {
-    let exe = std::env::var("WAR2_EXE").unwrap_or_else(|_| "/home/jd/WAR2.EXE".to_string());
+    let exe = mosura::paths::war2_exe().display().to_string(); // `binaries.war2` in dev-config.toml
     let Ok(text) = std::fs::read(&exe) else {
         eprintln!("fixture_provenance: {exe} absent — the WAR2 window check is skipped here");
         return;

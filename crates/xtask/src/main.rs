@@ -16,10 +16,43 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
-fn ghidra_src(ws: &Path) -> PathBuf {
-    std::env::var("GHIDRA_SRC")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| ws.parent().expect("workspace parent").join("ghidra"))
+/// The pinned checkout: `ghidra_src` in `dev-config.toml`, else `<workspace>/../ghidra`.
+fn ghidra_src(_ws: &Path) -> PathBuf {
+    mosura::devcfg::ghidra_src()
+}
+
+/// `cargo xtask devcfg <section.key> [<default>]` — print one developer-config value (scripts that
+/// need a `[[subject]]` entry or the Rust-side defaults use this; plain keys have `scripts/devcfg.sh`).
+/// `cargo xtask devcfg` alone lists every key the file sets.
+fn devcfg_cmd() {
+    let args: Vec<String> = std::env::args().skip(2).collect();
+    let cfg = mosura::devcfg::get();
+    match args.first().map(String::as_str) {
+        None => {
+            for (k, v) in cfg.entries() {
+                println!("{k} = {v}");
+            }
+            for s in cfg.subjects() {
+                println!("subject {} = {} (profile: {})", s.id, s.path.display(), s.profile.as_ref().map_or("-".to_string(), |p| p.display().to_string()));
+            }
+        }
+        Some(key) => {
+            let resolved = match key {
+                "ghidra_src" => Some(mosura::devcfg::ghidra_src().display().to_string()),
+                "oracle.ghidra_root" => Some(mosura::devcfg::oracle_root().display().to_string()),
+                "oracle.ghidra_dist" => Some(mosura::devcfg::oracle_dist().display().to_string()),
+                "watcom.install" => Some(mosura::devcfg::watcom_install().display().to_string()),
+                "watcom.wcc386" => Some(mosura::devcfg::watcom_wcc386().display().to_string()),
+                "recompile.cache" => Some(mosura::devcfg::recompile_cache().display().to_string()),
+                k if k.starts_with("binaries.") => mosura::devcfg::binary(&k["binaries.".len()..]).map(|p| p.display().to_string()),
+                k => cfg.str(k).map(str::to_string),
+            };
+            match resolved.or_else(|| args.get(1).cloned()) {
+                Some(v) => println!("{v}"),
+                None => die(format!("dev-config: `{key}` is not set and has no default")),
+            }
+        }
+    }
 }
 
 fn die(msg: impl AsRef<str>) -> ! {
@@ -244,8 +277,11 @@ fn main() {
         Some("baseline") => baseline(),
         Some("fid-build") => fid_build(),
         Some("omf-uber") => omf_uber(),
+        Some("devcfg") => devcfg_cmd(),
         other => {
-            eprintln!("usage: cargo xtask <baseline|fid-build|omf-uber>");
+            eprintln!("usage: cargo xtask <baseline|fid-build|omf-uber|devcfg>");
+            eprintln!();
+            eprintln!("  devcfg [<section.key> [<default>]]   print a dev-config.toml value (or every key)");
             eprintln!();
             eprintln!("  fid-build --family <name> --version <v> --variant <Release|Debug>");
             eprintln!("            [--common-symbols <file>] [--map <linker.map>] --out <db.mfid>");

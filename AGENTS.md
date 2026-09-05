@@ -62,7 +62,8 @@ the mechanism, then read the source to understand what was named. One trace beat
 plausible-but-wrong premise checks.
 
 - Ghidra source (pinned to tag `Ghidra_12.0.3_build`, commit `09f14c92`): `../ghidra` —
-  fetch + pin + compile the `.sla` with `scripts/setup-ghidra.sh` (`GHIDRA_SRC` overrides).
+  fetch + pin + compile the `.sla` with `scripts/setup-ghidra.sh` (`ghidra_src` in `dev-config.toml` overrides;
+  see `dev-config.example.toml`).
 - Decompiler core to port: `../ghidra/Ghidra/Features/Decompiler/src/decompile/cpp`
   (e.g. `coreaction.cc`, `printc.cc`, `printlanguage.cc`, `funcdata*.cc`, `type.cc`,
   `jumptable.cc`).

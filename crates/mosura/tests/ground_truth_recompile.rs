@@ -77,7 +77,7 @@ fn decompile_recompile_does_not_regress_against_the_local_baseline() {
         }
         s
     };
-    let update = std::env::var("MOSURA_GT_BASELINE").as_deref() == Ok("update");
+    let update = mosura::devcfg::gt_update_baseline(); // `gt.update_baseline = true` in dev-config.toml
     let Some(text) = std::fs::read_to_string(&baseline_path).ok().filter(|_| !update) else {
         std::fs::write(&baseline_path, serialize(&current)).unwrap();
         println!("baseline written: {} (WGSS {:.4})", baseline_path.display(), wgss(&current));

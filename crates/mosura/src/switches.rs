@@ -21,8 +21,8 @@
 //! answers at the site, and [`Knobs::stamp_parts`] puts it in the stamp — so a registered knob
 //! cannot be silently unstamped, and `tests::every_emit_knob_is_registered` fails on ANY raw
 //! `env::var("MOSURA_..")` / `env::var_os("MOSURA_..")` read in the library or the examples (the
-//! diagnostics are a caller-configured [`crate::debug::Config`] since WP3; only `paths.rs` still
-//! reads the environment, until the developer config and the resource provider — WP4/WP5).
+//! diagnostics are a caller-configured [`crate::debug::Config`] since WP3, and the dev tier's
+//! locations come from `dev-config.toml` through [`crate::devcfg`] since WP4).
 //!
 //! THE KNOBS ARE A VALUE, NOT A PROCESS STATE (2026-09-05, the environment-variable removal): a
 //! front-end builds one [`Knobs`] from its flags (`--arms-off`, `--cspec`, `--disable-analyzers`),
@@ -276,9 +276,8 @@ mod tests {
     /// A knob that changes a tree must be in the table, or the manifest's `arms:` line lies about
     /// how the tree was built; a diagnostic is a `debug::Config` field the caller sets. So NO
     /// `MOSURA_*` environment read may exist in the library or the examples: this guard scans them
-    /// and fails on any, naming file:line. (`paths.rs` is exempt until WP4/WP5 move the tree
-    /// locations to the developer config and the resource provider; this file is exempt because its
-    /// scanner test carries the pattern as test data.)
+    /// and fails on any, naming file:line. (This file is exempt because its scanner test carries
+    /// the pattern as test data.)
     #[test]
     fn every_emit_knob_is_registered() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -297,7 +296,7 @@ mod tests {
         }
         let mut unregistered: Vec<String> = Vec::new();
         for p in files {
-            if p.file_name().is_some_and(|n| n == "switches.rs" || n == "paths.rs") {
+            if p.file_name().is_some_and(|n| n == "switches.rs") {
                 continue;
             }
             let Ok(src) = std::fs::read_to_string(&p) else { continue };

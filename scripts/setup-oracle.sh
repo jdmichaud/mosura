@@ -29,7 +29,8 @@ GHIDRA_COMMIT="09f14c92d3da6e5d5f6b7dea115409719db3cce1"  # the exact pin (tags 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MOSURA_DIR="$(dirname "$SCRIPT_DIR")"
 WORKSPACE="$(dirname "$MOSURA_DIR")"
-GHIDRA_SRC="${GHIDRA_SRC:-$WORKSPACE/ghidra}"
+. "$SCRIPT_DIR/devcfg.sh"
+GHIDRA_SRC="$(devcfg ghidra_src "$WORKSPACE/ghidra")"
 JOBS="${JOBS:-$(nproc)}"
 
 CPP_DIR="$GHIDRA_SRC/Ghidra/Features/Decompiler/src/decompile/cpp"

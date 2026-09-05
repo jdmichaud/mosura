@@ -15,8 +15,9 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 REPO="$PWD"
 
-GHIDRA_SRC="${GHIDRA_SRC:-$(cd "$REPO/.." && pwd)/ghidra}"
-DIST="${GHIDRA_DIST:-$(echo "$GHIDRA_SRC"/build/dist/ghidra_*_DEV)}"
+. "$REPO/scripts/devcfg.sh"
+GHIDRA_SRC="$(devcfg ghidra_src "$(cd "$REPO/.." && pwd)/ghidra")"
+DIST="$(echo $(devcfg oracle.ghidra_dist "$GHIDRA_SRC/build/dist/ghidra_*_DEV"))"
 HEADLESS="$DIST/support/analyzeHeadless"
 [ -x "$HEADLESS" ] || { echo "ERROR: no analyzeHeadless at $HEADLESS (build the dist: scripts/build-ghidra-dist.sh)"; exit 1; }
 

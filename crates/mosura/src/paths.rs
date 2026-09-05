@@ -21,15 +21,17 @@ pub fn corpus_gates_file() -> PathBuf {
     workspace_root().join("scripts/corpus-gates.tsv")
 }
 
-/// The pinned Ghidra source checkout (`GHIDRA_SRC`, else `<workspace>/../ghidra`).
+/// The pinned Ghidra source checkout: `ghidra_src` in `dev-config.toml`, else
+/// `<workspace>/../ghidra` ([`crate::devcfg::ghidra_src`]).
 pub fn ghidra_src() -> PathBuf {
-    if let Ok(p) = std::env::var("GHIDRA_SRC") {
-        return PathBuf::from(p);
-    }
-    workspace_root()
-        .parent()
-        .expect("workspace should have a parent dir")
-        .join("ghidra")
+    crate::devcfg::ghidra_src()
+}
+
+/// The root the oracle capture tools are pointed at: `oracle.ghidra_root` in `dev-config.toml`,
+/// else the checkout ([`crate::devcfg::oracle_root`]). A distribution or a `make-oracle-root.sh`
+/// root serves here where the source checkout is absent.
+pub fn oracle_root() -> PathBuf {
+    crate::devcfg::oracle_root()
 }
 
 /// The vendored Ghidra subset committed in-repo (`third_party/ghidra/` — the used languages +
@@ -112,12 +114,9 @@ pub fn oracle_fixtures_dir() -> PathBuf {
 
 /// Ghidra's shipped **FID signature databases** — the packed `.fidb` vendored verbatim from
 /// `NationalSecurityAgency/ghidra-data` (`third_party/ghidra-data/README.md`). External data
-/// read at runtime, not compiled in; `MOSURA_FID_DIR` points elsewhere. With no database
-/// present the FID analyzer is simply inert.
+/// read at runtime, not compiled in. With no database present the FID analyzer is simply inert.
+/// (An override directory arrives with the resource provider, plan WP5.)
 pub fn fid_db_dir() -> PathBuf {
-    if let Ok(p) = std::env::var("MOSURA_FID_DIR") {
-        return PathBuf::from(p);
-    }
     workspace_root().join("third_party/ghidra-data/FunctionID")
 }
 
@@ -132,66 +131,55 @@ pub fn fid_db_dir() -> PathBuf {
 /// point) because zero databases matched, and to 121 names the moment this directory was
 /// included. A signature database nobody looks in is not a feature.
 ///
-/// `MOSURA_FID_DIR` overrides both — an explicit directory means exactly that directory.
 pub fn fid_db_dirs() -> Vec<PathBuf> {
-    if let Ok(p) = std::env::var("MOSURA_FID_DIR") {
-        return vec![PathBuf::from(p)];
-    }
     vec![
         workspace_root().join("third_party/ghidra-data/FunctionID"),
         workspace_root().join("oracle/fid/db"),
     ]
 }
 
-/// Locate a user-provided binary by an env var with a `$HOME`-relative default — the same
-/// override convention as [`ghidra_src`]. These are copyrighted third-party files that are
-/// **not committed**; the tests that use them skip when absent (`docs/dependencies.md`). No
-/// absolute path is baked in — the default is derived from `$HOME`.
-fn user_binary(env_var: &str, home_relative_default: &str) -> PathBuf {
-    if let Ok(p) = std::env::var(env_var) {
-        return PathBuf::from(p);
-    }
-    let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_default();
-    home.join(home_relative_default)
-}
+// User-provided binaries: located by their `[binaries]` key in `dev-config.toml` with the
+// `$HOME`-relative default the dependency manifest promises ([`crate::devcfg::binary`]). These
+// are copyrighted third-party files that are **not committed**; the tests that use them skip when
+// absent (`docs/dependencies.md`). No absolute path is baked in.
 
-/// `WAR2.EXE` — Warcraft II, a DOS/4GW-bound Watcom LE. `MOSURA_WAR2_EXE`, default
+/// `WAR2.EXE` — Warcraft II, a DOS/4GW-bound Watcom LE. `binaries.war2`, default
 /// `$HOME/WAR2.EXE`. Native-LE analysis + Watcom-detection ground truth.
 pub fn war2_exe() -> PathBuf {
-    user_binary("MOSURA_WAR2_EXE", "WAR2.EXE")
+    crate::devcfg::binary("war2").expect("war2 has a manifest default")
 }
 
-/// A 16-bit **Microsoft C** DOS program. `MOSURA_MSC16_EXE`, default `$HOME/msc16.exe`.
+/// A 16-bit **Microsoft C** DOS program. `binaries.msc16`, default `$HOME/msc16.exe`.
 /// Ground truth for the 16-bit real-mode path: the `msc-7.0-*` FID columns and the 16-bit
 /// Microsoft run-time banner (`docs/flashback-corpus-notes.md`). Generic name on purpose — the
 /// compiler and the language are what is under test, not any one product.
 pub fn msc16_exe() -> PathBuf {
-    user_binary("MOSURA_MSC16_EXE", "msc16.exe")
+    crate::devcfg::binary("msc16").expect("msc16 has a manifest default")
 }
 
-/// An X-32-bound executable (FlashTek X-32 / X-32VM). `MOSURA_X32_EXE`, default
+/// An X-32-bound executable (FlashTek X-32 / X-32VM). `binaries.x32`, default
 /// `$HOME/x32.exe`. Native-X-32 analysis ground truth for `docs/x32-loader-notes.md`.
 /// Deliberately a generic name: the container is what is under test, not any one product.
 pub fn x32_exe() -> PathBuf {
-    user_binary("MOSURA_X32_EXE", "x32.exe")
+    crate::devcfg::binary("x32").expect("x32 has a manifest default")
 }
 
-/// `cnv.exe` — a Clang-built PE. `MOSURA_CNV_EXE`, default `$HOME/cnv.exe`. PE
+/// `cnv.exe` — a Clang-built PE. `binaries.cnv`, default `$HOME/cnv.exe`. PE
 /// `CompilerOpinion` ground truth.
 pub fn cnv_exe() -> PathBuf {
-    user_binary("MOSURA_CNV_EXE", "cnv.exe")
+    crate::devcfg::binary("cnv").expect("cnv has a manifest default")
 }
 
 /// A Watcom C/C++32 installation directory (the one holding `BINW`, `H`, `LIB386`).
-/// `MOSURA_WATCOM_DIR`, default `$HOME/watcom`. The **recompile oracle**: byte-exactness is a
+/// `watcom.install`, default `$HOME/watcom`. The **recompile oracle**: byte-exactness is a
 /// claim about what a particular compiler emits, and only that compiler can settle it. Gates
 /// needing it skip when it is absent, like every other user-provided toolchain.
 pub fn watcom_dir() -> PathBuf {
-    user_binary("MOSURA_WATCOM_DIR", "watcom")
+    crate::devcfg::watcom_install()
 }
 
-/// `comcom32.exe` — a DJGPP MZ. `MOSURA_COMCOM32_EXE`, default
+/// `comcom32.exe` — a DJGPP MZ. `binaries.comcom32`, default
 /// `$HOME/.local/share/comcom32/comcom32.exe`. Watcom no-false-positive ground truth.
 pub fn comcom32_exe() -> PathBuf {
-    user_binary("MOSURA_COMCOM32_EXE", ".local/share/comcom32/comcom32.exe")
+    crate::devcfg::binary("comcom32").expect("comcom32 has a manifest default")
 }

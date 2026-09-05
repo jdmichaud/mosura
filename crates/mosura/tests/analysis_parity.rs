@@ -212,8 +212,8 @@ fn pe_compiler_opinion_gcc32() {
 /// offset_choice` gives BorlandPascal. mosura's port reproduces Ghidra exactly, which is the bar.
 #[test]
 fn pe_compiler_opinion_borland() {
-    let Some(path) = std::env::var_os("MOSURA_BC45_EXE").map(PathBuf::from) else {
-        eprintln!("skip pe_compiler_opinion_borland: set MOSURA_BC45_EXE to a Borland C++ 4.5 PE");
+    let Some(path) = mosura::devcfg::binary("bc45") else {
+        eprintln!("skip pe_compiler_opinion_borland: set binaries.bc45 in dev-config.toml to a Borland C++ 4.5 PE");
         return;
     };
     if !path.exists() {
@@ -245,8 +245,8 @@ fn pe_compiler_opinion_borland() {
 /// check fires. The i386 block resolves VisualStudio to the default `windows` cspec.
 #[test]
 fn pe_compiler_opinion_msvc() {
-    let Some(path) = std::env::var_os("MOSURA_VC6_EXE").map(PathBuf::from) else {
-        eprintln!("skip pe_compiler_opinion_msvc: set MOSURA_VC6_EXE to an MSVC 6.0 PE");
+    let Some(path) = mosura::devcfg::binary("vc6") else {
+        eprintln!("skip pe_compiler_opinion_msvc: set binaries.vc6 in dev-config.toml to an MSVC 6.0 PE");
         return;
     };
     if !path.exists() {
@@ -304,26 +304,27 @@ fn compiler_version_committed_fixtures() {
 #[test]
 fn compiler_version_proprietary_fixtures() {
     use mosura::analysis::loader::compiler_version::{detect, Family};
+    // `[binaries]` keys in dev-config.toml; none has a default, so each skips unless set.
     let cases: &[(&str, Family, &str)] = &[
-        ("MOSURA_VC6_EXE", Family::Msvc, "msvc:6.0"),           // VC6: Rich header → exact build
-        ("MOSURA_VC5_EXE", Family::Msvc, "msvc:link-5.0"),      // VC5: pre-Rich → linker version
-        ("MOSURA_VC4_EXE", Family::Msvc, "msvc:link-3.0"),      // VC4: pre-Rich → linker version
-        ("MOSURA_BC45_EXE", Family::Borland, "borland:c++:1994"),
+        ("vc6", Family::Msvc, "msvc:6.0"),           // VC6: Rich header → exact build
+        ("vc5", Family::Msvc, "msvc:link-5.0"),      // VC5: pre-Rich → linker version
+        ("vc4", Family::Msvc, "msvc:link-3.0"),      // VC4: pre-Rich → linker version
+        ("bc45", Family::Borland, "borland:c++:1994"),
     ];
-    for (env, fam, label) in cases {
-        let Some(path) = std::env::var_os(env).map(PathBuf::from) else {
-            eprintln!("skip {env}: not set");
+    for (key, fam, label) in cases {
+        let Some(path) = mosura::devcfg::binary(key) else {
+            eprintln!("skip binaries.{key}: not set in dev-config.toml");
             continue;
         };
         if !path.exists() {
-            eprintln!("skip {env}: {} absent", path.display());
+            eprintln!("skip binaries.{key}: {} absent", path.display());
             continue;
         }
         let data = std::fs::read(&path).unwrap();
-        let id = detect(&data).unwrap_or_else(|| panic!("no version marker via {env}"));
-        assert_eq!(id.family, *fam, "{env} family");
-        assert_eq!(id.label(), *label, "{env} label");
-        eprintln!("{env}: {} [{:?}] — {}", id.label(), id.precision, id.evidence);
+        let id = detect(&data).unwrap_or_else(|| panic!("no version marker via binaries.{key}"));
+        assert_eq!(id.family, *fam, "binaries.{key} family");
+        assert_eq!(id.label(), *label, "binaries.{key} label");
+        eprintln!("binaries.{key}: {} [{:?}] — {}", id.label(), id.precision, id.evidence);
     }
 }
 

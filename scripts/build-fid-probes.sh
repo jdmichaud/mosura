@@ -24,7 +24,8 @@ built=0
 # --- MSVC 6 (Visual Studio 98), x86-32 PE, static CRT (/MT) --------------------------------
 # Ghidra's vsOlder_x86 database covers VS 1998, so this column needs no ingest of our own.
 # CL.EXE is a 32-bit Windows binary: wine runs it, dosemu cannot.
-VC98="${MOSURA_VC98:-/data/msvc/VC98}"
+. "$REPO/scripts/devcfg.sh"
+VC98="$(devcfg toolchains.vc98 /data/msvc/VC98)"
 if [ "$WANT" = all ] || [ "$WANT" = msvc6 ]; then
 	if [ -x "$VC98/BIN/CL.EXE" ] && command -v wine >/dev/null 2>&1; then
 		work="$(mktemp -d)"
@@ -43,7 +44,7 @@ if [ "$WANT" = all ] || [ "$WANT" = msvc6 ]; then
 		fi
 		rm -rf "$work"
 	else
-		echo "  msvc6-x86-32   skipped (need wine + \$MOSURA_VC98/BIN/CL.EXE)"
+		echo "  msvc6-x86-32   skipped (need wine + <toolchains.vc98>/BIN/CL.EXE from dev-config.toml)"
 	fi
 fi
 
@@ -99,7 +100,7 @@ fi
 # tests/fid_borland_identify.rs. Hence `-M`.
 if [ "$WANT" = all ] || [ "$WANT" = borland ]; then
 	DC="${DOSEMU_C:-$HOME/.dosemu/drive_c}"
-	BC="${MOSURA_BC45:-/data/borland/BC45}"
+	BC="$(devcfg toolchains.bc45 /data/borland/BC45)"
 	if command -v dosemu >/dev/null && [ -x "$BC/BIN/BCC.EXE" ]; then
 		work="$DC/bcprobe"; rm -rf "$work"; mkdir -p "$work/INCLUDE" "$work/LIB"
 		cp -r "$BC/BIN" "$work/BIN"
@@ -125,7 +126,7 @@ if [ "$WANT" = all ] || [ "$WANT" = borland ]; then
 			fi
 		done
 	else
-		echo "  borland bc4.5       skipped (need dosemu2 + \$MOSURA_BC45/BIN/BCC.EXE)"
+		echo "  borland bc4.5       skipped (need dosemu2 + <toolchains.bc45>/BIN/BCC.EXE from dev-config.toml)"
 	fi
 fi
 

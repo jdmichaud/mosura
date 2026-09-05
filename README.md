@@ -31,7 +31,7 @@ scripts/setup-ghidra.sh
 ```
 
 `setup-ghidra.sh` shallow-clones the pinned Ghidra (tag `Ghidra_12.0.3_build`) beside this
-repo — `<workspace>/ghidra/`, override with `GHIDRA_SRC` — verifies it is the exact pinned
+repo — `<workspace>/ghidra/`, override with `ghidra_src` in `dev-config.toml` — verifies it is the exact pinned
 commit, and compiles the `.sla` that `cargo test` loads (a fresh Ghidra clone ships none).
 After this, `cargo test` is self-contained. `scripts/setup-oracle.sh` additionally builds the
 Ghidra C++ oracle tools, which are needed only to *regenerate* the committed goldens, not to

@@ -31,9 +31,7 @@ fn have(prog: &str) -> bool {
 #[test]
 #[ignore = "live-drive: needs dosemu + a Watcom 10.0a install"]
 fn watcom_10_0a_dos_compiles_an_mve() {
-    let install = std::env::var("MOSURA_WATCOM").unwrap_or_else(|_| {
-        "/home/jd/projects/warcraft2-re/tmp/watcom-experiments/watcom_10.0a/WATCOM".into()
-    });
+    let install = mosura::devcfg::watcom_install().display().to_string(); // `watcom.install` in dev-config.toml
     if !have("dosemu") || !std::path::Path::new(&install).is_dir() {
         eprintln!("SKIP: dosemu or the Watcom install is absent");
         return;
@@ -128,9 +126,7 @@ fn building_any_invocation_runs_no_compiler() {
 #[test]
 #[ignore = "live-drive: needs dosemu + a Watcom 10.0a install"]
 fn watcom_adjudicates_a_rejected_source_with_its_own_diagnostics() {
-    let install = std::env::var("MOSURA_WATCOM").unwrap_or_else(|_| {
-        "/home/jd/projects/warcraft2-re/tmp/watcom-experiments/watcom_10.0a/WATCOM".into()
-    });
+    let install = mosura::devcfg::watcom_install().display().to_string();
     if !have("dosemu") || !std::path::Path::new(&install).is_dir() {
         eprintln!("SKIP: dosemu or the Watcom install is absent");
         return;

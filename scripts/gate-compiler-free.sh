@@ -62,7 +62,7 @@ echo "   hidden: $HIDDEN"
 echo "== 3. run every gate binary with no toolchain =="
 rc=0
 for b in "${BINS[@]}"; do
-  out=$(env PATH="$RUNPATH" MOSURA_WATCOM_DIR="$NOWHERE" MOSURA_WATCOM="$NOWHERE" "$b" 2>&1)
+  out=$(env PATH="$RUNPATH" "$b" 2>&1)
   line=$(printf '%s\n' "$out" | grep -E '^test result' | tail -1)
   if printf '%s\n' "$out" | grep -q '^test result: FAILED'; then
     echo "   FAILED  $(basename "$b")  $line"

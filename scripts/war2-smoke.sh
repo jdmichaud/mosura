@@ -12,9 +12,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-EXE=${WAR2_EXE:-/home/jd/WAR2.EXE}
-WATCOM=${WAR2_WATCOM:-/home/jd/projects/warcraft2-re/tmp/watcom-experiments/watcom_10.0a/WATCOM}
-CACHE=${WAR2_CACHE:-/data/be2/cache}
+. "$(dirname "${BASH_SOURCE[0]}")/devcfg.sh"
+EXE="$(devcfg binaries.war2 "$HOME/WAR2.EXE")"
+WATCOM="$(devcfg watcom.install "$HOME/watcom")"
+CACHE="$(devcfg recompile.cache "${TMPDIR:-/tmp}/mosura-recompile-cache")"
 OUT=${1:-/data/be2/smoke}
 TARGET=${CARGO_TARGET_DIR:-/data/mosura-target}
 EXPECT=scripts/war2-smoke.expected.tsv

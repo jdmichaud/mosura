@@ -13,6 +13,7 @@
 #[macro_use]
 pub mod debug;
 pub mod switches;
+pub mod devcfg;
 pub mod analysis;
 pub mod ccompare;
 pub mod conformance;

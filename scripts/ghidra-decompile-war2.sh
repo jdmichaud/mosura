@@ -110,9 +110,10 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"                     # mosura/
-MANIFEST="${WAR2_MANIFEST:-$(cd "$HERE/.." && pwd)/war2-survey/manifest.tsv}"
-GHIDRA_SRC="${GHIDRA_SRC:-$(cd "$HERE/.." && pwd)/ghidra}"
-DIST="${GHIDRA_DIST:-$(echo /data/tools/ghidra_12.0.3_PUBLIC/build/dist/ghidra_*_DEV)}"
+. "$HERE/scripts/devcfg.sh"
+MANIFEST="$(devcfg survey.manifest "$(cd "$HERE/.." && pwd)/war2-survey/manifest.tsv")"
+GHIDRA_SRC="$(devcfg ghidra_src "$(cd "$HERE/.." && pwd)/ghidra")"
+DIST="$(echo $(devcfg oracle.ghidra_dist "$GHIDRA_SRC/build/dist/ghidra_*_DEV"))"
 [ -d "$DIST" ] || DIST="$(echo "$GHIDRA_SRC"/build/dist/ghidra_*_DEV)"
 HEADLESS="$DIST/support/analyzeHeadless"
 SCRIPTS="$HERE/oracle/ghidra_scripts"

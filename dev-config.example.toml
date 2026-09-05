@@ -1,0 +1,61 @@
+# dev-config.toml — the DEVELOPER config: where the tests, xtask, the examples and the scripts find
+# this machine's things. Copy to `dev-config.toml` (gitignored) and set what differs. An absent file
+# or key means the default shown. Read by `crates/mosura/src/devcfg.rs` (Rust) and
+# `scripts/devcfg.sh` (shell); the product library never reads it.
+#
+# Format: a TOML subset — `[section]`, `[[subject]]`, `key = "string"`, `key = true|false`, `#`.
+
+# The pinned Ghidra source checkout (tag Ghidra_12.0.3_build). When present its Processors tree
+# and datatests are read; when absent the vendored `third_party/ghidra` copy serves `cargo test`.
+# ghidra_src = "../ghidra"
+
+[oracle]
+# The root the oracle capture tools (oracle/capture*, decomp_dbg) run against: the checkout, a
+# Ghidra distribution, or a root made by scripts/make-oracle-root.sh. Default: ghidra_src.
+# ghidra_root = "../ghidra"
+# A built Ghidra DISTRIBUTION (analyzeHeadless) for the analysis-golden captures. Default: <ghidra_src>/build/dist/ghidra_*_DEV.
+# ghidra_dist = "../ghidra/build/dist/ghidra_12.0.3_DEV"
+
+[watcom]
+# A Watcom C/C++32 installation directory (BINW, H, LIB386) — the recompile oracle.
+# install = "~/watcom"
+# The DOS-hosted compiler itself (an LX; the LE loader's own test subject). Default: <install>/BINB/WCC386.EXE.
+# wcc386 = "~/watcom/BINB/WCC386.EXE"
+
+[gt]
+# Rewrite the ground-truth recompile baseline instead of comparing against it (one run, then unset).
+# update_baseline = false
+
+[recompile]
+# The content-addressed object cache the recompile tools share. Default: <tmp>/mosura-recompile-cache.
+# cache = "/tmp/mosura-recompile-cache"
+
+[survey]
+# The survey manifest the Ghidra per-function decompile script reads (moves into the subject profile, plan WP8).
+# manifest = "../subject-survey/manifest.tsv"
+
+[binaries]
+# User-provided binaries (copyrighted, never committed; the gates that need them SKIP when absent).
+# Defaults are $HOME-relative as docs/dependencies.md promises; keys without a default skip unless set.
+# war2 = "~/WAR2.EXE"
+# cnv = "~/cnv.exe"
+# comcom32 = "~/.local/share/comcom32/comcom32.exe"
+# msc16 = "~/msc16.exe"
+# x32 = "~/x32.exe"
+# vc6 = "/path/to/an/msvc-6.0.exe"
+# vc5 = "/path/to/an/msvc-5.0.exe"
+# vc4 = "/path/to/an/msvc-4.x.exe"
+# bc45 = "/path/to/a/borland-4.5.exe"
+
+[toolchains]
+# Archived compiler media the FID probe builder drives (scripts/build-fid-probes.sh). No defaults.
+# vc98 = "/path/to/VC98"
+# bc45 = "/path/to/BC45"
+
+# A subject binary under study, with its profile directory (everything that is ABOUT that binary:
+# analysis goldens, corpus gates, smoke expectations, notes) — outside the repository. Repeat the
+# block per subject.
+[[subject]]
+id = "example"
+path = "/path/to/subject.exe"
+profile = "/path/to/subject-profile"
