@@ -74,11 +74,17 @@ matched instruction rows out of 23, separates the two variables:
 Moving the blocks while the globals render as plain `int` scores exactly what the current emission
 scores. The two levers are multiplicative, and the one that unlocks the other is the volatile
 memory-operand model — which mosura already has
-(`buildconfig::volatile_globals_from_evidence` feeding `watsched::volatile_globals`). *That* is the
-cheaper investigation and it gates the other: on the subject above the model declared volatile in
-**zero** of 767 emitted units, so whatever its witness is, it did not recognise a binary that reads
-its globals through memory operands throughout. These numbers were measured off-repo on a subject
-this tree does not carry; they are a corroborating read, not a corpus measurement.
+(`buildconfig::volatile_globals_from_evidence` feeding `watsched::volatile_globals`). The 2×2's
+numbers were measured off-repo on a subject this tree does not carry; they are a corroborating
+read, not a corpus measurement.
+
+**The model is not blind — checked here before anyone acts on that report.** The contributed
+re-measurement noted it declaring volatile on **zero** of 767 emitted units of that other subject,
+which reads as "the witness misses a whole shape". Scanned over our own `tb` emission it fires on
+**77 of 2803 user functions (2.75%), declaring 85 globals volatile**. So the witness has real reach
+on this corpus, and the zero over there is a fact about that binary (or about a shape its witness
+does not cover) rather than a general defect to go fix. What survives as an open question belongs
+to whoever owns that subject: which memory-operand shape there produced no witness at all.
 
 **Three cautions for whoever turns the recipe into an arm.** They are why no `block-order` axis
 exists yet.
