@@ -168,6 +168,28 @@ across three construction phases with four signatures) — one line per arm, not
 
 ## What did not work (probed, not built)
 
+- **A `-oc` per-function flag rule — passes the bar here, but the reach is two functions
+  (measured 2026-09-06, not built).** The proposed witness is "the last two instructions are a
+  direct `CALL rel32` followed by `RET`": under `-onatx` Watcom rewrites that pair as `JMP`, so
+  only `-oc` leaves it standing. It arrived from work on another Watcom-era 32-bit DOS subject,
+  where it was worth +17 EXACT, and it carried a stated blocking pre-check — the bar above — that
+  had not been run against this subject. It has now been run over the `tb` emission:
+
+  | | |
+  |---|---|
+  | user functions scanned (>= 2 instructions) | 2790 |
+  | carry the witness (direct `CALL`; `RET` tail) | 2 |
+  | of those, byte-EXACT under the opposite setting | **0** |
+
+  So the bar is satisfied and the rule is *safe*, which is the opposite of the worry:
+  `buildconfig.rs` documents a `CALL f; RET` passthrough in this subject, so a collision looked
+  likely. What kills it here is reach, not risk — both witnessed functions are already MISMATCH,
+  so the whole population a `-oc` rule could move is two functions with no evidence either would
+  improve, against the cost of a scored round. The witness itself is sound and one-sided; if the
+  emission ever grows a larger tail-call population, re-run the scan before dismissing it again.
+  (The repo already owns a two-arm gate for the mechanism, needing no new machinery:
+  `oracle/ground-truth/build.sh` makes `-oc` the corpus default and documents it as disabling the
+  `call X; ret` -> `jmp X` rewrite, and builds `tailjmp` without it.)
 - The sound family (16 functions, `ADD EDX,k ; MOV EAX,EDX` for `return (rand() >> 8) % 4 + k`):
   no C form found — temporaries, `+=`, 8/16-bit return types, operand order, `-3r`/`-4r`, `-od`
   all compile to the `LEA`. The PSX source writes `ack1 += (rand() >> 8) % (ack2 - ack1 + 1)` on a
