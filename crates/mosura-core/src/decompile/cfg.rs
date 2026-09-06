@@ -246,6 +246,35 @@ pub fn build_cfg(f: &mut Funcdata) {
         }
     }
 
+    // Ghidra `FlowInfo::generateBlocks` (flow.cc:833), the clause right after `connectBasic`:
+    // "Make sure the entry block has no incoming edges". When the entry is itself a loop head it
+    // has a back edge into itself, and every downstream consumer assumes otherwise — `dominator.rs`
+    // documents "block 0 is the entry", `merge.rs` carries a regression comment reading "block 0 —
+    // the entry block, in_edges == []". Ghidra guarantees the invariant by inserting an empty block
+    // in front of the entry and making THAT the start block (`newBlockBasic` + `addEdge` +
+    // `setStartBlock`, which slides the rest down so the new front takes index 0).
+    //
+    // Without it the dominance-frontier walk never adds block 0 to its own frontier, so a value
+    // defined in the entry loop head gets no merge node at all and every read re-links to the
+    // function-input value: the loop's updates vanish from the output.
+    //
+    // Ghidra inserts before `removeUnreachableBlocks`; here the prune has already run, which is
+    // equivalent — the prune roots at the entry, and the new front reaches exactly what the old
+    // entry reached. There is no address range to set (`setBasicBlockRange` in Ghidra): a
+    // `BlockBasic` here carries no address, and every consumer derives one from its ops with a
+    // fallback to the function address.
+    if blocks.first().is_some_and(|b| !b.in_edges.is_empty()) {
+        for blk in blocks.iter_mut() {
+            for e in blk.in_edges.iter_mut().chain(blk.out_edges.iter_mut()) {
+                e.0 += 1;
+            }
+        }
+        // Ghidra adds this edge AFTER `connectBasic`, so the new predecessor is APPENDED to the old
+        // entry's in-edge list — MULTIEQUAL slot order follows in-edge order (`getOutRevIndex`).
+        blocks[0].in_edges.push(BlockId(0));
+        blocks.insert(0, BlockBasic { out_edges: vec![BlockId(1)], ..Default::default() });
+    }
+
     // set each op's parent block, then install
     for (bi, blk) in blocks.iter().enumerate() {
         for &opid in &blk.ops {
