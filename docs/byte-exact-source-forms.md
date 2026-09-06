@@ -59,6 +59,45 @@ more than every expression-level fix in this catalog combined.
 **Recipe:** read the original's address order, and move each block in the C so that source order
 matches address order. Seal the ends with explicit `goto`s.
 
+**Correction (2026-09-06): "dominant lever" only *given* memory-operand fidelity — on its own it
+is worth nothing.** The heading above was measured with the rest of the form already right. A 2×2
+on a single function of another Watcom-era 32-bit DOS subject (10.0a, `-3r -fpi87 -s -onatx`),
+matched instruction rows out of 23, separates the two variables:
+
+| globals | block layout | matched |
+|---|---|---|
+| plain `int` | the structurer's nested loop | 1 |
+| plain `int` | original address rank, sealed with `goto` | 1 |
+| `volatile` | the structurer's nested loop | 11 |
+| `volatile` | original address rank, sealed with `goto` | **23, exact** |
+
+Moving the blocks while the globals render as plain `int` scores exactly what the current emission
+scores. The two levers are multiplicative, and the one that unlocks the other is the volatile
+memory-operand model — which mosura already has
+(`buildconfig::volatile_globals_from_evidence` feeding `watsched::volatile_globals`). *That* is the
+cheaper investigation and it gates the other: on the subject above the model declared volatile in
+**zero** of 767 emitted units, so whatever its witness is, it did not recognise a binary that reads
+its globals through memory operands throughout. These numbers were measured off-repo on a subject
+this tree does not carry; they are a corroborating read, not a corpus measurement.
+
+**Three cautions for whoever turns the recipe into an arm.** They are why no `block-order` axis
+exists yet.
+
+- **The mechanism cannot produce the target shape.** In the emitted unit above, the two blocks
+  whose order is wrong sit at different *depths* of the structure tree, not as siblings, so no
+  permutation of a node's components by address reaches the layout that goes exact. That layout is
+  a flat, unstructured `goto` rendering of the control-flow graph — a rendering mode, not an
+  ordering axis, and it should be scoped and named as one.
+- **The reach is small.** Of the units carrying a top-level label at all, exactly two print their
+  labels out of address order; 33 of the 42 units containing a `goto` already place it at the right
+  address rank, so a blanket reorder churns them for nothing.
+- **There is a reverted precedent.** The store-order axis was landed and then reverted after a
+  four-function regression, because a partial reorder put stores in the wrong order where the
+  natural order was already exact. A block-order arm has the same failure shape and needs the same
+  per-site witness discipline. Note also that the structured-tree check which would catch a `goto`
+  to a label nobody emitted is a debug assertion, and the survey runs release: any un-structuring
+  arm has to promote that check for its own sites first.
+
 ### 2. Compare ladders are compiled `switch`es
 
 **Evidence:** a chain of `CMP`/`JC`/`JBE`/`JZ` against ascending constants, ending in a common
@@ -126,6 +165,33 @@ rather than a rule:
   `JL`/`JLE`/`JGE` and different block order
 * **where a constant is assigned** — Watcom sinks materialization to the use, so moving
   `iVar = 1` between two statements moves `MOV ECX,1` in the output
+
+### 8a. A `volatile` object decremented by a constant, under `-3r` only
+
+Watcom rewrites `x - c` as `x + (-c)`. Under 386 tuning that folded form reaches the encoder
+whenever the destination is `volatile`, so the *subtract disappears from the output*:
+
+| source (`volatile int vg;`) | `-3r` | `-4r` / `-5r` |
+|---|---|---|
+| `vg -= 9` , `vg = vg - 9` , `vg += -9` , `--vg` | `ADD [vg],-9` | `SUB [vg],9` |
+| `vg -= 1` | `ADD [vg],-1` | `DEC [vg]` |
+| `int nine = 9; vg -= nine;` | `SUB [vg],9` | `SUB [vg],9` |
+| `int one = 1; vg -= one;` | `DEC [vg]` | `DEC [vg]` |
+
+Same on 10.0a, 10.6 and 11.0, except that 11.0 propagates the initialized local back into the fold.
+A plain (non-volatile) global is never affected, nor is a byte-width volatile; `++vg` is `INC`, and
+`vg--` is `DEC` plus a dead reload. **The escape is to route the constant through an initialized
+local.** Cost when it bites: `DEC` is 6 bytes and `ADD ..,-1` is 7, so the decrement case moves
+every later branch target, and `k = 128` also changes length; other values differ only in the
+opcode byte.
+
+**No arm is justified, and this entry exists so nobody builds one.** The survey compiles `-5r`/`-4r`,
+where the fold does not occur, and neither known subject has a witnessed site — so an emit arm would
+have a structurally empty witness set. The value is defensive: a future `-3r` profile, or any hand
+convergence of a `-3r` function, hits this immediately and reads as a decompiler defect when it is a
+source-form fact. Revisit only on both conditions together: a `-3r` survey profile, *and* a corpus
+round showing original `SUB`/`DEC mem,imm` against candidate `ADD mem,-imm` at a store the volatile
+model marked. (Measured off-repo on another Watcom-era 32-bit DOS subject; not re-runnable here.)
 
 ## Declaration order steers the register allocator
 
