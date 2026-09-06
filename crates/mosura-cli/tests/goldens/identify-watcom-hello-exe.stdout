@@ -40,3 +40,4 @@ fid.database	watcom-9.01-stack-x86-32	634 records, 1 libraries
 fid.database	watcom-9.01-x86-32	654 records, 1 libraries
 fid.database	watcom-ow2-x86-32	1269 records, 1 libraries
 fid.records	18775	
+toolchain.evidence	available	run `program.toolchain-evidence` on the analysed program for encodings this toolchain does not emit

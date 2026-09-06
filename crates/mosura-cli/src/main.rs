@@ -164,6 +164,9 @@ enum Cmd {
         #[arg(long, value_name = "ID")]
         language: String,
     },
+    /// Encodings the program's own toolchain does not emit: evidence that parts were built
+    /// elsewhere (counts and bands, never a verdict)
+    ToolchainEvidence,
     /// FID: the library functions recognised in the current program (`fid identify [--db DIR]`)
     Fid {
         #[command(subcommand)]
@@ -574,6 +577,10 @@ fn run(cli: Cli) -> Res<()> {
         }
         Cmd::Arms => {
             let t = app.ctx.emit_arms()?;
+            app.show(&t)
+        }
+        Cmd::ToolchainEvidence => {
+            let t = app.call("program.toolchain-evidence", &[])?;
             app.show(&t)
         }
         Cmd::Fid { sub: FidCmd::Identify { db } } => {

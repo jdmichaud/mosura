@@ -18,6 +18,7 @@ pub mod analyzer;
 pub mod analyzers;
 pub mod bytesearch;
 pub mod codegen_fingerprint;
+pub mod toolchain_evidence;
 pub mod cspec;
 pub mod decompiler;
 pub mod fid;

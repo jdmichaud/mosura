@@ -17,6 +17,7 @@ pub mod schemas;
 pub mod session;
 pub mod sleigh;
 pub mod toolchain;
+pub mod toolchain_evidence;
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::sync::RwLock;
@@ -96,6 +97,7 @@ pub static REGISTRY: &[&Op] = &[
     &emit::PASSES,
     &program::READ,
     &program::TABLES,
+    &toolchain_evidence::EVIDENCE,
     &round::COMPARE_OP,
     &round::EXPORT,
     &round::GATES_OP,

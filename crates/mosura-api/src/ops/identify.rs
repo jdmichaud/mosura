@@ -105,6 +105,12 @@ fn identify(s: &mut Session, o: &Options, _p: &mut dyn Progress) -> Result<Table
                 row("fid.database", db.name(), &format!("{} records, {} libraries", db.function_count(), db.libraries().len()));
             }
             row("fid.records", &service.function_count().to_string(), if service.is_empty() { "no database matches this language and spec" } else { "" });
+            // A pointer, not the pass itself: deciding whether parts of the file were built by
+            // another toolchain needs the function set, and `identify` is load-only by contract.
+            // This is a table lookup on (language, spec), so it costs nothing.
+            if mosura_core::analysis::toolchain_evidence::table_for(&p.language_id, &p.compiler_spec_id).is_some() {
+                row("toolchain.evidence", "available", "run `program.toolchain-evidence` on the analysed program for encodings this toolchain does not emit");
+            }
         }
     }
     Ok(b.finish(false))

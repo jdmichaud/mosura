@@ -560,6 +560,7 @@ mosura round run <name> [--toolchain …] [--baseline NAME]                     
 mosura round compare <a> <b>                                                      (today's verdict-comparison script: EXACT, WGSS, ups/downs)
 mosura gates <round> [--baseline NAME]                                            (corpus-gates.tsv, text + verdict gates)
 mosura fid identify | fid build …
+mosura toolchain-evidence                                                         (encodings this toolchain does not emit: counts + bands, never a verdict)
 mosura data export <dir> | data list                                              (dump the embedded spec/FID data into the override dir; what is in effect)
 mosura cache explain <key> | cache gc
 mosura ops [--dev] | schema <table> | call <op> [--key value …]                   (discoverability + plumbing)

@@ -48,8 +48,20 @@ never mis-classifies another binary's own code as foreign.
   `asm`. The survey excludes `library` and `asm` from the denominator.
 - **FID** (`analysis/fid/*`): fingerprint matcher against packed `.fidb` / `.mfid.gz` databases.
 
+- **`analysis::toolchain_evidence`** (2026-09-06): encoding evidence, independent of names and of
+  strings. A register-to-register `MOV` has two legal encodings; this toolchain writes `89 /r` and
+  never `8b /r`, so a function using the load form was not built by it. Run as
+  `program.toolchain-evidence` it flags **98 of 3023 functions in four bands** (`0x63bb0`,
+  `0x67e78..0x68f25`, `0x7081e..0x74bdb`, `0x77660..0x7c3d0`), and **none of the 1031 byte-exact
+  functions** — code this toolchain demonstrably produced, so every flag there would be a false
+  positive. Those bands do not overlap the anchor-string band at `0x5191e..0x56815`, so this is a
+  *complementary* source rather than a second look at the same evidence.
+
 So today's foreign set = **FID-named ∪ hand-written-asm**. The gap: FID only knows libraries it
-has a database for.
+has a database for. Encoding evidence is the one source that needs neither a database nor a name
+nor a human-confirmed string, which is why it is worth wiring into the denominator argument: it
+reaches exactly the linked-in objects the other two miss. It stays a *proposal* like the rest —
+counts and bands, never a verdict, and never an automatic exclusion.
 
 ## 3. Validated findings (2026-08-25 POC)
 

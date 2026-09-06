@@ -55,8 +55,19 @@ impl Vocabulary {
     }
 
     /// Record everything in one compiled function.
+    ///
+    /// No-ops are skipped, and that is load-bearing rather than tidy. Padding and interior
+    /// self-moves are not instruction *selections*: the compiler did not choose that spelling to
+    /// express an operation, it needed some bytes. Because [`NormInsn::form`] masks the operand
+    /// bits, a single `MOV EAX,EAX` would enter the `8b /r` form into the vocabulary and
+    /// thereafter legitimise every register-to-register load-form move in the binary under test —
+    /// one meaningless instruction silently switching the whole instrument off. A vocabulary is
+    /// only useful while absence still means something.
     pub fn observe(&mut self, insns: &[NormInsn]) {
         for i in insns {
+            if i.is_nop() {
+                continue;
+            }
             self.pairs.insert((shape_key(i), i.form.clone()));
             self.forms.insert(i.form.clone());
             self.instructions_seen += 1;
@@ -83,14 +94,18 @@ impl Vocabulary {
     }
 
     /// Instructions in `insns` whose (shape, form) pair this toolchain has never emitted.
+    ///
+    /// No-ops are excluded for the same reason [`Self::observe`] does not learn from them: an
+    /// alignment `NOP` or an `XCHG BX,BX` says nothing about who selected the surrounding code,
+    /// and flagging a function for its padding is a false accusation.
     pub fn foreign<'a>(&self, insns: &'a [NormInsn]) -> Vec<&'a NormInsn> {
-        insns.iter().filter(|i| !self.contains(i)).collect()
+        insns.iter().filter(|i| !i.is_nop() && !self.contains(i)).collect()
     }
 
     /// The subset of [`Self::foreign`] whose *encoding* is unknown to the toolchain entirely.
     /// This is the strong signal: the compiler does not use this byte form for anything.
     pub fn foreign_forms<'a>(&self, insns: &'a [NormInsn]) -> Vec<&'a NormInsn> {
-        insns.iter().filter(|i| !self.contains_form(i)).collect()
+        insns.iter().filter(|i| !i.is_nop() && !self.contains_form(i)).collect()
     }
 }
 
@@ -128,5 +143,33 @@ mod tests {
         let mut v = Vocabulary::new();
         v.observe(&lift("89e5")); // mov ebp,esp
         assert!(v.contains(&lift("89c3")[0]), "mov ebx,eax is the same selection");
+    }
+
+    /// A no-op must not teach the vocabulary an encoding form. `form` masks the operand bits, so
+    /// learning `8b c0` (`MOV EAX,EAX`, a self-move some tunings emit as interior padding) would
+    /// enter the whole `8b /r` form and thereafter legitimise every load-form register move —
+    /// one meaningless instruction blinding the instrument for the rest of the binary.
+    #[test]
+    fn a_noop_does_not_teach_the_vocabulary_a_form() {
+        let nop = lift("8bc0"); // mov eax,eax — a self-move, semantically a no-op
+        assert!(nop[0].is_nop(), "the fixture must actually be a no-op");
+        let mut v = Vocabulary::new();
+        v.observe(&lift("89e5")); // the compiler's real spelling of a register move
+        v.observe(&nop);
+        assert_eq!(v.instructions_seen, 1, "the no-op is not counted as an observation");
+        assert!(!v.contains(&lift("8bec")[0]), "the no-op must not legitimise the 8b spelling");
+        assert_eq!(v.foreign(&lift("8bec")).len(), 1, "the foreign spelling is still caught");
+    }
+
+    /// The mirror: padding in the binary under test must not make a function look foreign. A
+    /// function is accused for the instructions someone selected, not for its alignment bytes.
+    #[test]
+    fn padding_in_the_scanned_code_is_not_evidence() {
+        let mut v = Vocabulary::new();
+        v.observe(&lift("89e5"));
+        let padded = lift("89e590"); // the known move, then a NOP the vocabulary has never seen
+        assert!(padded.iter().any(|i| i.is_nop()), "the fixture must contain a no-op");
+        assert!(v.foreign(&padded).is_empty(), "padding is not a foreign selection");
+        assert!(v.foreign_forms(&padded).is_empty(), "nor an unknown form worth reporting");
     }
 }
