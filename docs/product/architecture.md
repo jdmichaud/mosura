@@ -658,7 +658,8 @@ integration tests (identify → load → analyze → decompile → tables).
 | `fidnames` | `fid.identify`, `fid.build` | product |
 | the survey driver | `program.passes` (prototype pass, tail-return marks, param-order evidence, global widths — promoted into core), `function.emit` (TU synthesis promoted into `core::recompile::tu`), `round.run` | product |
 | `recompile_check` | `function.verify`, `round.run` | product |
-| `recompile_census`, `recompile_search`, `recompile_select`, the oracle sweep example, `over_decode`, `terminator_rate`, `watsched_census`, `watsched_split_census`, `foreign_propose`, `mz_noreturn` | dev operations returning tables (or deleted where the finding is recorded and the tool is spent) | dev |
+| the oracle sweep example → `dev.oracle.sweep`, `over_decode` → `dev.census.over-decode`, `terminator_rate` → `dev.census.terminator-rate`, `watsched_census` → `dev.census.watsched`, `watsched_split_census` → `dev.census.split-store`, `foreign_propose` → `dev.foreign.{facts,propose,report}` | dev operations returning tables | dev |
+| `recompile_census`, `recompile_search`, `recompile_select`, `mz_noreturn`, `le_funcs`, `gt_recompile_probe` | deleted (the union is retired; each finding is recorded in the doc it cites) | — |
 | `corpus_gates` | `gates` | product |
 | `gt_recompile`, `gt_recompile_probe`, `watcom_mve_fixtures` | `dev.groundtruth.*`, `dev.mve.*` | dev |
 | `perf_corpus` | `dev.bench` | dev |
@@ -773,8 +774,19 @@ caught: the emit state re-running the prototype pass with prototypes in place (1
 full-precision comparison of 3-decimal legacy sims. Known gap kept: the contract cache is warmed by
 re-running pass 1 at emit time rather than frozen (a `contracts` table is the later fix).
 
-**Phase 4 — dev tier.** The `mosura-dev-ops` crate behind the `dev-tools` feature: the
-censuses, oracle sweep, ground-truth and MVE tools as `dev` operations; delete the spent ones.
+**Phase 4 — dev tier.** LANDED 2026-09-06 (`plan-wp7-2026-09-05.md` §3 P4). The dev tier
+(`paths`, `devcfg`, `oraclecache`, `golden`, `conformance`, `ccompare`, `speccache`, the gcc
+ground truth, the MVE twin) is compiled only under core's `dev` feature; a release library
+(`cargo build --release -p mosura-capi`) has none of it, `resources::default_for_process()` is
+embedded-only, and `tests/no_spawn.rs` pins that `Command::new` appears only in the toolchain
+driver and the three dev-gated files. The `mosura-dev-ops` crate registers twelve `dev.*`
+operations into the same registry through `ops::register` when a `dev-tools` context is built
+(the api's registries are runtime-extensible): the omf dump, the oracle sweep, the perf bench,
+the ground-truth recompile, the MVE fixture generator, the over-decode / terminator-rate /
+watsched / split-store censuses, and the foreign-scope facts/propose/report. `mosura dev <op>`
+runs one and `mosura ops --dev` lists them; a release build answers a `dev.*` name with "not
+built in". `fid.identify` (was `fidnames`) is a PRODUCT operation. The seventeen ported and
+spent examples are deleted; `dumpc` and `trace` remain.
 
 **Phase 5 — later.** Frozen specs at build time (start-up), the frozen IR record (tier B), the
 type intern table, `mosura serve`, the wasm build (three seams: the resource provider, the
