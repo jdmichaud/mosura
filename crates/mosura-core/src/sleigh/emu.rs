@@ -153,7 +153,7 @@ impl Machine {
     /// other (ram/code) is a direct address jump.
     fn branch_to(target: Option<&PArg>) -> Flow {
         match target.and_then(PArg::as_var) {
-            Some(v) if v.is_const() => Flow::Rel(v.offset as i64),
+            Some(v) if v.is_const() => Flow::Rel(sext(v.offset, v.size)),
             Some(v) => Flow::Jump(v.offset),
             None => Flow::Next,
         }
