@@ -3,6 +3,11 @@
 
 # this machine's developer config (see dev-config.example.toml)
 /dev-config.toml
+# `scripts/ci-clean-clone.sh --hermetic` moves the real dev-config and the oracle tools aside as
+# `<path>.ci-hidden` and restores them on exit. A run that is KILLED (rather than exiting) leaves
+# them behind — and `dev-config.toml.ci-hidden` is the developer's own config, full of machine
+# paths and subject locations, sitting untracked and committable. Ignore the whole family.
+*.ci-hidden
 
 # Rust
 /target/
