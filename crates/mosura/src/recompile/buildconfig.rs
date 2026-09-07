@@ -92,6 +92,30 @@ pub struct Evidence {
     /// Note what the fact means: the option under which THIS compiler reproduces this shape, not
     /// the option the original build used — hand-written assembly emits the pair freely.
     pub call_then_return: bool,
+    /// The body stores an immediate ZERO to memory at an absolute or frame-relative address
+    /// (`MOV dword/word/byte ptr [g],0`, `MOV dword ptr [ESP + k],0`). The 486/586 code generators
+    /// never select that form: `V_GOOD_CLR` needs CPU_486, so they zero through a register
+    /// (measured on 10.0a: `-3r` -> `MOV dword ptr [g],0`; `-4r`/`-5r` -> `PUSH EDX ; XOR EDX,EDX ;
+    /// MOV [g],EDX ; POP EDX`, and the same split at byte and word width). A REGISTER-INDIRECT
+    /// destination is NOT a witness — measured, both digits keep the immediate there. One-sided.
+    pub immediate_zero_store: bool,
+    /// The body zero-extends a byte or word into a 32-bit register with `MOVZX` from MEMORY or
+    /// from a byte/word REGISTER. Same CPU-level gate as the zero store: measured on 10.0a,
+    /// `-3r` selects `MOVZX EAX,AL` / `MOVZX EAX,byte ptr [c]` where `-4r`/`-5r` select
+    /// `AND EAX,0xff` (register source) or `XOR EAX,EAX ; MOV AL,[c]` (memory source).
+    /// `MOVZX` between two registers of the same width is not this shape.
+    pub zext_widen: bool,
+    /// An ALU instruction reads an ABSOLUTE memory operand directly into a register destination
+    /// (`SUB EAX,dword ptr [0x482cc]`). The 486/586 generators split that into a load and a
+    /// register operation — `LdStAlloc` enregisters the memory operand because "the 486 has a
+    /// 1 cycle stall" — so they emit `MOV EBX,[0x482cc] ; SUB EAX,EBX` where the 386 generator
+    /// keeps the operand in place. Measured on 10.0a: the same source gives `SUB EAX,[g]` at
+    /// `-3r` and the load pair at `-5r`.
+    ///
+    /// Calibration on a hand-written 32-bit DOS subject: 117 of its 345 C-recompilable functions
+    /// carry the shape and ZERO of the 44 that already recompile byte-exactly do — the same bar
+    /// the other one-sided witnesses carry.
+    pub alu_absolute_operand: bool,
 }
 
 /// A compiler-level FACT the byte shapes prove — the currency a profile's rules trade in.
@@ -130,6 +154,11 @@ facts! {
     NoReorderer,
     /// The "call followed by return" rewrite was off (`Evidence::call_then_return`).
     TailCallKept,
+    /// Tuned for the 386: either byte shape — an immediate zero store to memory
+    /// (`Evidence::immediate_zero_store`, a form the 486/586 code generator never selects, since
+    /// V_GOOD_CLR needs CPU_486) or a `MOVZX` widening (`Evidence::zext_widen`, where the later
+    /// digits select `AND`/`XOR`+`MOV`).
+    Cpu386Tuning,
 }
 
 impl Evidence {
@@ -141,6 +170,7 @@ impl Evidence {
             Fact::PrePentiumTuning => self.in_place_scaled_lea,
             Fact::NoReorderer => self.immediate_store_after_cleanup || self.unscheduled_load_pair,
             Fact::TailCallKept => self.call_then_return,
+            Fact::Cpu386Tuning => self.immediate_zero_store || self.zext_widen || self.alu_absolute_operand,
         }
     }
 
@@ -1751,6 +1781,11 @@ pub fn watcom_10_0a() -> Profile {
             // `Evidence::immediate_store_after_cleanup` and `Evidence::unscheduled_load_pair`).
             // `-onatmil` is `-onatx` without `-or` (Watcom 10.0a rejects the letter `b`).
             Rule { when: Fact::NoReorderer, add: vec!["-onatmil".into()], remove: vec!["-onatx".into()] },
+            // The CPU digit again, one step lower: an immediate zero store proves the 386 generator
+            // (see `Evidence::immediate_zero_store`). Declared AFTER `PrePentiumTuning` so
+            // `apply_rules`' declaration order lets the stronger digit win when both fire — `-3r`
+            // also emits the in-place scaled LEA, so the two shapes are consistent, not contradictory.
+            Rule { when: Fact::Cpu386Tuning, add: vec!["-3r".into()], remove: vec!["-5r".into(), "-4r".into()] },
             // The tail-call rewrite, off (see `Evidence::call_then_return`). Additive: the base
             // `-onatx` (or `-onatmil`) stays, and 10.0a accepts both with `-oc`.
             Rule { when: Fact::TailCallKept, add: vec!["-oc".into()], remove: vec![] },
@@ -1816,6 +1851,46 @@ pub fn detect(insns: &[NormInsn], sp: (u64, u32), fp: (u64, u32)) -> Evidence {
     if let [.., call, ret] = insns {
         ev.call_then_return = call.mnemonic == "CALL" && call.text.starts_with("CALL 0x") && ret.mnemonic.starts_with("RET");
     }
+    // Body evidence: an immediate zero store to an absolute or frame-relative address (see
+    // `Evidence::immediate_zero_store`).
+    ev.immediate_zero_store = insns.iter().any(|x| {
+        if x.mnemonic != "MOV" {
+            return false;
+        }
+        // An absolute destination is a `Mem` sem operand; a frame-relative one is a STORE through
+        // a register, so it is read off the operand text.
+        let absolute = x
+            .sem
+            .iter()
+            .any(|op| matches!((&op.out, op.ins.as_slice()), (Some(SemArg::Mem(_, _, 1 | 2 | 4)), [SemArg::Const(0, _)])));
+        let frame_relative = (x.text.contains("ptr [ESP") || x.text.contains("ptr [EBP"))
+            && (x.text.ends_with(",0x0") || x.text.ends_with(",0"));
+        absolute || frame_relative
+    });
+    // Body evidence: an ALU op reading an absolute memory operand into a register (see
+    // `Evidence::alu_absolute_operand`). Read off the operand text: the destination must be a bare
+    // register (no memory operand on the left) and the source an absolute address.
+    ev.alu_absolute_operand = insns.iter().any(|x| {
+        match x.mnemonic.as_str() {
+            // An arithmetic operation with a memory operand on EITHER side: the operand is read
+            // (`SUB EAX,[0x482cc]`), compared (`CMP dword ptr [0x45208],0x280`) or updated in
+            // place (`INC word ptr [EBX + 0x29eae]`). All three are the same code-generator
+            // decision, and all three were witnessed on functions that are byte-exact only at -3r.
+            "ADD" | "SUB" | "AND" | "OR" | "XOR" | "CMP" | "ADC" | "SBB" | "INC" | "DEC" => {
+                x.text.contains("ptr [")
+            }
+            _ => false,
+        }
+    });
+    // Body evidence: a MOVZX widening (see `Evidence::zext_widen`).
+    ev.zext_widen = insns.iter().any(|x| {
+        x.mnemonic == "MOVZX"
+            && x.sem.iter().any(|op| match (&op.out, op.ins.as_slice()) {
+                (Some(SemArg::Reg(_, 4)), [SemArg::Reg(_, 1 | 2)]) => true,
+                (Some(SemArg::Reg(_, 4)), [SemArg::Mem(_, _, 1 | 2)]) => true,
+                _ => false,
+            })
+    });
     ev
 }
 
@@ -2392,6 +2467,7 @@ mod tests {
     /// declaration order, and `Evidence::has` (an exhaustive match) answers for each.
     #[test]
     fn every_fact_is_in_all() {
+        assert_eq!(Fact::ALL.len(), 6);
         for (i, f) in Fact::ALL.iter().enumerate() {
             assert_eq!(Fact::ALL.iter().position(|g| g == f), Some(i), "{f:?} listed once");
             let _ = Evidence::default().has(*f);
@@ -2451,6 +2527,46 @@ mod tests {
         assert!(!detect(&lift("e8000000005ac3"), ESP, EBP).call_then_return);
         // call +0 ; ret ; nop — the pair must END the function
         assert!(!detect(&lift("e800000000c390"), ESP, EBP).call_then_return);
+    }
+
+    #[test]
+    fn an_immediate_zero_store_downgrades_to_386_tuning() {
+        // Each of the three witnessed shapes of the same code-generator decision: a memory operand
+        // READ into a register, COMPARED against an immediate, and UPDATED in place. The 486/586
+        // generators enregister the operand first; the 386 generator keeps it.
+        for hex in ["2b05cc82040000c3", "813d0852040080020000c3", "66ff83ae9e0200c3"] {
+            let ev_mem = detect(&lift(hex), ESP, EBP);
+            assert!(ev_mem.alu_absolute_operand, "{hex}");
+            assert!(watcom_10_0a().flags_for(&ev_mem).contains(&"-3r".to_string()), "{hex}");
+        }
+        // register-only arithmetic is not the shape
+        assert!(!detect(&lift("29d8c3"), ESP, EBP).alu_absolute_operand);
+        assert!(!detect(&lift("40c3"), ESP, EBP).alu_absolute_operand);
+        // mov dword ptr [0x2f568],0 ; ret — only the 386 generator stores the immediate
+        let ev = detect(&lift("c70568f5020000000000c3"), ESP, EBP);
+        assert!(ev.immediate_zero_store);
+        let f = watcom_10_0a().flags_for(&ev);
+        assert!(f.contains(&"-3r".to_string()) && !f.contains(&"-5r".to_string()) && !f.contains(&"-4r".to_string()));
+        // word and byte widths, and a frame slot
+        assert!(detect(&lift("66c7056cf502000000c3"), ESP, EBP).immediate_zero_store);
+        assert!(detect(&lift("c60570f5020000c3"), ESP, EBP).immediate_zero_store);
+        assert!(detect(&lift("c704240000000000c3"), ESP, EBP).immediate_zero_store);
+        // mov dword ptr [eax],0 — a register-indirect destination keeps the immediate at EVERY
+        // digit, so it is not a witness
+        assert!(!detect(&lift("c70000000000c3"), ESP, EBP).immediate_zero_store);
+        // the 486/586 form, and a non-zero constant
+        assert!(!detect(&lift("31d2891568f5020089d0c3"), ESP, EBP).immediate_zero_store);
+        assert!(!detect(&lift("c70568f5020001000000c3"), ESP, EBP).immediate_zero_store);
+    }
+
+    #[test]
+    fn the_386_digit_wins_over_the_486_downgrade() {
+        // lea eax,[eax*4] (pre-Pentium tuning) + mov dword ptr [0x2f568],0 (386 tuning)
+        let ev = detect(&lift("8d048500000000c70568f5020000000000c3"), ESP, EBP);
+        assert!(ev.in_place_scaled_lea && ev.immediate_zero_store);
+        let f = watcom_10_0a().flags_for(&ev);
+        assert!(f.contains(&"-3r".to_string()), "{f:?}");
+        assert!(!f.contains(&"-4r".to_string()) && !f.contains(&"-5r".to_string()), "{f:?}");
     }
 
     #[test]
