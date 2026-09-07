@@ -133,6 +133,8 @@ mod aid {
     pub const LOW: u32 = 48;
     pub const HIGH: u32 = 49;
     pub const NUMCT: u32 = 53;
+    /// `ATTRIB_LABELS` (slaformat.cc:78) — how many `<label>`s a constructor's template declares.
+    pub const LABELS: u32 = 55;
 }
 
 #[derive(Debug)]
@@ -231,6 +233,11 @@ pub struct PatternBlock {
 #[derive(Debug, Clone)]
 pub struct ConstructTpl {
     pub ops: Vec<OpTpl>,
+    /// `ConstructTpl::numLabels` (semantics.hh:177) — how many SLEIGH internal labels
+    /// (`<start>`, `<done>`) this template declares. Every expansion of the template gets its own
+    /// block of that many label ids, so a constructor built twice in one instruction does not
+    /// have its two copies' labels collide.
+    pub numlabels: u32,
     /// The constructor's exported handle (what an operand referencing it resolves
     /// to), if any.
     pub result: Option<HandleTpl>,
@@ -386,6 +393,54 @@ pub struct Spec {
     /// the op as `<name>(args...)`, so the printer needs the index→name map to avoid leaking a raw
     /// `CALLOTHER(...)` into the emitted C. Populated by [`Spec::from_element`].
     pub userops: std::collections::HashMap<u64, String>,
+}
+
+/// SLEIGH internal-label bookkeeping for one instruction — `PcodeCacher`'s `labels` /
+/// `label_refs` plus `PcodeBuilder`'s `labelbase`/`labelcount` (sleigh.hh:63-64,
+/// semantics.hh:196-197).
+///
+/// A `<label>` inside a constructor's semantics is a p-code-RELATIVE branch target, and its
+/// displacement is not knowable until the whole template (including every sub-constructor built
+/// into it) has been expanded and the ops counted. So the branch operand is emitted holding its
+/// label ID and back-patched at the end, exactly as `PcodeCacher::resolveRelatives`
+/// (sleigh.cc:120) does.
+#[derive(Default)]
+struct Labels {
+    /// `PcodeBuilder::labelbase` — the id block the constructor currently being expanded owns.
+    base: u32,
+    /// `PcodeBuilder::labelcount` — the next free id block.
+    count: u32,
+    /// label id -> index of the op it sits in front of.
+    at: Vec<Option<usize>>,
+    /// `(index of the branching op, its label id, the operand's byte width)`.
+    refs: Vec<(usize, u64, u32)>,
+}
+
+impl Labels {
+    /// `PcodeCacher::addLabel` (sleigh.cc:101): this label stands in front of the next op.
+    fn define(&mut self, id: u64, next_op: usize) {
+        let id = id as usize;
+        if self.at.len() <= id {
+            self.at.resize(id + 1, None);
+        }
+        self.at[id] = Some(next_op);
+    }
+
+    /// `PcodeCacher::resolveRelatives` (sleigh.cc:120): rewrite each recorded branch operand as
+    /// `label_index - branch_index`, masked to the operand's width. A backward branch therefore
+    /// arrives as a masked negative, which is why [`super::emu`] sign-extends it.
+    fn resolve(&self, ops: &mut [PcodeOp]) {
+        for &(op_index, id, size) in &self.refs {
+            // A reference to a label that was never defined is a broken language table, not a
+            // program property: leave the operand alone rather than invent a target.
+            let Some(Some(target)) = self.at.get(id as usize).copied() else { continue };
+            let rel = (target as i64 - op_index as i64) as u64;
+            let masked = if (1..8).contains(&size) { rel & ((1u64 << (size * 8)) - 1) } else { rel };
+            if let Some(PArg::Var(v)) = ops[op_index].ins.first_mut() {
+                v.offset = masked;
+            }
+        }
+    }
 }
 
 impl Spec {
@@ -659,12 +714,18 @@ impl Spec {
 
     /// Expand a constructor's p-code template into normalized op lines, recursing
     /// into operand sub-constructors at `BUILD` ops.
-    fn build_into(&self, node: &Node, walker: &Walker, ops: &mut Vec<PcodeOp>) {
+    fn build_into(&self, node: &Node, walker: &Walker, ops: &mut Vec<PcodeOp>, lab: &mut Labels) {
         const BUILD: u32 = 60; // CPUI_MULTIEQUAL, aliased as BUILD in templates
         const DELAY_SLOT: u32 = 61;
         const LABELBUILD: u32 = 65;
         const CROSSBUILD: u32 = 66;
         let Some(tmpl) = self.ctor_of(node).tmpl.as_ref() else { return };
+        // `PcodeBuilder::build` (semantics.cc:931-933): this expansion owns a fresh block of label
+        // ids, and the old base is restored on the way out so a sibling sub-constructor's labels
+        // are not confused with this one's.
+        let oldbase = lab.base;
+        lab.base = lab.count;
+        lab.count += tmpl.numlabels;
         for op in &tmpl.ops {
             match op.opcode {
                 BUILD => {
@@ -674,7 +735,7 @@ impl Spec {
                         .and_then(|v| self.resolve_const_h(&v.offset, node, walker))
                         .unwrap_or(0) as usize;
                     if let Some(OpNode::Sub(sub)) = node.operands.get(idx) {
-                        self.build_into(sub, walker, ops);
+                        self.build_into(sub, walker, ops, lab);
                     }
                 }
                 DELAY_SLOT => {
@@ -690,17 +751,61 @@ impl Spec {
                         };
                         if let Some(dnode) = self.resolve(&dwalker, self.root_subtable, 0) {
                             dwalker.next.set(dwalker.addr + dnode.length.max(1) as u64);
-                            self.build_into(&dnode, &dwalker, ops);
+                            self.build_into(&dnode, &dwalker, ops, lab);
                         }
                     }
                 }
-                LABELBUILD | CROSSBUILD => {} // not modeled yet
-                _ => match self.op_pcode(op, node, walker) {
-                    Some(mut v) => ops.append(&mut v),
-                    None => ops.push(PcodeOp { opcode: op.opcode, out: None, ins: Vec::new() }),
-                },
+                // `SleighBuilder::setLabel` (sleigh.cc:399): the label sits in front of whatever
+                // op comes next, so its position is the current op count.
+                LABELBUILD => {
+                    if let Some(id) = op.inputs.first().and_then(|v| match &v.offset {
+                        ConstTpl::Real(r) => Some(*r),
+                        _ => None,
+                    }) {
+                        lab.define(id + lab.base as u64, ops.len());
+                    }
+                }
+                CROSSBUILD => {} // not modeled yet
+                _ => {
+                    // `SleighBuilder::dump` (sleigh.cc:252): a branch whose input 0 is
+                    // `j_relative` is a jump to an internal LABEL. The operand is emitted holding
+                    // the (base-adjusted) label id and back-patched by `Labels::resolve` once the
+                    // instruction is fully expanded. Before this was ported the operand could not
+                    // be resolved at all, `op_pcode` returned `None`, and the whole branch was
+                    // emitted with NO inputs — so every intra-instruction loop fell straight
+                    // through. `BSR`/`BSF` (ia.sinc:2765) answered a CONSTANT for every operand.
+                    let rel = match op.inputs.first().map(|v| &v.offset) {
+                        Some(ConstTpl::Relative(id)) => Some(*id),
+                        _ => None,
+                    };
+                    match (rel, self.op_pcode(op, node, walker)) {
+                        (Some(id), _) => {
+                            let size = op
+                                .inputs
+                                .first()
+                                .and_then(|v| self.resolve_const_h(&v.size, node, walker))
+                                .unwrap_or(4) as u32;
+                            let mut ins: Vec<PArg> = vec![PArg::Var(Varnode {
+                                space: self.space_name(0).to_string(),
+                                offset: 0,
+                                size,
+                            })];
+                            for inp in op.inputs.iter().skip(1) {
+                                match self.varnode_h(inp, node, walker) {
+                                    Some(v) => ins.push(PArg::Var(v)),
+                                    None => return,
+                                }
+                            }
+                            lab.refs.push((ops.len(), id + lab.base as u64, size));
+                            ops.push(PcodeOp { opcode: op.opcode, out: None, ins });
+                        }
+                        (None, Some(mut v)) => ops.append(&mut v),
+                        (None, None) => ops.push(PcodeOp { opcode: op.opcode, out: None, ins: Vec::new() }),
+                    }
+                }
             }
         }
+        lab.base = oldbase;
     }
 
     /// Build the structured p-code op(s) for one template op, generating `LOAD`/
@@ -1084,6 +1189,7 @@ fn decode_pattern_block(el: &Element) -> PatternBlock {
 fn decode_construct_tpl(el: &Element) -> Result<ConstructTpl, Error> {
     let mut ops = Vec::new();
     let mut result = None;
+    let numlabels = el.attr_int(aid::LABELS).unwrap_or(0) as u32;
     for child in &el.children {
         match child.id {
             eid::HANDLE_TPL => result = Some(decode_handle_tpl(child)?),
@@ -1091,7 +1197,7 @@ fn decode_construct_tpl(el: &Element) -> Result<ConstructTpl, Error> {
             _ => {}
         }
     }
-    Ok(ConstructTpl { ops, result })
+    Ok(ConstructTpl { ops, numlabels, result })
 }
 
 fn decode_handle_tpl(el: &Element) -> Result<HandleTpl, Error> {
@@ -1463,7 +1569,11 @@ impl Spec {
 
     fn build_pcode_node(&self, node: &Node, walker: &Walker) -> Vec<PcodeOp> {
         let mut ops = Vec::new();
-        self.build_into(node, walker, &mut ops);
+        let mut lab = Labels::default();
+        self.build_into(node, walker, &mut ops, &mut lab);
+        // `Sleigh::oneInstruction` (sleigh.cc:775) resolves the relatives once the whole
+        // instruction has been issued.
+        lab.resolve(&mut ops);
         ops
     }
 }
