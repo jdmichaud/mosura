@@ -1345,4 +1345,94 @@ mod tests {
         }
     }
 
+    /// The float family is Ghidra's own two-step (float.cc:462): decode both operands to a host
+    /// `double`, use the host FPU, re-encode. At `float4`/`float8` the host's formats ARE the
+    /// target's, so the answer is the IEEE one and can be checked against Rust's own arithmetic.
+    #[test]
+    fn float_arithmetic_matches_host_ieee_at_4_and_8_bytes() {
+        let mut m = traced();
+        for (name, f) in [
+            ("FLOAT_ADD", (|a: f64, b: f64| a + b) as fn(f64, f64) -> f64),
+            ("FLOAT_SUB", |a, b| a - b),
+            ("FLOAT_MULT", |a, b| a * b),
+            ("FLOAT_DIV", |a, b| a / b),
+        ] {
+            for (x, y) in [(1.5f64, 0.25f64), (-3.0, 7.0), (1e300, 1e-300), (0.0, 3.0)] {
+                m.write("register", 0, 8, x.to_bits());
+                m.write("register", 8, 8, y.to_bits());
+                m.step(&pcode(name, Some(vn("register", 16, 8)), vec![arg("register", 0, 8), arg("register", 8, 8)]));
+                let (got, want) = (f64::from_bits(m.read("register", 16, 8)), f(x, y));
+                // `1e300 * 1e-300` in `float4` is `inf * 0` = NaN, and NaN is not equal to itself:
+                // the operands stay because overflow/underflow to infinity is exactly the corner
+                // this is meant to exercise.
+                assert!(got == want || (got.is_nan() && want.is_nan()), "{name} f8 {x} {y}: {got} != {want}");
+
+                let (xs, ys) = (x as f32, y as f32);
+                m.write("register", 0, 4, xs.to_bits() as u64);
+                m.write("register", 8, 4, ys.to_bits() as u64);
+                m.step(&pcode(name, Some(vn("register", 16, 4)), vec![arg("register", 0, 4), arg("register", 8, 4)]));
+                let got = f32::from_bits(m.read("register", 16, 4) as u32);
+                let want = f(xs as f64, ys as f64) as f32;
+                assert!(got == want || (got.is_nan() && want.is_nan()), "{name} f4 {xs} {ys}: {got} != {want}");
+            }
+        }
+        assert_eq!(m.unmodeled, 0);
+    }
+
+    /// The unary and comparison halves, and the conversions. `FLOAT_NAN` (float.cc:521) is the one
+    /// that cannot be spelled as a comparison, and `FLOAT_TRUNC` (float.cc:631) truncates TOWARD
+    /// ZERO into an integer of the output's width, which is not the same as `FLOOR`.
+    #[test]
+    fn float_unary_comparison_and_conversion() {
+        let mut m = traced();
+        let mut unary = |name: &str, x: f64| {
+            m.write("register", 0, 8, x.to_bits());
+            m.step(&pcode(name, Some(vn("register", 16, 8)), vec![arg("register", 0, 8)]));
+            f64::from_bits(m.read("register", 16, 8))
+        };
+        assert_eq!(unary("FLOAT_NEG", 2.5), -2.5);
+        assert_eq!(unary("FLOAT_ABS", -2.5), 2.5);
+        assert_eq!(unary("FLOAT_SQRT", 9.0), 3.0);
+        assert_eq!(unary("FLOAT_CEIL", -1.5), -1.0);
+        assert_eq!(unary("FLOAT_FLOOR", -1.5), -2.0);
+        // float.cc:664 picked round-half-AWAY-from-zero over the `floor(val+.5)` it replaced.
+        assert_eq!(unary("FLOAT_ROUND", -1.5), -2.0);
+        assert_eq!(unary("FLOAT_ROUND", 2.5), 3.0);
+
+        let mut cmp = |name: &str, x: f64, y: f64| {
+            m.write("register", 0, 8, x.to_bits());
+            m.write("register", 8, 8, y.to_bits());
+            m.step(&pcode(name, Some(vn("register", 16, 1)), vec![arg("register", 0, 8), arg("register", 8, 8)]));
+            m.read("register", 16, 1)
+        };
+        assert_eq!(cmp("FLOAT_EQUAL", 1.0, 1.0), 1);
+        assert_eq!(cmp("FLOAT_NOTEQUAL", 1.0, 2.0), 1);
+        assert_eq!(cmp("FLOAT_LESS", 1.0, 2.0), 1);
+        assert_eq!(cmp("FLOAT_LESSEQUAL", 2.0, 2.0), 1);
+        // Every ordered comparison against a NaN is false — including equality with itself, which
+        // is what makes `FLOAT_NAN` a separate opcode.
+        assert_eq!(cmp("FLOAT_EQUAL", f64::NAN, f64::NAN), 0);
+        assert_eq!(cmp("FLOAT_LESS", f64::NAN, 1.0), 0);
+
+        m.write("register", 0, 8, f64::NAN.to_bits());
+        m.step(&pcode("FLOAT_NAN", Some(vn("register", 16, 1)), vec![arg("register", 0, 8)]));
+        assert_eq!(m.read("register", 16, 1), 1);
+
+        // float.cc:611 sign-extends the integer input first: a 4-byte 0xffffffff is -1.0, not 4e9.
+        m.write("register", 0, 4, 0xffff_ffff);
+        m.step(&pcode("FLOAT_INT2FLOAT", Some(vn("register", 16, 8)), vec![arg("register", 0, 4)]));
+        assert_eq!(f64::from_bits(m.read("register", 16, 8)), -1.0);
+
+        m.write("register", 0, 4, (0.5f32).to_bits() as u64);
+        m.step(&pcode("FLOAT_FLOAT2FLOAT", Some(vn("register", 16, 8)), vec![arg("register", 0, 4)]));
+        assert_eq!(f64::from_bits(m.read("register", 16, 8)), 0.5);
+
+        for (x, want) in [(2.9f64, 2u64), (-2.9, (-2i64) as u64 & 0xffff_ffff), (0.0, 0)] {
+            m.write("register", 0, 8, x.to_bits());
+            m.step(&pcode("FLOAT_TRUNC", Some(vn("register", 16, 4)), vec![arg("register", 0, 8)]));
+            assert_eq!(m.read("register", 16, 4), want, "trunc({x})");
+        }
+        assert_eq!(m.unmodeled, 0);
+    }
+
 }
