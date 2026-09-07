@@ -116,9 +116,34 @@ impl Machine {
             "INT_LESSEQUAL" => (a(0) <= a(1)) as u64,
             "INT_SLESS" => (sa(0) < sa(1)) as u64,
             "INT_SLESSEQUAL" => (sa(0) <= sa(1)) as u64,
-            "INT_CARRY" => (a(0).checked_add(a(1)).is_none() || mask(a(0), osize).wrapping_add(mask(a(1), osize)) > mask(u64::MAX, osize)) as u64,
-            "INT_SCARRY" => sa(0).overflowing_add(sa(1)).1 as u64,
-            "INT_SBORROW" => sa(0).overflowing_sub(sa(1)).1 as u64,
+            // The carry is a property of the ADDITION, so it is evaluated at the size of the
+            // INPUTS. Using the output size was wrong: an INT_CARRY writing a 1-byte flag (which
+            // is every x86 `ADD`/`ADC` flag computation) masked its 4-byte operands to a byte, so
+            // `ADD EAX,EBX ; ADC EDX,ECX` carried out of bit 7. Found 2026-09-06 by three
+            // independent 64-bit conversions whose only disagreement with the original was that
+            // carry, each proved by a twin source carrying at bit 7 and matching exactly.
+            "INT_CARRY" => {
+                let isize_ = op.ins.first().and_then(PArg::as_var).map_or(osize, |v| v.size);
+                let (x, y) = (mask(a(0), isize_), mask(a(1), isize_));
+                (x.wrapping_add(y) > mask(u64::MAX, isize_) || x.checked_add(y).is_none()) as u64
+            }
+            // The SIGNED overflow of an addition/subtraction is a property of the OPERANDS' width,
+            // like INT_CARRY above. `sa()` sign-extends its argument to i64, so an i64
+            // `overflowing_add` of two 4-byte values NEVER overflows and OF was always 0: x86's
+            // JG/JL/JLE/JGE after any 32-bit ADD/ADC/SUB/SBB/CMP degenerated to the SIGN of the
+            // WRAPPED result. Found 2026-09-06 on a fixed-point chain whose `ADC EDX,mem / JG`
+            // tests whether the exact 33-bit sum is positive; a C source computing that exactly
+            // disagreed with the original on exactly the 2 seeds in 128 where the sum overflowed.
+            "INT_SCARRY" => {
+                let isize_ = op.ins.first().and_then(PArg::as_var).map_or(osize, |v| v.size);
+                let s = sa(0).wrapping_add(sa(1));
+                (sext(mask(s as u64, isize_), isize_) != s) as u64
+            }
+            "INT_SBORROW" => {
+                let isize_ = op.ins.first().and_then(PArg::as_var).map_or(osize, |v| v.size);
+                let s = sa(0).wrapping_sub(sa(1));
+                (sext(mask(s as u64, isize_), isize_) != s) as u64
+            }
             "BOOL_NEGATE" => (a(0) == 0) as u64,
             "BOOL_AND" => (a(0) & 1) & (a(1) & 1),
             "BOOL_OR" => (a(0) & 1) | (a(1) & 1),
