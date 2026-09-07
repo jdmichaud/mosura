@@ -41,6 +41,10 @@ fn sext(v: u64, size: u32) -> i64 {
 enum UserOp {
     /// `LOCK()` / `UNLOCK()` — the bus-lock bracket around `XCHG`.
     Lock,
+    /// `in(port)` — read a hardware I/O port.
+    In,
+    /// `out(port, value)` — write a hardware I/O port.
+    Out,
     /// Something else this interpreter does not model.
     Unknown,
 }
@@ -446,6 +450,32 @@ impl Machine {
             // no-op is not an approximation of it — it is exactly what it does here. Modelling
             // them is what makes an `XCHG`-using function comparable at all.
             UserOp::Lock => return Flow::Next,
+            // `out(port, value)` (ia.sinc:4178-4183). Recorded as an effect: see [`Effect::Port`].
+            UserOp::Out => {
+                let port = op.ins.get(1).map_or(0, |a| self.read_arg(a));
+                let val = op.ins.get(2).map_or(0, |a| self.read_arg(a));
+                let sz = op.ins.get(2).and_then(PArg::as_var).map_or(0, |v| v.size);
+                if self.trace {
+                    self.effects.push(Effect::Port(true, port, sz, val));
+                }
+                return Flow::Next;
+            }
+            // `in(port)` (ia.sinc:3627-3637). What the hardware hands back is not in this image, so
+            // it is drawn from the seed the same way never-written memory is: a pure function of
+            // the PORT, so both sides of a differential run read the same byte. It is deliberately
+            // NOT a function of how many reads came before — the harness lets two implementations
+            // order independent work differently, and a read-counter would punish that. The cost is
+            // that a poll loop (`in al,0x60` until a bit clears) never terminates and both runs are
+            // cut off by the step/effect budget, which the verdict already reports as `finished=`.
+            UserOp::In => {
+                let port = op.ins.get(1).map_or(0, |a| self.read_arg(a));
+                // 0x494e is 'IN': a tag that keeps port space from aliasing the memory fill.
+                let v = self.fill.map_or(0, |seed| mask(mix(seed, port, 0x494e), osize));
+                if self.trace {
+                    self.effects.push(Effect::Port(false, port, osize, v));
+                }
+                v
+            }
             UserOp::Unknown => {
                 self.unmodeled += 1;
                 self.note_unmodeled("CALLOTHER", op);
@@ -464,6 +494,8 @@ impl Machine {
         let idx = op.ins.first().and_then(PArg::as_var).map_or(u64::MAX, |v| v.offset);
         match self.userops.get(&idx).map(String::as_str) {
             Some("LOCK") | Some("UNLOCK") => UserOp::Lock,
+            Some("in") => UserOp::In,
+            Some("out") => UserOp::Out,
             _ => UserOp::Unknown,
         }
     }
