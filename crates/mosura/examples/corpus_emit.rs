@@ -1342,8 +1342,15 @@ fn main() {
     // it cannot be silent. Zero is the expected reading; a nonzero one is a finding to chase.
     let mut cleanup_undecided = 0usize;
 
-    eprintln!("loading the subject via analyze_le_file ...");
-    let mut prog = analysis::analyze_le_file_with(std::path::Path::new(&bin), &knobs).expect("analyze_le_file");
+    // `--native`: open the subject through whichever beyond-Ghidra native loader claims it (LE,
+    // X-32, ...) instead of insisting on the LE path.
+    let mut prog = if rest.iter().any(|a| a == "--native") {
+        eprintln!("loading the subject via analyze_native_file ...");
+        analysis::analyze_native_file_with(std::path::Path::new(&bin), &knobs).expect("analyze_native_file")
+    } else {
+        eprintln!("loading the subject via analyze_le_file ...");
+        analysis::analyze_le_file_with(std::path::Path::new(&bin), &knobs).expect("analyze_le_file")
+    };
     // The byte-exact emitter models Ghidra's STANDALONE global-scope context (no auto-resolved
     // symbols, ActionConstantPtr silent): the binary is this tool's oracle, its source wrote
     // plain address constants, and the application context's anchored `(&xRam..)[..]` forms cost
