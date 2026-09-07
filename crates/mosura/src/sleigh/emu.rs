@@ -1332,4 +1332,17 @@ mod tests {
         assert_eq!(got, vec!["CALLOTHER:#48879", "CALLOTHER:cpuid", "SEGMENTOP"]);
     }
 
+    /// `OpBehaviorLzcount::evaluateUnary` (opbehavior.cc:788) counts within the INPUT's width:
+    /// `count_leading_zeros(in1) - 8*(sizeof(uintb) - sizein)`. Before the fix a 4-byte input was
+    /// counted across the whole 64-bit carrier and every answer was 32 too large.
+    #[test]
+    fn lzcount_counts_within_the_input_width() {
+        let mut m = traced();
+        for (val, size, want) in [(1u64, 4u32, 31u64), (0, 4, 32), (0x8000_0000, 4, 0), (1, 1, 7), (1, 8, 63)] {
+            m.write("register", 0, size, val);
+            m.step(&pcode("LZCOUNT", Some(vn("register", 32, 4)), vec![arg("register", 0, size)]));
+            assert_eq!(m.read("register", 32, 4), want, "lzcount({val:#x}) at {size} bytes");
+        }
+    }
+
 }
