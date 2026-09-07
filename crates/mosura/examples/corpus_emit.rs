@@ -1043,6 +1043,111 @@ fn nondefault_parm_from_storages(
     Some(names.iter().map(|n| format!("[{n}]")).collect::<Vec<_>>().join(" "))
 }
 
+/// The `parm [..]` clause a CALLER is told about `f` — the caller-side half of the contract, and
+/// a strictly higher bar than the callee's own `#pragma aux FUN_...` line ([`own_contract`]).
+///
+/// The two are not the same claim, which is why they are not the same function. The callee's own
+/// clause must match the SIGNATURE that TU prints, whatever the evidence for it: a body that
+/// reads ESI is compiled wrong without `parm [esi]`, so that clause is emitted on the recovery
+/// alone. A caller's clause is a claim about the OTHER function's interface, and stating a wrong
+/// one moves the arguments into registers the original never used — silently, since the compiler
+/// has nothing to check it against. So this one is emitted only where two independent readings of
+/// the callee agree.
+///
+/// THE CONFIDENCE RULE, in three parts, each measured against the 160 conventions this subject's
+/// hand-verified sources carry (`~/vpool-re/tools/measure_parm_recovery.py`):
+///
+///  1. EVERY SLOT MUST BE BACKED BY A READ IN THE IR. `rendered_param_slots` reports `vn: None`
+///     for a slot Ghidra MATERIALIZED — a positional hole `forceInactiveChain` filled between
+///     used slots, which exists because a compiler that put a value in the third argument
+///     register must have put one in the first two. Hand-written assembly owes no such debt. Of
+///     the 11 callee clauses carrying such a hole, ZERO match ground truth; of the 29 without
+///     one, 21 do. Whole registers only, for the same reason the widths were the other half of
+///     that bucket's error: a sub-register slot (`parm [ax]`, `parm [al]`) is a width GUESSED
+///     from one read, and every one of them in the subject's truth set is wrong against a
+///     full-register truth.
+///  2. AND THE CALLEE'S OWN BYTES MUST PROVE IT
+///     ([`mosura::recompile::buildconfig::register_inputs_from_evidence`], a read-before-write
+///     liveness over the callee's whole graph). Every named register must be PROVEN read — not
+///     merely un-refuted — and no register the clause omits may be proven read. This is the
+///     asymmetry that keeps the rule honest: `Undecided` withholds, because the two derivations
+///     agreeing is the entire evidence for saying anything at all, and the places the witness
+///     cannot decide are exactly the places the IR's own reading is least trustworthy. Measured:
+///     the six wrong clauses the weaker "not refuted" form emitted are all cases where the IR's
+///     read exists only because of a hole the callee's own nested call was given (`0x12624`'s
+///     EAX, `0x5dc`'s EDX) or only above a PARTIAL write (`0x12034`'s `MOV DX,[EAX]` then
+///     `LEA EDX,[EDX+EDX*2]`); the bytes prove none of them.
+///  3. Otherwise the clause is stated EVEN WHERE IT EQUALS WATCOM'S POSITIONAL DEFAULT, which
+///     [`nondefault_parm_from_storages`] suppresses as a no-op. It is not a no-op here: the
+///     caller's declaration is `extern int func_0x...();`, an empty declarator that states no
+///     ARITY at all, so the clause is the only thing that pins how many registers the call
+///     passes. That is exactly what the invented argument lists get wrong.
+///
+/// `None` means "say nothing", and the caller-side post-pass then leaves the callee to Watcom's
+/// default convention — the same outcome as before this rule existed.
+fn stated_parm_for_callers(
+    f: &mosura::decompile::funcdata::Funcdata,
+    insns: &[mosura::recompile::insn::NormInsn],
+    table: &[(u64, u32, &'static str)],
+    arg_reg_offs: &[u64],
+) -> Option<String> {
+    use mosura::recompile::buildconfig::RegInput;
+    let slots = mosura::decompile::printc::rendered_param_slots(f);
+    if slots.is_empty() {
+        return None;
+    }
+    let reg = f.spaces.by_name("register")?;
+    let mut storages = Vec::new();
+    for s in &slots {
+        // (1) a materialized hole is a positional assumption, not a reading of this callee; a
+        // sub-register slot is a guessed width
+        if s.vn.is_none() || s.addr.space != reg || s.size != 4 {
+            return None;
+        }
+        storages.push((s.addr.offset, s.size));
+    }
+    // (2) the callee's own bytes, over its whole graph. The register set is the clause's own
+    // storages, the convention's argument registers, and the three general registers a
+    // hand-written convention reaches for beyond them (ESI, EDI, EBP — the subject's truth set
+    // has parameters in all three) — so the witness can speak in both directions: a named
+    // register it does not prove read, and an omitted one it proves IS read. ESP is not among
+    // them: every frame prologue reads it, so it would refuse every framed function.
+    let mut regs: Vec<u64> = arg_reg_offs.to_vec();
+    for extra in ["esi", "edi", "ebp"] {
+        if let Some(&(o, ..)) = table.iter().find(|&&(_, sz, nm)| sz == 4 && nm == extra) {
+            if !regs.contains(&o) {
+                regs.push(o);
+            }
+        }
+    }
+    for &(off, _) in &storages {
+        if !regs.contains(&(off & !3)) {
+            regs.push(off & !3);
+        }
+    }
+    let ev = mosura::recompile::buildconfig::register_inputs_from_evidence(insns, &regs, arg_reg_offs);
+    let named: Vec<u64> = storages.iter().map(|&(o, _)| o & !3).collect();
+    for (i, &r) in regs.iter().enumerate() {
+        let proven_read = ev.get(i) == Some(&RegInput::Read);
+        if named.contains(&r) != proven_read {
+            return None;
+        }
+    }
+    // (3) the list, positional default included — it pins the arity an empty declarator cannot.
+    let mut names = Vec::new();
+    for &(off, size) in &storages {
+        let n = table.iter().find(|&&(o, sz, _)| o == off && sz == size)?;
+        // The frame and stack pointers are not argument storage under any Watcom convention, and
+        // naming one is `E1122: Illegal register modified by '<name>' #pragma` — the whole TU
+        // fails to compile. See [`nondefault_parm_from_storages`].
+        if n.2 == "ebp" || n.2 == "esp" {
+            return None;
+        }
+        names.push(n.2);
+    }
+    Some(names.iter().map(|n| format!("[{n}]")).collect::<Vec<_>>().join(" "))
+}
+
 /// The function's own Watcom contract — its `parm` list where the recovered storage is not what
 /// Watcom would assign by position, and its `modify` list where the decompiler established which
 /// registers the function destroys. `None` when neither is needed.
@@ -3117,9 +3222,21 @@ fn main() {
         // callee-pops form is propagated here — the existing-clause rule in the post-pass keeps a
         // caller-cleaned line as it is.
         let stack_decl = (stack_convention && !matches!(cleanup, Some(0))).then(|| "[]".to_string());
+        // The REGISTER clause is [`stated_parm_for_callers`]'s, not [`nondefault_parm_regs`]'s:
+        // a caller is told the callee's storage only where the callee's own bytes corroborate
+        // the decompiler's recovery, and it is told the ARITY even where the storage is
+        // Watcom's positional default. The stack clause keeps its own path — `parm []` is a
+        // statement about the convention, not about which registers carry what.
+        let own_insns = mosura::recompile::insn::normalize(
+            SURVEY_LANG,
+            &region,
+            *va,
+            &mosura::recompile::insn::NoReloc,
+        )
+        .unwrap_or_default();
         parm_map.insert(
             *va,
-            nondefault_parm_regs(&f, &watreg).or(stack_decl).map(|decl| {
+            stated_parm_for_callers(&f, &own_insns, &watreg, &arg_reg_offs).or(stack_decl).map(|decl| {
                 let sizes = mosura::decompile::printc::rendered_param_slots(&f)
                     .iter()
                     .map(|sl| sl.size)
