@@ -40,6 +40,13 @@ fn sext(v: u64, size: u32) -> i64 {
 #[derive(Default)]
 pub struct Machine {
     mem: HashMap<String, HashMap<u64, u8>>,
+    /// When set, a byte that was never written reads as a deterministic function of its address
+    /// instead of zero. That is what makes DIFFERENTIAL execution possible: two programs run over
+    /// the "same" unbounded memory without anyone having to enumerate which addresses they touch,
+    /// and a pointer arriving in a register is dereferenceable wherever it points.
+    fill: Option<u64>,
+    /// Interesting values the fill draws from (see [`fill_dword`]).
+    pool: Vec<u64>,
     /// How many p-code operations this interpreter does not model were executed. Any non-zero
     /// count invalidates a same/differs judgement built on this run.
     pub unmodeled: usize,
@@ -51,6 +58,115 @@ pub struct Machine {
     /// `define pcodeop` index -> name, copied from the [`Spec`] so a `CALLOTHER` can be named.
     /// Empty in a bare [`Machine`]; then a `CALLOTHER` is recorded by index.
     userops: HashMap<u64, String>,
+    /// Observable effects, in order (see [`Effect`]). Recorded only when `trace` is on.
+    pub effects: Vec<Effect>,
+    trace: bool,
+    /// Stores inside this half-open range are the program's own scratch (its stack frame) and are
+    /// NOT recorded: two implementations of the same function may lay their frames out differently.
+    quiet: Option<(u64, u64)>,
+}
+
+/// One observable effect of running a function: what a caller could tell apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Effect {
+    /// A store outside the scratch window: `(space, address, size, value)`.
+    Store(String, u64, u32, u64),
+    /// A call, with the argument registers the caller's contract names: `(target, args)`.
+    Call(u64, Vec<u64>),
+    /// The program trapped — a division by zero. It is an EVENT, not a value: two implementations
+    /// that both trap at the same point agree, and whatever their registers hold afterwards is not
+    /// defined by anything.
+    Fault,
+    /// A hardware I/O port access — x86 `IN`/`OUT`: `(is_write, port, size, value)`.
+    ///
+    /// An `OUT` is as observable as any store: it is how this program talks to the PIT, the PIC and
+    /// the sound hardware, and two implementations that write different bytes to port 0x43 are not
+    /// the same program. A port READ is recorded too, because on real hardware reading a port is
+    /// itself an action (reading 0x60 acknowledges the keyboard controller), so a candidate that
+    /// drops the read is not equivalent either — recording it can only turn a false SAME into a
+    /// DIFFERS, never the reverse.
+    Port(bool, u64, u32, u64),
+    /// A software interrupt — x86 `INT n`: `(number, argument registers)`.
+    ///
+    /// The handler is not entered (it is DOS or the BIOS, which is not in this image), so the
+    /// interrupt is an EVENT, exactly like a call. The recorded arguments are the registers
+    /// [`RunConfig::default_args`] names — the same policy this harness already applies to a call
+    /// whose target declares no contract — because an `INT 0x21` with `AH = 0x4c` and one with
+    /// `AH = 0x3d` are different programs and comparing the number alone would not tell them apart.
+    Swi(u64, Vec<u64>),
+}
+
+/// A cheap deterministic mix — not a hash, just a spreader.
+fn mix(seed: u64, a: u64, b: u64) -> u64 {
+    let mut x = seed ^ a.wrapping_mul(0x9e37_79b9_7f4a_7c15) ^ b.wrapping_mul(0x1000_0000_1b3);
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    x ^= x >> 29;
+    x
+}
+
+/// The value a never-written 4-byte block reads as.
+///
+/// Uniformly random words are a poor test oracle: a program that branches on `x >= 9` behaves the
+/// same under almost every random `x`, so a wrong threshold survives thousands of trials. Most of
+/// the memory here is therefore drawn from a POOL of interesting values — the constants the
+/// function under test compares against, and their neighbours — with the rest random so that
+/// address arithmetic and wide values are still exercised. The choice is a function of the address,
+/// so both sides of a differential run see the same memory.
+fn fill_dword(seed: u64, space: &str, block: u64, pool: &[u64]) -> u64 {
+    let h = mix(seed, block, space.len() as u64);
+    if !pool.is_empty() && h % 4 != 0 {
+        pool[(h >> 8) as usize % pool.len()]
+    } else {
+        h
+    }
+}
+
+/// Deterministic byte for an address that was never written.
+fn fill_byte_pool(seed: u64, space: &str, offset: u64, pool: &[u64]) -> u8 {
+    let block = offset & !3;
+    let w = fill_dword(seed, space, block, pool);
+    ((w >> (8 * (offset - block))) & 0xff) as u8
+}
+
+/// Deterministic byte for an address that was never written — a cheap mix, not a hash.
+fn fill_byte(seed: u64, space: &str, offset: u64) -> u8 {
+    (mix(seed, offset, space.len() as u64) & 0xff) as u8
+}
+
+/// The ONE BIT the `calls`-th call to `target` leaves in the one-bit register at `off`.
+///
+/// This is the callee's "answer" for a flag, and it exists as a named function because it has TWO
+/// consumers that must not be allowed to drift apart: the flag CLOBBER
+/// ([`RunConfig::call_flag_clobbers`], which is what the ORIGINAL's `JC` reads) and the flag
+/// RETURN delivery ([`RunConfig::call_flag_returns`], which is what the CANDIDATE reads out of a
+/// general register). Computing them separately — even from the same ingredients — would let one
+/// side's bit be repaired without the other's, and a differential harness whose two sides get
+/// their "same" value from two expressions is one edit away from agreeing for free.
+///
+/// It varies with the seed, with the call TARGET and with the call's ordinal, so a callee asked
+/// twice answers twice, independently, and across seeds both answers occur.
+fn call_flag_bit(seed: u64, target: u64, calls: u64, off: u64) -> u64 {
+    (fill_byte(seed ^ target ^ (calls << 8) ^ off, "flag", off) & 1) as u64
+}
+
+/// The VALUE the `calls`-th call to `target` leaves in the general register at `off`.
+///
+/// A CALL is an EVENT here, not a descent, so the registers the callee's contract says it destroys
+/// are given this deterministic replicated byte instead of whatever the real callee would have
+/// computed. It exists as a named function for exactly the reason [`call_flag_bit`] does: it has
+/// TWO consumers that must not be allowed to drift apart. The clobber loop gives it to the
+/// ORIGINAL's register, and [`RunConfig::call_reg_returns`] gives THE SAME EXPRESSION, at THE SAME
+/// `off`, to the register the CANDIDATE's C reads that callee's answer out of. Two expressions
+/// that "obviously" compute the same value are one edit away from a harness whose two sides agree
+/// for free.
+///
+/// It depends on `off`, and that is the whole reason the delivery has to be explicit rather than
+/// implied: the fill EBX gets is NOT the fill EAX gets, so a candidate that reads the answer out
+/// of the wrong register disagrees.
+fn call_clobber_fill(seed: u64, target: u64, calls: u64, off: u64) -> u64 {
+    let v = fill_byte(seed ^ target ^ (calls << 8) ^ off, "call", off) as u64;
+    v | (v << 8) | (v << 16) | (v << 24)
 }
 
 impl Machine {
@@ -62,7 +178,16 @@ impl Machine {
         let bank = self.mem.get(space);
         let mut v = 0u64;
         for i in 0..size.min(8) {
-            let b = bank.and_then(|m| m.get(&(offset + i as u64))).copied().unwrap_or(0);
+            let at = offset + i as u64;
+            let b = match bank.and_then(|m| m.get(&at)).copied() {
+                Some(b) => b,
+                None => match self.fill {
+                    Some(seed) if space != "register" && space != "unique" => {
+                        fill_byte_pool(seed, space, at, &self.pool)
+                    }
+                    _ => 0,
+                },
+            };
             v |= (b as u64) << (8 * i);
         }
         v
@@ -72,6 +197,12 @@ impl Machine {
     pub fn write(&mut self, space: &str, offset: u64, size: u32, value: u64) {
         if space == "const" {
             return;
+        }
+        if self.trace && space != "register" && space != "unique" {
+            let scratch = self.quiet.is_some_and(|(lo, hi)| offset >= lo && offset < hi);
+            if !scratch {
+                self.effects.push(Effect::Store(space.to_string(), offset, size, mask(value, size)));
+            }
         }
         let bank = self.mem.entry(space.to_string()).or_default();
         for i in 0..size.min(8) {
