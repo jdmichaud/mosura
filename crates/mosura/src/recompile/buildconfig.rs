@@ -3098,3 +3098,300 @@ pub fn value_phi_returns_from_evidence(cands: &[u64], insns: &[NormInsn]) -> std
     let pairs: Vec<(u64, u64)> = cands.iter().map(|&pc| (pc, 0)).collect();
     const_phi_returns_from_evidence(&pairs, insns)
 }
+
+
+// ---- The callee's register interface, read from its own code over its whole graph -------------
+
+// The p-code opcodes this witness classifies control flow with (Ghidra `opcodes.hh`, the same
+// numbering [`super::insn`] copies into [`SemOp::opcode`]).
+const P_BRANCH: u32 = 4;
+const P_CBRANCH: u32 = 5;
+const P_BRANCHIND: u32 = 6;
+const P_RETURN: u32 = 10;
+
+/// What one register's incoming value is to a function: an argument, dead, or undecided.
+///
+/// The tri-state is the one the emit's entry-block witness already speaks
+/// (`corpus_emit::callee_input_evidence`), and it means the same thing — a gate built on it may
+/// refuse on `Dead` but never on `Undecided`, because undecided is not evidence against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegInput {
+    /// PROVEN: some path from the entry reads the register's INCOMING value. It is a parameter.
+    Read,
+    /// PROVEN: no path from the entry reads the incoming value before overwriting it, so the
+    /// value the caller left there is dead and the register cannot be a parameter.
+    Dead,
+    /// The graph does not settle it — an indirect branch, a jump out of the recorded extent, or
+    /// a call the incoming value is live into (which may be an argument passed straight through).
+    Undecided,
+}
+
+/// Which of `regs` a function READS BEFORE WRITING — its register parameter storage, derived from
+/// the function's OWN instructions over its whole control-flow graph.
+///
+/// WHY A GRAPH RATHER THAN A STRAIGHT LINE. The derivation this generalises
+/// (`analysis::decompiler::callee_effects`) walks at most 64 instructions from the entry and
+/// RETURNS `None` AT THE FIRST BRANCH OR CALL, claiming nothing past it; the emit's own
+/// entry-block witness (`corpus_emit::callee_input_evidence`) stops at the same place. Real
+/// functions branch in their prologue, so on this subject those reach the frame setup and little
+/// else — the mechanism was right and never fired. Reading before writing is a liveness question
+/// and liveness is a graph computation, so this is the same question asked of the whole body.
+///
+/// THE TWO ANALYSES, and why there are two. "Read before written" over a graph has an EXISTS side
+/// (some path reads it) and a FORALL side (no path does), and a partial graph moves them in
+/// opposite directions, so each is computed with the approximation that keeps ITS answer sound:
+///
+///   * [`RegInput::Read`] runs liveness over the KNOWN edges only — an edge we cannot follow is
+///     an extra path, and an extra path can only add reads, so ignoring it cannot manufacture
+///     one. Kills are taken generously (a partial write like `MOV AL,1` kills EAX, a `POP` kills)
+///     because a missed kill is what would turn the function's own value into a phantom argument.
+///   * [`RegInput::Dead`] runs the same liveness with an unfollowable edge contributing EVERY
+///     register, a CALL READING every register (a value live into a call is being handed to the
+///     callee — that is a use, not a coincidence), and only FULL-WIDTH writes killing. A missed
+///     use is what would declare a real argument dead, which is the wrong-code direction.
+///
+/// `Undecided` is everything else, and it is the honest answer: this subject's hand-written code
+/// jumps through tables and tail-calls out of its own extent.
+///
+/// `call_kills` is the convention's killed-by-call set (watcall: EAX/EDX/EBX/ECX) — passed in
+/// rather than assumed, like every other rule in this module. `PUSH` and `POP` are the save
+/// prologue: a `PUSH` reads the register only to preserve it, so it is not a use of the incoming
+/// value the way a computation is (the rule X(3) the entry-block witness already applies). The
+/// matching `POP` does write it, and is counted as a kill so a restore cannot leave a later read
+/// looking like it saw the caller's value.
+///
+/// Offsets are compared at their containing 4-byte register (`& !3`), so `AL`, `AH` and `AX` all
+/// speak for `EAX`.
+pub fn register_inputs_from_evidence(
+    insns: &[NormInsn],
+    regs: &[u64],
+    call_kills: &[u64],
+) -> Vec<RegInput> {
+    let n = insns.len();
+    if n == 0 || regs.is_empty() || regs.len() > 32 {
+        return vec![RegInput::Undecided; regs.len()];
+    }
+    let bit = |r: u64| -> Option<u32> { regs.iter().position(|&x| x & !3 == r & !3).map(|i| 1u32 << i) };
+    let all: u32 = if regs.len() == 32 { u32::MAX } else { (1u32 << regs.len()) - 1 };
+    let kills_at_call: u32 = call_kills.iter().filter_map(|&r| bit(r)).fold(0, |a, b| a | b);
+
+    // Per instruction: the two use/def pairs (one per analysis), the known successors, and
+    // whether control can leave by an edge this walk cannot follow.
+    let index_of: HashMap<u64, usize> = insns.iter().enumerate().map(|(i, x)| (x.addr, i)).collect();
+    let mut use_r = vec![0u32; n]; // uses for the Read (exists-a-path) analysis
+    let mut def_r = vec![0u32; n]; // kills for the Read analysis — generous
+    let mut use_d = vec![0u32; n]; // uses for the Dead (no-path) analysis — generous
+    let mut def_d = vec![0u32; n]; // kills for the Dead analysis — only full-width writes
+    let mut succ: Vec<Vec<usize>> = vec![Vec::new(); n];
+    let mut unknown = vec![false; n];
+
+    for (i, x) in insns.iter().enumerate() {
+        let is_ret = x.sem.iter().any(|o| o.opcode == P_RETURN);
+        let uncond = x.sem.iter().any(|o| o.opcode == P_BRANCH) && !x.is_call;
+        let indirect = x.sem.iter().any(|o| o.opcode == P_BRANCHIND);
+        let cond = x.sem.iter().any(|o| o.opcode == P_CBRANCH);
+        // Control flow. A CALL falls through (it comes back); a RETURN has no successor at all.
+        if !is_ret && !uncond && !indirect {
+            match insns.get(i + 1) {
+                Some(_) => succ[i].push(i + 1),
+                None => unknown[i] = true, // ran off the recorded extent
+            }
+        }
+        if (uncond || cond) && !indirect {
+            match x.target.and_then(|t| index_of.get(&t)) {
+                Some(&j) => succ[i].push(j),
+                // A jump out of the extent: a tail call, or a region boundary. Either way the
+                // continuation is not ours to read.
+                None => unknown[i] = true,
+            }
+        }
+        if indirect {
+            unknown[i] = true;
+        }
+
+        // A CALL: for the Read analysis it destroys the convention's kill set and reads nothing
+        // (the narrow reading — a read after a call is not the caller's value). For the Dead
+        // analysis it reads EVERYTHING and destroys nothing (the wide reading — a register live
+        // into a call may be an argument passed straight through, which is a use).
+        if x.is_call {
+            def_r[i] |= kills_at_call;
+            use_d[i] |= all;
+            continue;
+        }
+        if x.mnemonic.eq_ignore_ascii_case("PUSH") {
+            continue; // a save reads the register but does not USE its value
+        }
+        if x.mnemonic.eq_ignore_ascii_case("POP") {
+            // the restore writes it; count the kill on both sides
+            for o in &x.sem {
+                if let Some(SemArg::Reg(off, _)) = o.out {
+                    if let Some(b) = bit(off) {
+                        def_r[i] |= b;
+                        def_d[i] |= b;
+                    }
+                }
+            }
+            continue;
+        }
+        // `XOR r,r` / `SUB r,r` is the zero idiom: it writes r, it does not read it.
+        let zero_idiom = matches!(x.mnemonic.to_ascii_uppercase().as_str(), "XOR" | "SUB")
+            && x.sem.iter().any(|o| {
+                matches!((o.out.as_ref(), o.ins.first()), (Some(SemArg::Reg(a, _)), Some(SemArg::Reg(b, _))) if a & !3 == b & !3)
+            });
+        for o in &x.sem {
+            if !zero_idiom {
+                for a in &o.ins {
+                    if let SemArg::Reg(off, _) = a {
+                        if let Some(b) = bit(*off) {
+                            // A use is upward-exposed only if this instruction has not already
+                            // killed it — within one instruction the inputs are read first.
+                            use_r[i] |= b & !def_r[i];
+                            use_d[i] |= b & !def_d[i];
+                        }
+                    }
+                }
+            }
+            if let Some(SemArg::Reg(off, sz)) = o.out {
+                if let Some(b) = bit(off) {
+                    def_r[i] |= b;
+                    if sz >= 4 {
+                        def_d[i] |= b;
+                    }
+                }
+            }
+        }
+    }
+
+    // Backward liveness to a fixed point. `open` is what an unfollowable edge contributes:
+    // nothing for the Read analysis (those paths are simply not considered), everything for the
+    // Dead analysis (they might read anything).
+    let solve = |uses: &[u32], defs: &[u32], open: u32| -> u32 {
+        let mut live_in = vec![0u32; n];
+        loop {
+            let mut changed = false;
+            for i in (0..n).rev() {
+                let mut out = if unknown[i] { open } else { 0 };
+                for &s in &succ[i] {
+                    out |= live_in[s];
+                }
+                let v = uses[i] | (out & !defs[i]);
+                if v != live_in[i] {
+                    live_in[i] = v;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        live_in[0]
+    };
+    let read = solve(&use_r, &def_r, 0);
+    let live = solve(&use_d, &def_d, all);
+    (0..regs.len())
+        .map(|i| {
+            let b = 1u32 << i;
+            if read & b != 0 {
+                RegInput::Read
+            } else if live & b == 0 {
+                RegInput::Dead
+            } else {
+                RegInput::Undecided
+            }
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod register_input_tests {
+    use super::*;
+    use crate::recompile::insn::{NoReloc, normalize};
+
+    // x86-32 register-space offsets, and watcall's killed-by-call set.
+    const EAX: u64 = 0x0;
+    const ECX: u64 = 0x4;
+    const EDX: u64 = 0x8;
+    const EBX: u64 = 0xc;
+    const ESI: u64 = 0x18;
+    const REGS: [u64; 5] = [EAX, EDX, EBX, ECX, ESI];
+    const KILLS: [u64; 4] = [EAX, EDX, EBX, ECX];
+
+    fn lift(hex: &str) -> Vec<NormInsn> {
+        let bytes: Vec<u8> = (0..hex.len() / 2)
+            .map(|i| u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).unwrap())
+            .collect();
+        normalize("x86:LE:32:default", &bytes, 0x1000, &NoReloc).expect("language tables")
+    }
+
+    fn ev(hex: &str) -> Vec<RegInput> {
+        register_inputs_from_evidence(&lift(hex), &REGS, &KILLS)
+    }
+
+    /// The specimen the whole track exists for (the subject's FUN_000047ac): the body's first
+    /// instruction is `MOV EAX,[EBX+0x24]`, so EBX carries the one argument and EAX does not —
+    /// its incoming value is overwritten before anything looks at it.
+    #[test]
+    fn a_pointer_dereferenced_at_the_entry_is_read_and_its_destination_is_dead() {
+        let e = ev("8b4324c3"); // MOV EAX,[EBX+0x24] ; RET
+        assert_eq!(e[2], RegInput::Read, "EBX supplies the address");
+        assert_eq!(e[0], RegInput::Dead, "EAX is written before it is read");
+        assert_eq!(e[4], RegInput::Dead, "ESI is never touched: its incoming value is dead");
+    }
+
+    /// THE POINT OF THE GRAPH. The straight-line derivation this generalises stops at the first
+    /// branch and claims nothing, so EDX — read only on the not-taken path — is invisible to it.
+    #[test]
+    fn a_register_read_only_past_a_branch_is_still_a_parameter() {
+        // TEST EAX,EAX ; JZ +2 ; MOV EAX,EDX ; RET
+        let insns = lift("85c0740289d0c3");
+        assert!(insns[1].is_branch, "the second instruction is the branch the old walk died on");
+        let e = ev("85c0740289d0c3");
+        assert_eq!(e[0], RegInput::Read, "TEST reads EAX before anything writes it");
+        assert_eq!(e[1], RegInput::Read, "EDX is read on the fall-through path only");
+        assert_eq!(e[2], RegInput::Dead, "EBX is never touched");
+    }
+
+    /// A loop counter the function zeroes itself is not an argument, however far down the body
+    /// its reads are.
+    #[test]
+    fn a_register_the_function_zeroes_first_is_dead() {
+        let e = ev("31db01d8c3"); // XOR EBX,EBX ; ADD EAX,EBX ; RET
+        assert_eq!(e[2], RegInput::Dead, "the zero idiom writes EBX, it does not read it");
+        assert_eq!(e[0], RegInput::Read, "EAX is read by the ADD");
+    }
+
+    /// `PUSH`/`POP` are the save prologue, not a use: a register the function only preserves is
+    /// not an argument, and the restore does not leave a later read looking like the caller's.
+    #[test]
+    fn a_saved_and_restored_register_is_not_an_argument() {
+        let e = ev("5689c65ec3"); // PUSH ESI ; MOV ESI,EAX ; POP ESI ; RET
+        assert_eq!(e[4], RegInput::Dead, "the PUSH preserves ESI, the MOV kills it");
+        assert_eq!(e[0], RegInput::Read, "EAX is the value moved");
+    }
+
+    /// A value live INTO a call may be an argument passed straight through, and a read AFTER one
+    /// is not the caller's value — so a call decides neither way. (The `0x50480` shape the
+    /// entry-block witness records: undecided is not evidence against.)
+    #[test]
+    fn a_call_leaves_the_argument_registers_undecided() {
+        // CALL 0x1ffb ; MOV [0],EAX ; RET
+        let e = ev("e8f60f0000a300000000c3");
+        assert_eq!(e[0], RegInput::Undecided, "the read after the call is not the caller's EAX");
+        assert_eq!(e[4], RegInput::Undecided, "ESI could be passed through to the callee");
+    }
+
+    /// A jump out of the recorded extent (a tail call, or a region boundary) is a continuation
+    /// this walk cannot read, so nothing past it is refuted.
+    #[test]
+    fn a_jump_out_of_the_extent_refutes_nothing() {
+        let e = ev("e900100000"); // JMP +0x1000, past the end of what we were given
+        assert!(e.iter().all(|&x| x == RegInput::Undecided), "{e:?}");
+    }
+
+    /// An empty body decides nothing rather than declaring everything dead — absence of code is
+    /// absence of evidence.
+    #[test]
+    fn no_instructions_decide_nothing() {
+        assert!(register_inputs_from_evidence(&[], &REGS, &KILLS).iter().all(|&x| x == RegInput::Undecided));
+    }
+}
