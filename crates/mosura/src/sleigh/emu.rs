@@ -651,9 +651,16 @@ impl Machine {
     /// Resolve a BRANCH/CBRANCH target operand into a control-flow effect: a
     /// const-space target is a p-code-relative hop within the instruction; any
     /// other (ram/code) is a direct address jump.
+    ///
+    /// The relative displacement is SIGN-EXTENDED from the operand's width.
+    /// `PcodeCacher::resolveRelatives` (sleigh.cc:130) masks it to that width, so the backward
+    /// branch that closes a SLEIGH `<loop>` arrives as `0xfffffffc`, and Ghidra's own interpreter
+    /// adds it to the op index in 32-bit arithmetic (`EmulatePcodeCache::executeBranch`,
+    /// emulate.cc:404: `uintm id = destaddr.getOffset(); id = id + (uintm)current_op;`). Taking it
+    /// as a huge positive would step off the end of the instruction instead of round the loop.
     fn branch_to(target: Option<&PArg>) -> Flow {
         match target.and_then(PArg::as_var) {
-            Some(v) if v.is_const() => Flow::Rel(v.offset as i64),
+            Some(v) if v.is_const() => Flow::Rel(sext(v.offset, v.size)),
             Some(v) => Flow::Jump(v.offset),
             None => Flow::Next,
         }
