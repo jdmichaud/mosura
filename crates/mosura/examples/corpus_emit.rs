@@ -1297,6 +1297,26 @@ fn main() {
     let probing = !only.is_empty();
     // `--skip <va,...>`: functions the decompiler cannot finish (a stack overflow aborts the
     // whole survey); they are left out of every pass and get no TU.
+    // `--volatile-globals <model|all>`: which globals a recovered TU declares `volatile`.
+    //
+    // `model` (the default) is the scheduler-witnessed set — the right answer for a subject the
+    // compiler built, where a wrong mark costs alignment at every unvalidated access.
+    // `all` declares every global the function touches, which is the right answer for a subject
+    // whose code was NOT compiled: hand-written assembly reads and writes globals through memory
+    // operands at every use, and non-volatile C lets the compiler cache them in registers, which
+    // changes every instruction downstream. Measured on one such subject (769 functions, Watcom
+    // 10.0a): EXACT 43 -> 44 with the 43 retained, WGSS 0.1282 -> 0.1404.
+    let volatile_all = rest
+        .iter()
+        .position(|a| a == "--volatile-globals")
+        .and_then(|i| rest.get(i + 1))
+        .map(|v| match v.as_str() {
+            "all" => true,
+            "model" => false,
+            other => panic!("--volatile-globals expects `model` or `all`, got `{other}`"),
+        })
+        .unwrap_or(false);
+
     let skip: std::collections::HashSet<u64> = rest
         .iter()
         .position(|a| a == "--skip")
@@ -1595,6 +1615,9 @@ fn main() {
         .cloned()
         .collect();
     off_names.extend(knobs.stamp_parts());
+    if volatile_all {
+        off_names.push("volatile-globals=all".to_string());
+    }
     let off_stamp = if off_names.is_empty() { String::new() } else { format!("; off: {}", off_names.join(",")) };
     writeln!(mf, "# arms: {rec_arm}{off_stamp}").unwrap();
     eprintln!("arms (recovered emit): {rec_arm}{off_stamp}");
@@ -3254,8 +3277,22 @@ fn main() {
             let rc = mosura::decompile::printc::print_c_recovered(&f, &rec_arm, &recovered);
             // VOLATILE RECOVERY: globals whose original store sites show the blocked order
             // (see buildconfig::volatile_globals_from_evidence) declare volatile in this TU.
-            let volatiles =
-                mosura::recompile::buildconfig::volatile_globals_from_evidence(&insns);
+            let volatiles = if volatile_all {
+                // Every absolute address the function's own instructions touch (an operand in a
+                // real address space is a global here — the image is flat and the survey's TUs
+                // name globals by address).
+                insns
+                    .iter()
+                    .flat_map(|x| x.sem.iter())
+                    .flat_map(|op| op.out.iter().chain(op.ins.iter()))
+                    .filter_map(|a| match a {
+                        mosura::recompile::insn::SemArg::Mem(_, addr, _) => Some(*addr),
+                        _ => None,
+                    })
+                    .collect()
+            } else {
+                mosura::recompile::buildconfig::volatile_globals_from_evidence(&insns)
+            };
             // VARARG CALLEES: targets of calls the decompiler recovered as caller-cleaned
             // (`CallSpec::caller_cleans` — evidence: the callee's RET pops nothing AND the
             // original fallthrough is `ADD ESP,n`), each with its own recovered modify set
