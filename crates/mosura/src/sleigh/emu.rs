@@ -1435,4 +1435,21 @@ mod tests {
         assert_eq!(m.unmodeled, 0);
     }
 
+    /// The refusal that matters. x87 arithmetic in Ghidra's x86 spec runs on 10-byte `ST` varnodes
+    /// (ia.sinc:93, `FADD` at ia.sinc:5082), and a [`Machine`] value is a `u64`: the sign and
+    /// exponent of an 80-bit operand are gone before this code ever sees it. Both sides of a
+    /// differential run would lose the same two bytes and keep agreeing, so a wrong candidate would
+    /// come back SAME. It is left unmodelled ON PURPOSE, and labelled with the width so the census
+    /// reports the 80-bit case by name instead of blaming the opcode.
+    #[test]
+    fn x87_extended_precision_is_refused_not_approximated() {
+        let mut m = traced();
+        m.step(&pcode(
+            "FLOAT_ADD",
+            Some(vn("register", 0x1100, 10)),
+            vec![arg("register", 0x1100, 10), arg("register", 0x110a, 10)],
+        ));
+        assert_eq!(m.unmodeled, 1, "an 80-bit float op must still invalidate the run");
+        assert_eq!(m.unmodeled_ops.iter().map(String::as_str).collect::<Vec<_>>(), vec!["FLOAT_ADD@10"]);
+    }
 }
