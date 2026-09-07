@@ -1091,6 +1091,50 @@ fn for_recovery_backtracks_past_wrong_phi() {
 /// reads a global bound, inside that predicate's documented blind spot — so this reads the
 /// emitted loop directly.
 #[test]
+/// A loop whose HEAD IS THE FUNCTION ENTRY keeps its loop-carried value.
+///
+/// Ghidra guarantees the entry block has no in-edges by inserting an empty front block when it
+/// does (`FlowInfo::generateBlocks`, flow.cc:833-840). Without that clause the root of the
+/// dominator tree has a predecessor, the dominance-frontier walk never puts block 0 in its own
+/// frontier, and a value DEFINED IN the entry block gets no MULTIEQUAL: every read re-links to
+/// the function-input varnode and the loop's update vanishes. Before the port this printed a loop
+/// with an EMPTY body and an uninitialized variable; the shape also let the rule pool build a
+/// self-referential INT_ADD, which sends `AddExpression::gather` (a faithful port of
+/// expression.cc:333, unbounded by design because Ghidra's SSA never holds such an op) into
+/// recursion that no stack size absorbs.
+///
+/// Distinct from `indirect_call_does_not_clobber_loop_variable`, which produces a similar symptom
+/// from a different mechanism (the call-clobber contract, not the CFG root).
+fn a_loop_head_at_the_entry_keeps_its_loop_variable() {
+    let bin = ground_truth_dir().join("entryloop.gcc-x86-64");
+    let truth_path = ground_truth_dir().join("entryloop.gcc-x86-64.truth");
+    if !bin.exists() || !truth_path.exists() {
+        eprintln!("skip a_loop_head_at_the_entry_keeps_its_loop_variable: {} absent", bin.display());
+        return;
+    }
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    let spin = truth.funcs.iter().find(|(_, n)| n == "spin").map(|(a, _)| *a).expect("truth lists spin");
+    let prog = analysis::analyze_file(&bin).expect("analyze entryloop");
+    let f = decompile_function(&prog, Address::new(prog.default_space, spin)).expect("spin decompiles");
+    let c = print_c(&f);
+
+    // The loop body must ASSIGN the value it tests. `n = n >> 1` may print as a shift assignment
+    // or as a compound expression, so the assertion is "some line inside the loop assigns an
+    // identifier that a shift reads", not a literal spelling.
+    let body_has_update = c.lines().any(|l| {
+        let t = l.trim();
+        t.contains(">>") && t.contains('=') && !t.starts_with("if") && !t.starts_with("while") && !t.starts_with("}")
+    });
+    assert!(body_has_update, "spin lost its loop update (the entry-block front-block clause):\n{c}");
+
+    // And the parameter must survive: the defect also dropped the function's input.
+    assert!(
+        !c.contains("spin(void)") && !c.lines().next().unwrap_or("").contains("(void)"),
+        "spin lost its parameter:\n{c}"
+    );
+}
+
+#[test]
 fn indirect_call_does_not_clobber_loop_variable() {
     let bin = ground_truth_dir().join("callclob.watcom-x86-32");
     let truth_path = ground_truth_dir().join("callclob.watcom-x86-32.truth");

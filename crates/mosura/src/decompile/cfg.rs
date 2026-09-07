@@ -231,6 +231,34 @@ pub fn build_cfg(f: &mut Funcdata) {
         }
     }
 
+    // The entry block must have NO in-edges — Ghidra `FlowInfo::generateBlocks` (flow.cc:833-840),
+    // the one clause of that span this port was missing. When a function's entry is itself a branch
+    // target (a loop head at the entry: prologue-free register-convention code, hand-written
+    // assembly, or an optimizer's rotated loop), the root of the dominator tree has a predecessor.
+    // `dominator.rs` then never puts block 0 in its own frontier, so a value defined in the entry
+    // block gets NO MULTIEQUAL at all and every read re-links to the function-input varnode: the
+    // loop's updates vanish from the output, and the rules can build a self-referential INT_ADD that
+    // sends `AddExpression::gather` (a faithful port of expression.cc:333, which recurses without a
+    // depth cap because Ghidra's SSA never contains such an op) into unbounded recursion.
+    //
+    // Ghidra inserts an empty block ahead of the old entry AFTER `connectBasic`, so the entry edge is
+    // APPENDED (`FlowBlock::addInEdge`, block.cc:73) and lands in the LAST phi slot; `setStartBlock`
+    // (block.cc:1625) slides the list, shifting every other block index by one. Both are reproduced
+    // here. The front block carries no ops; consumers derive a block address with a fallback to the
+    // function's own address, which is what Ghidra's `setBasicBlockRange(newfront, addr, addr)` sets.
+    if !blocks.is_empty() && !blocks[0].in_edges.is_empty() {
+        for blk in blocks.iter_mut() {
+            for e in blk.in_edges.iter_mut() {
+                e.0 += 1;
+            }
+            for e in blk.out_edges.iter_mut() {
+                e.0 += 1;
+            }
+        }
+        blocks[0].in_edges.push(BlockId(0));
+        blocks.insert(0, BlockBasic { ops: Vec::new(), in_edges: Vec::new(), out_edges: vec![BlockId(1)] });
+    }
+
     // set each op's parent block, then install
     for (bi, blk) in blocks.iter().enumerate() {
         for &opid in &blk.ops {
