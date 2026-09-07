@@ -23,7 +23,22 @@ fn branch_target(f: &Funcdata, i: usize, addr_index: &BTreeMap<u64, usize>) -> O
     let in0 = f.op(OpId(i as u32)).input(0)?;
     let vn = f.vn(in0);
     if vn.is_constant() {
-        Some((i as i64 + vn.constant_value() as i64) as usize)
+        // A p-code-relative branch offset is a SIGNED displacement, masked to the operand's own
+        // width by `PcodeCacher::resolveRelatives` (a backward intra-instruction loop — the shape
+        // the `<label>` resolution now produces for `REP`/`BSR`/`BSF` — arrives as e.g.
+        // `0xfffffffc`). Read unsigned, `+0xfffffffc` steps billions of ops past the end and
+        // panics; sign-extend from the operand width, the way `sleigh::emu::branch_to` does. A
+        // displacement that still lands before the entry is not a real target.
+        let bits = vn.size * 8;
+        let raw = vn.constant_value();
+        let rel = if bits == 0 || bits >= 64 {
+            raw as i64
+        } else {
+            let sign = 1u64 << (bits - 1);
+            ((raw & ((1u64 << bits) - 1)) ^ sign).wrapping_sub(sign) as i64
+        };
+        let t = i as i64 + rel;
+        (t >= 0).then_some(t as usize)
     } else {
         addr_index.range(vn.loc.offset..).next().map(|(_, &idx)| idx)
     }
