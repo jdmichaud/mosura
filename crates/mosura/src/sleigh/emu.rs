@@ -291,6 +291,46 @@ impl Machine {
             "BOOL_AND" => (a(0) & 1) & (a(1) & 1),
             "BOOL_OR" => (a(0) & 1) | (a(1) & 1),
             "BOOL_XOR" => (a(0) & 1) ^ (a(1) & 1),
+            // Integer division. Absent until 2026-09-06, when every divide in the subject was
+            // silently computing 0 on BOTH sides of a differential run — which makes two different
+            // implementations look equal. A division by zero is a FAULT on this target, so the run
+            // stops there rather than inventing a value; two equivalent programs fault together.
+            "INT_DIV" => {
+                if a(1) == 0 {
+                    if self.trace {
+                        self.effects.push(Effect::Fault);
+                    }
+                    return Flow::Stop;
+                }
+                mask(a(0), osize) / mask(a(1), osize)
+            }
+            "INT_REM" => {
+                if a(1) == 0 {
+                    if self.trace {
+                        self.effects.push(Effect::Fault);
+                    }
+                    return Flow::Stop;
+                }
+                mask(a(0), osize) % mask(a(1), osize)
+            }
+            "INT_SDIV" => {
+                if a(1) == 0 {
+                    if self.trace {
+                        self.effects.push(Effect::Fault);
+                    }
+                    return Flow::Stop;
+                }
+                sa(0).wrapping_div(sa(1)) as u64
+            }
+            "INT_SREM" => {
+                if a(1) == 0 {
+                    if self.trace {
+                        self.effects.push(Effect::Fault);
+                    }
+                    return Flow::Stop;
+                }
+                sa(0).wrapping_rem(sa(1)) as u64
+            }
             "POPCOUNT" => a(0).count_ones() as u64,
             "LZCOUNT" => a(0).leading_zeros() as u64,
             "LOAD" => {
