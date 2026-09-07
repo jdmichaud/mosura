@@ -211,7 +211,12 @@ fn main() {
             emit_failed.push(r);
             continue;
         };
-        let unit_flags: Vec<String> = if recover_flags {
+        // A flags TABLE may name `recover` for a unit, meaning "derive this one's options from its
+        // own bytes like the recovery path does". That lets a table carry only the units whose
+        // options were established by hand and leave the rest to the profile — without it, a table
+        // silently downgrades every unlisted unit to DEFAULT_FLAGS.
+        let table_says_recover = flags.get(&r.idx).map(|f| f.trim() == "recover").unwrap_or(false);
+        let unit_flags: Vec<String> = if recover_flags || table_says_recover {
             // A short read means the recorded extent runs past readable memory. Truncating
             // silently would compare the candidate against FEWER original bytes than the function
             // has, which reads as agreement about bytes that were never examined -- the failure
@@ -250,6 +255,11 @@ fn main() {
                 .map(str::to_string)
                 .collect()
         };
+        if verbose {
+            // Which options this unit was compiled with, and why: with `--only` the operator is
+            // asking about one function, and the derived option set is half the answer.
+            eprintln!("[flags] {} {}: {}", r.idx, r.name, unit_flags.join(" "));
+        }
         units.push(CompileUnit { key: r.idx.clone(), source, flags: unit_flags });
         kept.push(r);
     }
