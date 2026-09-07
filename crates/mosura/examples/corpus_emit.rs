@@ -3713,6 +3713,13 @@ fn main() {
             out
         };
         let mut patched = 0usize;
+        // THE RESIDUAL, counted so it cannot be silent. A callee whose contract we recovered but
+        // whose clause this TU does not get is not neutral: the call compiles under Watcom's
+        // DEFAULT convention, which is a specific and different claim about where the arguments
+        // go. The gate below refuses on arity/width because a clause that disagrees with the
+        // argument list the caller prints is wrong code of another kind — but the count belongs
+        // in the round's report, not in silence.
+        let (mut want, mut refused_arity, mut refused_sites, mut already) = (0usize, 0usize, 0usize, 0usize);
         // the recovered tree externs the same callees and needs the same contracts — its
         // omission cost EXACT verdicts that looked like evidence-rule failures (the sb71
         // "12 lw-only wins" turned out partly to be TUs missing their callee pragmas)
@@ -3749,6 +3756,7 @@ fn main() {
                     else {
                         continue;
                     };
+                    want += 1;
                     // arity AND width gate: every call site in this TU must pass exactly
                     // the pragma's parameter count, each argument at the parameter's own
                     // width. A width mismatch is as fatal as an arity one — a 16-bit
@@ -3760,6 +3768,7 @@ fn main() {
                         .cloned()
                         .flatten()
                     else {
+                        refused_sites += 1;
                         continue;
                     };
                     // Per slot the pragma register must be AT LEAST the argument's width:
@@ -3776,11 +3785,12 @@ fn main() {
                     if !(asizes.len() == psizes.len()
                         && (stack_slots || asizes.iter().zip(psizes).all(|(a, p)| a <= p)))
                     {
+                        refused_arity += 1;
                         continue;
                     }
                     let tag = format!("#pragma aux func_0x{cva:08x} ");
                     match src.lines().find(|l| l.starts_with(&tag)) {
-                        Some(l) if l.contains(" parm ") => {}
+                        Some(l) if l.contains(" parm ") => already += 1,
                         Some(l) => merges.push((
                             l.to_string(),
                             format!("{tag}parm {decl} {}", &l[tag.len()..]),
@@ -3800,7 +3810,12 @@ fn main() {
                 }
             }
         }
-        eprintln!("caller-side parm pragmas: {patched} TU(s) patched");
+        eprintln!(
+            "caller-side parm pragmas: {patched} TU(s) patched; of {want} (TU, callee) pairs whose \
+             callee contract was recovered, {refused_arity} refused because the TU's own call \
+             argument list does not match the clause (arity or width), {refused_sites} because the \
+             TU's sites disagree about it, {already} already carried one"
+        );
     }
     eprintln!("EMIT done: ok={ok} fail={fail} in {:?}", t0.elapsed());
     if cleanup_undecided > 0 {
