@@ -682,3 +682,80 @@ fn a_candidate_that_reads_the_wrong_register_after_a_call_differs() {
     assert!(unwired <= 1, "the ordinal channel must be load-bearing: cutting it must break agreement ({unwired}/64)");
 }
 
+/// The same contract keyed by call TARGET, for a DIRECT call — and the ordinals a site resolves to
+/// are recorded per call, so a site inside a loop names every pass.
+#[test]
+fn a_register_contract_can_be_keyed_by_callee_or_by_ordinal() {
+    let rr = RegReturn { src: (EBX, 4), dst: (EDX, 4) };
+    let (nof, none): (HashMap<u64, FlagReturn>, HashMap<u64, RegReturn>) = (HashMap::new(), HashMap::new());
+    // CALL 0x10000 ; MOV [0x5000],EBX ; RET, and the candidate that publishes EDX instead.
+    #[rustfmt::skip]
+    let orig = vec![0xe8u8, 0xfb, 0xbf, 0x00, 0x00, 0x89, 0x1d, 0x00, 0x50, 0x00, 0x00, 0xc3];
+    #[rustfmt::skip]
+    let cand = vec![0xe8u8, 0xfb, 0xbf, 0x00, 0x00, 0x89, 0x15, 0x00, 0x50, 0x00, 0x00, 0xc3];
+    let by_target = HashMap::from([(CALLEE, rr)]);
+    for s in 0..32u64 {
+        let seed = seed_of(s);
+        let o = run_full(seed, &orig, &[], &nof, &nof, &nof, (&by_target, &none, &none), false);
+        let c = run_full(seed, &cand, &[], &nof, &nof, &nof, (&by_target, &none, &none), true);
+        assert_eq!(o.effects, c.effects, "a target-keyed register contract reaches a direct call");
+        // ...and a target key records no ordinals: only a SITE has to cross between the two runs.
+        assert!(o.reg_return_ordinals.is_empty());
+    }
+    // MOV ESI,3 ; L: CALL [VECTOR] ; DEC ESI ; JNZ L ; RET — ESI is not in the clobber set, so the
+    // trip count is fixed and the ordinals are exactly 1, 2, 3.
+    #[rustfmt::skip]
+    let loop_bytes = vec![
+        0xbe, 0x03, 0x00, 0x00, 0x00,                   // 4000 mov esi,3
+        0xff, 0x15, 0x20, 0x53, 0x04, 0x00,             // 4005 call dword ptr [0x45320]
+        0x4e,                                           // 400b dec esi
+        0x75, 0xf7,                                     // 400c jnz 0x4005
+        0xc3,                                           // 400e ret
+    ];
+    let sites = HashMap::from([(0x4005, rr)]);
+    let m = run_full(seed_of(1), &loop_bytes, &[], &nof, &nof, &nof, (&none, &sites, &none), false);
+    assert_eq!(m.reg_return_ordinals, vec![(1, rr), (2, rr), (3, rr)]);
+    // An address no call is at names nothing. (`equiv_check` refuses such an annotation outright;
+    // this only pins that the interpreter cannot be made to invent a delivery from one.)
+    let sites = HashMap::from([(0x4006, rr)]);
+    let m = run_full(seed_of(1), &loop_bytes, &[], &nof, &nof, &nof, (&none, &sites, &none), false);
+    assert!(m.reg_return_ordinals.is_empty());
+}
+
+/// A call with NO register contract is treated exactly as before, on both sides. The feature is
+/// opt-in, so no verdict already recorded can change under it — including every flag-model verdict,
+/// whose runs now go through the same `call_clobber_fill` the delivery does.
+#[test]
+fn a_callee_without_a_register_contract_is_unchanged() {
+    let bytes = [0xffu8, 0x15, 0x20, 0x53, 0x04, 0x00, 0xc3];
+    let none: HashMap<u64, FlagReturn> = HashMap::new();
+    for s in 0..32u64 {
+        let plain = run(seed_of(s), &bytes, &[]);
+        let asked = run_full(seed_of(s), &bytes, &[], &none, &none, &none, no_regs(), true);
+        for &(off, name) in &[(EAX, "eax"), (ECX, "ecx"), (EDX, "edx"), (EBX, "ebx")] {
+            assert_eq!(plain.read("register", off, 4), asked.read("register", off, 4), "{name}");
+        }
+    }
+}
+
+/// A flag contract and a register contract on the SAME call are independent channels: the flag
+/// answer still reaches the flag on both runs and the candidate's flag register, and the register
+/// answer still reaches the candidate's other register. (`equiv_check` refuses the one arrangement
+/// that would make them collide — a register delivery into the flag's register.)
+#[test]
+fn a_flag_and_a_register_contract_can_share_one_call() {
+    let fr = FlagReturn { flag: (CF, 1), reg: (EAX, 4), from: FlagSource::Bit };
+    let rr = RegReturn { src: (EBX, 4), dst: (EDX, 4) };
+    let (nof, none): (HashMap<u64, FlagReturn>, HashMap<u64, RegReturn>) = (HashMap::new(), HashMap::new());
+    let regs = HashMap::from([(BASE, rr)]);
+    let bytes = [0xffu8, 0x15, 0x20, 0x53, 0x04, 0x00, 0xc3];
+    for s in 0..32u64 {
+        let seed = seed_of(s);
+        let o = run_full(seed, &bytes, &[], &nof, &HashMap::from([(BASE, fr)]), &nof, (&none, &regs, &none), false);
+        let fo: HashMap<u64, FlagReturn> = o.flag_return_ordinals.iter().copied().collect();
+        let ro: HashMap<u64, RegReturn> = o.reg_return_ordinals.iter().copied().collect();
+        let c = run_full(seed, &bytes, &[], &nof, &nof, &fo, (&none, &none, &ro), true);
+        assert_eq!(o.read("register", CF, 1), c.read("register", EAX, 4), "the flag answer still crosses");
+        assert_eq!(o.read("register", EBX, 4), c.read("register", EDX, 4), "the register answer still crosses");
+    }
+}
