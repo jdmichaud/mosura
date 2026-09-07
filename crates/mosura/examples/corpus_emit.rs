@@ -1295,6 +1295,14 @@ fn main() {
     // a real survey is in flight would destroy that survey's inputs mid-run. (Overlapping runs
     // have already cost this project one measurement.) Probing must be free of that.
     let probing = !only.is_empty();
+    // `--skip <va,...>`: functions the decompiler cannot finish (a stack overflow aborts the
+    // whole survey); they are left out of every pass and get no TU.
+    let skip: std::collections::HashSet<u64> = rest
+        .iter()
+        .position(|a| a == "--skip")
+        .and_then(|i| rest.get(i + 1))
+        .map(|s| s.split(',').map(|v| u64::from_str_radix(v.trim().trim_start_matches("0x"), 16).expect("--skip hex va")).collect())
+        .unwrap_or_default();
 
     // A re-emit at the same clean commit is a no-op, not a silent rewrite. `-dirty` is exempt: an
     // uncommitted tree is expected to be re-emitted repeatedly while iterating.
@@ -1392,7 +1400,11 @@ fn main() {
         let probe_scope: Option<std::collections::HashSet<u64>> = if only.is_empty()
             || rest.iter().any(|a| a == "--probe-full")
         {
-            None
+            if skip.is_empty() {
+                None
+            } else {
+                Some(prog.function_manager.functions().map(|f| f.entry.offset).filter(|va| !skip.contains(va)).collect())
+            }
         } else {
             let entry_offs: std::collections::BTreeSet<u64> =
                 prog.function_manager.functions().map(|f| f.entry.offset).collect();
@@ -1516,6 +1528,7 @@ fn main() {
     let mut entries: Vec<(u64, String)> =
         prog.function_manager.functions().map(|f| (f.entry.offset, f.name().to_string())).collect();
     entries.sort_by_key(|e| e.0);
+    entries.retain(|e| !skip.contains(&e.0));
     // Next-entry map (same code object) → function byte extent [entry, next_entry).
     let entry_offs: Vec<u64> = entries.iter().map(|e| e.0).collect();
 
