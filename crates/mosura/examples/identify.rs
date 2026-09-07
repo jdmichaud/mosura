@@ -84,7 +84,14 @@ fn main() {
 
     // ---- analysis
     let program = if native {
-        mosura::analysis::analyze_native_file(&path)
+        // A declared `--cspec` must reach the native view too — it is the only view a
+        // DOS-extender-bound image has, and the spec changes what the analysis finds (on one X-32
+        // subject, 751 functions / 29,072 instructions as `gcc` against 769 / 29,543 as `watcom`).
+        // Dropping it here made this branch answer a question the caller did not ask, while the FID
+        // section below tells the caller to declare a spec to test a hypothesis.
+        let mut knobs = mosura::switches::Knobs::default();
+        knobs.x86_32_cspec = cspec.clone();
+        mosura::analysis::analyze_native_file_with(&path, &knobs)
     } else if le {
         mosura::analysis::analyze_le_file(&path)
     } else {
