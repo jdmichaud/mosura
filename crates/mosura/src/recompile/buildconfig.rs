@@ -1404,6 +1404,70 @@ pub fn looks_hand_written(insns: &[NormInsn]) -> bool {
     }) || hand_written_idioms(insns)
 }
 
+/// Encodings of a register-to-register MOV or ALU operation that this toolchain never selects,
+/// with the mnemonic of each site — the `Vocabulary` question (`recompile::vocab`) answered for
+/// the one pair that decides it, without needing a census pass to learn the vocabulary first.
+///
+/// x86 spells `MOV EAX,ECX` two ways: the STORE form `89 /r` (the register field holds the
+/// SOURCE) and the LOAD form `8b /r` (it holds the DESTINATION). The same duality covers the
+/// ALU ops (`01`/`03` ADD, `29`/`2b` SUB, `31`/`33` XOR, `09`/`0b` OR, `21`/`23` AND,
+/// `39`/`3b` CMP, `11`/`13` ADC, `19`/`1b` SBB). Watcom's code generator emits the STORE form
+/// for every one of them; assemblers of the period default to the LOAD form. So a function whose
+/// original carries a load-form register-to-register operation cannot be reproduced byte-exactly
+/// from C by this compiler AT ALL, whatever the source says — it is capped at SAME_SHAPE.
+///
+/// Measured on a hand-written 32-bit DOS subject: 2,714 load-form sites against 3 store-form, and
+/// ZERO of the functions that recompile byte-exactly contain one — the same calibration bar
+/// `looks_hand_written` carries, and the reason this is reported rather than folded into the kind.
+/// The signal is one-sided in the other direction from the vocabulary's: a form that IS emitted
+/// proves nothing, a form that is never emitted is decisive.
+pub fn unemittable_encodings(insns: &[NormInsn]) -> Vec<&'static str> {
+    let mut out = Vec::new();
+    for x in insns {
+        // `form` is the instruction's bytes with every operand-value bit cleared (see
+        // `NormInsn::form`), so the opcode byte survives and the ModRM's mod field with it.
+        let b = &x.bytes;
+        let mut k = 0usize;
+        while k < b.len() && matches!(b[k], 0x66 | 0x67 | 0x2e | 0x3e | 0x26 | 0x36 | 0x64 | 0x65 | 0xf2 | 0xf3) {
+            k += 1;
+        }
+        if k + 1 >= b.len() {
+            continue;
+        }
+        let (op, modrm) = (b[k], b[k + 1]);
+        if modrm >> 6 != 3 {
+            continue; // a memory operand: the load form is the only form
+        }
+        let name = match op {
+            0x8b => "load-form MOV",
+            0x03 => "load-form ADD",
+            0x2b => "load-form SUB",
+            0x33 => "load-form XOR",
+            0x0b => "load-form OR",
+            0x23 => "load-form AND",
+            0x3b => "load-form CMP",
+            0x13 => "load-form ADC",
+            0x1b => "load-form SBB",
+            // The same duality at BYTE width (`8a`/`88` MOV, `02`/`00` ADD, ...). Watcom picks the
+            // store form here too: `MOV CL,AL` is `88 c1`, never `8a c8`.
+            0x8a => "load-form MOV8",
+            0x02 => "load-form ADD8",
+            0x2a => "load-form SUB8",
+            0x32 => "load-form XOR8",
+            0x0a => "load-form OR8",
+            0x22 => "load-form AND8",
+            0x3a => "load-form CMP8",
+            0x12 => "load-form ADC8",
+            0x1a => "load-form SBB8",
+            _ => continue,
+        };
+        if !out.contains(&name) {
+            out.push(name);
+        }
+    }
+    out
+}
+
 /// The 1990s hand-assembly idioms, matched on the MNEMONIC — the carry-flag return convention,
 /// the counted loop and the string load. These are the shapes a Watcom-era C compiler never
 /// selects, measured on wcc386 10.0a probe TUs under `-3r`/`-5r` crossed with
