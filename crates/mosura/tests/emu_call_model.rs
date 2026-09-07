@@ -128,3 +128,26 @@ fn a_call_gives_back_the_word_its_push_took() {
     }
 }
 
+/// A call leaves the arithmetic flags UNDEFINED. Before this was modelled they survived a call
+/// untouched, so `STC ; CALL f ; JC` took the same branch on both sides of every differential run
+/// no matter what either program did — the CF-returning idiom this subject is full of was being
+/// agreed with for free. The property is behavioural: over enough seeds the CF after the call must
+/// sometimes be 0 even though the caller set it to 1.
+#[test]
+fn a_call_clobbers_the_arithmetic_flags() {
+    // STC ; CALL rel32 ; RET
+    let bytes = [0xf9u8, 0xe8, 0x00, 0x10, 0x00, 0x00, 0xc3];
+    let mut zero = 0;
+    let mut one = 0;
+    for s in 0..64u64 {
+        let m = run(0x5eed_0000 ^ s.wrapping_mul(0x9e37_79b9), &bytes, &[]);
+        match m.read("register", CF, 1) {
+            0 => zero += 1,
+            1 => one += 1,
+            v => panic!("a flag must hold 0 or 1, not {v:#x} — a byte of fill in a 1-bit register"),
+        }
+    }
+    assert!(zero > 0, "CF survived the call on every seed: the callee's effect on it is not modelled");
+    assert!(one > 0, "CF was never 1 either — the clobber is not a bit, it is a constant");
+}
+
