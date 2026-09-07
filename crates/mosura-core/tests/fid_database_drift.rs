@@ -209,6 +209,9 @@ fn committed_databases_match_the_current_hasher() {
     let dir = db_dir();
     let mut checked = 0usize;
     let mut skipped = Vec::new();
+    // ...of which this many were skipped because the SOURCE LIBRARY is not on this machine, as
+    // opposed to a database we could not read (see the gate below).
+    let mut absent = 0usize;
     let mut drifted = Vec::new();
 
     for src in SOURCES {
@@ -216,6 +219,7 @@ fn committed_databases_match_the_current_hasher() {
         let db = dir.join(src.database);
         if let Some(missing) = libs.iter().find(|p| !p.exists()) {
             skipped.push(format!("{} (no {})", src.database, missing.display()));
+            absent += 1;
             continue;
         }
         let Some(want) = committed_text(&db) else {
@@ -257,11 +261,30 @@ fn committed_databases_match_the_current_hasher() {
         eprintln!("  skipped {s}");
     }
 
-    // A gate that checks nothing passes trivially. If every source is missing, that is a broken
-    // environment, not a clean run.
+    // A gate that checks nothing passes trivially — but EVERY source here is historical install
+    // media staged OUTSIDE the repository, so a clean clone has none of it, and neither does CI.
+    // Failing there does not report a broken environment; it reports the documented one, and it
+    // makes `cargo test` red on every machine except the one that built the databases. That is
+    // exactly what happened: this assertion is why the clean-clone job went red on 2026-08-11 and
+    // stayed red for thirteen runs, while the suite was green on the machine with the media. So
+    // absence of every source is a loud SKIP — the same contract every other regeneration-only
+    // test in this repository honours (scripts/ci-clean-clone.sh).
+    //
+    // The gate keeps its teeth where it can have them: wherever any media IS staged, every staged
+    // source is still re-ingested and compared. And a database that is present but UNREADABLE is a
+    // defect in the repository rather than in the environment, so that still fails below.
+    if checked == 0 && absent == skipped.len() {
+        eprintln!(
+            "skip committed_databases_match_the_current_hasher: no source library is staged here \
+             ({} sources, all absent) — this gate only has teeth where the install media is",
+            skipped.len()
+        );
+        return;
+    }
+
     assert!(
         checked > 0,
-        "no database source was available — this gate measured nothing:\n  {}",
+        "no database source was READABLE — this gate measured nothing:\n  {}",
         skipped.join("\n  ")
     );
 
