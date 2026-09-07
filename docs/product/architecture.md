@@ -556,6 +556,7 @@ mosura emit <fn>|--all [--tu] [--arms-off a,b] [--out DIR]                      
 mosura annotate <kind> <addr> <payload>                                           (rename, prototype, noreturn, cspec, foreign …)
 mosura toolchain add <name> --spec watcom-10.0a-dos --install <dir>              (per-machine location, per-session choice)
 mosura recompile <fn>|--all --toolchain <name> [--round NAME]                     (emit → compile → verify → verdict + divergences)
+mosura equiv <fn>|--all --toolchain <name> [--seeds N]                            (differential p-code execution: is the C faithful, regardless of the bytes?)
 mosura round run <name> [--toolchain …] [--baseline NAME]                         (today's round script)
 mosura round compare <a> <b>                                                      (today's verdict-comparison script: EXACT, WGSS, ups/downs)
 mosura gates <round> [--baseline NAME]                                            (corpus-gates.tsv, text + verdict gates)

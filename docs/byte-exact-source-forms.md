@@ -274,6 +274,55 @@ Whether to build it is a scope decision, not a technical one: the machinery is c
 mismatching function is a candidate), and the alternative is accepting that large functions
 converge structurally but not exactly.
 
+## Register pinning, argument order, and the caps behind them
+
+*Measured 2026-09-06 on wcc386 10.0a with a one-function compile loop, on a second Watcom-era
+32-bit DOS subject (held outside this repo). Each entry is a lever or a cap, not a preference.*
+
+### Levers
+
+* **`#pragma aux <fn> value [reg]` pins a value to a register**, and it is the only pinning
+  mechanism that survives an assignment — `parm [reg]` alone does not. Declare the function to
+  return the pinned value and write `return v;` at every exit, and the value stays in that register
+  across the body. A useful side effect: each early exit then becomes its own bare `RET`, which is
+  how a `CMP ; JNZ`-over-`RET` chain is reproduced. (This defeats the shared-epilogue merge that
+  otherwise makes such a chain unreachable — see the early-return note below.)
+* **Register arguments are emitted last-argument-first.** To make the argument loads come out in a
+  given order, write the call's arguments in the reverse of that order. A memory-load argument is
+  the exception: it is hoisted to the front.
+* **`-oanti`** — the `-o` letter set with `l` dropped — turns loop rotation off, so a loop's test
+  stays at the top with a `JMP` back instead of being duplicated at the bottom.
+* **A narrow (word or byte) parameter is cheaper as a caller-clean STACK parameter**
+  (`parm caller [edx][ecx][esi][edi][ebx]`) than as a register parameter: the register form costs a
+  `SUB ESP,4` / store / reload / `ADD ESP,4` round trip around the use.
+* **Qualify the base and the target separately.** When the original caches a base pointer in a
+  register and re-reads the field it points at, the base global must be plain and the dereference
+  must go through a `volatile`-qualified pointer. Marking both volatile forces the base to be
+  re-read; marking neither lets the field be cached.
+* **Two distinct global names that relink to the same address** reproduce a comparison between two
+  link-time symbols that happen to be equal (`MOV EDI,g1 ; CMP EDI,g2` where `g1 == g2`). With one
+  symbol, or a literal on both sides, the optimizer copy-propagates it into `CMP EDI,EDI` or
+  deletes the loop.
+* **A cast on the comparison constant** (`(unsigned short)0x100`) gives `CMP word ptr [g],0x100`
+  where the plain constant gives `MOVZX` + a 32-bit compare.
+
+### Caps — shapes no C source reaches with this compiler
+
+* Every byte TEMPORARY is allocated to `AH` (then `DH`), never `AL`, under every flag set tried.
+  Only a byte PARAMETER can occupy `AL`, and only while it is never reassigned.
+* A `#pragma aux ... parm [...]` list attached to a function POINTER is ignored: an indirect call
+  always passes EAX, EDX, EBX, ECX.
+* `MUL r8` (the 8×8→16 unsigned multiply) is never selected; every spelling of the source produces
+  `IMUL r32,r32`.
+* A jump-table `switch` always carries a `CMP`/`JA` range check ahead of it.
+* `EBP` is never allocated to a temporary.
+* A register built from two byte halves (`MOV BL,9 ; MOV BH,1`) and partial-register arithmetic in
+  general (`MOV AX,imm16` writing only the low half, `NOT AX`, `MOV CH,AH`, a result returned
+  assembled in `CH:CL`) have no C spelling.
+* An early return that jumps forward over a bare `RET` to an out-of-line `CALL ; RET` is
+  unreachable in the general case: the test is inverted and the two returns are merged. The
+  `value [reg]` lever above is the exception that recovers it.
+
 ## Preserved artifacts
 
 `<subject-profile>/notes/convergence/` holds the working state, so the reconstructions are not lost:
