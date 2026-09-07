@@ -455,3 +455,106 @@ fn a_site_inside_a_loop_names_every_pass() {
     assert!(m.flag_return_ordinals.is_empty());
 }
 
+// ---------------------------------------------------------------------------------------------
+// A callee whose flag answer is a PREDICATE ON THE VALUE IT RETURNS.
+//
+// `FUN_0001025d` is the game's key-poll: it leaves the key in EAX and ends `TEST EAX,EAX ; RET`,
+// so its ZF says "there was no key" — and its caller reads BOTH, `JE` for the flag and `CMP AL,0x1b`
+// for the key. `FlagSource::Bit` cannot express that: it would have to put the flag in EAX and
+// the key would be gone. `FlagSource::IsZero` computes the flag from the register instead, on both
+// runs, and delivers nothing.
+
+/// `CALL 0x10000 ; JNE -7 ; store 1 ; RET` — poll until the callee answers "zero", the shape of
+/// `FUN_0001758f`'s key loop. The trip count is a property of the value the callee returns, so it
+/// is the same on both sides only if the flag really is derived from that value.
+#[rustfmt::skip]
+fn original_polling_until_zero() -> Vec<u8> {
+    vec![
+        0xe8, 0xfb, 0xbf, 0x00, 0x00,                   // 4000 call 0x10000
+        0x75, 0xf9,                                     // 4005 jnz 0x4000
+        0xc6, 0x05, 0x00, 0x50, 0x00, 0x00, 0x01,       // 4007 mov byte [0x5000],1
+        0xc3,                                           // 400e ret
+    ]
+}
+
+/// The candidate: `k = f(); while (k != 0) k = f();` — it tests the returned VALUE itself.
+#[rustfmt::skip]
+fn candidate_polling_on_eax(cc: u8) -> Vec<u8> {
+    vec![
+        0xe8, 0xfb, 0xbf, 0x00, 0x00,                   // 4000 call 0x10000
+        0x85, 0xc0,                                     // 4005 test eax,eax
+        cc, 0xf7,                                       // 4007 jcc 0x4000
+        0xc6, 0x05, 0x00, 0x50, 0x00, 0x00, 0x01,       // 4009 mov byte [0x5000],1
+        0xc3,                                           // 4010 ret
+    ]
+}
+
+/// A derived flag is COMPUTED from the register on both runs, and nothing is delivered: the
+/// register still holds the callee's ordinary clobber, which is the point — the caller reads it.
+#[test]
+fn a_derived_flag_is_the_predicate_on_the_value_the_callee_returns() {
+    let bytes = [0xe8u8, 0xfb, 0xbf, 0x00, 0x00, 0xc3]; // CALL 0x10000 ; RET
+    let plain = HashMap::new();
+    for (from, flag, name) in
+        [(FlagSource::IsZero, ZF, "zf"), (FlagSource::IsNegative, SF, "sf")]
+    {
+        let map = HashMap::from([(CALLEE, FlagReturn { flag: (flag, 1), reg: (EAX, 4), from })]);
+        let (mut zero, mut one) = (0, 0);
+        for s in 0..4096u64 {
+            let m = run_side(seed_of(s), &bytes, &[], &map, false);
+            let eax = m.read("register", EAX, 4);
+            let want = match from {
+                FlagSource::IsZero => u64::from(eax == 0),
+                _ => eax >> 31,
+            };
+            assert_eq!(m.read("register", flag, 1), want, "{name}: the flag must be the predicate on EAX");
+            // NOTHING is delivered in the register: it is the ordinary clobber, the same value the
+            // run would have had with no contract at all, and the same on the candidate's side.
+            assert_eq!(eax, run(seed_of(s), &bytes, &[]).read("register", EAX, 4), "{name}: EAX untouched");
+            assert_eq!(eax, run_side(seed_of(s), &bytes, &[], &map, true).read("register", EAX, 4));
+            assert_eq!(run_side(seed_of(s), &bytes, &[], &plain, false).read("register", EAX, 4), eax);
+            match want {
+                0 => zero += 1,
+                _ => one += 1,
+            }
+        }
+        assert!(zero > 0 && one > 0, "{name}: the answer must VARY over the seeds ({zero}/{one})");
+    }
+}
+
+/// The poll loop runs as often as the returned VALUE says, and a candidate that tests it the wrong
+/// way round does not.
+///
+/// `unwired` is the control that matters here too: the same faithful candidate against an original
+/// whose ZF is the independent clobber bit rather than the predicate. That original leaves the
+/// loop after about two passes and the candidate after about two hundred and fifty, so it must
+/// disagree — which is exactly the divergence `FUN_0001758f` was stuck on.
+#[test]
+fn a_candidate_that_tests_a_derived_flag_the_wrong_way_differs() {
+    let map = HashMap::from([(CALLEE, FlagReturn { flag: (ZF, 1), reg: (EAX, 4), from: FlagSource::IsZero })]);
+    let none = HashMap::new();
+    let orig = original_polling_until_zero();
+    let faithful = candidate_polling_on_eax(0x75); // JNE: poll again while the value is non-zero
+    let inverted = candidate_polling_on_eax(0x74); // JE:  poll again while it is zero
+    let ignoring = vec![0xe8u8, 0xfb, 0xbf, 0x00, 0x00, 0xc6, 0x05, 0x00, 0x50, 0x00, 0x00, 0x01, 0xc3];
+    let (mut agree, mut inv_agree, mut ign_agree, mut unwired_agree) = (0, 0, 0, 0);
+    let (mut passes, mut longest) = (0usize, 0usize);
+    for s in 0..64u64 {
+        let seed = seed_of(s);
+        let o = run_side(seed, &orig, &[], &map, false).effects;
+        let n = o.iter().filter(|e| matches!(e, emu::Effect::Call(..))).count();
+        passes += n;
+        longest = longest.max(n);
+        agree += usize::from(o == run_side(seed, &faithful, &[], &map, true).effects);
+        inv_agree += usize::from(o == run_side(seed, &inverted, &[], &map, true).effects);
+        ign_agree += usize::from(o == run_side(seed, &ignoring, &[], &map, true).effects);
+        let unwired = run_side(seed, &orig, &[], &none, false).effects;
+        unwired_agree += usize::from(unwired == run_side(seed, &faithful, &[], &none, true).effects);
+    }
+    assert!(longest > 4 && passes > 64, "the poll loop must really loop ({passes} passes, longest {longest})");
+    assert_eq!(agree, 64, "the faithful candidate must agree on every seed");
+    assert!(inv_agree <= 2, "a candidate that inverts the derived test must DIFFER ({inv_agree}/64)");
+    assert!(ign_agree <= 2, "a candidate that never loops must DIFFER ({ign_agree}/64)");
+    assert!(unwired_agree < 32, "without the contract the flag is an independent coin and the two must part ({unwired_agree}/64)");
+}
+
