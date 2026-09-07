@@ -1401,7 +1401,68 @@ pub fn looks_hand_written(insns: &[NormInsn]) -> bool {
             || t == "POP GS"
             || t.starts_with("MOV ES,")
             || t.starts_with("MOV DS,")
-    })
+    }) || hand_written_idioms(insns)
+}
+
+/// The 1990s hand-assembly idioms, matched on the MNEMONIC — the carry-flag return convention,
+/// the counted loop and the string load. These are the shapes a Watcom-era C compiler never
+/// selects, measured on wcc386 10.0a probe TUs under `-3r`/`-5r` crossed with
+/// `-onatx`/`-od`/`-os`/`-oc`/`-os -ol+`, and on 10.6 and 11.0: zero `LOOP*`, `LODS*`, `STC`,
+/// `CLC`, `CMC`, and zero flag tests adjacent to a `CALL`, in every run. The 23 committed
+/// `*.watcom-x86-32` ground-truth objects agree (they are small freestanding programs, so they
+/// corroborate the probes rather than carry the claim).
+///
+/// Deliberately NOT signatures, both measured on the same probes — adding either would silently
+/// drop compiled functions from the recompilation denominator, which is what the calibration bar
+/// exists to prevent:
+///
+/// - `SAHF` — Watcom's float compare IS `FNSTSW AX ; SAHF ; Jcc` (4 of 4 float-compare functions,
+///   every version and flag set tried).
+/// - `JECXZ` — the `-oi` inlined `memchr` is `JECXZ ; REPNE SCASB`.
+///
+/// `CLI`/`STI`, `HLT` and `PUSHAD`/`POPAD` are here for the same reason `IN`/`OUT` already are:
+/// the emitter cannot render them, so a function containing one is not a C-recompilation target.
+/// (`CLI`/`STI` and `IN`/`OUT` do have C spellings — the `_disable`/`_enable` and `inp`/`outp`
+/// intrinsics of `I86.H`/`CONIO.H`, both inside `#ifdef __INLINE_FUNCTIONS__`, so `-oi`/`-ox` only.
+/// The class this list names is "not renderable by the plain-C emitter", not "never compiled".)
+/// Calibrated with the rest: 9 functions carry them and none of the byte-exact ones does.
+///
+/// Held back for want of independent calibration: `LAHF` and a ZERO-flag test after a `CALL`.
+///
+/// The carry follower set is `JC`/`JNC` only: on the second survey subject the wider CF-consumer
+/// set (`SETC`/`ADC`/`SBB`/`RCL`/`RCR`/`JA`/`JBE`) selects an identical function set, so the
+/// extras buy no recall and only add unwitnessed surface at the one place a linear sweep can
+/// straddle a basic-block boundary.
+///
+/// Calibration against the second subject's verified rows: zero of its 71 EXACT and zero of its 8
+/// SAME_CODE functions trip. ONE SAME_SHAPE function trips — a ten-byte hex-digit converter
+/// (`ac 3c39 7602 2c07 2c30 c3`) whose `LODSB` IS its divergence: recompiling its own emitted C
+/// gives 15 bytes against 10, `MOV AL,[ESI] ; MOVZX ESI,AL` in place of the `LODSB`. The bar
+/// ("zero EXACT/SAME_SHAPE") is therefore recorded with that single named exception rather than
+/// loosened: the bar's rationale is never to drop a VERIFIED-COMPILED function, and that function
+/// is not one. An exception whose divergence is NOT the signature would refute the change.
+fn hand_written_idioms(insns: &[NormInsn]) -> bool {
+    let carry_after_call = insns
+        .windows(2)
+        .any(|w| w[0].mnemonic == "CALL" && matches!(w[1].mnemonic.as_str(), "JC" | "JNC"));
+    carry_after_call
+        || insns.iter().any(|x| {
+            let m = x.mnemonic.as_str();
+            m == "LOOP"
+                || m == "LOOPZ"
+                || m == "LOOPNZ"
+                || m.starts_with("LODS")
+                || m == "STC"
+                || m == "CLC"
+                || m == "CMC"
+                || m == "CLI"
+                || m == "STI"
+                || m == "HLT"
+                || m == "PUSHAD"
+                || m == "POPAD"
+                || m == "PUSHAL"
+                || m == "POPAL"
+        })
 }
 
 /// Decide persist-store EMISSION ORDER per run from the original's bytes. The candidates
@@ -2567,6 +2628,29 @@ mod tests {
         let f = watcom_10_0a().flags_for(&ev);
         assert!(f.contains(&"-3r".to_string()), "{f:?}");
         assert!(!f.contains(&"-4r".to_string()) && !f.contains(&"-5r".to_string()), "{f:?}");
+    }
+
+    /// The four families added to `looks_hand_written`, each with the compiler idiom it must NOT
+    /// be confused with. The negatives are the load-bearing half: they go red the moment anyone
+    /// adds `SAHF` or `JECXZ` to the signature list.
+    #[test]
+    fn hand_written_idioms_are_calibrated_against_the_compilers_own_shapes() {
+        assert!(looks_hand_written(&lift("e2fec3"))); // loop $ ; ret
+        assert!(looks_hand_written(&lift("f9c3"))); // stc ; ret — the carry-flag return convention
+        assert!(looks_hand_written(&lift("f8c3"))); // clc ; ret
+        assert!(looks_hand_written(&lift("f513c0c3"))); // cmc ; adc eax,eax ; ret
+        assert!(looks_hand_written(&lift("e80000000072fac3"))); // call ; jc — carry tested from the callee
+        assert!(looks_hand_written(&lift("ac3c3976022c072c30c3"))); // lodsb ; cmp al,0x39 ; jbe ; sub al,7 ; sub al,0x30 ; ret
+        assert!(looks_hand_written(&lift("fac3"))); // cli ; ret — the interrupt-flag pair, like IN/OUT
+        assert!(looks_hand_written(&lift("fbc3"))); // sti ; ret
+        assert!(looks_hand_written(&lift("f4c3"))); // hlt ; ret
+        assert!(looks_hand_written(&lift("6061c3"))); // pushad ; popad ; ret
+        // fnstsw ax ; sahf ; jnc ; mov eax,1 ; ret — Watcom's OWN float compare
+        assert!(!looks_hand_written(&lift("dfe09e7306b801000000c3")));
+        // jecxz ; repne scasb ; jnz — Watcom's OWN inlined memchr under -oi
+        assert!(!looks_hand_written(&lift("e307f2ae7503")));
+        // call ; test eax,eax ; jz — a compiled result test, not a carry test
+        assert!(!looks_hand_written(&lift("e80000000085c07405")));
     }
 
     #[test]
