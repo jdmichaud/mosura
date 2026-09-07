@@ -558,3 +558,127 @@ fn a_candidate_that_tests_a_derived_flag_the_wrong_way_differs() {
     assert!(unwired_agree < 32, "without the contract the flag is an independent coin and the two must part ({unwired_agree}/64)");
 }
 
+// ---------------------------------------------------------------------------------------------
+// A callee that answers in a REGISTER THE CANDIDATE'S C CANNOT NAME.
+//
+// The other half of the indirect-call wall. `CALL CS:[EDI*4+0x20e42]` in `FUN_00020dba` reaches a
+// boundary-push routine that hands the clipped point back as X in EAX and Y in EBX, and the caller
+// publishes both with `XCHG mem,reg`. Watcom 10.0a honours no `#pragma aux` form on a function
+// POINTER, so a `code *` call returns `int` in EAX and that is the ONLY register C can name at an
+// indirect call; the X half is therefore expressible and the Y half is not. `RegReturn` delivers
+// the ORIGINAL's EBX fill into the register a second channel — the EDX half of a
+// `double (*)(void)` return under `-fpc` — puts it in on the CANDIDATE's side.
+//
+// These tests are what says that channel is a real one: the same value on both sides, computed
+// once, varying with the seed, and load-bearing enough that reading the WRONG register still
+// DIFFERS. Without the last part the model would be hollow.
+
+/// `CALL [0x45320] ; MOV [0x5000],EBX ; RET` — the ORIGINAL: publish what the indirect callee left
+/// in EBX. Its call is at [`BASE`], the address a `site` contract names.
+#[rustfmt::skip]
+fn original_publishing_ebx() -> Vec<u8> {
+    vec![
+        0xff, 0x15, 0x20, 0x53, 0x04, 0x00,             // 4000 call dword ptr [0x45320]
+        0x89, 0x1d, 0x00, 0x50, 0x00, 0x00,             // 4006 mov [0x5000],ebx
+        0xc3,                                           // 400c ret
+    ]
+}
+
+/// The candidate for it, publishing whatever register `modrm` names — and its call is at BASE+1,
+/// NOT at the annotated site, because a compiler lays the same program out differently and nothing
+/// about the candidate's own addresses may be relied on.
+///
+/// `0x15` is EDX (what the second channel delivers into), `0x05` EAX (the ordinary `code *` return,
+/// i.e. a candidate that read the WRONG half), `0x0d` ECX (a register nothing was delivered to).
+#[rustfmt::skip]
+fn candidate_publishing(modrm: u8) -> Vec<u8> {
+    vec![
+        0x90,                                           // 4000 nop
+        0xff, 0x15, 0x20, 0x53, 0x04, 0x00,             // 4001 call dword ptr [0x45320]
+        0x89, modrm, 0x00, 0x50, 0x00, 0x00,            // 4007 mov [0x5000],<reg>
+        0xc3,                                           // 400d ret
+    ]
+}
+
+/// The candidate's named register is handed the SAME value the original's named register gets, and
+/// it is a VALUE: different on (almost) every seed, and different from what the candidate's own
+/// register would otherwise have held.
+///
+/// This is the soundness argument in one property, and it is the register twin of
+/// `a_flag_returning_callee_answers_the_same_bit_to_both_sides`. Both places come from ONE
+/// `call_clobber_fill` at ONE offset — the SOURCE register's — so they cannot drift; and because
+/// that fill depends on the offset, the delivered value is NOT what EDX would have held, which is
+/// exactly why reading the wrong register is detectable.
+#[test]
+fn a_register_returning_callee_answers_the_same_value_to_both_sides() {
+    let rr = RegReturn { src: (EBX, 4), dst: (EDX, 4) };
+    let by_site = HashMap::from([(BASE, rr)]);
+    let (nof, none): (HashMap<u64, FlagReturn>, HashMap<u64, RegReturn>) = (HashMap::new(), HashMap::new());
+    let bytes = [0xffu8, 0x15, 0x20, 0x53, 0x04, 0x00, 0xc3]; // CALL [0x45320] ; RET
+    let mut differed_from_own_fill = 0;
+    for s in 0..64u64 {
+        let seed = seed_of(s);
+        let orig = run_full(seed, &bytes, &[], &nof, &nof, &nof, (&none, &by_site, &none), false);
+        let ord: HashMap<u64, RegReturn> = orig.reg_return_ordinals.iter().copied().collect();
+        assert_eq!(orig.reg_return_ordinals, vec![(1, rr)], "the site must resolve to the call it names");
+        let cand = run_full(seed, &bytes, &[], &nof, &nof, &nof, (&none, &none, &ord), true);
+        let answer = orig.read("register", EBX, 4);
+        assert_eq!(answer, cand.read("register", EDX, 4), "the candidate's EDX holds the original's EBX");
+        // ...and NOTHING is delivered on the original's side: its EDX is the ordinary clobber, the
+        // same value it has with no contract at all.
+        assert_eq!(
+            orig.read("register", EDX, 4),
+            run(seed, &bytes, &[]).read("register", EDX, 4),
+            "the original's own EDX must be untouched"
+        );
+        // The delivery is not a no-op dressed up as one: EDX's own fill is a different value from
+        // EBX's on essentially every seed, which is what makes the wrong-register control below
+        // fail. (Both are replicated bytes, so a collision is a 1-in-256 event, not impossible.)
+        differed_from_own_fill += usize::from(answer != orig.read("register", EDX, 4));
+        assert_ne!(answer, 0, "a replicated-byte fill of zero would make the controls vacuous");
+    }
+    assert!(
+        differed_from_own_fill > 55,
+        "the delivered value must differ from the register's own fill ({differed_from_own_fill}/64)"
+    );
+}
+
+/// THE NEGATIVE CONTROL. A candidate that publishes the register the delivery names agrees on every
+/// seed; one that publishes the ordinary `code *` return instead, or a register nothing was
+/// delivered to, does not — and neither does the faithful candidate with the ordinal channel cut.
+///
+/// `unwired` is the one that keeps this honest. The site key crosses between the two programs
+/// through exactly one channel, and if that channel were dead the faithful candidate would still be
+/// publishing SOMETHING; without this the test would pass just as well against a model that
+/// delivered nothing at all.
+#[test]
+fn a_candidate_that_reads_the_wrong_register_after_a_call_differs() {
+    let rr = RegReturn { src: (EBX, 4), dst: (EDX, 4) };
+    let by_site = HashMap::from([(BASE, rr)]);
+    let none = HashMap::new();
+    let orig = original_publishing_ebx();
+    let nof: HashMap<u64, FlagReturn> = HashMap::new();
+    let (mut agree, mut wrong_eax, mut wrong_ecx, mut unwired) = (0, 0, 0, 0);
+    for s in 0..64u64 {
+        let seed = seed_of(s);
+        let om = run_full(seed, &orig, &[], &nof, &nof, &nof, (&none, &by_site, &none), false);
+        assert!(
+            matches!(om.effects.last(), Some(emu::Effect::Store(_, SLOT, 4, _))),
+            "the original must publish its EBX: {:?}",
+            om.effects
+        );
+        let ord: HashMap<u64, RegReturn> = om.reg_return_ordinals.iter().copied().collect();
+        let cand = |modrm: u8, o: &HashMap<u64, RegReturn>| {
+            run_full(seed, &candidate_publishing(modrm), &[], &nof, &nof, &nof, (&none, &none, o), true).effects
+        };
+        agree += usize::from(om.effects == cand(0x15, &ord));
+        wrong_eax += usize::from(om.effects == cand(0x05, &ord));
+        wrong_ecx += usize::from(om.effects == cand(0x0d, &ord));
+        unwired += usize::from(om.effects == cand(0x15, &none));
+    }
+    assert_eq!(agree, 64, "the faithful candidate must agree on every seed");
+    assert!(wrong_eax <= 1, "a candidate that reads the call's ordinary EAX return must DIFFER ({wrong_eax}/64)");
+    assert!(wrong_ecx <= 1, "a candidate that reads a register nothing was delivered to must DIFFER ({wrong_ecx}/64)");
+    assert!(unwired <= 1, "the ordinal channel must be load-bearing: cutting it must break agreement ({unwired}/64)");
+}
+
