@@ -1213,3 +1213,123 @@ pub fn run(spec: &Spec, bytes: &[u8], base: u64, context: &[u32], inputs: &[(&st
     }
     m
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sleigh::pcode::Varnode;
+
+    /// Opcode NUMBER for a mnemonic, by inverting [`opcode_name`] — so these tests and the
+    /// interpreter read the same table (`opcodes.hh`) and cannot drift apart.
+    fn opcode(name: &str) -> u32 {
+        (1..=73).find(|&n| opcode_name(n) == name).unwrap_or_else(|| panic!("no opcode {name}"))
+    }
+
+    fn vn(space: &str, offset: u64, size: u32) -> Varnode {
+        Varnode { space: space.to_string(), offset, size }
+    }
+    fn arg(space: &str, offset: u64, size: u32) -> PArg {
+        PArg::Var(vn(space, offset, size))
+    }
+    fn konst(value: u64, size: u32) -> PArg {
+        arg("const", value, size)
+    }
+    fn pcode(name: &str, out: Option<Varnode>, ins: Vec<PArg>) -> PcodeOp {
+        PcodeOp { opcode: opcode(name), out, ins }
+    }
+
+    /// A machine set up the way [`run_traced`] sets one up: recording effects, unset memory drawn
+    /// from a seed, and x86's user-op indices (`ia.sinc:764-782`, as emitted by `x86.sla`).
+    fn traced() -> Machine {
+        let mut userops = HashMap::new();
+        for (i, n) in [(1u64, "in"), (2, "out"), (0x10, "swi"), (0x11, "LOCK"), (0x12, "UNLOCK"), (0x13, "cpuid")] {
+            userops.insert(i, n.to_string());
+        }
+        Machine {
+            fill: Some(0x5eed_1234),
+            trace: true,
+            userops,
+            // x86 register-space offsets of EAX/EDX/EBX/ECX — the harness's `default_args`.
+            swi_args: vec![(0, 4), (8, 4), (12, 4), (4, 4)],
+            ..Machine::default()
+        }
+    }
+
+    /// `XCHG` with memory lifts to `LOCK() … UNLOCK()` (ia.sinc:1578-1586) whether or not a `LOCK`
+    /// prefix is present. On one program with no concurrent agent that bracket asserts nothing an
+    /// observer could see, so it must execute silently — not be counted as evidence-destroying.
+    #[test]
+    fn bus_lock_bracket_is_silent() {
+        let mut m = traced();
+        for idx in [0x11u64, 0x12] {
+            m.step(&pcode("CALLOTHER", None, vec![konst(idx, 4)]));
+        }
+        assert_eq!(m.unmodeled, 0, "the lock bracket must not invalidate a run");
+        assert!(m.effects.is_empty(), "it is not an observable effect either");
+    }
+
+    /// `out(port, value)` (ia.sinc:4178) is how this program drives the PIT and the PIC. It is as
+    /// observable as a store, so it is recorded with its port, width and value.
+    #[test]
+    fn port_write_is_an_observable_effect() {
+        let mut m = traced();
+        // OUT 0x43,AL — `CALLOTHER (const,0x2,4) (const,0x43,1) (register,0x0,1)`.
+        m.write("register", 0, 1, 0x34);
+        m.step(&pcode("CALLOTHER", None, vec![konst(2, 4), konst(0x43, 1), arg("register", 0, 1)]));
+        assert_eq!(m.effects, vec![Effect::Port(true, 0x43, 1, 0x34)]);
+        assert_eq!(m.unmodeled, 0);
+    }
+
+    /// `in(port)` (ia.sinc:3633) has no answer inside this image, so it is drawn from the seed as a
+    /// pure function of the PORT — the same rule as never-written memory, and for the same reason:
+    /// both sides of a differential run must read the same byte without anyone enumerating what the
+    /// hardware would have said. Two reads of one port agree; two ports (almost surely) do not.
+    #[test]
+    fn port_read_is_deterministic_per_port_and_recorded() {
+        let mut m = traced();
+        let read = |m: &mut Machine, port: u64| {
+            m.step(&pcode("CALLOTHER", Some(vn("register", 0, 1)), vec![konst(1, 4), konst(port, 1)]));
+            m.read("register", 0, 1)
+        };
+        let a = read(&mut m, 0x60);
+        let b = read(&mut m, 0x60);
+        let c = read(&mut m, 0x40);
+        assert_eq!(a, b, "the same port must read the same on both sides of a differential run");
+        assert_ne!(a, c, "different ports must not collapse to one value");
+        assert_eq!(m.unmodeled, 0);
+        assert_eq!(m.effects.len(), 3, "a port READ is an action on real hardware, so it is recorded");
+        assert_eq!(m.effects[0], Effect::Port(false, 0x60, 1, a));
+    }
+
+    /// `INT n` lifts to `intloc = swi(n); call [intloc];` (ia.sinc:3658). The interrupt is an event:
+    /// its NUMBER and the registers the harness's contract-less-call convention names are recorded,
+    /// so `INT 0x21` with `AH=0x4c` and one with `AH=0x3d` are told apart. The value handed back is
+    /// the synthetic vector the instruction's own indirect call then jumps through.
+    #[test]
+    fn software_interrupt_records_number_and_argument_registers() {
+        let mut m = traced();
+        for (off, val) in [(0u64, 0x4c00u64), (8, 0x1111), (12, 0x2222), (4, 0x3333)] {
+            m.write("register", off, 4, val);
+        }
+        m.step(&pcode("CALLOTHER", Some(vn("unique", 0x100, 4)), vec![konst(0x10, 4), konst(0x21, 1)]));
+        assert_eq!(m.effects, vec![Effect::Swi(0x21, vec![0x4c00, 0x1111, 0x2222, 0x3333])]);
+        assert_eq!(m.read("unique", 0x100, 4), SWI_VECTOR | 0x21);
+        assert_eq!(m.unmodeled, 0);
+    }
+
+    /// The point of the whole change: an unmodelled op says WHICH one it was, so a blocked function
+    /// reports what would unblock it. A `CALLOTHER` is named by its user-op — merging `cpuid` into a
+    /// bare "CALLOTHER" would hide exactly the distinction a census needs — and an index the
+    /// language table does not know is reported as an index rather than guessed at.
+    #[test]
+    fn an_unmodeled_op_is_reported_by_name() {
+        let mut m = traced();
+        m.step(&pcode("CALLOTHER", Some(vn("register", 0, 4)), vec![konst(0x13, 4), konst(0, 4)]));
+        m.step(&pcode("CALLOTHER", Some(vn("register", 0, 4)), vec![konst(0xbeef, 4)]));
+        m.step(&pcode("SEGMENTOP", Some(vn("register", 0, 4)), vec![konst(0, 4)]));
+        assert_eq!(m.unmodeled, 3);
+        let got: Vec<&str> = m.unmodeled_ops.iter().map(String::as_str).collect();
+        assert_eq!(got, vec!["CALLOTHER:#48879", "CALLOTHER:cpuid", "SEGMENTOP"]);
+    }
+
+}
