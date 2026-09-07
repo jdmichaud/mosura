@@ -169,11 +169,11 @@ typedef unsigned char bool;
 #define SEXT34(x) (((int)((unsigned int)(x)<<8))>>8)
 #define CARRY2(a,b) ((((unsigned int)(unsigned short)(a)+(unsigned int)(unsigned short)(b)))>0xffffU)
 #define SCARRY4(a,b) ((int)(((~((unsigned int)(a)^(unsigned int)(b)))&((unsigned int)(a)^((unsigned int)(a)+(unsigned int)(b))))>>31))
-#define SCARRY1(a,b) SCARRY4((int)(signed char)(a),(int)(signed char)(b))
-#define SCARRY2(a,b) SCARRY4((int)(short)(a),(int)(short)(b))
+#define SCARRY1(a,b) ((int)((((~((unsigned char)(a)^(unsigned char)(b)))&((unsigned char)(a)^(unsigned char)((unsigned char)(a)+(unsigned char)(b))))>>7)&1))
+#define SCARRY2(a,b) ((int)((((~((unsigned short)(a)^(unsigned short)(b)))&((unsigned short)(a)^(unsigned short)((unsigned short)(a)+(unsigned short)(b))))>>15)&1))
 #define SBORROW4(a,b) ((int)((((unsigned int)(a)^(unsigned int)(b))&((unsigned int)(a)^((unsigned int)(a)-(unsigned int)(b))))>>31))
-#define SBORROW1(a,b) SBORROW4((int)(signed char)(a),(int)(signed char)(b))
-#define SBORROW2(a,b) SBORROW4((int)(short)(a),(int)(short)(b))
+#define SBORROW1(a,b) ((int)(((((unsigned char)(a)^(unsigned char)(b))&((unsigned char)(a)^(unsigned char)((unsigned char)(a)-(unsigned char)(b))))>>7)&1))
+#define SBORROW2(a,b) ((int)(((((unsigned short)(a)^(unsigned short)(b))&((unsigned short)(a)^(unsigned short)((unsigned short)(a)-(unsigned short)(b))))>>15)&1))
 #define CARRY4(a,b) ((unsigned int)(a)>(unsigned int)~(unsigned int)(b))
 #define CARRY1(a,b) ((((unsigned int)(unsigned char)(a)+(unsigned int)(unsigned char)(b)))>0xffU)
 /* POPCOUNT(x) was `(0)` -- always wrong, never failing. Loud now (Phase 1). */
@@ -898,6 +898,27 @@ pub fn with_contract(name: &str, contract: Option<&str>, tu: String) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// SCARRY1/2 and SBORROW1/2 test the SIGNED OVERFLOW at the operand's own width, not by
+    /// delegating to the 32-bit helper on sign-extended operands — two values sign-extended from
+    /// 8 or 16 bits can never overflow a 32-bit signed add, so the old form was identically zero
+    /// (wrong C, silent). Pins the fix re-landed from `faithful-c-equivalence` against regression;
+    /// the exhaustive value check (that the macro agrees with `emu`'s INT_SCARRY at bytes/words)
+    /// is a dev-tier gcc test, since it needs a C compiler.
+    #[test]
+    fn narrow_signed_overflow_macros_are_not_identically_zero() {
+        let p = PRELUDE;
+        // the zero-form (delegate to SCARRY4 on a sign-extended narrow operand) must be gone
+        assert!(!p.contains("SCARRY4((int)(signed char)"), "SCARRY1 must not delegate to the 32-bit helper");
+        assert!(!p.contains("SCARRY4((int)(short)"), "SCARRY2 must not delegate to the 32-bit helper");
+        assert!(!p.contains("SBORROW4((int)(signed char)"), "SBORROW1 must not delegate to the 32-bit helper");
+        assert!(!p.contains("SBORROW4((int)(short)"), "SBORROW2 must not delegate to the 32-bit helper");
+        // and each narrow macro must test overflow at its own width (bit 7 for byte, 15 for word)
+        assert!(p.contains("#define SCARRY1(a,b)") && p.contains(">>7)&1"), "SCARRY1 tests bit 7");
+        assert!(p.contains("#define SCARRY2(a,b)") && p.contains(">>15)&1"), "SCARRY2 tests bit 15");
+        assert!(p.contains("#define SBORROW1(a,b)"));
+        assert!(p.contains("#define SBORROW2(a,b)"));
+    }
 
     /// The prelude's closure assertion runs (a missing in-contract helper would panic here), and
     /// the function type is the FUNCTION, not a pointer to one (the globfnptr byte finding).
