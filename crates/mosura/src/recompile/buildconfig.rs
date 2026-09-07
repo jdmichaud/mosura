@@ -80,6 +80,18 @@ pub struct Evidence {
     /// (byte-exact only without `-or`), FUN_00069430 (up), and one foreign function at
     /// sim 0.115 either way.
     pub unscheduled_load_pair: bool,
+    /// The function ENDS with a direct `CALL rel32` immediately followed by `RET` — the pair
+    /// Watcom's "call followed by return" optimization rewrites to `JMP` under `-o` unless `-oc`
+    /// is given. Measured on 10.0a (`g = 1; h();` at `-onatx` -> `MOV [g],1 ; JMP h`, at
+    /// `-onatx -oc` -> `MOV [g],1 ; CALL h ; RET`; same under `-3r` and `-5r`), and the repo's own
+    /// ground-truth corpus already encodes the mechanism: `oracle/ground-truth/build.sh` makes
+    /// `-oc` the default and builds `tailjmp` without it precisely to let the rewrite through.
+    /// A call THROUGH A POINTER keeps `CALL ; RET` under both settings, so only a direct call is a
+    /// witness. One-sided like `in_place_scaled_lea`: absence proves nothing.
+    ///
+    /// Note what the fact means: the option under which THIS compiler reproduces this shape, not
+    /// the option the original build used — hand-written assembly emits the pair freely.
+    pub call_then_return: bool,
 }
 
 /// A compiler-level FACT the byte shapes prove — the currency a profile's rules trade in.
@@ -116,6 +128,8 @@ facts! {
     /// adjacent to a stack cleanup (`Evidence::immediate_store_after_cleanup`) or an indexed
     /// load kept ahead of a stack-argument load (`Evidence::unscheduled_load_pair`).
     NoReorderer,
+    /// The "call followed by return" rewrite was off (`Evidence::call_then_return`).
+    TailCallKept,
 }
 
 impl Evidence {
@@ -126,6 +140,7 @@ impl Evidence {
             Fact::SavesBeforeFrame => self.saves_before_frame,
             Fact::PrePentiumTuning => self.in_place_scaled_lea,
             Fact::NoReorderer => self.immediate_store_after_cleanup || self.unscheduled_load_pair,
+            Fact::TailCallKept => self.call_then_return,
         }
     }
 
@@ -1736,6 +1751,9 @@ pub fn watcom_10_0a() -> Profile {
             // `Evidence::immediate_store_after_cleanup` and `Evidence::unscheduled_load_pair`).
             // `-onatmil` is `-onatx` without `-or` (Watcom 10.0a rejects the letter `b`).
             Rule { when: Fact::NoReorderer, add: vec!["-onatmil".into()], remove: vec!["-onatx".into()] },
+            // The tail-call rewrite, off (see `Evidence::call_then_return`). Additive: the base
+            // `-onatx` (or `-onatmil`) stays, and 10.0a accepts both with `-oc`.
+            Rule { when: Fact::TailCallKept, add: vec!["-oc".into()], remove: vec![] },
         ],
     }
 }
@@ -1792,6 +1810,12 @@ pub fn detect(insns: &[NormInsn], sp: (u64, u32), fp: (u64, u32)) -> Evidence {
     // Body evidence: an indexed load kept ahead of an independent stack-argument load the
     // reorderer would have swapped (see `Evidence`).
     ev.unscheduled_load_pair = unscheduled_load_pair(insns);
+    // Tail evidence: a direct CALL immediately followed by RET, at the END of the function — the
+    // position the rewrite acts on (see `Evidence::call_then_return`). `CALL 0x...` is the direct
+    // form; `CALL dword ptr [..]` and `CALL EAX` are not witnesses.
+    if let [.., call, ret] = insns {
+        ev.call_then_return = call.mnemonic == "CALL" && call.text.starts_with("CALL 0x") && ret.mnemonic.starts_with("RET");
+    }
     ev
 }
 
@@ -2368,7 +2392,6 @@ mod tests {
     /// declaration order, and `Evidence::has` (an exhaustive match) answers for each.
     #[test]
     fn every_fact_is_in_all() {
-        assert_eq!(Fact::ALL.len(), 4);
         for (i, f) in Fact::ALL.iter().enumerate() {
             assert_eq!(Fact::ALL.iter().position(|g| g == f), Some(i), "{f:?} listed once");
             let _ = Evidence::default().has(*f);
@@ -2412,6 +2435,24 @@ mod tests {
     /// A constant dword store to a global right after a stack cleanup is the form the
     /// reorderer never leaves, so it drops `-or` for that function; the byte form, the
     /// register form and a store after a bare CALL are not evidence.
+    #[test]
+    fn a_kept_tail_call_adds_the_call_ret_option() {
+        // call +0 ; ret — the pair `-onatx` alone would have rewritten to JMP
+        let ev = detect(&lift("e800000000c3"), ESP, EBP);
+        assert!(ev.call_then_return);
+        let f = watcom_10_0a().flags_for(&ev);
+        assert!(f.contains(&"-oc".to_string()) && f.contains(&"-onatx".to_string()));
+        // call dword ptr [0x2f56c] ; ret — an INDIRECT call keeps the pair under both settings
+        assert!(!detect(&lift("ff156cf50200c3"), ESP, EBP).call_then_return);
+        // jmp +0 — a bare tail jump (a thunk) is not the witness, and a corpus-wide `-oc` is
+        // exactly what breaks such a function
+        assert!(!detect(&lift("e900000000"), ESP, EBP).call_then_return);
+        // call +0 ; pop edx ; ret — not adjacent
+        assert!(!detect(&lift("e8000000005ac3"), ESP, EBP).call_then_return);
+        // call +0 ; ret ; nop — the pair must END the function
+        assert!(!detect(&lift("e800000000c390"), ESP, EBP).call_then_return);
+    }
+
     #[test]
     fn an_immediate_store_after_a_cleanup_drops_the_reorderer() {
         // add esp,8 ; mov dword ptr [0x88a80],1 ; ret
