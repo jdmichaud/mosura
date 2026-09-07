@@ -37,6 +37,7 @@ fn sext(v: u64, size: u32) -> i64 {
 }
 
 /// The `define pcodeop`s this interpreter models, resolved from a `CALLOTHER`'s user-op index.
+/// The names are x86's (`ia.sinc:764`, `:765`, `:779`, `:781`, `:782`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum UserOp {
     /// `LOCK()` / `UNLOCK()` — the bus-lock bracket around `XCHG`.
@@ -45,9 +46,15 @@ enum UserOp {
     In,
     /// `out(port, value)` — write a hardware I/O port.
     Out,
+    /// `swi(n)` — take software interrupt `n`.
+    Swi,
     /// Something else this interpreter does not model.
     Unknown,
 }
+
+/// The address a modelled software interrupt hands back as its vector. Far above any address in a
+/// 32-bit DOS image, so it cannot be mistaken for a real callee.
+const SWI_VECTOR: u64 = 0xffff_ff00;
 
 /// The IEEE format `size` bytes selects, or `None` when this interpreter has none for it.
 ///
@@ -99,6 +106,9 @@ pub struct Machine {
     /// `define pcodeop` index -> name, copied from the [`Spec`] so a `CALLOTHER` can be named.
     /// Empty in a bare [`Machine`]; then a `CALLOTHER` is recorded by index.
     userops: HashMap<u64, String>,
+    /// The registers recorded as the arguments of a software interrupt ([`Effect::Swi`]), from
+    /// [`RunConfig::default_args`]. Empty in a bare [`Machine`]: then only the number is recorded.
+    swi_args: Vec<(u64, u32)>,
     /// Observable effects, in order (see [`Effect`]). Recorded only when `trace` is on.
     pub effects: Vec<Effect>,
     trace: bool,
@@ -441,6 +451,12 @@ impl Machine {
     /// `BreakTableCallBack::registerPcodeCallback(const string &nm, …)` (emulate.hh:146), whose own
     /// comment says the table *"needs a translator object so user-defined pcode ops can be
     /// registered against by name"*. This is that table, with the entries the subject needs.
+    ///
+    /// The five x86 user-ops handled here are the ones the subject actually executes; every other
+    /// language's user-ops, and x86's own remainder (`cpuid`, the MMX/SSE helpers, `fsin`, …),
+    /// stay unmodelled and are reported by name. Keying on the NAME is safe: no other processor in
+    /// Ghidra's tree defines a `pcodeop` called `in`, `out`, `swi`, `LOCK` or `UNLOCK` (checked
+    /// across `Ghidra/Processors/*/data/languages/*.sinc`), so a name cannot mean two things.
     fn callother(&mut self, op: &PcodeOp, osize: u32) -> Flow {
         let res = match self.userop_kind(op) {
             // `LOCK()` / `UNLOCK()` bracket every `XCHG` with memory (ia.sinc:1578-1586 — SLEIGH
@@ -476,6 +492,23 @@ impl Machine {
                 }
                 v
             }
+            // `swi(n)` — the `INT n` instruction (ia.sinc:3656-3658, which lifts to
+            // `intloc = swi(n); call [intloc];`). Recorded as an effect: see [`Effect::Swi`]. The
+            // value handed back stands for the interrupt VECTOR, which is what the instruction's
+            // own indirect call then jumps through; a synthetic address encoding `n` keeps that
+            // call deterministic and far above any address in this image.
+            UserOp::Swi => {
+                let n = op.ins.get(1).map_or(0, |a| self.read_arg(a));
+                let mut args = Vec::with_capacity(self.swi_args.len());
+                for i in 0..self.swi_args.len() {
+                    let (off, sz) = self.swi_args[i];
+                    args.push(self.read("register", off, sz));
+                }
+                if self.trace {
+                    self.effects.push(Effect::Swi(n, args));
+                }
+                SWI_VECTOR | (n & 0xff)
+            }
             UserOp::Unknown => {
                 self.unmodeled += 1;
                 self.note_unmodeled("CALLOTHER", op);
@@ -496,6 +529,7 @@ impl Machine {
             Some("LOCK") | Some("UNLOCK") => UserOp::Lock,
             Some("in") => UserOp::In,
             Some("out") => UserOp::Out,
+            Some("swi") => UserOp::Swi,
             _ => UserOp::Unknown,
         }
     }
