@@ -36,6 +36,15 @@ fn sext(v: u64, size: u32) -> i64 {
     ((m ^ sign).wrapping_sub(sign)) as i64
 }
 
+/// The `define pcodeop`s this interpreter models, resolved from a `CALLOTHER`'s user-op index.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum UserOp {
+    /// `LOCK()` / `UNLOCK()` — the bus-lock bracket around `XCHG`.
+    Lock,
+    /// Something else this interpreter does not model.
+    Unknown,
+}
+
 /// The IEEE format `size` bytes selects, or `None` when this interpreter has none for it.
 ///
 /// Ghidra asks `Translate::getFloatFormat(size)` for the target's format at that width
@@ -386,6 +395,10 @@ impl Machine {
                 }
                 return Flow::Next;
             }
+            // A `define pcodeop` — the language's own escape hatch for an instruction SLEIGH
+            // does not express in p-code. Which one it is decides everything, so it is dispatched
+            // by name (see [`UserOp`]); anything not named there stays unmodelled.
+            "CALLOTHER" => return self.callother(op, osize),
             // The float family. Modelled only at the IEEE widths a `u64` machine word carries
             // exactly; see [`Machine::float_op`] for what that excludes and why.
             "FLOAT_ADD" | "FLOAT_SUB" | "FLOAT_MULT" | "FLOAT_DIV" | "FLOAT_NEG" | "FLOAT_ABS"
@@ -413,6 +426,46 @@ impl Machine {
             self.write(&v.space, v.offset, v.size, mask(res, v.size));
         }
         Flow::Next
+    }
+
+    /// One `CALLOTHER` — a `define pcodeop`, the language's escape hatch for an instruction its
+    /// SLEIGH spec does not express in p-code.
+    ///
+    /// Dispatching BY NAME is Ghidra's own design, not a special case invented here: its emulator
+    /// refuses `CALLOTHER` outright (`EmulatePcodeOp::executeCallother`, emulate.cc:295 — *"CALLOTHER
+    /// emulation not currently supported"*) and the supported route is
+    /// `BreakTableCallBack::registerPcodeCallback(const string &nm, …)` (emulate.hh:146), whose own
+    /// comment says the table *"needs a translator object so user-defined pcode ops can be
+    /// registered against by name"*. This is that table, with the entries the subject needs.
+    fn callother(&mut self, op: &PcodeOp, osize: u32) -> Flow {
+        let res = match self.userop_kind(op) {
+            // `LOCK()` / `UNLOCK()` bracket every `XCHG` with memory (ia.sinc:1578-1586 — SLEIGH
+            // emits them even with no `LOCK` prefix, since `XCHG` locks the bus implicitly). They
+            // assert the bus lock and nothing else. This interpreter runs one program, with no
+            // concurrent agent and no memory model, so the bracket has NO observable effect and a
+            // no-op is not an approximation of it — it is exactly what it does here. Modelling
+            // them is what makes an `XCHG`-using function comparable at all.
+            UserOp::Lock => return Flow::Next,
+            UserOp::Unknown => {
+                self.unmodeled += 1;
+                self.note_unmodeled("CALLOTHER", op);
+                0
+            }
+        };
+        if let Some(v) = &op.out {
+            self.write(&v.space, v.offset, v.size, mask(res, v.size));
+        }
+        Flow::Next
+    }
+
+    /// Which `define pcodeop` this `CALLOTHER` is. Input 0 is the constant user-op index (Ghidra
+    /// `opcodes.hh` CPUI_CALLOTHER; the index is a `UserOpSymbol`, slghsymbol.cc:377).
+    fn userop_kind(&self, op: &PcodeOp) -> UserOp {
+        let idx = op.ins.first().and_then(PArg::as_var).map_or(u64::MAX, |v| v.offset);
+        match self.userops.get(&idx).map(String::as_str) {
+            Some("LOCK") | Some("UNLOCK") => UserOp::Lock,
+            _ => UserOp::Unknown,
+        }
     }
 
     /// One op of the float family, or `None` when it cannot be modelled FAITHFULLY at these widths.
