@@ -36,6 +36,34 @@ fn sext(v: u64, size: u32) -> i64 {
     ((m ^ sign).wrapping_sub(sign)) as i64
 }
 
+/// The IEEE format `size` bytes selects, or `None` when this interpreter has none for it.
+///
+/// Ghidra asks `Translate::getFloatFormat(size)` for the target's format at that width
+/// (opbehavior.cc:571) and falls back to the integer behaviour when there is none. Here the only
+/// formats are the host's own: 4-byte binary32 and 8-byte binary64. x87's 10-byte `float10` gets
+/// `None` — see [`Machine::float_op`] for why that is a refusal rather than an omission.
+fn ieee_size(size: u32) -> Option<u32> {
+    (size == 4 || size == 8).then_some(size)
+}
+
+/// `FloatFormat::getHostFloat` (float.cc:228): decode a `size`-byte IEEE encoding to a host
+/// `double`. `None` at any width this interpreter has no format for.
+fn host_float(encoding: u64, size: u32) -> Option<f64> {
+    match ieee_size(size)? {
+        4 => Some(f32::from_bits(encoding as u32) as f64),
+        _ => Some(f64::from_bits(encoding)),
+    }
+}
+
+/// `FloatFormat::getEncoding` (float.cc:365): encode a host `double` into a `size`-byte IEEE
+/// pattern. `size` must already have passed [`ieee_size`].
+fn float_encode(host: f64, size: u32) -> u64 {
+    match size {
+        4 => (host as f32).to_bits() as u64,
+        _ => host.to_bits(),
+    }
+}
+
 /// A byte-addressable machine state, one byte-map per address space.
 #[derive(Default)]
 pub struct Machine {
@@ -358,6 +386,19 @@ impl Machine {
                 }
                 return Flow::Next;
             }
+            // The float family. Modelled only at the IEEE widths a `u64` machine word carries
+            // exactly; see [`Machine::float_op`] for what that excludes and why.
+            "FLOAT_ADD" | "FLOAT_SUB" | "FLOAT_MULT" | "FLOAT_DIV" | "FLOAT_NEG" | "FLOAT_ABS"
+            | "FLOAT_SQRT" | "FLOAT_CEIL" | "FLOAT_FLOOR" | "FLOAT_ROUND" | "FLOAT_EQUAL"
+            | "FLOAT_NOTEQUAL" | "FLOAT_LESS" | "FLOAT_LESSEQUAL" | "FLOAT_NAN" | "FLOAT_INT2FLOAT"
+            | "FLOAT_FLOAT2FLOAT" | "FLOAT_TRUNC" => match self.float_op(opname, op, osize) {
+                Some(v) => v,
+                None => {
+                    self.unmodeled += 1;
+                    self.note_unmodeled(opname, op);
+                    0
+                }
+            },
             // An opcode this interpreter does not model (the exotica, and whatever the subject's
             // language lifts to a `CALLOTHER`). Writing 0 and carrying on would make a REAL
             // difference invisible, so the fact is recorded: a caller comparing two runs must treat
@@ -374,12 +415,104 @@ impl Machine {
         Flow::Next
     }
 
+    /// One op of the float family, or `None` when it cannot be modelled FAITHFULLY at these widths.
+    ///
+    /// Ghidra emulates a target float op by decoding both operands into a HOST `double`, doing the
+    /// arithmetic on the host FPU and re-encoding the result — `float.cc:462`: *"Currently we
+    /// emulate floating point operations on the target by converting the encoding to the host's
+    /// encoding and then performing the operation using the host's floating point unit"*. Each op
+    /// below is that same two-step, ported from `FloatFormat::op*` (float.cc:470-680) as reached
+    /// through `OpBehaviorFloat*::evaluate*` (opbehavior.cc:569-750), which picks the format from
+    /// the INPUT size for everything except `INT2FLOAT` (output size) and `FLOAT2FLOAT` (both).
+    ///
+    /// WHAT IS MODELLED: `float4` (IEEE binary32) and `float8` (IEEE binary64). Those are the
+    /// host's own formats, so the decode/encode is exact and the arithmetic is the same hardware
+    /// Ghidra would use.
+    ///
+    /// WHAT IS NOT, AND WHY: x87 80-bit extended (`float10`). A [`Machine`] value is a `u64` and
+    /// [`Machine::read`] stops at 8 bytes, so a 10-byte `ST0` arrives here with its sign and
+    /// exponent — the top two bytes — already gone; what is left is the significand alone. There is
+    /// no faithful float in that. Worse, the two sides of a differential run would lose the SAME
+    /// two bytes and go on agreeing, so a wrong candidate would come back SAME: false evidence,
+    /// which is the one outcome this instrument must never produce. So a float op with any 10-byte
+    /// operand returns `None` here and is counted as unmodelled, labelled with its width
+    /// (`FLOAT_DIV@10`) so the census says plainly that it is the 80-bit case that is missing.
+    /// Closing it needs a wider machine word and a soft-float `float10`, not a wider `match`.
+    fn float_op(&self, name: &str, op: &PcodeOp, osize: u32) -> Option<u64> {
+        let isz = op.ins.first().and_then(PArg::as_var)?.size;
+        let x = self.read_arg(op.ins.first()?);
+        let bin = |f: fn(f64, f64) -> f64| -> Option<u64> {
+            // A binary op is evaluated in the input's format and its result is re-encoded in that
+            // same format (opbehavior.cc:619 + float.cc:533).
+            let (a, b) = (host_float(x, isz)?, host_float(self.read_arg(op.ins.get(1)?), isz)?);
+            (osize == isz).then(|| float_encode(f(a, b), isz))
+        };
+        let cmp = |f: fn(f64, f64) -> bool| -> Option<u64> {
+            let (a, b) = (host_float(x, isz)?, host_float(self.read_arg(op.ins.get(1)?), isz)?);
+            Some(f(a, b) as u64)
+        };
+        let un = |f: fn(f64) -> f64| -> Option<u64> {
+            let a = host_float(x, isz)?;
+            (osize == isz).then(|| float_encode(f(a), isz))
+        };
+        match name {
+            "FLOAT_ADD" => bin(|a, b| a + b),
+            "FLOAT_SUB" => bin(|a, b| a - b),
+            "FLOAT_MULT" => bin(|a, b| a * b),
+            "FLOAT_DIV" => bin(|a, b| a / b),
+            "FLOAT_NEG" => un(|a| -a),
+            "FLOAT_ABS" => un(f64::abs),
+            "FLOAT_SQRT" => un(f64::sqrt),
+            "FLOAT_CEIL" => un(f64::ceil),
+            "FLOAT_FLOOR" => un(f64::floor),
+            // float.cc:664 chose `round()` — half away from zero — over the `floor(val+.5)` it
+            // used to use, and says so in a comment left in the source. Rust's `f64::round` is the
+            // same rule.
+            "FLOAT_ROUND" => un(f64::round),
+            "FLOAT_EQUAL" => cmp(|a, b| a == b),
+            "FLOAT_NOTEQUAL" => cmp(|a, b| a != b),
+            "FLOAT_LESS" => cmp(|a, b| a < b),
+            "FLOAT_LESSEQUAL" => cmp(|a, b| a <= b),
+            // float.cc:521 asks the DECODER for the class, so a NaN encoding the host cannot
+            // represent still answers true; here the host formats are the target formats.
+            "FLOAT_NAN" => Some(host_float(x, isz)?.is_nan() as u64),
+            // float.cc:611: the INPUT is a signed integer of `sizein` bytes and the format is the
+            // OUTPUT's. The input width is an integer width, so it is not restricted to 4 and 8.
+            "FLOAT_INT2FLOAT" => Some(float_encode(sext(x, isz) as f64, ieee_size(osize)?)),
+            // float.cc:622: decode in the input's format, re-encode in the output's.
+            "FLOAT_FLOAT2FLOAT" => Some(float_encode(host_float(x, isz)?, ieee_size(osize)?)),
+            // float.cc:631: truncate toward zero into an integer of `sizeout` bytes. C++'s
+            // `(intb)val` is undefined when `val` does not fit; on every host Ghidra runs on that
+            // compiles to `cvttsd2si`, which yields the "integer indefinite" value. Rust's `as`
+            // saturates instead, so the x86 answer is spelled out rather than inherited.
+            "FLOAT_TRUNC" => {
+                let v = host_float(x, isz)?;
+                let ival = if v.is_nan() || v < -(2f64.powi(63)) || v >= 2f64.powi(63) {
+                    i64::MIN
+                } else {
+                    v as i64
+                };
+                Some(mask(ival as u64, osize))
+            }
+            _ => None,
+        }
+    }
+
     /// Record an opcode this interpreter met but does not model.
     ///
     /// Only the FIRST sighting allocates: an unmodelled op inside a hot loop is met millions of
     /// times and the set must not cost a `String` each time.
     fn note_unmodeled(&mut self, name: &str, op: &PcodeOp) {
         if name != "CALLOTHER" {
+            // For the float family the WIDTH is the whole question — a 4- or 8-byte IEEE operand is
+            // modelled and a 10-byte x87 extended one is not — so it is part of the label.
+            let label = match name.starts_with("FLOAT_") {
+                true => format!("{name}@{}", op.ins.first().and_then(PArg::as_var).map_or(0, |v| v.size)),
+                false => name.to_string(),
+            };
+            if !self.unmodeled_ops.contains(label.as_str()) {
+                self.unmodeled_ops.insert(label);
+            }
             return;
         }
         // `CALLOTHER`'s first input is the constant index of a `define pcodeop` (Ghidra
