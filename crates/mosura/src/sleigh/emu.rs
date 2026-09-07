@@ -332,7 +332,17 @@ impl Machine {
                 sa(0).wrapping_rem(sa(1)) as u64
             }
             "POPCOUNT" => a(0).count_ones() as u64,
-            "LZCOUNT" => a(0).leading_zeros() as u64,
+            // `OpBehaviorLzcount::evaluateUnary` (opbehavior.cc:788) is
+            // `count_leading_zeros(in1) - 8*(sizeof(uintb) - sizein)`: the count is of the INPUT's
+            // own width, not of the 64-bit word it is carried in. Without the correction a 4-byte
+            // `LZCOUNT 0x00000001` answered 63 where the hardware (and Ghidra) answer 31 — every
+            // width but 8 was wrong by `8*(8-sizein)`. Unreachable on this subject (an i386 has no
+            // `LZCNT`), which is why it survived; fixed because a model that is wrong when it does
+            // fire is worse than one that is absent.
+            "LZCOUNT" => {
+                let isize_ = op.ins.first().and_then(PArg::as_var).map_or(8, |v| v.size);
+                a(0).leading_zeros() as u64 - 8 * (8 - isize_.min(8)) as u64
+            }
             "LOAD" => {
                 if let (Some(PArg::Space(spc)), Some(ptr)) = (op.ins.first(), op.ins.get(1)) {
                     self.read(spc, self.read_arg(ptr), osize)
