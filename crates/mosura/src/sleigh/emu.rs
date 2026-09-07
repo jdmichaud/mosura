@@ -8,7 +8,7 @@
 
 use super::engine::Spec;
 use super::pcode::{opcode_name, PArg, PcodeOp};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 /// The control-flow effect of executing one p-code op.
 enum Flow {
@@ -40,6 +40,17 @@ fn sext(v: u64, size: u32) -> i64 {
 #[derive(Default)]
 pub struct Machine {
     mem: HashMap<String, HashMap<u64, u8>>,
+    /// How many p-code operations this interpreter does not model were executed. Any non-zero
+    /// count invalidates a same/differs judgement built on this run.
+    pub unmodeled: usize,
+    /// WHICH operations those were. A bare count says "no evidence" and stops there; the set says
+    /// what would have to be built to turn this function into evidence, so the hole in the
+    /// instrument can be measured and closed rather than merely noted. A `CALLOTHER` is recorded
+    /// as `CALLOTHER:<name>` — the whole point of that opcode is that the NAME is the operation.
+    pub unmodeled_ops: BTreeSet<String>,
+    /// `define pcodeop` index -> name, copied from the [`Spec`] so a `CALLOTHER` can be named.
+    /// Empty in a bare [`Machine`]; then a `CALLOTHER` is recorded by index.
+    userops: HashMap<u64, String>,
 }
 
 impl Machine {
@@ -87,7 +98,8 @@ impl Machine {
         let a = |i: usize| if i < n { self.read_arg(&op.ins[i]) } else { 0 };
         let sa = |i: usize| if i < n { self.sread_arg(&op.ins[i]) } else { 0 };
         let osize = op.out.as_ref().map_or(0, |v| v.size);
-        let res: u64 = match opcode_name(op.opcode) {
+        let opname = opcode_name(op.opcode);
+        let res: u64 = match opname {
             "RETURN" => return Flow::Stop,
             "BRANCH" => return Self::branch_to(op.ins.first()),
             "CBRANCH" => {
@@ -165,12 +177,42 @@ impl Machine {
                 }
                 return Flow::Next;
             }
-            _ => 0, // unmodeled op: no effect (keeps going)
+            // An opcode this interpreter does not model (the exotica, and whatever the subject's
+            // language lifts to a `CALLOTHER`). Writing 0 and carrying on would make a REAL
+            // difference invisible, so the fact is recorded: a caller comparing two runs must treat
+            // a verdict with `unmodeled` set as no evidence at all.
+            _ => {
+                self.unmodeled += 1;
+                self.note_unmodeled(opname, op);
+                0
+            }
         };
         if let Some(v) = &op.out {
             self.write(&v.space, v.offset, v.size, mask(res, v.size));
         }
         Flow::Next
+    }
+
+    /// Record an opcode this interpreter met but does not model.
+    ///
+    /// Only the FIRST sighting allocates: an unmodelled op inside a hot loop is met millions of
+    /// times and the set must not cost a `String` each time.
+    fn note_unmodeled(&mut self, name: &str, op: &PcodeOp) {
+        if name != "CALLOTHER" {
+            return;
+        }
+        // `CALLOTHER`'s first input is the constant index of a `define pcodeop` (Ghidra
+        // `opcodes.hh` CPUI_CALLOTHER; the index convention is `UserOpSymbol`, slghsymbol.cc:377).
+        // Reporting them all as "CALLOTHER" would merge `swi` with `fsin` with `cpuid`, which is
+        // exactly the distinction a census needs.
+        let idx = op.ins.first().and_then(PArg::as_var).map_or(u64::MAX, |v| v.offset);
+        let label = match self.userops.get(&idx) {
+            Some(n) => format!("CALLOTHER:{n}"),
+            None => format!("CALLOTHER:#{idx}"),
+        };
+        if !self.unmodeled_ops.contains(label.as_str()) {
+            self.unmodeled_ops.insert(label);
+        }
     }
 
     /// Resolve a BRANCH/CBRANCH target operand into a control-flow effect: a
@@ -200,7 +242,7 @@ pub fn run(spec: &Spec, bytes: &[u8], base: u64, context: &[u32], inputs: &[(&st
         })
         .collect();
 
-    let mut m = Machine::default();
+    let mut m = Machine { userops: spec.userops.clone(), ..Machine::default() };
     for &(space, offset, value, size) in inputs {
         m.write(space, offset, size, value);
     }
