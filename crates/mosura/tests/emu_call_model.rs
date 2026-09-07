@@ -151,3 +151,13 @@ fn a_call_clobbers_the_arithmetic_flags() {
     assert!(one > 0, "CF was never 1 either — the clobber is not a bit, it is a constant");
 }
 
+/// The bytes a function is made of are also memory. Without them in the machine's data space an
+/// inline table or a self-referential load read the seeded fill instead of the byte that is there.
+#[test]
+fn a_function_can_read_its_own_bytes() {
+    // MOV EAX,[0x4000] ; RET — the dword it loads is the instruction's own encoding.
+    let bytes = [0xa1u8, 0x00, 0x40, 0x00, 0x00, 0xc3];
+    let m = run(0x1234, &bytes, &[]);
+    assert_eq!(m.read("register", EAX, 4), 0x0040_00a1, "the load must see the function's own bytes");
+}
+
