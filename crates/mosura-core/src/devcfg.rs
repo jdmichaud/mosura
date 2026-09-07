@@ -329,6 +329,9 @@ mod tests {
             "recompile.cache", "binaries.cnv", "binaries.comcom32", "binaries.msc16",
             "binaries.x32", "binaries.vc6", "binaries.vc5", "binaries.vc4", "binaries.bc45",
             "toolchains.vc98", "toolchains.bc45",
+            // install roots the FID database-drift gate re-ingests from
+            "toolchains.wat100a", "toolchains.watcom16", "toolchains.ow2", "toolchains.msc7",
+            "toolchains.hc331", "toolchains.hc231", "toolchains.sdcc",
         ];
         for (k, _) in c.entries() {
             assert!(KNOWN.contains(&k), "dev-config.example.toml names `{k}`, which nothing reads");

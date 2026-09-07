@@ -8,14 +8,14 @@ metadata:
 ---
 
 Task #6 = port Ghidra **ActionLaneDivide** (laned-vector split) to fix stackstring (0.794).
-Owner lane1, PARALLEL worktree `/home/jd/projects/mosura/mosura-lane` branch `lanedivide`
+Owner lane1, PARALLEL worktree `~/projects/mosura/mosura-lane` branch `lanedivide`
 (base master `91ddcf7`; sb3 works main checkout — NEVER touch it). See [[direction-faithful-port]],
 [[port-all-faithful-rules]].
 
 ## BASELINE (base `91ddcf7`, worktree lanedivide)
 suite **350/0**; corpus stackstring **0.794** (avg ~0.8936 per prior memory; report prints
 per-fixture only, no avg line). Oracle scoring in the worktree needs the binaries symlinked:
-`ln -sf /home/jd/projects/mosura/mosura/oracle/capture{,_trace} oracle/` (gitignored, `!!`).
+`ln -sf ~/projects/mosura/mosura/oracle/capture{,_trace} oracle/` (gitignored, `!!`).
 Per-fixture mosura dump: `cargo run -q --example dumpc -- <stem> [--raw]`. Oracle stage IR:
 `oracle/capture <ghidra_root> <fixture.xml> --ir <action>` breaks at START of <action>
 (`--ir -` = final, `--ir lanedivide` = before it runs, `--ir multicse` = right after it).
@@ -226,7 +226,7 @@ CONCLUSION reported to lead: the floatcast win = the mainloop-repeat/spacebase-S
   speccache::get (+ mirror in lang::load). At reactivation, `floatcast` +0.038 confirms the split is
   correct once fed correct-width reads; expect stackstring 0.794→UP only AFTER the 4-byte trials are
   gone. MODIFIED FINISH LINE (lead): I did NOT merge (sb5 holds main-checkout WIP; lead merges lead-side,
-  branch files disjoint); worktree `/home/jd/projects/mosura/mosura-lane` REMOVED (branch lanedivide
+  branch files disjoint); worktree `~/projects/mosura/mosura-lane` REMOVED (branch lanedivide
   KEPT at 19bd978). Two-agent setup ends here; no replacement agent for task #6.
 
 ## ★★★ STACKSTALL-SLOT MOVE (task #8 Brick F) BUILT + RECOMMENDED-PARK (ml8f 2026-07-17 @608d7d3 — full gate record in [[task8-mainloop-repeat]] ★★★★★ section; patch `brickF-lanedivide-stackstall.patch` in memory dir)

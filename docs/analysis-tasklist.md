@@ -163,7 +163,7 @@ analysis-lane work is EXHAUSTED (per [[bounded-levers-exhausted]] pattern). Leve
 is decompiler-lane (D2–D6) or deep foundations — user's investment call, do NOT force.
 
 ## Follow-ups (analysis lane) — TOOLCHAINS NOW AVAILABLE (2026-07-22)
-External toolchains restored by user under `/home/jd/projects/tools` (watcom/,
+External toolchains restored by user under `~/projects/tools` (watcom/,
 visual_studio/, borland_turbo_c/) + installed: wine 10.0 (+i386), mingw-w64 (both
 arches), clang, dosemu2, native Open Watcom. Go dropped (user). Disk: build caches +
 `~/tools` relocated to `/data` (sda4, new 30G partition); root off 100%.

@@ -22,7 +22,13 @@ both sides — the same argument that makes RELOC_EXACT legitimate in the survey
 import os, re, subprocess, sys, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, "/home/jd/projects/the RE tracker/tools/wardiff")
+# `wardiff` (the OMF object reader `ref_bytes` needs) lives in a working tree OUTSIDE this
+# repository. Point GT_WARDIFF at the directory holding it. The path used to be hardcoded to one
+# machine's home directory, which both published that path in every log this script touched and
+# left the import broken anywhere else.
+_WARDIFF = os.environ.get("GT_WARDIFF")
+if _WARDIFF and os.path.isdir(_WARDIFF):
+    sys.path.insert(0, _WARDIFF)
 WAT = os.environ.get("GT_WATCOM", os.path.expanduser("~/tools/open-watcom"))
 PRE = ("typedef int code(); typedef unsigned int uint4; typedef unsigned int xunknown4; "
        "typedef unsigned char uint1; typedef int int4;")
@@ -64,7 +70,13 @@ def mask(h):
 
 
 def ref_bytes(path, decls, flags):
-    import wardiff
+    try:
+        import wardiff
+    except ImportError:
+        raise SystemExit(
+            "verify-expected: the `wardiff` OMF reader is not importable — set GT_WARDIFF to the "
+            "directory that holds wardiff.py"
+        )
     with tempfile.TemporaryDirectory() as td:
         src = os.path.join(td, "e.c")
         with open(src, "w") as f:

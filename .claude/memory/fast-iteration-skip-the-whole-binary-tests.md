@@ -13,7 +13,7 @@ cargo test --release --test analysis_parity      -- --skip le_subjects --skip pe
 cargo test --release --test ground_truth_parity  -- --skip ground_truth_parity
 
 # PRE-COMMIT — the full pass, ~10 min, ALWAYS before landing
-GHIDRA_SRC=/home/jd/projects/mosura/ghidra cargo test --release --workspace > /tmp/suite.log 2>&1
+GHIDRA_SRC=~/projects/mosura/ghidra cargo test --release --workspace > /tmp/suite.log 2>&1
 ```
 
 Measured, each with everything else unchanged:

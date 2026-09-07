@@ -48,9 +48,20 @@
 # bc45 = "/path/to/a/borland-4.5.exe"
 
 [toolchains]
-# Archived compiler media the FID probe builder drives (scripts/build-fid-probes.sh). No defaults.
+# Archived compiler media the FID probe builder drives (scripts/build-fid-probes.sh), and the
+# install roots the FID database-drift gate re-ingests from
+# (crates/mosura-core/tests/fid_database_drift.rs). No defaults: a root that is not set here makes
+# that gate SKIP its row, naming the key it wanted. Paths are this machine's and belong only here —
+# never in the sources, which are public and end up quoted in CI logs.
 # vc98 = "/path/to/VC98"
 # bc45 = "/path/to/BC45"
+# wat100a = "~/.dosemu/drive_c/WAT100A"
+# watcom16 = "/path/to/watcom16"
+# ow2 = "/path/to/open-watcom-v2"
+# msc7 = "~/.dosemu/drive_c/MSC7"
+# hc331 = "~/.dosemu/drive_c/hc331"
+# hc231 = "~/.dosemu/drive_c/HC231"
+# sdcc = "/usr/share/sdcc"
 
 # A subject binary under study, with its profile directory (everything that is ABOUT that binary:
 # analysis goldens, corpus gates, smoke expectations, notes) — outside the repository. Repeat the

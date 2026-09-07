@@ -11,7 +11,7 @@ Distinct from the existing `analysis/codegen_fingerprint.rs` / `loader/compiler_
 identify the **compiler/toolchain of the whole binary**. FID identifies an **individual function**.
 Same word "fingerprint," opposite granularity — complementary, both live in the analysis lane.
 
-**Branch/worktree:** `fid-port` @ `/home/jd/projects/mosura/mosura-fid`, cut from `master`
+**Branch/worktree:** `fid-port` @ `~/projects/mosura/mosura-fid`, cut from `master`
 `aad9f87`. Sibling of `ghidra/`, so `ghidra_src` (dev-config.toml) resolves by the usual `../ghidra` default (a
 `/tmp` worktree silently drops to 15 vendored languages — see the vendored-language ratchet note
 in `AGENTS.md`).

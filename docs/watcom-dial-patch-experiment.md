@@ -119,7 +119,7 @@ In this order:
 5. **`docs/corpus-round-runbook.md`** — the canonical measurement runbook. Every trap in §7
    below traces to a lesson recorded here or in the memory files.
 
-**Memory files** (`/home/jd/.claude/projects/-home-jd-projects-mosura/memory/`, indexed in
+**Memory files** (`~/.claude/projects/-home-jd-projects-mosura/memory/`, indexed in
 `MEMORY.md`): `compiler-identity (subject-profile note).md` (pile-B is a LIST OF CLAIMS, not a verdict; the fold
 member flip-flopped twice — re-check each claim's evidence, and beware over-correcting in
 either direction), `allocator-model-thread.md` (the full 2026-08-22 allocator investigation:
@@ -133,15 +133,15 @@ holdout functions, which is itself evidence a dial differs), `experiment-discipl
 
 ## 3. The environment (exact paths)
 
-- **Repo:** `/home/jd/projects/mosura/mosura` (note the doubled path; the outer
-  `/home/jd/projects/mosura` is an sshfs mount, the repo is one level in). NOT a git repo at
+- **Repo:** `~/projects/mosura/mosura` (note the doubled path; the outer
+  `~/projects/mosura` is an sshfs mount, the repo is one level in). NOT a git repo at
   the outer level; `git` works inside the inner dir.
 - **Reference compiler (NEVER WRITE TO THIS):**
-  `/home/jd/projects/the RE tracker/tmp/watcom-experiments/watcom_10.0a/WATCOM`. The compiler
+  `~/projects/the RE tracker/tmp/watcom-experiments/watcom_10.0a/WATCOM`. The compiler
   executable is `BINB/WCC386.EXE` (541,364 bytes, an LX / DOS-extender image — "MS-DOS
   executable, LX for OS/2, Intel i386"). It runs under dosemu via `BIN/W32RUN.EXE`
   (W32RUN-hosted; W32RUN must be on the DOS PATH).
-- **The subject:** `/home/jd/the subject binary`.
+- **The subject:** `~/the subject binary`.
 - **Corpus manifest + recovered C:** produced by `corpus_emit` into `/data/be2/zcNN/`
   (manifest.tsv, recovered/NNNNN.c, prelude.h). The current baseline tree is `zc26`
   (764 EXACT / WGSS 0.4801). Column 9 of the manifest is the original function's bytes (hex).

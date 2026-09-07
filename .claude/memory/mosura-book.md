@@ -9,7 +9,7 @@ metadata:
 
 **mosura-book** is an O'Reilly-style book the user asked for, teaching
 disassembly/decompilation theory (Part I) then documenting mosura as the worked
-example (Part II, a manual). Separate repo from mosura: `/home/jd/projects/mosura-book`
+example (Part II, a manual). Separate repo from mosura: `~/projects/mosura-book`
 (git-init'd, not committed — commit only when asked). Audience: software devs new
 to RE jargon; didactic prose (NOT telegraphic), define every term, use diagrams.
 

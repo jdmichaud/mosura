@@ -8,7 +8,7 @@ metadata:
   modified: 2026-08-06T16:59:41.115Z
 ---
 
-**Always run a scratch git worktree with `GHIDRA_SRC=/home/jd/projects/mosura/ghidra`.**
+**Always run a scratch git worktree with `GHIDRA_SRC=~/projects/mosura/ghidra`.**
 
 `paths::ghidra_src()` (`crates/mosura-core/src/paths.rs:21`) resolves in order: **`GHIDRA_SRC` env → the
 sibling checkout `<workspace>/../ghidra` → the vendored in-repo copy**. A worktree created under

@@ -29,13 +29,19 @@ use mosura_core::analysis::fid::build::{build_from_files, BuildSpec};
 
 /// A committed database and the library it was ingested from.
 ///
-/// Paths are the ones `docs/fid-building-databases.md` documents. They are deliberately absolute
-/// and machine-specific: the alternative is copying vendor runtimes into the repo, and the point
-/// of this gate is to check the *committed* databases, not a fixture that stands in for them.
+/// The install media is vendor runtime that cannot live in the repository, so WHERE it sits is a
+/// property of the machine and belongs in `dev-config.toml` under `[toolchains]` — not in this
+/// file. It used to be spelled here as absolute paths, which pinned the gate to one machine and
+/// published that machine's home directory in the log of every CI run (the paths are printed with
+/// each skip). What stays here is the RECIPE — which libraries, in which order, under the root —
+/// because that is the part a drift in the build must still be caught by.
 struct Source {
     /// File name under `data/fid/`.
     database: &'static str,
-    /// EVERY library the database is ingested from, in build order. This is the recipe, and
+    /// The `[toolchains]` key naming this product's install root on this machine, e.g. `wat100a`
+    /// for `~/.dosemu/drive_c/WAT100A`. Absent from dev-config => this source is skipped.
+    root: &'static str,
+    /// EVERY library the database is ingested from, in build order, RELATIVE to [`Source::root`]. This is the recipe, and
     /// listing it here is what makes the gate catch a recipe change as well as a hasher change —
     /// when the math/graphics libraries were added, this test went red until it was updated,
     /// which is exactly the behaviour wanted.
@@ -56,11 +62,12 @@ const SOURCES: &[Source] = &[
     // goldens, which makes a drift check the only automated cover it has.
     Source {
         database: "sdcc-4.5.0-z80.mfid.gz",
-        libraries: &["/usr/share/sdcc/lib/z80/z80.lib"],
+        root: "sdcc",
+        libraries: &["lib/z80/z80.lib"],
         family: "sdcc",
         version: "4.5.0",
         variant: "z80",
-    language: None,
+        language: None,
         compiler_spec: None,
     },
     // Open Watcom, built from the source tree. NOTE the exact path: there are many `clib3r.lib`
@@ -68,14 +75,15 @@ const SOURCES: &[Source] = &[
     // docs/fid-building-databases.md.
     Source {
         database: "watcom-ow2-x86-32.mfid.gz",
+        root: "ow2",
         libraries: &[
-            "/data/open-watcom-v2/bld/clib/library/msdos.386/ms_r/clib3r.lib",
-            "/data/open-watcom-v2/bld/mathlib/library/msdos.386/ms_r/math3r.lib",
+            "bld/clib/library/msdos.386/ms_r/clib3r.lib",
+            "bld/mathlib/library/msdos.386/ms_r/math3r.lib",
         ],
         family: "Watcom",
         version: "ow2",
         variant: "Release",
-    language: None,
+        language: None,
         compiler_spec: None,
     },
     // Watcom 10.0a DOS — the column the subject is built against, and the one that moved when the OMF
@@ -84,61 +92,65 @@ const SOURCES: &[Source] = &[
     // row above is a source build, and the two Borland rows are a different loader path.
     Source {
         database: "watcom-10.0a-x86-32.mfid.gz",
+        root: "wat100a",
         libraries: &[
-            "/home/jd/.dosemu/drive_c/WAT100A/LIB386/DOS/CLIB3R.LIB",
-            "/home/jd/.dosemu/drive_c/WAT100A/LIB386/MATH3R.LIB",
-            "/home/jd/.dosemu/drive_c/WAT100A/LIB386/MATH387R.LIB",
-            "/home/jd/.dosemu/drive_c/WAT100A/LIB386/DOS/EMU387.LIB",
-            "/home/jd/.dosemu/drive_c/WAT100A/LIB386/DOS/GRAPH.LIB",
+            "LIB386/DOS/CLIB3R.LIB",
+            "LIB386/MATH3R.LIB",
+            "LIB386/MATH387R.LIB",
+            "LIB386/DOS/EMU387.LIB",
+            "LIB386/DOS/GRAPH.LIB",
         ],
         family: "Watcom",
         version: "10.0a",
         variant: "Release",
-    language: None,
+        language: None,
         compiler_spec: None,
     },
     // Watcom 16-bit. A different language (`x86:LE:16:Real Mode`) reached through the same OMF
     // reader, so it catches a drift that only shows on 16-bit operand masks.
     Source {
         database: "watcom-10.5-cs-x86-16.mfid.gz",
+        root: "watcom16",
         libraries: &[
-            "/data/watcom16/LIB286/DOS/CLIBS.LIB",
-            "/data/watcom16/LIB286/MATH87S.LIB",
-            "/data/watcom16/LIB286/MATHS.LIB",
-            "/data/watcom16/LIB286/DOS/EMU87.LIB",
-            "/data/watcom16/LIB286/DOS/GRAPH.LIB",
+            "LIB286/DOS/CLIBS.LIB",
+            "LIB286/MATH87S.LIB",
+            "LIB286/MATHS.LIB",
+            "LIB286/DOS/EMU87.LIB",
+            "LIB286/DOS/GRAPH.LIB",
         ],
         family: "Watcom",
         version: "10.5",
         variant: "cs",
-    language: None,
+        language: None,
         compiler_spec: None,
     },
     // Borland 4.5 — the one Borland install that lives on persistent storage. Covers x86-16,
     // which is where the R7 drift actually landed, and x86-32 as a control.
     Source {
         database: "borland-bc4.5-cs-x86-16.mfid.gz",
+        root: "bc45",
         libraries: &[
-            "/data/borland/BC45/LIB/CS.LIB",
-            "/data/borland/BC45/LIB/MATHS.LIB",
-            "/data/borland/BC45/LIB/EMU.LIB",
-            "/data/borland/BC45/LIB/FP87.LIB",
-            "/data/borland/BC45/LIB/GRAPHICS.LIB",
-            "/data/borland/BC45/LIB/OVERLAY.LIB",
+            "LIB/CS.LIB",
+            "LIB/MATHS.LIB",
+            "LIB/EMU.LIB",
+            "LIB/FP87.LIB",
+            "LIB/GRAPHICS.LIB",
+            "LIB/OVERLAY.LIB",
         ],
         family: "Borland",
         version: "bc4.5",
         variant: "cs",
-    language: None,
+        language: None,
         compiler_spec: None,
     },
     Source {
         database: "borland-bc4.5-flat-x86-32.mfid.gz",
-        libraries: &["/data/borland/BC45/LIB/CW32.LIB"],
+        root: "bc45",
+        libraries: &["LIB/CW32.LIB"],
         family: "Borland",
         version: "bc4.5",
         variant: "flat",
-    language: None,
+        language: None,
         compiler_spec: None,
     },
     // MetaWare High C 386 — the only rows whose source libraries live inside the dosemu C:
@@ -151,12 +163,13 @@ const SOURCES: &[Source] = &[
     // exactly what word-split out of the rebuild script's option string until it used an array.
     Source {
         database: "msc-7.0-cm-x86-16.mfid.gz",
+        root: "msc7",
         libraries: &[
-            "/home/jd/.dosemu/drive_c/MSC7/LIB/MLIBCR.LIB",
-            "/home/jd/.dosemu/drive_c/MSC7/LIB/MLIBFP.LIB",
-            "/home/jd/.dosemu/drive_c/MSC7/LIB/EM.LIB",
-            "/home/jd/.dosemu/drive_c/MSC7/LIB/87.LIB",
-            "/home/jd/.dosemu/drive_c/MSC7/LIB/GRAPHICS.LIB",
+            "LIB/MLIBCR.LIB",
+            "LIB/MLIBFP.LIB",
+            "LIB/EM.LIB",
+            "LIB/87.LIB",
+            "LIB/GRAPHICS.LIB",
         ],
         family: "Microsoft C",
         version: "7.0",
@@ -166,11 +179,12 @@ const SOURCES: &[Source] = &[
     },
     Source {
         database: "highc-3.31-x86-32.mfid.gz",
+        root: "hc331",
         libraries: &[
-            "/home/jd/.dosemu/drive_c/hc331/small/hc386.lib",
-            "/home/jd/.dosemu/drive_c/hc331/small/hc387.lib",
-            "/home/jd/.dosemu/drive_c/hc331/small/hcloc.lib",
-            "/home/jd/.dosemu/drive_c/hc331/small/hcna.lib",
+            "small/hc386.lib",
+            "small/hc387.lib",
+            "small/hcloc.lib",
+            "small/hcna.lib",
         ],
         family: "MetaWare High C",
         version: "3.31",
@@ -180,11 +194,12 @@ const SOURCES: &[Source] = &[
     },
     Source {
         database: "highc-2.31-x86-32.mfid.gz",
+        root: "hc231",
         libraries: &[
-            "/home/jd/.dosemu/drive_c/HC231/SMALL/HC386.LIB",
-            "/home/jd/.dosemu/drive_c/HC231/SMALL/HC387.LIB",
-            "/home/jd/.dosemu/drive_c/HC231/SMALL/HCLOC.LIB",
-            "/home/jd/.dosemu/drive_c/HC231/SMALL/HCNA.LIB",
+            "SMALL/HC386.LIB",
+            "SMALL/HC387.LIB",
+            "SMALL/HCLOC.LIB",
+            "SMALL/HCNA.LIB",
         ],
         family: "MetaWare High C",
         version: "2.31",
@@ -204,6 +219,21 @@ fn committed_text(path: &Path) -> Option<String> {
     mosura_core::analysis::fid::store::decompress(&raw).ok()
 }
 
+/// This source's install root on THIS machine: its `[toolchains]` entry, or the distro location
+/// where the runtime is packaged rather than archived.
+fn source_root(src: &Source) -> Option<PathBuf> {
+    if let Some(p) = mosura_core::devcfg::toolchain(src.root) {
+        return Some(p);
+    }
+    // sdcc ships its runtime in a distro package, so it has one standard location and needs no
+    // dev-config entry. That keeps at least one row checkable on an ordinary machine — the
+    // property the sdcc note below depends on.
+    match src.root {
+        "sdcc" => Some(PathBuf::from("/usr/share/sdcc")),
+        _ => None,
+    }
+}
+
 #[test]
 fn committed_databases_match_the_current_hasher() {
     let dir = db_dir();
@@ -215,8 +245,16 @@ fn committed_databases_match_the_current_hasher() {
     let mut drifted = Vec::new();
 
     for src in SOURCES {
-        let libs: Vec<PathBuf> = src.libraries.iter().map(PathBuf::from).collect();
         let db = dir.join(src.database);
+        let Some(root) = source_root(src) else {
+            skipped.push(format!(
+                "{} (no toolchains.{} in dev-config.toml)",
+                src.database, src.root
+            ));
+            absent += 1;
+            continue;
+        };
+        let libs: Vec<PathBuf> = src.libraries.iter().map(|l| root.join(l)).collect();
         if let Some(missing) = libs.iter().find(|p| !p.exists()) {
             skipped.push(format!("{} (no {})", src.database, missing.display()));
             absent += 1;
@@ -244,8 +282,8 @@ fn committed_databases_match_the_current_hasher() {
         if got != want {
             // Report the shape of the drift, not a 600-line diff.
             let (a, b): (Vec<&str>, Vec<&str>) = (want.lines().collect(), got.lines().collect());
-            let changed = a.iter().zip(&b).filter(|(x, y)| x != y).count()
-                + a.len().abs_diff(b.len());
+            let changed =
+                a.iter().zip(&b).filter(|(x, y)| x != y).count() + a.len().abs_diff(b.len());
             drifted.push(format!(
                 "{}: {changed} of {} records differ (committed {} lines, rebuilt {} lines)",
                 src.database,
@@ -256,7 +294,10 @@ fn committed_databases_match_the_current_hasher() {
         }
     }
 
-    eprintln!("database drift: {checked} checked, {} skipped", skipped.len());
+    eprintln!(
+        "database drift: {checked} checked, {} skipped",
+        skipped.len()
+    );
     for s in &skipped {
         eprintln!("  skipped {s}");
     }

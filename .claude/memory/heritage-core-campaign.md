@@ -18,7 +18,7 @@ metadata:
 
 **⚖️ LEAD RULINGS PENDING BEFORE COMMIT:** (1) **commit GATED on the completed mosura-vs-mosura strict-subset audit** — aggregate triumph + incomplete per-fn audit IS the stackptr configuration; gauge-vs-Ghidra cannot see a fn that lost a call while staying ≥ Ghidra. (2) **NEW SURPLUS-SIDE CHECK (first time >100%):** list fns where mosura > Ghidra; settle top ones against flow-following disassembly — surplus = Ghidra under-emitting (oracle-ledger news) OR mosura spurious calls (defect inside a win). (3) confirm suite −1 is the retired pin test.
 
-**DURABILITY:** everything future sessions need is in **/home/jd/projects/mosura/<subject-survey>/held-patches/** with README: heritage-core-with-refinement.patch, call-args-twin.patch, B1, stackpointer-fix, corpus-baseline-7596459.txt (the per-fixture baseline all task-#6 deltas quote against). Convention: blocking-check inputs NEVER in session scratchpads.
+**DURABILITY:** everything future sessions need is in **~/projects/mosura/<subject-survey>/held-patches/** with README: heritage-core-with-refinement.patch, call-args-twin.patch, B1, stackpointer-fix, corpus-baseline-7596459.txt (the per-fixture baseline all task-#6 deltas quote against). Convention: blocking-check inputs NEVER in session scratchpads.
 
 **NEXT (approved order):** audit + surplus check → commit Stage A → Stage B cover filter (heritage.cc:2704 — input + unaffected varnodes with no descendants; mosura's op-derived LocSet cannot see them) → call-args twin lands on top → stackptr re-test → input-join consumer (un-holds the carve-out). Perf improvement observed (master emit far slower) but NOT claimed — unmeasured.
 

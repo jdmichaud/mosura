@@ -1173,7 +1173,7 @@ Watcom tree (`/data/watcom16`) — every cache-missing TU "failed" with dosemu's
 or file name - WCC386` and the 312 fresh entries poisoned the cache as COMPILE_FAIL. Wild
 verdict shifts on a small source diff = wrong harness invocation, exactly as the runbook
 says; the canonical path is
-`/home/jd/projects/the RE tracker/tmp/watcom-experiments/watcom_10.0a/WATCOM`. Purge the
+`~/projects/the RE tracker/tmp/watcom-experiments/watcom_10.0a/WATCOM`. Purge the
 poisoned entries (they are keyed on content, so they do NOT age out) before re-running.
 
 **The transferable win is the METHOD:** recovered-vs-searched can now be measured for any axis

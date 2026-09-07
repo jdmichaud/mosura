@@ -37,7 +37,7 @@ skip-if-absent) + `.github/workflows/ci.yml` (thin, portable). Audited: no test 
 compiler/analyzeHeadless at test time → **#6 MOSURA_*_EXE vars ✅ `b0d298b`+`9b9dd7e`**:
 `paths.rs::{cnv_exe,comcom32_exe}` (env override, `$HOME`-relative default); adopted in
 all tests + capture-analysis.sh + ci-clean-clone.sh; docs flipped to implemented; ZERO
-`/home/jd` literals remain in src/tests/scripts. `9b9dd7e`: `ci-clean-clone.sh --hermetic` now
+`~` literals remain in src/tests/scripts. `9b9dd7e`: `ci-clean-clone.sh --hermetic` now
 points MOSURA_*_EXE at `build/hermetic-absent/*` (user's $HOME files NEVER moved; only in-repo
 oracle tools still move-aside). Part-(a) audit: only beyond-Ghidra datum is the
 watcall cspec (specs/, vendored); noreturn lists are Ghidra data vendored as `const` — nothing

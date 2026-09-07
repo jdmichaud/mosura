@@ -125,7 +125,7 @@ Keep this current, not historic. If a line grows past ~1.5 lines, move the detai
 - [ghidra-dependency-pin](ghidra-dependency-pin.md) — `scripts/setup-ghidra.sh` pins tag Ghidra_12.0.3_build @09f14c92 + compiles the `.sla`.
 - [analysis-external-toolchains](analysis-external-toolchains.md) — /data build caches, ~/tools symlinks, historical compilers, Ghidra DEV dist + JDK21.
 - [mosura-perf-worktree](mosura-perf-worktree.md) — MOSURA_PERF timing tooling; candidates in docs/perf-log.md.
-- [mosura-book](mosura-book.md) — Typst book at /home/jd/projects/mosura-book.
+- [mosura-book](mosura-book.md) — Typst book at ~/projects/mosura-book.
 - [analysis-unblocked-sweep-0723](analysis-unblocked-sweep-0723.md) — the 2026-07-23 analysis sweep; all items landed.
 
 - [dead-ops-stay-in-our-block-lists](dead-ops-stay-in-our-block-lists.md) — ⭐ ours leaves destroyed ops in blocks; block-op walks NEED a dead filter.

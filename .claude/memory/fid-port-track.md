@@ -14,7 +14,7 @@ User-opened 2026-07-23, re-opened + replanned **2026-08-07**: "we should be able
 database directly and embed it with mosura" → **faithful port**, byte-identical hashes.
 
 Full plan = **`docs/fid-port-plan.md`** (rewritten 2026-08-07). Branch **`fid-port`** @
-`/home/jd/projects/mosura/mosura-fid`, cut from `master` `aad9f87` — **sibling of `ghidra/` on
+`~/projects/mosura/mosura-fid`, cut from `master` `aad9f87` — **sibling of `ghidra/` on
 purpose** so `GHIDRA_SRC`'s `../ghidra` default resolves (see
 [[worktree-needs-ghidra-src-or-ratchet-lies]]). Tasks #1–#7 = stages 1–7.
 
