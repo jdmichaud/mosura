@@ -115,6 +115,22 @@ pub struct Machine {
     /// Stores inside this half-open range are the program's own scratch (its stack frame) and are
     /// NOT recorded: two implementations of the same function may lay their frames out differently.
     quiet: Option<(u64, u64)>,
+    /// The call ORDINALs at which a SITE-keyed flag contract fired, with the contract
+    /// ([`RunConfig::site_flag_returns`]).
+    ///
+    /// This is how a site-keyed contract crosses from one run to the other. A site is an address
+    /// in the ORIGINAL's text and the candidate's compiled code has no such address, so the
+    /// original's run reports WHICH CALLS the named site turned out to be — the 1-based ordinal
+    /// among all calls — and the candidate's run is given those ordinals
+    /// ([`RunConfig::ordinal_flag_returns`]). The ordinal is exactly the correspondence the
+    /// verdict already uses: two effect traces are compared element by element, so if they agree
+    /// at all then the candidate's k-th call IS the original's k-th call, and if they do not the
+    /// seed is already counted as a disagreement.
+    pub flag_return_ordinals: Vec<(u64, FlagReturn)>,
+    /// The call ORDINALs at which a SITE-keyed REGISTER contract fired, with the contract
+    /// ([`RunConfig::site_reg_returns`]). The twin of `flag_return_ordinals`, and it crosses
+    /// between the two runs the same way and for the same reason.
+    pub reg_return_ordinals: Vec<(u64, RegReturn)>,
 }
 
 /// One observable effect of running a function: what a caller could tell apart.
@@ -665,6 +681,491 @@ impl Machine {
             None => Flow::Next,
         }
     }
+}
+
+/// A callee that answers in a FLAG, and the general register a C model of it answers in.
+///
+/// This subject's calling convention returns booleans in the carry flag — `STC`/`CLC` in the
+/// callee, `CALL` then `JC`/`JNC`/`JB`/`JAE` in the caller — and it does so pervasively. No C
+/// compiler can express that: Watcom 10.0a rejects `#pragma aux f value [cf]`, and there is no C
+/// construct that reads the flags a call left. A candidate must therefore model the callee as
+/// returning a VALUE, and the two runs then read the callee's answer out of two different places:
+/// the original out of `flag`, the candidate out of `reg`.
+///
+/// The harness makes those two places hold the same bit (see [`call_flag_bit`]). That is what
+/// makes the branch a TEST again rather than a coin: the original's `JC` and the candidate's
+/// `if (f())` are given the same answer, so they agree exactly when the candidate uses the
+/// condition the way the original does, and a candidate that inverts it or ignores it disagrees on
+/// the seeds where the answer differs from the arm it hard-wired.
+///
+/// `reg` must be a register the callee's clobber set already destroys — it is written on the
+/// candidate side only, and writing a register the original still holds live would make the two
+/// runs differ for a reason that is not about the candidate.
+///
+/// This models nothing in Ghidra: Ghidra has no differential-execution harness and no notion of a
+/// C source standing in for a function. It is TESTING POLICY, and the honest limits of it are:
+///
+/// * only a flag the harness can name (`equiv_check`'s `NAMED_FLAGS`: CF, ZF and SF);
+/// * keyed by call TARGET, or by call SITE ([`RunConfig::site_flag_returns`]) when the call is
+///   indirect and has no static target;
+/// * under [`FlagSource::Bit`], a callee that answers in a flag AND leaves a value the caller
+///   reads in a register is NOT expressible: `reg` holds the clobber fill on the original side, so
+///   it can only be a register whose contents nobody reads. One flag answer per callee. Where the
+///   flag is a PREDICATE on the returned value — the callee ends `TEST EAX,EAX` — say so with
+///   [`FlagSource::IsZero`] instead and both are available.
+///
+/// A callee that answers in a REGISTER the candidate cannot name is the other half of the same
+/// wall; see [`RegReturn`], which is keyed and delivered the same way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlagReturn {
+    /// The one-bit register the ORIGINAL's callee answers in: `(register-space offset, 1)`.
+    pub flag: (u64, u32),
+    /// The general register the CANDIDATE's model answers in: `(register-space offset, size)`.
+    pub reg: (u64, u32),
+    /// Where the answer comes from — see [`FlagSource`].
+    pub from: FlagSource,
+}
+
+/// WHERE a flag-answering callee's answer comes from.
+///
+/// The two are not interchangeable and the difference is the difference between modelling a
+/// callee and guessing at it. [`FlagSource::Bit`] says "this callee's answer is a boolean nobody
+/// can see in a register"; the derived forms say "this callee's answer is a PREDICATE on the value
+/// it already returns", which is what a callee ending `TEST EAX,EAX ; RET` actually does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlagSource {
+    /// An independent per-call bit ([`call_flag_bit`]): delivered to the flag on BOTH runs (where
+    /// it is the same value the clobber would have left) and, on the CANDIDATE's run only, to the
+    /// general register its C model reads the answer out of.
+    ///
+    /// This is the `STC`/`CLC` convention: the answer exists nowhere but the flag, so the two runs
+    /// must be handed it in two different places.
+    Bit,
+    /// The flag is set when the register is ZERO — a callee that ends `TEST reg,reg ; RET`.
+    ///
+    /// NOTHING is delivered in a register here, and the model is symmetric: the flag is COMPUTED,
+    /// on both runs, from a register both runs already hold the same value in (the call's clobber
+    /// fill). That is strictly more faithful than [`FlagSource::Bit`] where it applies, and it is
+    /// the only way to express a callee that answers in a flag AND leaves a value the caller
+    /// reads — with `Bit` the register would have to carry the flag instead of the value.
+    IsZero,
+    /// The flag is the register's SIGN bit — the other predicate `TEST reg,reg` leaves.
+    IsNegative,
+}
+
+/// A callee that leaves its answer in a REGISTER THE CANDIDATE'S C CANNOT NAME, and the register
+/// the candidate reads it out of instead.
+///
+/// This is [`FlagReturn`]'s twin, for the other half of the same wall. An INDIRECT call has no
+/// static target, so no `#pragma aux` can give it a convention: Watcom 10.0a ignores every aux
+/// form on a function POINTER and a `code *` call returns `int` in EAX, which is all such a call
+/// can express. When the original's callee leaves its answer somewhere else — `FUN_00020dba`'s
+/// boundary-push routine, reached through `CALL CS:[EDI*4+0x20e42]`, hands back the clipped point
+/// as X in EAX and Y in EBX, and the caller publishes both with a pair of `XCHG mem,reg` — the C
+/// has no way to READ the second half. The `double (*)(void)` trick buys one more register (under
+/// `-fpc` a double comes back in EDX:EAX), and this says which of the original's registers that
+/// second channel is standing in for.
+///
+/// The delivery is the mirror of [`FlagSource::Bit`]'s. `src` is filled on BOTH runs by the
+/// ordinary clobber loop — that IS the callee's answer, since a call is an event here — and on the
+/// CANDIDATE's run only, `dst` is written with [`call_clobber_fill`] AT `src`'s OFFSET: the same
+/// expression, so the two sides provably cannot drift.
+///
+/// BOTH registers must be ones the call's clobber set destroys, and `equiv_check` stops the run if
+/// they are not. For `src`, because otherwise the original still holds the CALLER's own live value
+/// there and the fill delivered to the candidate models nothing that happened. For `dst`, because
+/// otherwise the delivery would overwrite a value the original still needs, and the two runs would
+/// differ for a reason that is not about the candidate — the same condition [`FlagReturn`] is held
+/// to. `src` and `dst` must also differ: naming one register on both sides delivers nothing, since
+/// both runs already hold that register's fill.
+///
+/// Like [`FlagReturn`] this models nothing in Ghidra. It is TESTING POLICY, and its honest limits
+/// are:
+///
+/// * it says WHERE a callee's answer lives, not WHAT it is. The answer itself is still the
+///   harness's own deterministic fill, shared by both runs, so what is under test is that the
+///   candidate reads the right register and does the right thing with it. An INDIRECT call is also
+///   still compared BY TARGET ONLY, so the registers going INTO such a call are unchecked.
+/// * `equiv_check` holds the two registers to the clobber set it can KNOW at annotation time,
+///   which for an indirect call is [`RunConfig::call_clobbers`]. If such a call resolves at run
+///   time to a target the source declared a narrower `modify` clause for, the clobber loop follows
+///   the declaration and `src` may not be filled after all — the delivery then hands the candidate
+///   a value the original does not have, and the run DIFFERS. That fails in the safe direction (a
+///   missed agreement, never a false one), and it is the same gap the flag guard has.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegReturn {
+    /// The register the ORIGINAL's callee leaves its answer in: `(register-space offset, size)`.
+    pub src: (u64, u32),
+    /// The register the CANDIDATE's C reads that answer out of: `(register-space offset, size)`.
+    pub dst: (u64, u32),
+}
+
+/// How a differential run is set up: the seed for unset memory, the scratch (stack) window whose
+/// stores are not observable, and the argument registers each call target's contract names.
+pub struct RunConfig<'a> {
+    /// Seed for the deterministic fill of never-written memory. Two runs with the same seed see
+    /// the same memory, which is what makes their effects comparable.
+    pub seed: u64,
+    /// Half-open `(lo, hi)` byte range treated as the program's own frame: stores there are not
+    /// recorded.
+    pub scratch: (u64, u64),
+    /// `target -> (register space offset, size)` list: the registers that carry that callee's
+    /// arguments. A target absent from the map uses `default_args`.
+    pub call_args: &'a HashMap<u64, Vec<(u64, u32)>>,
+    /// The convention to assume for a call whose target has no entry in `call_args`.
+    pub default_args: &'a [(u64, u32)],
+    /// Targets whose contract passes arguments on the STACK. Their arguments live in the caller's
+    /// frame, which two implementations lay out differently, and their count is not recoverable
+    /// from the contract — so such a call is compared by TARGET ONLY. The count of these is
+    /// reported with the verdict, because a run full of them is weaker evidence.
+    pub stack_targets: &'a std::collections::HashSet<u64>,
+    /// The stack pointer, `(register offset, size)`. A CALL is an event here, not a descent, but
+    /// the instruction's own p-code has already PUSHED the return address by the time the CALL op
+    /// is reached — and nothing ever pops it, so every later stack reference in the caller is off
+    /// by a word. Popping it here is what makes `PUSH x ; CALL f ; POP x` behave as written.
+    pub sp: (u64, u32),
+    /// Registers a call is assumed to clobber when its target declares nothing, set to a
+    /// deterministic value after each call so the two runs agree on what the callee "returned"
+    /// without either program's contract being privileged.
+    pub call_clobbers: &'a [(u64, u32)],
+    /// `target -> registers that target's own contract says it modifies`, overriding
+    /// `call_clobbers` for that callee.
+    ///
+    /// A fixed clobber set OVERRULES the source: a candidate that truthfully declares
+    /// `#pragma aux f modify [eax]` was still told, after every call to `f`, that EBX had been
+    /// destroyed — so a value the original legitimately keeps in EBX across the call could not be
+    /// expressed, and the only way through was to write a contract known to be false. The declared
+    /// list is the candidate's claim about the callee and the harness holds it to it: if the callee
+    /// really does clobber EBX, the original's behaviour will disagree somewhere else and the
+    /// verdict is still DIFFERS.
+    ///
+    /// An INDIRECT call's target is not known before the run, so it always falls back.
+    pub call_modifies: &'a HashMap<u64, Vec<(u64, u32)>>,
+    /// ONE-BIT registers — the arithmetic flags — a call is assumed to clobber.
+    ///
+    /// Kept apart from `call_clobbers` because a flag is not a byte: filling `ZF` with `0x37`
+    /// would make `SETZ` write `0x37`, and every consumer that zero-extends a flag would carry
+    /// the noise into arithmetic. These get a single deterministic BIT instead.
+    ///
+    /// A call MUST clobber them. Without this the arithmetic flags survived a call untouched, and
+    /// this subject has a whole band of functions that return a boolean in CF — the `STC`/`CLC`
+    /// then `CALL`-then-`JC` idiom — whose verdicts were therefore hollow: a candidate leaving a
+    /// different CF was silently agreed with, because on BOTH sides the flag still held whatever
+    /// the caller's own last arithmetic had put there. Found 2026-09-06 on FUN_0001effd, which
+    /// ends `MOV byte[0x44edb],0 ; JAE ; CALL 0x1e380` — on hardware the `JAE` tests the CF the
+    /// PREVIOUS call returned, and nothing in the emulated state made that so.
+    pub call_flag_clobbers: &'a [(u64, u32)],
+    /// `target -> the flag that callee answers in, and the register a C model answers in`.
+    ///
+    /// Declared by the candidate's source (see [`FlagReturn`]). After such a call the named flag
+    /// gets the callee's answer on BOTH runs — the same bit the clobber would have left there, by
+    /// construction — and `is_candidate_run` decides whether the register gets it too.
+    ///
+    /// Empty by default: a callee not named here is clobbered and nothing more, exactly as before.
+    pub call_flag_returns: &'a HashMap<u64, FlagReturn>,
+    /// `address of a CALL instruction in THIS run's text -> the flag contract for that ONE call`.
+    ///
+    /// The alternative key to `call_flag_returns`, and the only one that can reach an INDIRECT
+    /// call: a call through a function pointer has no static target, so `CALL [0x45320] ; JAE`
+    /// cannot be named by callee at all — the runtime target is a different word on every seed.
+    ///
+    /// A site belongs to ONE program's text, so this map is given to the ORIGINAL's run only. What
+    /// it does there is record the ordinals it fired at ([`Machine::flag_return_ordinals`]) for
+    /// the candidate's run to pick up as `ordinal_flag_returns`.
+    pub site_flag_returns: &'a HashMap<u64, FlagReturn>,
+    /// `call ORDINAL (1-based) -> the flag contract for that call`, the CANDIDATE's side of
+    /// `site_flag_returns`.
+    ///
+    /// Empty on the original's run. See [`Machine::flag_return_ordinals`] for why an ordinal is
+    /// the right correspondence between the two runs and cannot launder a disagreement.
+    pub ordinal_flag_returns: &'a HashMap<u64, FlagReturn>,
+    /// `target -> the register that callee leaves its answer in, and the register a C model reads
+    /// it out of` (see [`RegReturn`]).
+    ///
+    /// Empty by default: a callee not named here is clobbered and nothing more, exactly as before.
+    pub call_reg_returns: &'a HashMap<u64, RegReturn>,
+    /// `address of a CALL instruction in THIS run's text -> the register contract for that ONE
+    /// call` — the only key an INDIRECT call has, and the case [`RegReturn`] exists for.
+    ///
+    /// Given to the ORIGINAL's run only, exactly like [`RunConfig::site_flag_returns`]: a site is
+    /// an address in ITS text. What it does there is record the ordinals it fired at
+    /// ([`Machine::reg_return_ordinals`]) for the candidate's run to pick up as
+    /// `ordinal_reg_returns`.
+    pub site_reg_returns: &'a HashMap<u64, RegReturn>,
+    /// `call ORDINAL (1-based) -> the register contract for that call`, the CANDIDATE's side of
+    /// `site_reg_returns`. Empty on the original's run.
+    pub ordinal_reg_returns: &'a HashMap<u64, RegReturn>,
+    /// Is this the CANDIDATE's run? Then a [`FlagReturn`] callee's answer is ALSO delivered in the
+    /// general register the candidate reads it from, and a [`RegReturn`] callee's answer in the
+    /// register the candidate reads THAT out of.
+    ///
+    /// This is the one asymmetry in the whole instrument, and it is the point: the two programs
+    /// disagree about WHERE a callee's answer lives, and about nothing else. The original run
+    /// leaves a flag answer in the flag alone, which is what its `JC` reads; the candidate run
+    /// additionally puts it in the register its `#pragma aux ... value [reg]` names, which is what
+    /// its `if` reads. Both come from one [`call_flag_bit`], so the branch condition is genuinely
+    /// shared — and a register answer crosses the same way through one [`call_clobber_fill`].
+    ///
+    /// (Named `flag_return_in_register` while a flag was the only thing that could be delivered.)
+    pub is_candidate_run: bool,
+    /// Give up after this many p-code steps (a wrong candidate can loop forever).
+    pub max_steps: usize,
+    /// Interesting values for the memory fill — typically the constants the function compares
+    /// against, so boundary behaviour is actually exercised (see [`fill_dword`]).
+    pub pool: &'a [u64],
+    /// Bytes of the ORIGINAL program to place in the data space before the run, as
+    /// `(address, bytes)`.
+    ///
+    /// A function's own extent is DATA as well as code — an inline jump table, a constant pool
+    /// between basic blocks, a `MOV EAX,[here]` — and without this it read as the seeded fill
+    /// instead of the byte that is actually there.
+    ///
+    /// It is the ORIGINAL's bytes on BOTH sides, deliberately. Writing each run its OWN code would
+    /// compare the two programs by their ENCODING, which is the one thing this harness declares
+    /// free to differ: measured over the verified corpus it turned 14 correct sources into DIFFERS,
+    /// every one of them a seed whose pointer happened to land inside the function's extent, where
+    /// the original read its own opcodes and the candidate read its own — different bytes for a
+    /// reason that is not a difference in behaviour. The memory image is the ENVIRONMENT the
+    /// candidate is judged in, and the original is what that environment actually contains.
+    pub image: &'a [(u64, &'a [u8])],
+    /// Stop after this many recorded effects. A step budget alone is UNFAIR between two
+    /// implementations of one function: the one whose loop body lifts to more p-code ops completes
+    /// fewer iterations, and their traces then differ for a reason that is not a difference in
+    /// behaviour. Counting effects makes the budget mean the same thing on both sides.
+    pub max_effects: usize,
+}
+
+/// Execute `bytes` from `base` recording the effects a caller could observe, with calls treated
+/// as events rather than followed.
+///
+/// This is the semantic-equivalence instrument: run the ORIGINAL function and a CANDIDATE
+/// implementation of it over the same seeded state and compare the effect traces. It deliberately
+/// does NOT compare register allocation, frame layout, or instruction selection — only the stores
+/// the function makes outside its own frame, the calls it makes with the arguments its contract
+/// says it passes, and (left to the caller) whatever register the contract names as the result.
+pub fn run_traced(
+    spec: &Spec,
+    bytes: &[u8],
+    base: u64,
+    context: &[u32],
+    inputs: &[(&str, u64, u64, u32)],
+    cfg: &RunConfig<'_>,
+) -> (Machine, bool) {
+    let mut prog: HashMap<u64, (Vec<PcodeOp>, u64)> = spec
+        .disassemble_ctx(bytes, base, context)
+        .into_iter()
+        .map(|insn| {
+            let next = insn.address + insn.bytes.len() as u64;
+            (insn.address, (insn.ops, next))
+        })
+        .collect();
+
+    let mut m = Machine {
+        fill: Some(cfg.seed),
+        pool: cfg.pool.to_vec(),
+        trace: true,
+        quiet: Some(cfg.scratch),
+        userops: spec.userops.clone(),
+        // A software interrupt's handler is not in this image, so it has no declared contract —
+        // exactly the situation `default_args` exists for. See [`Effect::Swi`].
+        swi_args: cfg.default_args.to_vec(),
+        ..Machine::default()
+    };
+    // The memory image, as DATA — see [`RunConfig::image`]. Only what the caller hands over is
+    // written; the rest of the address space is still fill, which is a separate and larger gap.
+    let data = spec.spaces.get(spec.default_space).map(|s| s.name.clone()).unwrap_or_default();
+    for &(at, chunk) in cfg.image {
+        for (i, b) in chunk.iter().enumerate() {
+            m.write(&data, at + i as u64, 1, *b as u64);
+        }
+    }
+    for &(space, offset, value, size) in inputs {
+        m.write(space, offset, size, value);
+    }
+    // The seeding writes above are setup, not effects.
+    m.effects.clear();
+
+    let mut pc = base;
+    let mut steps = 0usize;
+    let mut calls = 0u64;
+    let mut finished = false;
+    'run: loop {
+        // `prog` is a LINEAR sweep from `base`, so any DATA embedded in the code -- a jump table,
+        // most of all -- throws the sweep out of phase and the real instruction boundaries after
+        // it are simply absent from the map. A `BRANCHIND` into one of them used to miss and the
+        // function silently STOPPED: no call, no store, its entry registers still in place, and
+        // the run counted only as `finished=false`. FUN_0000054b (corpus 00011) is the witness --
+        // its four-entry table at 0x55d puts the q==3 arm at 0x56d, which the sweep swallows
+        // inside the `ADD EAX,0xd8f70000` it decodes at 0x56a, so the original lost that whole
+        // quadrant on exactly the 32 seeds in 128 that take it. Decode such an address on demand;
+        // that cannot change any address the sweep already reached, and costs nothing until a
+        // branch actually lands off-phase.
+        if !prog.contains_key(&pc) {
+            let Some(off) = pc.checked_sub(base).filter(|o| (*o as usize) < bytes.len()) else {
+                break 'run;
+            };
+            let Some(insn) = spec.disassemble_ctx(&bytes[off as usize..], pc, context).into_iter().next()
+            else {
+                break 'run;
+            };
+            let nxt = insn.address + insn.bytes.len() as u64;
+            prog.insert(pc, (insn.ops, nxt));
+        }
+        let (ops, next) = &prog[&pc];
+        let mut i = 0usize;
+        let mut jump = None;
+        while i < ops.len() {
+            steps += 1;
+            if steps > cfg.max_steps || m.effects.len() > cfg.max_effects {
+                break 'run;
+            }
+            let op = &ops[i];
+            match opcode_name(op.opcode) {
+                // A CALL is an EVENT: record the target and the arguments its contract names,
+                // then apply a deterministic "callee effect" so both runs continue from the same
+                // state without either side's return-value convention being assumed correct.
+                "CALL" | "CALLIND" => {
+                    let indirect = opcode_name(op.opcode) == "CALLIND";
+                    // A DIRECT call names its destination in the varnode's OFFSET (the operand is
+                    // `(ram,0x23118,4)`). An INDIRECT call names a varnode whose VALUE is the
+                    // destination — `CALLIND (register,0x0,4)` is `CALL EAX`. Taking the offset
+                    // there compared two runs by the varnode's IDENTITY: the same computed target
+                    // reached through a different register looked like a different callee, and two
+                    // different targets through the same register looked like the same one. Found
+                    // 2026-09-06 from two directions at once — a convergence wave on 00748, and a
+                    // software interrupt, where every `INT n` in the subject came out as a call to
+                    // the `unique` slot the lifter happened to allocate for the vector.
+                    let target = if indirect {
+                        m.read_arg(op.ins.first().unwrap_or(&PArg::Space(String::new())))
+                    } else {
+                        match op.ins.first().and_then(PArg::as_var) {
+                            Some(v) if !v.is_const() => v.offset,
+                            _ => m.read_arg(op.ins.first().unwrap_or(&PArg::Space(String::new()))),
+                        }
+                    };
+                    // An INDIRECT call's callee is not known until run time, so neither is its
+                    // contract: comparing a fixed set of registers there fails correct programs for
+                    // holding different values in registers that are not arguments at all. Such a
+                    // call is compared by TARGET only, and counted, so the weakening is visible.
+                    let vals: Vec<u64> = if indirect || cfg.stack_targets.contains(&target) {
+                        Vec::new()
+                    } else {
+                        let args = cfg.call_args.get(&target).map(|v| v.as_slice()).unwrap_or(cfg.default_args);
+                        args.iter().map(|&(off, sz)| m.read("register", off, sz)).collect()
+                    };
+                    m.effects.push(Effect::Call(target, vals));
+                    calls += 1;
+                    // The callee returned: take its return address back off the stack.
+                    let (spoff, spsz) = cfg.sp;
+                    let espv = m.read("register", spoff, spsz);
+                    m.write("register", spoff, spsz, espv.wrapping_add(spsz as u64));
+                    let clobbers =
+                        cfg.call_modifies.get(&target).map(|v| v.as_slice()).unwrap_or(cfg.call_clobbers);
+                    for &(off, sz) in clobbers {
+                        m.write("register", off, sz, call_clobber_fill(cfg.seed, target, calls, off));
+                    }
+                    // ...and the arithmetic flags, which a call leaves undefined WHATEVER its
+                    // contract says: Watcom's `modify` clause describes registers, and there is no
+                    // spelling in it for "preserves the flags". One BIT each — see
+                    // [`RunConfig::call_flag_clobbers`].
+                    for &(off, sz) in cfg.call_flag_clobbers {
+                        m.write("register", off, sz, call_flag_bit(cfg.seed, target, calls, off));
+                    }
+                    // ...and if this callee ANSWERS in a flag, that flag's clobber IS its answer,
+                    // and the candidate is handed the same bit in the register it models the
+                    // answer as living in. Writing the flag here as well as in the loop above is
+                    // deliberate: it is the same value ([`call_flag_bit`]) either way, and it
+                    // makes the answer independent of whether the flag happens to be in
+                    // `call_flag_clobbers`. See [`RunConfig::call_flag_returns`].
+                    // A contract may be keyed by the callee's TARGET, by this call's SITE (the
+                    // address of the CALL instruction, the only key an indirect call can have) or
+                    // — on the candidate's run — by the call's ORDINAL, which is what a site
+                    // resolved to on the original's. The three key spaces are disjoint by
+                    // construction: `equiv_check` rejects a site that names a call whose target is
+                    // already named, and gives the site map to one run and the ordinal map to the
+                    // other.
+                    let by_site = cfg.site_flag_returns.get(&pc);
+                    if let Some(fr) = by_site {
+                        m.flag_return_ordinals.push((calls, *fr));
+                    }
+                    let fr = cfg
+                        .call_flag_returns
+                        .get(&target)
+                        .or(by_site)
+                        .or_else(|| cfg.ordinal_flag_returns.get(&calls));
+                    if let Some(fr) = fr {
+                        match fr.from {
+                            FlagSource::Bit => {
+                                let bit = call_flag_bit(cfg.seed, target, calls, fr.flag.0);
+                                m.write("register", fr.flag.0, fr.flag.1, bit);
+                                if cfg.is_candidate_run {
+                                    m.write("register", fr.reg.0, fr.reg.1, bit);
+                                }
+                            }
+                            // ...and a callee whose answer is a PREDICATE on the value it returns
+                            // (`TEST EAX,EAX ; RET`) needs no delivery at all: the register holds
+                            // the same clobber fill on both runs, so computing the flag from it
+                            // here gives the original's `JE` exactly what the candidate's
+                            // `if (k == 0)` computes for itself. Symmetric, so it runs on both
+                            // sides regardless of `is_candidate_run`.
+                            FlagSource::IsZero | FlagSource::IsNegative => {
+                                let v = m.read("register", fr.reg.0, fr.reg.1);
+                                let bit = match fr.from {
+                                    FlagSource::IsZero => u64::from(v == 0),
+                                    _ => (v >> (8 * fr.reg.1 - 1)) & 1,
+                                };
+                                m.write("register", fr.flag.0, fr.flag.1, bit);
+                            }
+                        }
+                    }
+                    // ...and if this callee leaves its answer in a REGISTER the candidate's C
+                    // cannot name — the indirect-call case, where no `#pragma aux` reaches — the
+                    // candidate is handed that same answer in the register it CAN name. The
+                    // original's `src` was filled by the clobber loop above; this writes the
+                    // candidate's `dst` from the SAME [`call_clobber_fill`] at the SAME offset, so
+                    // both runs read one value out of two places. See [`RegReturn`].
+                    //
+                    // Keyed exactly as the flag contract is, and run AFTER it deliberately: a
+                    // DERIVED flag ([`FlagSource::IsZero`]) is COMPUTED from a register, and that
+                    // computation must see the ordinary clobber fill on BOTH runs. `equiv_check`
+                    // refuses a contract whose `dst` is a flag contract's register for the same
+                    // call, so in practice the two deliveries never touch one register.
+                    let reg_by_site = cfg.site_reg_returns.get(&pc);
+                    if let Some(rr) = reg_by_site {
+                        m.reg_return_ordinals.push((calls, *rr));
+                    }
+                    let rr = cfg
+                        .call_reg_returns
+                        .get(&target)
+                        .or(reg_by_site)
+                        .or_else(|| cfg.ordinal_reg_returns.get(&calls));
+                    if let (Some(rr), true) = (rr, cfg.is_candidate_run) {
+                        let v = call_clobber_fill(cfg.seed, target, calls, rr.src.0);
+                        m.write("register", rr.dst.0, rr.dst.1, v);
+                    }
+                    i += 1;
+                }
+                "RETURN" => {
+                    finished = true;
+                    break 'run;
+                }
+                _ => match m.step(op) {
+                    Flow::Next => i += 1,
+                    Flow::Rel(d) => i = (i as i64 + d).max(0) as usize,
+                    Flow::Jump(t) => {
+                        jump = Some(t);
+                        break;
+                    }
+                    Flow::Stop => {
+                        finished = true;
+                        break 'run;
+                    }
+                },
+            }
+        }
+        pc = jump.unwrap_or(*next);
+    }
+    (m, finished)
 }
 
 /// Disassemble `bytes` and execute the lifted p-code from `base`, following
