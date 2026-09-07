@@ -75,7 +75,12 @@ fn main() {
     assert!(!arms.is_empty(), "at least one arm");
 
     let data = std::fs::read(Path::new(bin)).expect("read binary");
-    let prog = analysis::loader::load_le(&data).expect("load binary");
+    // The registry, not the LE loader: this tool needs the fixed-up image and no analysis
+    // (`analysis::load_native`, the loader half of `analyze_native_file_with`), so a subject in
+    // any beyond-Ghidra container opens here instead of panicking. For an LE file the registry's
+    // first entry IS the LE loader, and `load_le_with` opens with the same `detect_le` predicate
+    // the registry uses to claim the file, so this is the identity on every LE subject.
+    let prog = analysis::load_native(&data).expect("load binary");
     let space = prog.default_space;
     let flags = read_flags(flagsfile);
 

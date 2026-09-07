@@ -95,7 +95,12 @@ fn main() {
         .unwrap_or_default();
 
     let data = std::fs::read(Path::new(bin)).expect("read binary");
-    let prog = analysis::loader::load_le(&data).expect("load binary");
+    // The LE path first (the subject the tool was built on); a container the LE loader refuses is
+    // offered to the X-32 native loader, whose flat image carries no fixups.
+    // The registry (`analysis::load_native`), so every beyond-Ghidra container opens through one
+    // list rather than a fallback chain per tool. Identity on an LE subject: the registry's first
+    // entry is the LE loader.
+    let prog = analysis::load_native(&data).expect("load binary");
     let space = prog.default_space;
 
     let work = std::env::temp_dir().join(format!("mosura-check-{}", std::process::id()));
@@ -141,7 +146,7 @@ fn main() {
                     Path::new(sf).file_name().and_then(|s| s.to_str()).unwrap_or("foreign"),
                     std::hash::Hasher::finish(&h)
                 );
-                let sprog = analysis::analyze_le_file(Path::new(bin)).expect("analyze binary for the foreign scan");
+                let sprog = analysis::analyze_native_file(Path::new(bin)).expect("analyze binary for the foreign scan");
                 let facts = mosura::analysis::foreign::extract_facts(&sprog);
                 let conf = mosura::analysis::foreign::Confirmation::load(Path::new(sf)).expect("confirmation file");
                 let cls = mosura::analysis::foreign::classify(&facts, &conf);

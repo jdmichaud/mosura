@@ -171,16 +171,36 @@ pub fn analyze_native_file(path: &Path) -> Result<Program, AnalysisError> {
 /// [`analyze_native_file`] under explicit [`Knobs`] (see [`analyze_file_with`]).
 pub fn analyze_native_file_with(path: &Path, knobs: &Knobs) -> Result<Program, AnalysisError> {
     let data = std::fs::read(path)?;
+    let mut program = loader::with_compiler_version(&data, load_native_with(&data, knobs)?);
+    analyze(&mut program);
+    Ok(program)
+}
+
+/// The LOADER half of [`analyze_native_file_with`]: walk the registry, return the fixed-up image,
+/// run no analysis.
+///
+/// The byte-exact instruments (`recompile_check`, `recompile_census`, `recompile_search`) need the
+/// image and nothing else — the auto-analysis costs about a minute per run, which would put a
+/// 60-second floor under a tool meant to be run constantly — so they called `loader::load_le`
+/// directly and panicked on any other container. The registry was reachable only through the
+/// analysing entry point; this is the same dispatch without it, so a third container still touches
+/// one list. Deliberately PURE dispatch: the compiler-version refinement stays in
+/// [`analyze_native_file_with`], because the callers being fixed do not read that field today and
+/// adding it here would make their behaviour differ from the `load_le` they replace.
+pub fn load_native_with(data: &[u8], knobs: &Knobs) -> Result<Program, loader::LoadError> {
     for (_name, claims, load) in NATIVE_LOADERS {
-        if claims(&data) {
-            let mut program = loader::with_compiler_version(&data, load(&data, knobs)?);
-            analyze(&mut program);
-            return Ok(program);
+        if claims(data) {
+            return load(data, knobs);
         }
     }
-    Err(AnalysisError::Load(loader::LoadError::Unsupported(
+    Err(loader::LoadError::Unsupported(
         "no native (beyond-Ghidra) loader claims this file; the default dispatch handles it".into(),
-    )))
+    ))
+}
+
+/// [`load_native_with`] under default [`Knobs`].
+pub fn load_native(data: &[u8]) -> Result<Program, loader::LoadError> {
+    load_native_with(data, &Knobs::default())
 }
 
 /// Which native loader claims `data`, without loading it — for a CLI that wants to warn that the
