@@ -7,6 +7,7 @@
 //! context is built.
 
 pub mod emit;
+pub mod equiv;
 pub mod fid;
 pub mod function;
 pub mod identify;
@@ -87,6 +88,7 @@ pub static REGISTRY: &[&Op] = &[
     &round::BUILDCONFIG_OP,
     &function::DECOMPILE,
     &emit::EMIT,
+    &equiv::EQUIV,
     &round::RECOMPILE,
     &round::VERIFY,
     &identify::IDENTIFY,

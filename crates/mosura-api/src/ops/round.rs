@@ -149,7 +149,7 @@ fn divergence_text_of(t: &Table) -> Result<String> {
 
 // ── the original's bytes, instructions, flags ──
 
-fn orig_bytes(p: &Program, va: u64, len: u64) -> Vec<u8> {
+pub(crate) fn orig_bytes(p: &Program, va: u64, len: u64) -> Vec<u8> {
     let mut out = Vec::with_capacity(len as usize);
     for k in 0..len {
         match p.memory.byte_at(Address::new(p.default_space, va + k)) {
@@ -160,11 +160,11 @@ fn orig_bytes(p: &Program, va: u64, len: u64) -> Vec<u8> {
     out
 }
 
-fn insns_of(bytes: &[u8], va: u64) -> Result<Vec<NormInsn>> {
+pub(crate) fn insns_of(bytes: &[u8], va: u64) -> Result<Vec<NormInsn>> {
     normalize(EMIT_LANG, bytes, va, &NoReloc).map_err(|e| Error::Unsupported(format!("{e:?}")))
 }
 
-fn profile_flags(insns: &[NormInsn]) -> Result<(buildconfig::Evidence, Vec<String>)> {
+pub(crate) fn profile_flags(insns: &[NormInsn]) -> Result<(buildconfig::Evidence, Vec<String>)> {
     let profile = buildconfig::watcom_10_0a();
     let (sp, fp) = profile.stack_regs().ok_or_else(|| Error::Unsupported(format!("the {} profile's stack registers could not be resolved", profile.name)))?;
     let ev = buildconfig::detect(insns, sp, fp);
@@ -174,7 +174,7 @@ fn profile_flags(insns: &[NormInsn]) -> Result<(buildconfig::Evidence, Vec<Strin
 
 /// Verify one object against the original function; the jump-table correspondence search looks
 /// `window` bytes around the function (nearest match wins), as `recompile_check` did.
-fn verify_function(p: &Program, va: u64, name: &str, len: u64, object: &[u8], window: u64) -> std::result::Result<Checked, String> {
+pub(crate) fn verify_function(p: &Program, va: u64, name: &str, len: u64, object: &[u8], window: u64) -> std::result::Result<Checked, String> {
     let obytes = orig_bytes(p, va, len);
     let subject = Subject { name: name.to_string(), va, len: len as usize };
     let win_lo = va.saturating_sub(window);
@@ -206,22 +206,22 @@ fn verify_function(p: &Program, va: u64, name: &str, len: u64, object: &[u8], wi
     verify_with_image(EMIT_LANG, &obytes, &subject, object, &emitted_symbol_address, Some(&find_near)).map_err(|e| e.to_string())
 }
 
-fn window_of(o: &Options) -> Result<u64> {
+pub(crate) fn window_of(o: &Options) -> Result<u64> {
     crate::options::parse_hex(o.get(keys::VERIFY_TABLE_WINDOW)?).ok_or_else(|| Error::InvalidArg("verify.table-window is not a number".into()))
 }
 
 /// One emitted function: its emit index, name, original length and TU — from the program's
 /// emission set when it exists (the post-passed TU the round measures), else from
 /// `function.emit` (the survey's `--only` probe: the TU before the caller-side post-pass).
-struct EmittedFn {
-    idx: String,
-    name: String,
-    orig_len: u64,
-    tu: Option<String>,
-    status: String,
+pub(crate) struct EmittedFn {
+    pub(crate) idx: String,
+    pub(crate) name: String,
+    pub(crate) orig_len: u64,
+    pub(crate) tu: Option<String>,
+    pub(crate) status: String,
 }
 
-fn emitted_function(s: &mut Session, o: &Options, entry: u64) -> Result<EmittedFn> {
+pub(crate) fn emitted_function(s: &mut Session, o: &Options, entry: u64) -> Result<EmittedFn> {
     let eo = emission_options(o)?;
     let pk = program_key(s, &eo)?;
     let passes_k = ensure_passes(s, &eo, &pk)?;

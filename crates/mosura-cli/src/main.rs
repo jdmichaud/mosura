@@ -233,6 +233,20 @@ enum Cmd {
         #[arg(long)]
         verbose: bool,
     },
+    /// Differential-execution equivalence: is the recovered C faithful, regardless of the bytes?
+    Equiv {
+        func: Option<String>,
+        #[arg(long)]
+        all: bool,
+        #[arg(long, value_name = "NAME")]
+        toolchain: String,
+        /// The install location for this run only (else the machine config)
+        #[arg(long, value_name = "DIR")]
+        install: Option<String>,
+        /// How many random machine states to compare (default 128)
+        #[arg(long)]
+        seeds: Option<u64>,
+    },
     /// Verify a compiled object file against the original function
     Verify { func: String, object: PathBuf },
     /// Corpus rounds: run, compare, list, show, export, import
@@ -708,6 +722,29 @@ fn run(cli: Cli) -> Res<()> {
             // one named function that is not EXACT fails the command: usable as a gate
             if func.is_some() && not_exact > 0 {
                 return Err(Fail { code: 1, message: "not EXACT".into() });
+            }
+            Ok(())
+        }
+        Cmd::Equiv { func, all, toolchain, install, seeds } => {
+            app.open_toolchain(&toolchain, None, install.as_deref())?;
+            let entries = targets(&mut app, func.clone(), all)?;
+            let seeds_s = seeds.map(|n| n.to_string());
+            let mut differed = 0usize;
+            for e in &entries {
+                let entry = format!("{e:#x}");
+                let mut extra: Vec<(&str, &str)> = vec![("entry", &entry), ("toolchain", &toolchain)];
+                if let Some(n) = &seeds_s {
+                    extra.push(("equiv.seeds", n));
+                }
+                let t = app.call("function.equiv", &extra)?;
+                app.show(&t)?;
+                if t.str(0, 3)? == "DIFFERS" {
+                    differed += 1;
+                }
+            }
+            // one named function that DIFFERS fails the command (SAME is only evidence, so it does not)
+            if func.is_some() && differed > 0 {
+                return Err(Fail { code: 1, message: "DIFFERS".into() });
             }
             Ok(())
         }

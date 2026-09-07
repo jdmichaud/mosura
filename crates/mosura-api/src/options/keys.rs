@@ -25,6 +25,7 @@ pub const TOOLCHAIN_SPEC: &str = "toolchain.spec";
 pub const TOOLCHAIN_INSTALL: &str = "toolchain.install";
 pub const COMPILE_CACHE: &str = "compile.cache";
 pub const VERIFY_TABLE_WINDOW: &str = "verify.table-window";
+pub const EQUIV_SEEDS: &str = "equiv.seeds";
 pub const ROUND_SCOPE: &str = "round.scope";
 pub const ROUND_SCOPE_FILE: &str = "round.scope-file";
 pub const ROUND_BASELINE: &str = "round.baseline";
@@ -80,6 +81,7 @@ pub fn hand_written() -> Vec<OptionSpec> {
         spec!(TOOLCHAIN_INSTALL, OptType::Str, "", Affects::Environment, "where the toolchain is installed on this machine (the WATCOM directory, or a native compiler command)"),
         spec!(COMPILE_CACHE, OptType::Str, "", Affects::Environment, "the compile cache directory (default: <session>/compile); slots are keyed on toolchain id, flags and source"),
         spec!(VERIFY_TABLE_WINDOW, OptType::Hex, "0x20000", Affects::Result, "how far around a function the jump-table correspondence search looks (bytes)"),
+        spec!(EQUIV_SEEDS, OptType::U64, "128", Affects::Result, "how many random machine states the differential run compares (function.equiv); more seeds = more coverage, and the verdict can strengthen from DIFFERS to SAME or the reverse"),
         spec!(ROUND_SCOPE, OptType::Enum(ROUND_SCOPES), "user", Affects::Result, "which functions a round measures: user (not library/asm), all, or the list in round.scope-file"),
         spec!(ROUND_SCOPE_FILE, OptType::Str, "", Affects::Input, "a TSV whose first two columns are idx and va: the functions of round.scope=list (a smoke set)"),
         spec!(ROUND_BASELINE, OptType::Str, "", Affects::Input, "the previous round the verdict gates compare against (no EXACT lost, no new failure)"),
