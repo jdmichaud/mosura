@@ -1623,7 +1623,7 @@ fn main() {
     eprintln!("arms (recovered emit): {rec_arm}{off_stamp}");
     writeln!(
         mf,
-        "idx\tva\tname\tstatus\torig_len\tcov_lo\tcov_hi\tsmells\torig_hex\tir_calls\tblocks_cfg\tblocks_reached\tkind\tcontract"
+        "idx\tva\tname\tstatus\torig_len\tcov_lo\tcov_hi\tsmells\torig_hex\tir_calls\tblocks_cfg\tblocks_reached\tkind\tcontract\tencodings"
     )
     .unwrap();
     let mut contract_bad = 0usize;
@@ -3551,10 +3551,17 @@ fn main() {
                 .unwrap_or_default();
         writeln!(
             mf,
-            "{idx:05}\t{va:08x}\t{name}\tOK\t{orig_len}\t{cov_lo:08x}\t{cov_hi:08x}\t{}\t{orig_hex}\t{ir_calls}\t{blocks_cfg}\t{blocks_reached}\t{}\t{}",
+            "{idx:05}\t{va:08x}\t{name}\tOK\t{orig_len}\t{cov_lo:08x}\t{cov_hi:08x}\t{}\t{orig_hex}\t{ir_calls}\t{blocks_cfg}\t{blocks_reached}\t{}\t{}\t{}",
             smells.join(","),
             kind_of_insns(name, &norm_insns_for_kind),
             if violations.is_empty() { "ok".to_string() } else { format!("wide:{}", violations.join("+")) },
+            // `encodings`: forms the ORIGINAL uses that this toolchain never emits
+            // (`buildconfig::unemittable_encodings`). Reported, never folded into `kind`: it is a
+            // ceiling on what a byte-exact attempt can reach, not a claim about who wrote the code.
+            {
+                let u = mosura::recompile::buildconfig::unemittable_encodings(&norm_insns_for_kind);
+                if u.is_empty() { "ok".to_string() } else { u.join("+") }
+            },
         )
         .unwrap();
 
