@@ -161,3 +161,28 @@ fn a_function_can_read_its_own_bytes() {
     assert_eq!(m.read("register", EAX, 4), 0x0040_00a1, "the load must see the function's own bytes");
 }
 
+/// `BSR`/`BSF` scan for the highest/lowest set bit. Their SLEIGH semantics are a LOOP built out of
+/// internal labels (`<start>`, `<done>` — ia.sinc:2765), and until `PcodeBuilder`'s label
+/// resolution was ported the lifter emitted every one of those branches with NO operands: the loop
+/// fell straight through and `BSR` answered 31 (16-bit: 15) and `BSF` answered 1 for EVERY input.
+/// That is the worst shape of modelling bug — both sides of a differential run got the same wrong
+/// answer, so a verdict on any bit-scanning function was hollow rather than failing.
+///
+/// The zero-source case is NOT a convention chosen here: x86 leaves the destination undefined, and
+/// the language table decides. `ia.sinc` branches straight to `<done>` with the counter still at
+/// its initial value, so `BSR 0` is 31 and `BSF 0` is 0 — this test pins what the table says.
+#[test]
+fn bit_scan_finds_the_bit_rather_than_a_constant() {
+    for (bytes, name, cases) in [
+        // BSR ECX,EDX ; RET
+        (&[0x0fu8, 0xbd, 0xca, 0xc3][..], "BSR", &[(0x3a4u64, 9u64), (1, 0), (0x8000_0000, 31), (0xff, 7), (0, 31)][..]),
+        // BSF ECX,EDX ; RET
+        (&[0x0f, 0xbc, 0xca, 0xc3][..], "BSF", &[(0x3a4, 2), (1, 0), (0x8000_0000, 31), (0xff, 0), (0, 0)][..]),
+    ] {
+        for &(src, want) in cases {
+            let m = run(0x1234, bytes, &[("register", EDX, src, 4)]);
+            assert_eq!(m.read("register", ECX, 4), want, "{name}({src:#x})");
+        }
+    }
+}
+
