@@ -327,3 +327,131 @@ fn a_callee_without_a_flag_contract_is_unchanged() {
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// A flag returned by a call that has NO STATIC TARGET.
+//
+// `CALL dword ptr [0x45320] ; JAE` is the shape `FUN_000140f8` polls its mode-settle vector with,
+// and no `callee <va>` contract can describe it: nothing writes 0x45320, so the interpreter fills
+// it and the runtime target is a different word on every seed. The key is then the CALL SITE — and
+// because a site is an address in the ORIGINAL's text, which the candidate's compiled code does
+// not share, the original's run resolves its sites to call ORDINALS
+// (`emu::Machine::flag_return_ordinals`) and the candidate's run is driven by those.
+
+/// `CALL [0x45320] ; JB +8 ; store 1 ; RET ; store 2 ; RET` — the ORIGINAL, its call at [`BASE`].
+#[rustfmt::skip]
+fn original_indirect() -> Vec<u8> {
+    vec![
+        // 0x45320 is never written, so both runs read the same filled word there and so reach the
+        // same (seed-dependent) callee — which is the whole difficulty: it is a DIFFERENT callee
+        // on every seed, and no `callee <va>` line can name it.
+        0xff, 0x15, 0x20, 0x53, 0x04, 0x00,             // 4000 call dword ptr [0x45320]
+        0x72, 0x08,                                     // 4006 jb 0x4010
+        0xc6, 0x05, 0x00, 0x50, 0x00, 0x00, 0x01,       // 4008 mov byte [0x5000],1
+        0xc3,                                           // 400f ret
+        0xc6, 0x05, 0x00, 0x50, 0x00, 0x00, 0x02,       // 4010 mov byte [0x5000],2
+        0xc3,                                           // 4017 ret
+    ]
+}
+
+/// The candidate for it — and its call is at BASE+1, NOT at the annotated site. That is the
+/// property under test: a compiler lays the same program out differently, so nothing about the
+/// candidate's own addresses may be relied on.
+#[rustfmt::skip]
+fn candidate_indirect(cc: u8) -> Vec<u8> {
+    vec![
+        0x90,                                           // 4000 nop
+        0xff, 0x15, 0x20, 0x53, 0x04, 0x00,             // 4001 call dword ptr [0x45320]
+        0x85, 0xc0,                                     // 4007 test eax,eax
+        cc, 0x08,                                       // 4009 jcc 0x4013
+        0xc6, 0x05, 0x00, 0x50, 0x00, 0x00, 0x01,       // 400b mov byte [0x5000],1
+        0xc3,                                           // 4012 ret
+        0xc6, 0x05, 0x00, 0x50, 0x00, 0x00, 0x02,       // 4013 mov byte [0x5000],2
+        0xc3,                                           // 401a ret
+    ]
+}
+
+/// A flag contract keyed by CALL SITE reaches an indirect call, and the branch it feeds is a real
+/// test: the faithful candidate agrees on every seed, the inverted one on none, the one that
+/// ignores the answer not on all of them — and the candidate run that is NOT given the ordinals
+/// the site resolved to does not agree either.
+///
+/// That last count is the one that keeps this honest. The site key crosses between two programs
+/// through exactly one channel, and if the channel were dead the faithful candidate would still be
+/// branching on SOMETHING; `unwired` is that same candidate with the channel cut, and it must
+/// fail. Without it this test would pass just as well against a model that delivered nothing at
+/// all and let both sides read the same clobbered flag.
+#[test]
+fn a_flag_returned_by_an_indirect_call_is_reachable_by_call_site() {
+    let fr = FlagReturn { flag: (CF, 1), reg: (EAX, 4), from: FlagSource::Bit };
+    let by_site = HashMap::from([(BASE, fr)]);
+    let none = HashMap::new();
+    let orig = original_indirect();
+    let faithful = candidate_indirect(0x75); // JNE: take the arm the carry's 1 takes
+    let inverted = candidate_indirect(0x74); // JE:  the same source with `if (!f())`
+    let ignoring = {
+        let mut v = vec![0x90u8, 0xff, 0x15, 0x20, 0x53, 0x04, 0x00];
+        v.extend_from_slice(&[0xc6, 0x05, 0x00, 0x50, 0x00, 0x00, 0x01, 0xc3]);
+        v
+    };
+    let (mut arm1, mut arm2) = (0, 0);
+    let (mut agree, mut inv_agree, mut ign_agree, mut unwired_agree) = (0, 0, 0, 0);
+    for s in 0..64u64 {
+        let seed = seed_of(s);
+        let om = run_full(seed, &orig, &[], &none, &by_site, &none, no_regs(), false);
+        // The site is the FIRST call this program makes, every time it runs.
+        assert_eq!(om.flag_return_ordinals, vec![(1, fr)], "the site must resolve to the call it names");
+        let by_ordinal: HashMap<u64, FlagReturn> = om.flag_return_ordinals.iter().copied().collect();
+        match om.effects.last() {
+            Some(emu::Effect::Store(_, SLOT, 1, 1)) => arm1 += 1,
+            Some(emu::Effect::Store(_, SLOT, 1, 2)) => arm2 += 1,
+            e => panic!("the original stored nothing recognisable: {e:?}"),
+        }
+        let cand = |b: &[u8], ord: &HashMap<u64, FlagReturn>| {
+            run_full(seed, b, &[], &none, &none, ord, no_regs(), true).effects
+        };
+        agree += usize::from(om.effects == cand(&faithful, &by_ordinal));
+        inv_agree += usize::from(om.effects == cand(&inverted, &by_ordinal));
+        ign_agree += usize::from(om.effects == cand(&ignoring, &by_ordinal));
+        unwired_agree += usize::from(om.effects == cand(&faithful, &none));
+    }
+    assert!(arm1 > 0 && arm2 > 0, "the original must take BOTH arms across the seeds ({arm1}/{arm2})");
+    assert_eq!(agree, 64, "the faithful candidate must agree on every seed");
+    assert_eq!(inv_agree, 0, "a candidate that inverts the returned condition must DIFFER");
+    assert!(ign_agree < 64, "a candidate that ignores the returned condition must DIFFER somewhere");
+    assert!(unwired_agree < 64, "the ordinal channel must be load-bearing: cutting it must break agreement");
+}
+
+/// A site is resolved to the ORDINAL of the call, so a site inside a LOOP names every pass — which
+/// is the shape that matters, since `FUN_000140f8` polls its vector until it answers.
+#[test]
+fn a_site_inside_a_loop_names_every_pass() {
+    let fr = FlagReturn { flag: (CF, 1), reg: (EAX, 4), from: FlagSource::Bit };
+    let none = HashMap::new();
+    // MOV ESI,3 ; L: CALL [VECTOR] ; DEC ESI ; JNZ L ; RET — ESI is not in the clobber set, so the
+    // trip count is fixed and the ordinals are exactly 1, 2, 3.
+    #[rustfmt::skip]
+    let bytes = vec![
+        0xbe, 0x03, 0x00, 0x00, 0x00,                   // 4000 mov esi,3
+        0xff, 0x15, 0x20, 0x53, 0x04, 0x00,             // 4005 call dword ptr [0x45320]
+        0x4e,                                           // 400b dec esi
+        0x75, 0xf7,                                     // 400c jnz 0x4005
+        0xc3,                                           // 400e ret
+    ];
+    let m = run_full(seed_of(1), &bytes, &[], &none, &HashMap::from([(0x4005, fr)]), &none, no_regs(), false);
+    assert_eq!(m.flag_return_ordinals, vec![(1, fr), (2, fr), (3, fr)]);
+    // ...and a site that is not the first call in the function gets the ordinal it really has.
+    #[rustfmt::skip]
+    let two = vec![
+        0xe8, 0xfb, 0xbf, 0x00, 0x00,                   // 4000 call 0x10000
+        0xff, 0x15, 0x20, 0x53, 0x04, 0x00,             // 4005 call dword ptr [0x45320]
+        0xc3,                                           // 400b ret
+    ];
+    let m = run_full(seed_of(1), &two, &[], &none, &HashMap::from([(0x4005, fr)]), &none, no_regs(), false);
+    assert_eq!(m.flag_return_ordinals, vec![(2, fr)]);
+    // An address that no call is at names nothing, and the run is unchanged. (`equiv_check`
+    // refuses such an annotation outright — this only pins that the interpreter cannot be made to
+    // invent a delivery from one.)
+    let m = run_full(seed_of(1), &two, &[], &none, &HashMap::from([(0x4006, fr)]), &none, no_regs(), false);
+    assert!(m.flag_return_ordinals.is_empty());
+}
+
