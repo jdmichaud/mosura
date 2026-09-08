@@ -1,8 +1,13 @@
 # mosura as a product — library, C API, session store, CLI
 
-*Design draft, 2026-09-05. Branch `product-api-design`. Nothing here is implemented; the
-header next to this file (`mosura.h`) is the first draft of the C surface and will change. The
-document decides the shape; the numbered phases at the end are the order to build it in.*
+*Design of 2026-09-05 (branch `product-api-design`), **implemented**: phases 0–4 of §8 landed on
+2026-09-05/06 and this is the shape master has — the five crates, the operation/option/table spine,
+the flat session store, the C ABI, the Rust binding, the CLI, the rounds through it, and the dev
+tier. The C surface is the generated, committed [`include/mosura.h`](../../include/mosura.h) (the
+hand-written draft that lived next to this file is gone; `mosura.h` here is a pointer). Where the
+implementation deviated from the text below, the deviation is recorded per phase in
+[`plan-wp7-2026-09-05.md` §0.2c](plan-wp7-2026-09-05.md). Phase 5 (§8) remains the pointer to later
+work.*
 
 ## 0. What this document decides
 
