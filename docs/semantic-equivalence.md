@@ -13,8 +13,8 @@ with the original.
 
 ## What it does
 
-`mosura equiv <fn>|--all --toolchain <name> [--seeds N]` (the op `function.equiv`) emits and
-compiles the candidate exactly as `function.recompile` does, then runs the ORIGINAL function and the
+`mosura equiv <fn> --toolchain <name> [--seeds N]` (the op `function.equiv`) emits and compiles
+the candidate exactly as `function.recompile` does, then runs the ORIGINAL function and the
 candidate's compiled code over the same seeded machine state under mosura's p-code interpreter
 (`sleigh::emu::run_traced`) and compares the effects a CALLER could observe:
 
@@ -24,6 +24,11 @@ candidate's compiled code over the same seeded machine state under mosura's p-co
 
 Register allocation, frame layout, instruction selection, the order of independent computations and
 the function's own entry convention are all free to differ.
+
+`mosura equiv --all` is the op `program.equiv`: the program thawed once, every candidate compiled in
+ONE batch, then the differential per row, scoped with `-o round.scope=user|all|list` (and
+`round.scope-file`). Use it for a sweep — a loop over `function.equiv` pays a compiler boot and a
+program thaw per row, measured at ~50 s a row on a second subject against ~1 s cached.
 
 ## How the state is built
 

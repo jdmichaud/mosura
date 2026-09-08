@@ -354,7 +354,7 @@ fn recompile_op(s: &mut Session, o: &Options, prog: &mut dyn Progress) -> Result
 
 // ── round.run ──
 
-fn read_scope_file(path: &str) -> Result<BTreeSet<u64>> {
+pub(crate) fn read_scope_file(path: &str) -> Result<BTreeSet<u64>> {
     let text = std::fs::read_to_string(path).map_err(|e| Error::io(e, PathBuf::from(path)))?;
     let mut set = BTreeSet::new();
     for line in text.lines().filter(|l| !l.starts_with('#') && !l.trim().is_empty()) {
