@@ -491,7 +491,14 @@ fn program_equiv_op(s: &mut Session, o: &Options, prog: &mut dyn Progress) -> Re
     let (spec, ctx) = language()?;
     let window = window_of(o)?;
     let mut rows: Vec<EquivRow> = Vec::with_capacity(selected.len());
+    let total = selected.len() as u64;
     for (i, sel) in selected.iter().enumerate() {
+        // per row: a divergent row can burn its whole step budget on every seed, so the table
+        // otherwise appears all at once after minutes of silence (a second-subject sweep of 769
+        // rows saw nothing until the end)
+        if !prog.report("run", i as u64, total) {
+            return Err(Error::Cancelled);
+        }
         let (bytes, insns) = bytes_of[i].as_ref().expect("filled above");
         let row = match (&sel.tu, out_by_row.get(&i).map(|k| &outs[*k])) {
             (None, _) => {
