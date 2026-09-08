@@ -16,7 +16,7 @@ use crate::recompile::function::{self, Extent, Metrics, OwnContract};
 use crate::recompile::manifest::{self, ManifestRow, Status};
 use crate::recompile::passes::{Entries, GlobalWidths, ParamOrders, Worlds};
 use crate::recompile::pragma::{self, ContractTable, WatcomRegs};
-use crate::recompile::tu::{aggregate_ram_globals, build_tu, contract_violations, with_contract};
+use crate::recompile::tu::{aggregate_ram_globals, build_tu, contract_violations_of, with_contract};
 use crate::recompile::upgrade::{upgrade, UpgradeCaches, UpgradeCtx};
 use crate::switches::{Knobs, Switch};
 
@@ -320,7 +320,9 @@ impl EmitState {
         if metrics.thunk {
             smells.push("thunk".into());
         }
-        let violations = contract_violations(&reference_tu);
+        // Over BOTH renderings: the recovered TU is the one that is compiled and measured, so the
+        // column must describe it (see `contract_violations_of`).
+        let violations = contract_violations_of(&reference_tu, recovered_tu.as_deref());
         let orig_hex: String = extent.region.iter().map(|b| format!("{b:02x}")).collect();
         // the not-C classification reads the original's decoded instructions (see kind_of_insns)
         let norm_insns_for_kind =

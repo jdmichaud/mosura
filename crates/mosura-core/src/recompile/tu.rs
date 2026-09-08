@@ -303,6 +303,26 @@ pub fn contract_violations(tu: &str) -> Vec<String> {
     out.into_iter().collect()
 }
 
+/// The `contract` column's violations for one function: the union over the REFERENCE rendering
+/// (`arms[0]`, the decompiler's own C) and the RECOVERED rendering that is actually compiled and
+/// measured.
+///
+/// The column used to be computed from the reference alone. An emit arm can put a wide form into
+/// the recovered TU that the reference never had — `(int4)(CONCAT44(param_2,param_1) / uVar3)`
+/// on a second subject, whose reference spelled the same value narrowly — and the manifest then
+/// said `ok` about a unit that hit the prelude's 64-bit tripwire the moment it was compiled. A
+/// census keyed on the column undercounted the wide population by exactly such units. On this
+/// corpus the two renderings agree on every wide unit (the union changes no row; measured before
+/// landing), which is why it never showed here. The union rather than the recovered TU alone,
+/// so nothing a reference-only violation flagged today unflags.
+pub fn contract_violations_of(reference_tu: &str, recovered_tu: Option<&str>) -> Vec<String> {
+    let mut out: std::collections::BTreeSet<String> = contract_violations(reference_tu).into_iter().collect();
+    if let Some(r) = recovered_tu {
+        out.extend(contract_violations(r));
+    }
+    out.into_iter().collect()
+}
+
 pub fn is_ident(c: u8) -> bool {
     c.is_ascii_alphanumeric() || c == b'_'
 }
@@ -918,6 +938,19 @@ mod tests {
         assert!(p.contains("#define SCARRY2(a,b)") && p.contains(">>15)&1"), "SCARRY2 tests bit 15");
         assert!(p.contains("#define SBORROW1(a,b)"));
         assert!(p.contains("#define SBORROW2(a,b)"));
+    }
+
+    /// The `contract` column describes the TU that is COMPILED. A wide form that only the recovered
+    /// rendering carries must flag the unit; a reference-only one must keep flagging it.
+    #[test]
+    fn the_contract_column_covers_the_recovered_rendering_too() {
+        let reference = "int4 f(int4 a, int4 b, uint4 c) { return a / c; }";
+        let recovered = "int4 f(int4 a, int4 b, uint4 c) { return (int4)(CONCAT44(b, a) / c); }";
+        assert!(contract_violations(reference).is_empty(), "the reference is within contract");
+        assert_eq!(contract_violations_of(reference, Some(recovered)), vec!["CONCAT44"], "the recovered form is what compiles");
+        assert_eq!(contract_violations_of(reference, None), Vec::<String>::new(), "no recovered rendering, nothing added");
+        // a reference-only violation is not unflagged by the union, and the set stays sorted+deduped
+        assert_eq!(contract_violations_of("uint8 g(void);", Some("int4 g(void) { return CONCAT44(1, 2); }")), vec!["CONCAT44", "uint8"]);
     }
 
     /// The prelude's closure assertion runs (a missing in-contract helper would panic here), and
