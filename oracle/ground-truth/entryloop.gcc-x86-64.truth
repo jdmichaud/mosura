@@ -1,0 +1,7 @@
+# mosura-ground-truth v1 program=entryloop compiler=gcc arch=x86-64 lang=x86:LE:64:default
+# derived-from=entryloop.gcc-x86-64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 0000000000401020
+func 0000000000401000 0000000000000004 sink code
+func 0000000000401010 0000000000000009 spin code
+func 0000000000401020 0000000000000031 _start code

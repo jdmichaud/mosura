@@ -163,7 +163,7 @@ ELF_PROGS_ALL="arith dispatch tables strdata fnptr recursion tailcall sparseswit
 # (x86-64/aarch64/riscv64), so a decompiler divergence there is a genuine port bug, not an
 # arch-support gap: varargs, bitfields+union, 64-bit arithmetic, irreducible CFG, nested loops,
 # switch fall-through, pointer/array arithmetic.
-ELF_PROGS_A8="varargs bitfields arith64 irreducible nestedloop fallthrough ptrarith"
+ELF_PROGS_A8="varargs bitfields arith64 irreducible nestedloop fallthrough ptrarith entryloop"
 
 # x86-64 (host gcc)
 for prog in $ELF_PROGS_ALL $ELF_PROGS_A8; do
