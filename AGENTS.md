@@ -1,14 +1,17 @@
 # Working on mosura
 
-mosura is a CLI **port of Ghidra's logic** (not its UI) in Rust: a SLEIGH disassembler
-+ p-code lifter, a p-code interpreter, and a decompiler. Ghidra is the golden oracle —
-mosura's output is validated against it.
+mosura is a **port of Ghidra's logic** (not its UI) in Rust — a SLEIGH disassembler and p-code
+lifter, a p-code interpreter, and the decompiler — shipped as a library with a C API and a
+command line, and extended with a recompilation pipeline that emits compilable C and judges it
+against the original bytes. Ghidra is the golden oracle for the port; the binary is the target.
 
-**Master plan: [`docs/port-plan.md`](docs/port-plan.md). Live status: [`TODO.md`](TODO.md).**
-
-> **Before quoting a number, retiring a claim, or trusting an instrument, read
-> [`docs/measurement-rules.md`](docs/measurement-rules.md).** Not needed to start work; needed
-> the moment you are about to assert something measured.
+**Read to start work:** this file. **Before quoting a number, retiring a claim, or trusting an
+instrument:** [`docs/measurement-rules.md`](docs/measurement-rules.md). **Setup, layout, tests,
+the developer tier:** [`docs/development.md`](docs/development.md). **The plans:**
+[`docs/port-plan.md`](docs/port-plan.md) (the faithful decompiler port),
+[`docs/roadmap-100.md`](docs/roadmap-100.md) (the road to a complete port),
+[`docs/product/architecture.md`](docs/product/architecture.md) (the library, C API, store and CLI).
+The owner's backlog is [`TODO.md`](TODO.md).
 
 ## Operating directives
 
@@ -17,19 +20,20 @@ These come from the project owner and outrank convenience.
 1. **Exactness with the BINARY is the goal, not agreement with Ghidra's output.** Ghidra
    faithfulness is the *method*; the original binary's bytes are the target. The corpus is a
    diagnostic, never the objective.
-3. **Don't stop. If you want to stop, don't.** Work continues until the task is done or the
+2. **Don't stop. If you want to stop, don't.** Work continues until the task is done or the
    owner redirects.
-4. **Don't block on questions — take the first option you would have proposed and keep going.**
+3. **Don't block on questions — take the first option you would have proposed and keep going.**
    Report status, not choices.
-6. **An issue found on a survey binary becomes an MVE first — then you solve the MVE.**
+4. **An issue found on a survey binary becomes an MVE first — then you solve the MVE.**
    When decompiling a real binary surfaces a defect, do not fix it against that binary. Write a
    minimal self-compiled program in `oracle/ground-truth/src/` that surfaces the same defect,
-   gate it in `tests/ground_truth_parity.rs`, and fix *that*. The survey binary is temporary and
-   cannot be shipped; a gate built on it dies with it, and until then it is unreproducible by
-   anyone who lacks the binary. The MVE must be shown to FAIL before the fix and pass after —
-   a gate that never caught the bug is decoration. Record the properties the program depends on
-   in its own source, so it is not later "simplified" into something that no longer reproduces.
-7. **Compiler quirks go through the cspec, never an `if (target)` in the decompiler core.**
+   gate it in `crates/mosura-core/tests/ground_truth_parity.rs`, and fix *that*. The survey
+   binary is temporary and cannot be shipped; a gate built on it dies with it, and until then it
+   is unreproducible by anyone who lacks the binary. The MVE must be shown to FAIL before the
+   fix and pass after — a gate that never caught the bug is decoration. Record the properties
+   the program depends on in its own source, so it is not later "simplified" into something
+   that no longer reproduces.
+5. **Compiler quirks go through the cspec, never an `if (target)` in the decompiler core.**
    Reduce a suspected quirk to a minimal example, compile it with several compilers, and if the
    behaviour is compiler-specific, scope it behind the existing compiler/version detection so one
    compiler's specifics are not generalised. If the cspec route becomes limiting: shoehorn it in
@@ -57,16 +61,21 @@ are not deviations; they *are* the port.)
 
 **Instrument first, hypothesise second.** When the question is "which Ghidra mechanism produces
 X?", do not chain source-reading guesses — run the rule-trace diff (`scripts/trace-diff.sh
-<fixture>`, `oracle/capture_trace --trace`) or an oracle IR dump so the firing evidence *names*
-the mechanism, then read the source to understand what was named. One trace beats five
+<fixture>`, `oracle/capture_trace`) or an oracle IR dump so the firing evidence *names* the
+mechanism, then read the source to understand what was named. One trace beats five
 plausible-but-wrong premise checks.
 
-- Ghidra source (pinned to tag `Ghidra_12.0.3_build`, commit `09f14c92`): `../ghidra` —
-  fetch + pin + compile the `.sla` with `scripts/setup-ghidra.sh` (`ghidra_src` in `dev-config.toml` overrides;
-  see `dev-config.example.toml`).
-- Decompiler core to port: `../ghidra/Ghidra/Features/Decompiler/src/decompile/cpp`
-  (e.g. `coreaction.cc`, `printc.cc`, `printlanguage.cc`, `funcdata*.cc`, `type.cc`,
-  `jumptable.cc`).
+**Where the printer and the emitter part ways.** The C printer (`decompile/printc.rs`) is the
+faithful port and stays one; when its output is not *compilable* C, the fix lives in the emit arms
+and the translation-unit synthesis (`decompile/emit/`, `recompile/tu.rs`), each arm witnessed by
+the bytes and switchable, never in a printer "improvement". `docs/exact-arms.md` is the record.
+
+The Ghidra source is pinned to tag `Ghidra_12.0.3_build` (commit `09f14c92`): `scripts/setup-ghidra.sh`
+fetches it beside this repository (or at `ghidra_src` in `dev-config.toml`), verifies the commit and
+compiles the `.sla`. The decompiler to port is `Ghidra/Features/Decompiler/src/decompile/cpp` in that
+tree (`coreaction.cc`, `printc.cc`, `printlanguage.cc`, `funcdata*.cc`, `type.cc`, `jumptable.cc`, …);
+`crates/mosura-core/src/decompile/` mirrors its file and class names. Nothing at run time needs that
+checkout: the processor tables are vendored in `third_party/ghidra/` and embedded.
 
 ## The decision rule (read this before you revert anything)
 
@@ -100,72 +109,61 @@ If you catch yourself about to revert a parity-clean change because the corpus a
 **stop** and re-read this section. And if you've reverted the same area twice, **stop guessing
 and read the IR.**
 
-## Layout
-
-```
-<workspace>/
-  ghidra/   pinned Ghidra source — the reference oracle (do not bump casually)
-  mosura/   this project
-```
-
-- `crates/mosura-core/src/sleigh/` — SLEIGH engine (`sla` loader, `engine`, `emu`) + p-code IR.
-  **Done, keep, never regress.**
-- `crates/mosura-core/src/decompile/` — **the faithful port (new work)**: Ghidra's data model
-  + `Action`/`Rule` pipeline, mirroring `decompile/cpp` file/class names. See `port-plan.md`.
-- `crates/mosura-core/src/ccompare.rs` — structural C-similarity comparator (string in, score
-  out), used by `decompile_corpus`.
-- `oracle/capture.cc` — offline oracle tool, built by `scripts/setup-oracle.sh`.
-- `goldens/` — committed disasm / p-code goldens.
-
 ## The oracle
 
 There are **two** Ghidra oracles and they disagree by construction. `oracle/capture --c` is the
-C++ decompiler alone — it answers *how the decompiler renders something*. `<subject-survey>/
-ghidra-all.txt` is analyzeHeadless, Java layer included — it answers *what the whole tool
-produces on a real binary*. **mosura ports the C++ decompiler**, so rendering questions go to
-`capture --c`. Full rule and worked examples:
+C++ decompiler alone — it answers *how the decompiler renders something*. analyzeHeadless output
+(the Java layer included) answers *what the whole tool produces on a real binary*. **mosura ports
+the C++ decompiler**, so rendering questions go to `capture --c`. Full rule and worked examples:
 [`docs/measurement-rules.md` §2](docs/measurement-rules.md).
 
-`scripts/setup-oracle.sh` (needs the pinned `ghidra/` + a C++ toolchain) builds `oracle/capture`:
+`scripts/setup-oracle.sh` (needs the pinned source and a C++ toolchain) builds the tools under
+`oracle/`, all linked against Ghidra's `libdecomp_dbg.a`:
 
-- `oracle/capture <ghidra-src> <fixture.xml>` — dumps disasm + raw p-code.
-- `oracle/capture <ghidra-src> <fixture.xml> --c` — dumps **Ghidra's own decompiled C**.
-- **P0 work** (`port-plan.md`): extend `capture` to drive `decomp_dbg` to each action
-  breakpoint and dump Ghidra's **per-phase IR** — the per-stage oracle for `tests/ir_parity.rs`.
+- `oracle/capture <sleighdir> <fixture.xml>` — disassembly + raw p-code (the golden generator);
+  `--c` — **Ghidra's own decompiled C**; `--ir [action]` — Ghidra's IR at the start of a named
+  action, the per-phase oracle behind `ir_parity`.
+- `oracle/capture_trace` — the rule-application trace (`OPACTION_DEBUG`), diffed against mosura's
+  `--debug opaction` by `scripts/trace-diff.sh`; `oracle/capture_typeprop` — the type-propagation
+  twin; `oracle/capture_merge` — HighVariable membership and covers at the end of the merge cluster.
 
-Rebuild after editing `capture.cc`:
+**Rebuild only through `scripts/setup-oracle.sh`.** The tools must be compiled with the same
+preprocessor switches as the library (`-DCPUI_DEBUG -D__TERMINAL__`); without them the struct
+layouts differ and the oracle *silently* decompiles differently from canonical Ghidra — no crash,
+wrong answers. The header of `oracle/capture.cc` records the incident.
 
-```sh
-CPP=../ghidra/Ghidra/Features/Decompiler/src/decompile/cpp
-g++ -std=c++11 -I"$CPP" -O2 -o oracle/capture oracle/capture.cc \
-  -Wl,--whole-archive "$CPP/libdecomp_dbg.a" -Wl,--no-whole-archive -lbfd -lz
-```
-
-For the subject specifically, the per-function recipe's limits — including that it can change block
-structure — are in `scripts/ghidra-decompile-subject.sh`'s header and in
+The subject's per-function Ghidra recipe and its limits — it can change block structure — are in
+the header of `scripts/ghidra-decompile-subject.sh` and in
 [`docs/measurement-rules.md` §1](docs/measurement-rules.md).
 
 ## Verification (the quality bar)
 
 Every change is verified; never ship semantically-wrong output.
 
-- `cargo test --workspace` — must stay green.
-- **`tests/disasm_golden.rs` — 254/254 disasm/p-code parity must NEVER regress.**
-- **`tests/ir_parity.rs` (the gate for the faithful port)** — diffs mosura's IR against
-  Ghidra's IR at each pipeline stage (post-heritage SSA tree, post-types, post-merge,
-  structured blocks, C), **structurally exact**. A phase isn't done until its IR-parity
-  is green on the datatests. This is the real port metric; faithfulness *is* the score.
-- `tests/decompile_corpus.rs` — structural-similarity score against Ghidra's C over the x86-64
-  datatests. **A coarse progress gauge, never a hard gate** — it must not block a faithful
-  change.
-
-Wrong-code gates (the subject): `reached == cfg` per function, no undefined `goto` labels, no
-fall-off-end, no empty `switch(){}` / `while(true){}`. A structuring change shows up in these
-before it shows in the recompile.
+- `cargo test --workspace` must stay green (run it through a log file and read the exit code;
+  a pipe reports the tail's). The three repository guards are part of it: no environment
+  variable read anywhere, no tracked file naming a subject binary, no tracked file naming a
+  developer's home directory.
+- **`disasm_golden` — every golden instruction's disassembly and raw p-code must NEVER regress.**
+- **`ir_parity` — the gate for the faithful port:** mosura's IR against Ghidra's at each pipeline
+  stage (`capture --ir <action>`), structurally exact. A phase is not done until its parity is
+  green on the datatests. This is the real port metric; faithfulness *is* the score.
+- `decompile_corpus` — the structural-similarity score against Ghidra's C over the fixture corpus.
+  **A coarse progress gauge, never a hard gate** — it must not block a faithful change.
+- `ground_truth_parity` — the analysis against self-compiled programs whose oracle is the *known*
+  source and build, not Ghidra; the home of every MVE (directive 4).
+- **The recompile pipeline is measured by corpus rounds**, not by tests: a defect fix ships a
+  pinning test; a behaviour-neutral change passes the identity gate (the emitted tree is
+  byte-identical to the baseline's); an intended change to the emitted text goes through a round
+  and lands on the verdict comparison — no EXACT lost, no new failure verdict, the eight gates OK.
+  How to run one and what "stable" means: [`docs/corpus-round-runbook.md`](docs/corpus-round-runbook.md).
+  How to quote what it says: [`docs/measurement-rules.md`](docs/measurement-rules.md). The
+  opt-in gcc ground truth of the emit arms (`ground_truth_recompile_arms -- --ignored`) runs at plan
+  closure and whenever a commit changes an arm, the emit plan or the oracle.
 
 Loop for porting a phase: read the Ghidra source for that component → translate it
-faithfully into `src/decompile/` (mirroring Ghidra's file/class names) → diff mosura's
-IR vs Ghidra's IR at that stage until exact → retire the corresponding prototype code →
+faithfully into `crates/mosura-core/src/decompile/` (mirroring Ghidra's file/class names) → diff
+mosura's IR vs Ghidra's IR at that stage until exact → retire the corresponding prototype code →
 record gotchas in memory.
 
 ## Third-party material
@@ -175,9 +173,10 @@ run-times; `docs/third-party-test-binaries.md` inventories every one with its pr
 gate that needs it. **Do not add to it casually.** Compiler distributions, SDKs, manuals and subject
 binaries are never committed — they are user-provided, located through `dev-config.toml`
 (`dev-config.example.toml` lists every key), and their gates skip when absent (`docs/dependencies.md`).
-Nothing in the library, the tests or the scripts reads an environment variable for a location or a
-knob: knobs are values (`switches::Knobs`, `--arms-off`), diagnostics are `--debug <spec>`, spec and
-FID data are embedded with a `--data-dir` override (`crate::resources`); `tests/no_env.rs` enforces it.
+Oracle fixtures are self-compiled minimal examples, never a subject's bytes. Nothing in the library,
+the CLI, the tests or the scripts reads an environment variable for a location or a knob: knobs are
+values (`switches::Knobs`, `--arms-off`), diagnostics are `--debug <spec>`, spec and FID data are
+embedded with a `--data-dir` override (`crate::resources`); the guard tests enforce all of it.
 
 ## Conventions
 
@@ -185,21 +184,29 @@ FID data are embedded with a `--data-dir` override (`crate::resources`); `tests/
 - Keep the disasm engine data-driven — no per-instruction or per-arch special-casing.
 - Match Ghidra where it is the port target (formatting, structure, types); prefer
   faithfulness over "nicer" output.
+- One branch per work package, small self-contained commits that each build; the gate numbers go
+  in the message of the commit they were measured on; the suite runs once per package.
+- A number is quoted with its denominator and its instrument, and never re-derived from someone
+  else's report — read their work instead.
 
 ## Pointers
 
-- **Master plan: `docs/port-plan.md`.** Live status / phase checklist: `TODO.md`.
-- **Measurement, instruments, and how claims go bad: `docs/measurement-rules.md`.**
-- Per-Ghidra-class port status: `docs/coverage.md`.
-- Debug-information track (DWARF/PDB/CodeView/Go/PEF; phases `D0`–`D12`, not started):
-  `docs/debug-info-port-plan.md`.
-- **"What is this file?"** — `cargo run -q -p mosura-cli -- identify <binary>` prints the
-  container, which loader claims it, the compiler evidence in the bytes, the resolved
-  language/cspec and the FID databases that apply (`-o load.loader=native|le`,
-  `-o load.cspec-x86-32=<id>` to test a hypothesis). The same binary is the product's command
-  line: `mosura -S <dir> add <bin>`, `analyze`, `functions`, `decompile <fn>`, `emit <fn>`,
-  `lift <hex>`, `disasm --bytes <hex>`, `read <addr> <len>`, and `mosura call <op>` for every
-  operation (`mosura ops`). Reach for it before writing a throwaway.
+- **Measurement, instruments, and how claims go bad:** `docs/measurement-rules.md`.
+- **Setup, layout, tests, the developer tier, the guards:** `docs/development.md`.
+- **Plans:** `docs/port-plan.md` (the decompiler port), `docs/roadmap-100.md` (to a complete port),
+  `docs/product/architecture.md` and `docs/product/plan-wp7-2026-09-05.md` (the product surface).
+- **Recompilation:** `docs/corpus-round-runbook.md` (rounds), `docs/exact-arms.md` (the emit arms),
+  `docs/semantic-equivalence.md` (the differential-execution check).
+- **Open work:** `TODO.md` (the owner's backlog), `docs/tasklist-2026-09-08.md` (the queued items
+  from the second subject).
+- Per-Ghidra-class port status: `docs/coverage.md`. Debug-information track (DWARF/PDB/CodeView/
+  Go/PEF; not started): `docs/debug-info-port-plan.md`.
+- **"What is this file?"** — `mosura identify <binary>` prints the container, which loader
+  claims it, the compiler evidence in the bytes, the resolved language/cspec and the FID databases
+  that apply (`-o load.loader=native|le`, `-o load.cspec-x86-32=<id>` to test a hypothesis). The
+  same binary is the product's command line: `mosura -S <dir> add <bin>`, `analyze`, `functions`,
+  `decompile <fn>`, `emit <fn>`, `lift <hex>`, `disasm --bytes <hex>`, `read <addr> <len>`, and
+  `mosura call <op>` for every operation (`mosura ops`). Reach for it before writing a throwaway.
 - Detailed per-feature notes and gotchas: `.claude/memory/mosura-project.md`.
 - Superseded (approximation-era, kept for history): `docs/decompiler-plan.md`,
-  `floats-plan.md`, `switches-plan.md`, `type-system-plan.md`.
+  `docs/floats-plan.md`, `docs/switches-plan.md`, `docs/type-system-plan.md`.
