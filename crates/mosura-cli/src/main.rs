@@ -727,23 +727,29 @@ fn run(cli: Cli) -> Res<()> {
         }
         Cmd::Equiv { func, all, toolchain, install, seeds } => {
             app.open_toolchain(&toolchain, None, install.as_deref())?;
-            let entries = targets(&mut app, func.clone(), all)?;
             let seeds_s = seeds.map(|n| n.to_string());
-            let mut differed = 0usize;
-            for e in &entries {
-                let entry = format!("{e:#x}");
-                let mut extra: Vec<(&str, &str)> = vec![("entry", &entry), ("toolchain", &toolchain)];
-                if let Some(n) = &seeds_s {
-                    extra.push(("equiv.seeds", n));
-                }
-                let t = app.call("function.equiv", &extra)?;
-                app.show(&t)?;
-                if t.str(0, 3)? == "DIFFERS" {
-                    differed += 1;
-                }
+            let mut extra: Vec<(&str, &str)> = vec![("toolchain", &toolchain)];
+            if let Some(n) = &seeds_s {
+                extra.push(("equiv.seeds", n));
             }
+            if all {
+                if func.is_some() {
+                    return Err(usage("give a function or --all, not both"));
+                }
+                // The corpus form is ONE operation: the program thawed once, every candidate
+                // compiled in one batch, then the differential per row. A loop over
+                // function.equiv pays a compiler boot and a program thaw per row (~50 s measured
+                // on a second subject against ~1 s cached). Scope with -o round.scope=... .
+                let t = app.call("program.equiv", &extra)?;
+                app.show(&t)?;
+                return Ok(());
+            }
+            let entry = format!("{:#x}", targets(&mut app, func, false)?[0]);
+            extra.push(("entry", &entry));
+            let t = app.call("function.equiv", &extra)?;
+            app.show(&t)?;
             // one named function that DIFFERS fails the command (SAME is only evidence, so it does not)
-            if func.is_some() && differed > 0 {
+            if t.str(0, 3)? == "DIFFERS" {
                 return Err(Fail { code: 1, message: "DIFFERS".into() });
             }
             Ok(())

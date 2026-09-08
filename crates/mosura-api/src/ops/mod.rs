@@ -95,6 +95,7 @@ pub static REGISTRY: &[&Op] = &[
     &program::ANALYZE,
     &program::DISASSEMBLE,
     &emit::PROGRAM_EMIT,
+    &equiv::PROGRAM_EQUIV,
     &program::LOAD,
     &emit::PASSES,
     &program::READ,
