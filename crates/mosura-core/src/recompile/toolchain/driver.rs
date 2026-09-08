@@ -233,9 +233,15 @@ impl CompilerDriver {
                 let Some((prog, args)) = argv.split_first() else {
                     return vec![String::new(); units.len()];
                 };
+                // `status()` INHERITS stdin (unlike `output()`, which the Native arm below uses),
+                // so the dosemu script drained whatever pipe our caller was reading from: a
+                // `... | while read va; do mosura equiv "$va"; done` loop fed its whole remaining
+                // list to the FIRST compiler boot and every later iteration saw EOF -- six workers,
+                // six rows, no error anywhere. The child has no business with our stdin.
                 let _ = std::process::Command::new(prog)
                     .args(args)
                     .current_dir(&self.work_dir)
+                    .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::null())
                     .stderr(std::process::Stdio::null())
                     .status();
