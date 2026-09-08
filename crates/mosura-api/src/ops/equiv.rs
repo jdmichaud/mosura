@@ -91,6 +91,102 @@ const GPRS: [(&str, u64); 8] =
 const STACK_TOP: u64 = 0x0f00_0000;
 const STACK_WINDOW: (u64, u64) = (STACK_TOP - 0x8000, STACK_TOP + 0x400);
 
+fn reg_by_name(name: &str) -> Option<u64> {
+    let n = name.trim().to_ascii_lowercase();
+    GPRS.iter().find(|(r, _)| *r == n).map(|(_, o)| *o)
+}
+
+/// The COMPILER-VISIBLE contracts the candidate TU declares: what its own `#pragma aux` lines say
+/// about each callee and about the function itself. Nothing here is a magic comment — these are the
+/// pragmas the emitter writes and Watcom reads, so honouring them compares the two runs on the
+/// same question the compiler was asked.
+///
+/// Without them every call was compared on the convention's default four registers, and a
+/// NON-argument register holding different scratch across two correct implementations read as a
+/// `call-arguments` difference. Measured on a second subject: the branch's instrument, which
+/// parsed these, scored 175/769 SAME at 32 seeds; this op without them 166/769 at 8 — stricter by
+/// at least nine units in a direction fewer seeds should have made more lenient.
+#[derive(Default)]
+struct Contracts {
+    /// callee VA -> the registers its `parm [..]` clause names, in argument order.
+    call_args: HashMap<u64, Vec<(u64, u32)>>,
+    /// callees whose arguments go on the STACK (`parm caller []`, `parm []`): compared by target
+    /// only, since their arguments live in a frame two implementations lay out differently.
+    stack_targets: HashSet<u64>,
+    /// callee VA -> its declared `modify [..]` set (plus `value [..]`, modified by definition).
+    modifies: HashMap<u64, Vec<(u64, u32)>>,
+    /// The function's OWN result register from its `value [reg]` clause; EAX when unstated.
+    result: (u64, u32),
+}
+
+/// The registers a `#pragma aux` clause names, e.g. `modify [eax ecx]` -> `[EAX, ECX]`. The clause
+/// ENDS at the next keyword — `parm [eax] modify [ecx]` must not read `ecx` as an argument — and
+/// `exact`/`nomemory`/`caller` are modifiers, not registers.
+fn pragma_regs(tail: &str, keyword: &str) -> Option<Vec<(u64, u32)>> {
+    let at = tail.find(keyword)?;
+    let clause = &tail[at + keyword.len()..];
+    let end = ["parm ", "value ", "modify ", "aborts", "export", "far", "near"]
+        .iter()
+        .filter_map(|k| clause.find(k))
+        .min()
+        .unwrap_or(clause.len());
+    let mut regs = Vec::new();
+    for group in clause[..end].split('[').skip(1) {
+        let Some(inner) = group.split(']').next() else { break };
+        if inner.contains("caller") {
+            continue;
+        }
+        for r in inner.split_whitespace() {
+            if let Some(off) = reg_by_name(r) {
+                regs.push((off, 4u32));
+            }
+        }
+    }
+    Some(regs)
+}
+
+/// The VA a callee pragma names: `func_0x0001cc88`, `FUN_0001cc88`.
+fn pragma_va(name: &str) -> Option<u64> {
+    let hex = name.strip_prefix("func_0x").or_else(|| name.strip_prefix("FUN_"))?;
+    u64::from_str_radix(hex.trim_end_matches('_'), 16).ok()
+}
+
+/// Read the candidate TU's `#pragma aux` lines. `own` is the function's own name, whose `value`
+/// clause is the result register; every other pragma describes a callee.
+fn contracts_of(tu: &str, own: &str) -> Contracts {
+    let mut c = Contracts { result: (EAX, 4), ..Contracts::default() };
+    for line in tu.lines() {
+        let l = line.trim();
+        let Some(rest) = l.strip_prefix("#pragma aux ") else { continue };
+        let Some((name, tail)) = rest.split_once(' ') else { continue };
+        let name = name.trim_end_matches(';');
+        if name == own {
+            if let Some(v) = pragma_regs(tail, "value ").and_then(|v| v.first().copied()) {
+                c.result = v;
+            }
+            continue;
+        }
+        let Some(va) = pragma_va(name) else { continue };
+        if tail.contains("parm ") {
+            let regs = pragma_regs(tail, "parm ").unwrap_or_default();
+            if regs.is_empty() {
+                c.stack_targets.insert(va);
+            } else {
+                c.call_args.insert(va, regs);
+            }
+        }
+        if let Some(mut m) = pragma_regs(tail, "modify ") {
+            for v in pragma_regs(tail, "value ").unwrap_or_default() {
+                if !m.contains(&v) {
+                    m.push(v);
+                }
+            }
+            c.modifies.insert(va, m);
+        }
+    }
+    c
+}
+
 /// One row of the `equiv` table.
 struct EquivRow {
     idx: String,
@@ -159,7 +255,7 @@ fn language() -> Result<(&'static Spec, &'static [u32])> {
 /// `seeds` machine states. Everything that is per-function and does not touch the session lives
 /// here, so `function.equiv` and `program.equiv` cannot drift apart.
 #[allow(clippy::too_many_arguments)]
-fn differential(spec: &Spec, ctx: &[u32], idx: &str, entry: u64, name: &str, bytes: &[u8], cand_bytes: &[u8], insns: &[NormInsn], seeds: u64) -> EquivRow {
+fn differential(spec: &Spec, ctx: &[u32], idx: &str, entry: u64, name: &str, bytes: &[u8], cand_bytes: &[u8], insns: &[NormInsn], seeds: u64, con: &Contracts) -> EquivRow {
     let orig_n = insns.len() as u64;
     // The pool the memory fill draws from: every constant the ORIGINAL mentions, its neighbours,
     // and the boundaries — so a wrong threshold is actually exercised (a uniform-random word
@@ -176,11 +272,9 @@ fn differential(spec: &Spec, ctx: &[u32], idx: &str, entry: u64, name: &str, byt
         }
     }
 
-    // Every channel the contract layer would drive is empty (see the module doc): this is emu's
-    // opt-in `a_callee_without_a_flag_contract_is_unchanged` case on both sides.
-    let call_args: HashMap<u64, Vec<(u64, u32)>> = HashMap::new();
-    let call_modifies: HashMap<u64, Vec<(u64, u32)>> = HashMap::new();
-    let stack_targets: HashSet<u64> = HashSet::new();
+    // The COMPILER-VISIBLE contracts (the TU's own pragmas) drive the call channels; the @equiv
+    // flag/register-return channels stay empty (see the module doc) — emu's opt-in
+    // `a_callee_without_a_flag_contract_is_unchanged` case on both sides.
     let no_flags: HashMap<u64, FlagReturn> = HashMap::new();
     let no_regs: HashMap<u64, RegReturn> = HashMap::new();
     let default_args = [(EAX, 4u32), (EDX, 4), (EBX, 4), (ECX, 4)];
@@ -213,10 +307,10 @@ fn differential(spec: &Spec, ctx: &[u32], idx: &str, entry: u64, name: &str, byt
         let cfg = RunConfig {
             seed,
             scratch: STACK_WINDOW,
-            call_args: &call_args,
+            call_args: &con.call_args,
             default_args: &default_args,
             call_clobbers: &clobbers,
-            call_modifies: &call_modifies,
+            call_modifies: &con.modifies,
             call_flag_clobbers: &flag_clobbers,
             call_flag_returns: &no_flags,
             site_flag_returns: &no_flags,
@@ -226,7 +320,7 @@ fn differential(spec: &Spec, ctx: &[u32], idx: &str, entry: u64, name: &str, byt
             ordinal_reg_returns: &no_regs,
             is_candidate_run: false,
             image: &image,
-            stack_targets: &stack_targets,
+            stack_targets: &con.stack_targets,
             sp: (ESP, 4),
             max_steps: 20_000_000,
             pool: &pool,
@@ -254,7 +348,7 @@ fn differential(spec: &Spec, ctx: &[u32], idx: &str, entry: u64, name: &str, byt
         } else {
             (&mo.effects, &mc.effects)
         };
-        let (ro, rc) = (mo.read("register", EAX, 4), mc.read("register", EAX, 4));
+        let (ro, rc) = (mo.read("register", con.result.0, con.result.1), mc.read("register", con.result.0, con.result.1));
         traces.insert(format!("{:?}|{ro:x}", mo.effects));
         if eo == ec {
             agree += 1;
@@ -270,7 +364,8 @@ fn differential(spec: &Spec, ctx: &[u32], idx: &str, entry: u64, name: &str, byt
         ("UNMODELED".to_string(), format!("interpreter met {unmodeled} unmodelled op(s): {}", unmodeled_ops.iter().cloned().collect::<Vec<_>>().join(",")))
     } else if agree == seeds {
         let weak = if traces.len() < 2 { " WEAK(one path)" } else { "" };
-        ("SAME".to_string(), format!("evidence over {} trace(s){weak}; result eax agreed {result_agree}/{seeds}; orig_n={orig_n}", traces.len()))
+        let rname = GPRS.iter().find(|(_, o)| *o == con.result.0).map(|(n, _)| *n).unwrap_or("?");
+        ("SAME".to_string(), format!("evidence over {} trace(s){weak}; result {rname} agreed {result_agree}/{seeds}; orig_n={orig_n}; contracts: {} callee(s), {} stack", traces.len(), con.call_args.len(), con.stack_targets.len()))
     } else {
         ("DIFFERS".to_string(), first_diff.unwrap_or_else(|| "unknown".into()))
     };
@@ -294,6 +389,7 @@ fn equiv_op(s: &mut Session, o: &Options, prog: &mut dyn Progress) -> Result<Tab
         return Ok(table_of(&[EquivRow::failure(&f.idx, entry, &f.name, v, seeds, "no candidate to run")]));
     };
     let (_, flags) = profile_flags(&insns)?;
+    let con = contracts_of(&tu, &f.name);
     if !prog.report("compile", 1, 3) {
         return Err(Error::Cancelled);
     }
@@ -313,7 +409,7 @@ fn equiv_op(s: &mut Session, o: &Options, prog: &mut dyn Progress) -> Result<Tab
         return Err(Error::Cancelled);
     }
     let (spec, ctx) = language()?;
-    Ok(table_of(&[differential(spec, ctx, &f.idx, entry, &f.name, &bytes, &cand_bytes, &insns, seeds)]))
+    Ok(table_of(&[differential(spec, ctx, &f.idx, entry, &f.name, &bytes, &cand_bytes, &insns, seeds, &con)]))
 }
 
 // ── program.equiv: the corpus, compiled in one batch ──
@@ -406,7 +502,8 @@ fn program_equiv_op(s: &mut Session, o: &Options, prog: &mut dyn Progress) -> Re
             (Some(_), Some(out)) => match verify_function(&p, sel.va, &sel.name, sel.orig_len, out.object.as_ref().expect("ok"), window) {
                 Ok(c) => {
                     let cand_bytes = c.relinked.relinked_bytes();
-                    differential(spec, ctx, &sel.idx, sel.va, &sel.name, bytes, &cand_bytes, insns, seeds)
+                    let con = contracts_of(sel.tu.as_deref().unwrap_or(""), &sel.name);
+                    differential(spec, ctx, &sel.idx, sel.va, &sel.name, bytes, &cand_bytes, insns, seeds, &con)
                 }
                 Err(e) => EquivRow::failure(&sel.idx, sel.va, &sel.name, Outcome::ObjError, seeds, &e),
             },
@@ -420,6 +517,7 @@ fn program_equiv_op(s: &mut Session, o: &Options, prog: &mut dyn Progress) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+    const EDI_OFF: u64 = 28;
 
     fn store(a: u64) -> Effect {
         Effect::Store("ram".into(), a, 4, 0)
@@ -454,9 +552,30 @@ mod tests {
         // MOV EAX,[EBX+0x24] ; RET — reads through a seeded pointer, so the traces vary by seed.
         let bytes = [0x8bu8, 0x43, 0x24, 0xc3];
         let insns = mosura_core::recompile::insn::normalize(EMIT_LANG, &bytes, 0x4000, &mosura_core::recompile::insn::NoReloc).unwrap();
-        let r = differential(spec, ctx, "00001", 0x4000, "f", &bytes, &bytes, &insns, 16);
+        let r = differential(spec, ctx, "00001", 0x4000, "f", &bytes, &bytes, &insns, 16, &Contracts { result: (EAX, 4), ..Contracts::default() });
         assert_eq!(r.verdict, "SAME", "{}", r.detail);
         assert_eq!((r.agreed, r.finished, r.faults), (16, 16, 0));
         assert!(r.detail.contains("result eax agreed 16/16"), "{}", r.detail);
+    }
+
+    /// The TU's own pragmas are the compiler-visible contract: a callee's `parm` registers, a
+    /// stack-convention callee, its `modify` set (plus `value`, modified by definition), and the
+    /// function's own result register. The clause ends at the next keyword, so `parm [eax] value
+    /// [ebx] modify [ecx]` has ONE argument register.
+    #[test]
+    fn the_candidate_tus_pragmas_are_read_as_contracts() {
+        let tu = "#pragma aux FUN_00001000 value [ebx] modify [eax edx];\n\
+                  #pragma aux func_0x00002000 parm [edi] [eax] value [ebx] modify [ecx];\n\
+                  #pragma aux func_0x00003000 parm caller [] modify exact [eax];\n\
+                  #pragma aux func_0x00004000 modify [eax];\n\
+                  int FUN_00001000(void) { return 0; }\n";
+        let c = contracts_of(tu, "FUN_00001000");
+        assert_eq!(c.result, (EBX, 4), "own value [ebx]");
+        assert_eq!(c.call_args.get(&0x2000).cloned(), Some(vec![(EDI_OFF, 4), (EAX, 4)]), "parm stops at `value`");
+        assert!(c.stack_targets.contains(&0x3000), "parm caller [] is a stack callee");
+        assert!(!c.call_args.contains_key(&0x3000) && !c.call_args.contains_key(&0x4000));
+        let m2 = c.modifies.get(&0x2000).cloned().unwrap();
+        assert!(m2.contains(&(ECX, 4)) && m2.contains(&(EBX, 4)), "modify + value: {m2:?}");
+        assert_eq!(c.modifies.get(&0x3000).cloned(), Some(vec![(EAX, 4)]), "`exact` is a modifier, not a register");
     }
 }
