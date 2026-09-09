@@ -207,10 +207,18 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
     }));
     match outcome {
         Ok(f) => Some(f),
-        Err(_) => {
+        Err(e) => {
+            // The panic's own words, so the log names the cause (a guard's message, a failed
+            // invariant) rather than only the function it took down.
+            let why = e
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| e.downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_else(|| "(non-string panic payload)".to_string());
             warn!(
-                "decompile_function: pipeline failed for FUN_{:08x} — skipping (no switch/proto)",
-                entry.offset
+                "decompile_function: pipeline failed for FUN_{:08x} — skipping (no switch/proto): {}",
+                entry.offset,
+                why
             );
             None
         }

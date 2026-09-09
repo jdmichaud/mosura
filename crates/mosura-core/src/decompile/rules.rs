@@ -885,11 +885,13 @@ fn same_value(data: &Funcdata, a: VarnodeId, b: VarnodeId) -> bool {
 struct AddExpression {
     constval: u64,
     terms: Vec<(VarnodeId, u64)>, // up to 2 (varnode, coefficient)
+    /// The varnodes on the current [`gather`](Self::gather) recursion path — the cycle guard.
+    path: Vec<VarnodeId>,
 }
 
 impl AddExpression {
     fn new() -> Self {
-        AddExpression { constval: 0, terms: Vec::new() }
+        AddExpression { constval: 0, terms: Vec::new(), path: Vec::new() }
     }
     fn add(&mut self, vn: VarnodeId, coeff: u64) {
         if self.terms.len() < 2 {
@@ -904,28 +906,59 @@ impl AddExpression {
             return;
         }
         if data.vn(vn).is_written() {
-            let op = data.vn(vn).def.unwrap();
-            if data.op(op).code() == OpCode::IntAdd && data.op(op).num_inputs() == 2 {
-                let mut d = depth;
-                if !data.vn(data.op(op).input(1).unwrap()).is_constant() {
-                    d -= 1;
-                }
-                if d >= 0 {
-                    self.gather(data, data.op(op).input(0).unwrap(), coeff, d);
-                    self.gather(data, data.op(op).input(1).unwrap(), coeff, d);
-                    return;
-                }
-            } else if data.op(op).code() == OpCode::IntMult && data.op(op).num_inputs() == 2 {
-                let c1 = data.op(op).input(1).unwrap();
-                if data.vn(c1).is_constant() {
-                    let m = super::nzmask::calc_mask(data.vn(vn).size);
-                    let c = coeff.wrapping_mul(data.vn(c1).constant_value()) & m;
-                    self.gather(data, data.op(op).input(0).unwrap(), c, depth);
-                    return;
-                }
+            // GUARD, not behaviour (a deviation from expression.cc:333, which has no cycle check
+            // because well-formed SSA has no value defined in terms of itself). When that invariant
+            // is broken — an entry block with in-edges left a loop-carried value without its
+            // MULTIEQUAL, the 2026-09-08 second-subject abort — this walk never terminates: the
+            // depth budget decrements only on a NON-constant addend, so `v = v + c` recurses until
+            // the stack overflows, which is not a panic and takes the whole process down with every
+            // other function's work. A cycle on the recursion path is named instead; the bridge's
+            // per-function `catch_unwind` then makes it one failed function. Counting every addend
+            // against the budget would change legitimate deep chains, so the guard is on the
+            // invariant, not the budget.
+            if self.path.contains(&vn) {
+                let op = data.vn(vn).def.unwrap();
+                panic!(
+                    "AddExpression::gather: the INT_ADD chain cycles through varnode {:?} (defined by op {:?} at {:#x}): a value defined in terms of itself is not well-formed SSA — a loop-carried value without its MULTIEQUAL (does the entry block have in-edges?)",
+                    vn,
+                    op,
+                    data.op(op).seqnum.pc.offset
+                );
+            }
+            self.path.push(vn);
+            let consumed = self.gather_def(data, vn, coeff, depth);
+            self.path.pop();
+            if consumed {
+                return;
             }
         }
         self.add(vn, coeff);
+    }
+    /// The written case of [`gather`](Self::gather): descend through INT_ADD and
+    /// INT_MULT-by-constant. True when the walk consumed `vn` (Ghidra's early returns), false when
+    /// `vn` is a term of its own.
+    fn gather_def(&mut self, data: &Funcdata, vn: VarnodeId, coeff: u64, depth: i32) -> bool {
+        let op = data.vn(vn).def.unwrap();
+        if data.op(op).code() == OpCode::IntAdd && data.op(op).num_inputs() == 2 {
+            let mut d = depth;
+            if !data.vn(data.op(op).input(1).unwrap()).is_constant() {
+                d -= 1;
+            }
+            if d >= 0 {
+                self.gather(data, data.op(op).input(0).unwrap(), coeff, d);
+                self.gather(data, data.op(op).input(1).unwrap(), coeff, d);
+                return true;
+            }
+        } else if data.op(op).code() == OpCode::IntMult && data.op(op).num_inputs() == 2 {
+            let c1 = data.op(op).input(1).unwrap();
+            if data.vn(c1).is_constant() {
+                let m = super::nzmask::calc_mask(data.vn(vn).size);
+                let c = coeff.wrapping_mul(data.vn(c1).constant_value()) & m;
+                self.gather(data, data.op(op).input(0).unwrap(), c, depth);
+                return true;
+            }
+        }
+        false
     }
     fn gather_two_terms_subtract(&mut self, data: &Funcdata, a: VarnodeId, b: VarnodeId) {
         let depth = if data.vn(a).is_constant() || data.vn(b).is_constant() { 1 } else { 0 };
@@ -10956,6 +10989,43 @@ mod tests {
         let spaces = SpaceManager::standard();
         let ram = spaces.by_name("ram").unwrap();
         (Funcdata::new("t", Address::new(ram, 0), spaces), Address::new(ram, 0))
+    }
+
+    /// A value defined in terms of itself — `v = v + 1`, the shape an entry block with in-edges
+    /// leaves behind — must name its cause. Before the guard this recursed until the stack
+    /// overflowed (no panic, the process died with every other function's work); the depth
+    /// budget never decrements on a constant addend.
+    #[test]
+    #[should_panic(expected = "cycles through varnode")]
+    fn a_self_referential_add_panics_naming_the_cause() {
+        let (mut f, at) = fd();
+        let v = f.new_unique(4);
+        let c = f.new_const(4, 1);
+        let op = f.new_op(OpCode::IntAdd, SeqNum { pc: at, uniq: 0 }, vec![v, c]);
+        f.op_set_output(op, v);
+        let mut e = AddExpression::new();
+        e.gather_two_terms_root(&f, v);
+    }
+
+    /// The same walk over a legitimate chain still terminates and still folds the constants: the
+    /// guard is on the invariant, not on the budget.
+    #[test]
+    fn a_legitimate_add_chain_still_gathers() {
+        let (mut f, at) = fd();
+        let x = f.new_unique(4);
+        let c1 = f.new_const(4, 1);
+        let c2 = f.new_const(4, 2);
+        let t = f.new_unique(4);
+        let op1 = f.new_op(OpCode::IntAdd, SeqNum { pc: at, uniq: 0 }, vec![x, c1]);
+        f.op_set_output(op1, t);
+        let v = f.new_unique(4);
+        let op2 = f.new_op(OpCode::IntAdd, SeqNum { pc: at, uniq: 1 }, vec![t, c2]);
+        f.op_set_output(op2, v);
+        let mut e = AddExpression::new();
+        e.gather_two_terms_root(&f, v);
+        assert_eq!(e.constval, 3, "1 + 2 folded");
+        assert_eq!(e.terms, vec![(x, 1)], "one non-constant term");
+        assert!(e.path.is_empty(), "the path unwinds");
     }
 
     /// The guard is a DEFERRAL, and that is what this asserts. While the sum still has a
