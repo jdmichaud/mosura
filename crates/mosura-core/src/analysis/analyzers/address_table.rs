@@ -54,12 +54,12 @@ use crate::analysis::pseudo_disassembler::PseudoDisassembler;
 use crate::decompile::space::{Address, SpaceId};
 
 /// `AddressTable.BILLION_CASES` (AddressTable.java:44).
-const BILLION_CASES: f64 = (1024 * 1024 * 1024) as f64;
+pub(crate) const BILLION_CASES: f64 = (1024 * 1024 * 1024) as f64;
 /// `AddressTable.TOO_MANY_ENTRIES` (:45).
 const TOO_MANY_ENTRIES: i32 = 1024 * 1024;
 /// `AddressTable.MINIMUM_SAFE_ADDRESS` (:46) — "default minimum address that should be
 /// considered an address".
-const MINIMUM_SAFE_ADDRESS: u64 = 1024;
+pub(crate) const MINIMUM_SAFE_ADDRESS: u64 = 1024;
 
 /// `AddressTableAnalyzer.OPTION_DEFAULT_TABLE_ALIGNMENT` (AddressTableAnalyzer.java:69).
 const OPTION_DEFAULT_TABLE_ALIGNMENT: u64 = 4;
@@ -77,12 +77,12 @@ const OPTION_DEFAULT_RELOCATION_GUIDE_ENABLED: bool = true;
 const OPTION_DEFAULT_ALLOW_OFFCUT_REFERENCES: bool = false;
 
 /// Longest x86-64 instruction — the `getCodeUnitContaining` back-probe window.
-const MAX_INSN_LEN: u64 = 16;
+pub(crate) const MAX_INSN_LEN: u64 = 16;
 
 /// Ghidra's `PointerDataType(DataType.DEFAULT, dtm).getName()` — the data type
 /// `AddressTable.makeTable` lays on each entry. Confirmed against Ghidra's own dump of
 /// `datafnptr.watcom-x86-32` (`DATA 08049000 undefined * len=4`).
-const POINTER_TYPE_NAME: &str = "undefined *";
+pub(crate) const POINTER_TYPE_NAME: &str = "undefined *";
 
 /// A run of consecutive pointers found in memory (Ghidra `AddressTable`). The secondary
 /// index-table variant (`topIndexAddress`/`indexLen`) is not modelled: `AddressTableAnalyzer`
@@ -185,46 +185,57 @@ impl AddressTable {
         let mut count: usize = 0;
         let mut current = top_addr.offset;
         let addr_size = u64::from(program.addr_size_bits / 8);
+        // What ended the run — named on the `analysis` topic when the run falls short, so a
+        // refused table says which of Ghidra's tests refused it.
+        let mut ended_by = "the end of the block";
 
         while current >= range_min && current <= range_max {
             // :1080 — get the value in address form of the bytes at the current address.
             let Some(addr_long) = read_uint_le(program, Address::new(top_addr.space, current), addr_size)
             else {
+                ended_by = "a short read";
                 break; // MemoryAccessException
             };
 
             // :1107 — too low in memory to be an address.
             if addr_long > 0 && addr_long < min_address_offset {
+                ended_by = "a value below the minimum address (:1107)";
                 break;
             }
             // :1112 — "test that the value isn't 0 … better to be conservative".
             if addr_long == 0 {
+                ended_by = "a zero value (:1112)";
                 break;
             }
             // :1119 — the value must satisfy the processor's alignment.
             if addr_long % alignment != 0 {
+                ended_by = "a misaligned value (:1119)";
                 break;
             }
             let test_addr = Address::new(top_addr.space, addr_long);
             // :1124 — the tested address must be contained in memory.
             if !program.memory.contains(test_addr) {
+                ended_by = "a value outside memory (:1124)";
                 break;
             }
             // :1129 — a relocatable program's pointers must all be relocations.
             if use_relocation_table
                 && !is_valid_relocation_address(program, Address::new(top_addr.space, current))
             {
+                ended_by = "a slot that is not a relocation (:1129)";
                 break;
             }
             // :1135 — "if there is a ref in the middle of the table, then isn't a table".
             if count > 1
                 && program.reference_manager.has_reference_to(Address::new(top_addr.space, current))
             {
+                ended_by = "a reference into the middle of the table (:1135)";
                 break;
             }
             // :1141 — "also check what the address pointer points to; if the thing existing
             // there doesn't jibe with the pointer, don't do it".
             if check_existing && check_for_collision_at_target(program, test_addr) {
+                ended_by = "a collision at the target (:1141)";
                 break;
             }
 
@@ -236,12 +247,15 @@ impl AddressTable {
             count += 1;
         }
 
-        // :1163 — "if table too small, don't even check later".
+        // :1163 — "if table too small, don't even check later". Named for a run of at least two
+        // (a blind scan tries every address; one bare pointer is not worth a line) and for any run
+        // whose top was NAMED by an instruction (alignment 1 — the switch-table path), where the
+        // refusal is the whole answer.
         if count < minimum_table_size {
-            if count > 1 {
+            if count > 1 || alignment == 1 {
                 crate::debug!(
                     crate::debug::Topic::Analysis,
-                    "addrtable {:#x}: run of {count} < minimum {minimum_table_size} — no table",
+                    "addrtable {:#x}: run of {count} < minimum {minimum_table_size}, ended by {ended_by} — no table",
                     top_addr.offset
                 );
             }
@@ -260,6 +274,12 @@ impl AddressTable {
             }
         }
         if count < minimum_table_size {
+            crate::debug!(
+                crate::debug::Topic::Analysis,
+                "addrtable {:#x}: a reference destination at {:#x} inside the run cuts it to {count} < minimum {minimum_table_size} — no table",
+                top_addr.offset,
+                next_sym_addr.map_or(0, |a| a.offset)
+            );
             return None;
         }
 
@@ -282,6 +302,14 @@ impl AddressTable {
             if let Some(instr) = program.listing.instruction_after(top_addr) {
                 if instr.space == top_addr.space && instr.offset < end_addr {
                     count = ((instr.offset - top_addr.offset) / (addr_size + skip_amount)) as usize;
+                    if count < minimum_table_size {
+                        crate::debug!(
+                            crate::debug::Topic::Analysis,
+                            "addrtable {:#x}: an instruction at {:#x} inside the run cuts it to {count} < minimum {minimum_table_size} — no table",
+                            top_addr.offset,
+                            instr.offset
+                        );
+                    }
                 }
             }
             if count < minimum_table_size {
@@ -312,6 +340,14 @@ impl AddressTable {
                 let last = a.offset + u64::from((*len).max(1)) - 1;
                 if pointer_set.ranges().any(|r| a.offset <= r.max && last >= r.min) {
                     count = ((a.offset - top_addr.offset) / (addr_size + skip_amount)) as usize;
+                    if count < minimum_table_size {
+                        crate::debug!(
+                            crate::debug::Topic::Analysis,
+                            "addrtable {:#x}: defined data `{type_name}` at {:#x} off the pointer starts cuts the run to {count} < minimum {minimum_table_size} — no table",
+                            top_addr.offset,
+                            a.offset
+                        );
+                    }
                     break;
                 }
             }
@@ -498,9 +534,17 @@ fn instruction_falls_into(program: &Program, addr: Address) -> bool {
     if prev.offset + len != addr.offset {
         return false;
     }
+    // Ghidra's `getFallFrom` is decided by the PREDECESSOR's fall-through: an instruction whose
+    // flow ends there — a `ret`, a `jmp` — falls into nothing, however adjacent its successor.
+    // Adjacency alone called every routine that follows another's `ret` "fallen into", which
+    // refused a pointer run the moment its targets were decoded (`codetable`: the second pass of
+    // the switch-table path found `h1_` behind `h0_`'s `ret` and cut the run to one).
+    let Some((_, flow)) = program.listing.instruction_at(prev) else { return false };
+    if !super::falls_through_stored(program, prev, flow, addr.space) {
+        return false;
+    }
     // A flow reference out of `prev` to somewhere other than `addr` does not preclude
-    // fall-through; Ghidra's `getFallFrom` is decided by the predecessor's fall-through, which
-    // is exactly "there is no terminating flow that removes it".
+    // fall-through; an unconditional jump elsewhere does.
     !program.reference_manager.refs_from(prev).any(|r| {
         matches!(r.ref_type, RefType::UnconditionalJump | RefType::ComputedJump) && r.to != addr
     })
@@ -516,7 +560,7 @@ fn instruction_containing(program: &Program, addr: Address) -> Option<(Address, 
 }
 
 /// `Listing.getDefinedDataContaining`.
-fn defined_data_containing(program: &Program, addr: Address) -> Option<&(Address, String, u32)> {
+pub(crate) fn defined_data_containing(program: &Program, addr: Address) -> Option<&(Address, String, u32)> {
     program.defined_data.iter().find(|(a, _, len)| {
         a.space == addr.space && a.offset <= addr.offset && addr.offset < a.offset + u64::from((*len).max(1))
     })
@@ -888,4 +932,37 @@ fn get_wstr_len(program: &Program, ad: Address, max: usize) -> usize {
         i += 1;
     }
     i
+}
+
+#[cfg(test)]
+mod fall_into_tests {
+    use super::*;
+    use crate::analysis::flowtype::FlowKind;
+    use crate::analysis::program::InstructionFlow;
+    use crate::decompile::space::{SpaceKind, SpaceManager};
+
+    fn program() -> (Program, SpaceId) {
+        let mut spaces = SpaceManager::standard();
+        let ram = spaces.add("ram", SpaceKind::Processor, 4, 1);
+        let mut p = Program::new(spaces, ram, "x86:LE:32:default", "watcom", Address::new(ram, 0x1000), false, 32);
+        p.memory.add_block("CODE", Address::new(ram, 0x1000), 0x100, true, false, true, Some(vec![0x90; 0x100]));
+        (p, ram)
+    }
+
+    /// `Instruction.getFallFrom() != null` is the PREDECESSOR's fall-through, not adjacency: a
+    /// routine that starts right after another's `ret` is not fallen into; one that starts right
+    /// after a plain instruction is. Both directions, so the pin cannot pass by refusing everything.
+    #[test]
+    fn a_ret_does_not_fall_into_its_successor() {
+        let (mut p, ram) = program();
+        let ret = InstructionFlow { kind: FlowKind::Terminator, ends_flow: true, ..Default::default() };
+        p.listing.define(Address::new(ram, 0x1000), CodeUnit::Instruction { length: 1, flow: ret });
+        p.listing.define(Address::new(ram, 0x1001), CodeUnit::instruction(1));
+        assert!(!instruction_falls_into(&p, Address::new(ram, 0x1001)), "a `ret` falls into nothing");
+
+        let (mut p, ram) = program();
+        p.listing.define(Address::new(ram, 0x1000), CodeUnit::instruction(1));
+        p.listing.define(Address::new(ram, 0x1001), CodeUnit::instruction(1));
+        assert!(instruction_falls_into(&p, Address::new(ram, 0x1001)), "a plain instruction falls into its successor");
+    }
 }

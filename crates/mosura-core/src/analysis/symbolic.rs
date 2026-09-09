@@ -140,6 +140,31 @@ const MIN_SPECULATIVE_REF: u64 = 1024;
 /// Record a reference if the target lies in mapped memory at or above `min` (Ghidra's
 /// `evaluateReference`: reject `!memory.contains(address)`, and addresses below the
 /// applicable threshold).
+/// Is `c` a SLEIGH program-counter marker rather than a real operand? `inst_start` (the
+/// instruction's own address) and `inst_next` (its fall-through) appear as `const` varnodes in
+/// the p-code of MANY instructions — a call's return address on a link-register ISA, but also the
+/// PC-relative bookkeeping of ordinary instructions — and none of those is a data address. The
+/// ONE exception is a COMPUTED jump or call: `jmp [T + reg*scale]` with the table `T` laid down
+/// immediately after the instruction makes `T == inst_next`, and there `T` is the genuine
+/// displacement operand, the table that hand-written code (the second subject's switches, the
+/// `codetable` ground truth) puts right after the jump. A computed flow has no link-register
+/// marker to confuse it with, so the value is unambiguous there and only there.
+fn is_pc_marker(c: u64, here: u64, inst_next: u64, insn_flow: Option<RefType>) -> bool {
+    (c == here || c == inst_next) && !insn_flow.is_some_and(is_computed_flow)
+}
+
+/// `FlowType.isComputed()` over the flow types that are also a jump or a call.
+fn is_computed_flow(r: RefType) -> bool {
+    matches!(
+        r,
+        RefType::ComputedJump
+            | RefType::ConditionalComputedJump
+            | RefType::ComputedCall
+            | RefType::ConditionalComputedCall
+            | RefType::ComputedCallTerminator
+    )
+}
+
 fn make_ref(program: &mut Program, from: Address, ram: SpaceId, to_off: u64, ref_type: RefType, min: u64) {
     let to = Address::new(ram, to_off);
     if to_off < min || !program.memory.contains(to) {
@@ -281,21 +306,29 @@ fn process_op(
                     make_ref(program, here, ram, v.offset, RefType::Read, MIN_KNOWN_REF);
                 } else if v.space == "const"
                     && const_is_data
-                    && v.offset != here.offset
-                    && v.offset != inst_next
+                    && !is_pc_marker(v.offset, here.offset, inst_next, insn_flow)
                 {
-                    // A `const` equal to the instruction's own address (`inst_start`) or its
-                    // fall-through address (`inst_next`) is a SLEIGH program-counter-location
-                    // symbol, not a scalar operand, so it is never a data address. Both arise
-                    // as a call's return address on link-register ISAs: AArch64 `bl` computes
-                    // it as `X30 = INT_ADD(inst_start, 4)` (const = inst_start == here), and
-                    // RISC-V `jal ra,target` as `ra = COPY(const inst_next)` (const = here +
-                    // ilen) — the link-register analogue of the return address x86 `call`
-                    // pushes via STORE (already excluded by `const_is_data`). Ghidra's
-                    // constant/operand reference analysis works from real instruction operands
+                    // A `const` equal to a CALL's own address (`inst_start`) or its fall-through
+                    // address (`inst_next`) is a SLEIGH program-counter-location symbol, not a
+                    // scalar operand, so it is never a data address. Both arise as a call's
+                    // return address on link-register ISAs: AArch64 `bl` computes it as
+                    // `X30 = INT_ADD(inst_start, 4)` (const = inst_start == here), and RISC-V
+                    // `jal ra,target` as `ra = COPY(const inst_next)` (const = here + ilen) —
+                    // the link-register analogue of the return address x86 `call` pushes via
+                    // STORE (already excluded by `const_is_data`). Ghidra's constant/operand
+                    // reference analysis works from real instruction operands
                     // (`instruction.getOpObjects()`) and its `SymbolicPropogator` COPY case
                     // only references an `in[0].isAddress()` varnode (SymbolicPropogator.java:
                     // 882), never a `const`; so these PC markers are never data references.
+                    //
+                    // ⚠️ The exclusion is a CALL's. On any other instruction a constant equal to
+                    // `inst_next` IS an operand — `jmp dword ptr [T + ebx*4]` with the table `T`
+                    // laid down right after the jump, which is where hand-written code puts its
+                    // switch tables (the second subject's four unguarded switches, and the
+                    // `codetable` ground truth: 8 bytes of `jmp` at 0x...57, the table at
+                    // 0x...5f). Ghidra references that scalar because it is the operand; excluding
+                    // it here as a marker lost the only reference that names the table, and the
+                    // "Switch Table References" path (`analyzers::switch_table`) never saw it.
                     make_ref(program, here, ram, v.offset, RefType::Data, MIN_SPECULATIVE_REF);
                 }
             }
@@ -760,6 +793,32 @@ mod tests {
             r.ref_type == RefType::Data && r.from.offset == 0x40_1000 && r.to.offset == 0x40_1800
         });
         assert!(!data_at, "the speculative DATA ref must be dropped when PARAM is created");
+    }
+
+    /// A jump table laid down RIGHT AFTER its `jmp` sits at the instruction's fall-through
+    /// address — the shape of every hand-written switch on the second subject and of the
+    /// `codetable` ground truth (8 bytes of `jmp cs:[T + ebx*4]` at 0x...57, `T` at 0x...5f).
+    /// That constant is the jump's OPERAND and Ghidra references it; it is a program-counter
+    /// marker only on a CALL (a link register's return address), the one place `is_pc_marker`
+    /// may apply. Before the fix the reference was dropped and the "Switch Table References"
+    /// path never saw the table.
+    #[test]
+    fn a_table_at_the_fall_through_of_a_jump_is_referenced() {
+        let Some((spec, ctx)) = crate::lang::load_cached("x86:LE:64:default") else {
+            return;
+        };
+        // jmp qword ptr [rbx*8 + 0x401007] — 7 bytes at 0x401000, so inst_next IS the table.
+        let (mut program, ram) = program_with_listing(spec, ctx, &[0xff, 0x24, 0xdd, 0x07, 0x10, 0x40, 0x00]);
+        flow_constants(spec, ctx, &mut program, Address::new(ram, 0x401000), &std::collections::HashSet::new());
+        let refs: Vec<(u64, u64, RefType)> =
+            program.reference_manager.refs_from(Address::new(ram, 0x40_1000)).map(|r| (r.from.offset, r.to.offset, r.ref_type)).collect();
+        assert!(
+            refs.iter().any(|(_, to, rt)| *to == 0x40_1007 && *rt == RefType::Data),
+            "the table at the jmp's fall-through must carry a DATA reference, got {refs:x?}"
+        );
+        assert!(is_pc_marker(0x40_1007, 0x40_1000, 0x40_1007, Some(RefType::UnconditionalCall)), "on an ordinary call it is a marker");
+        assert!(is_pc_marker(0x40_1007, 0x40_1000, 0x40_1007, Some(RefType::UnconditionalJump)), "on an ordinary jump it is a marker too");
+        assert!(!is_pc_marker(0x40_1007, 0x40_1000, 0x40_1007, Some(RefType::ComputedJump)), "on a COMPUTED jump the fall-through value is the table operand");
     }
 
     #[test]
