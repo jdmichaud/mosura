@@ -2039,9 +2039,15 @@ pub fn resolve_call_output(f: &mut Funcdata) -> u32 {
             .filter_map(|t| vnmap.iter().find(|(a, _, _)| *a == t.addr).copied())
             .collect();
         used.sort_by_key(|(a, _, _)| (a.space.0, a.offset));
+        // The committed storage, for the emitter (`CallSpec::output_storage`): the pieces are
+        // address-ordered and contiguous, so the whole is the first address and the summed size.
+        let storage = used.first().map(|(a, _, _)| (*a, used.iter().map(|(_, _, v)| f.vn(*v).size).sum::<u32>()));
         build_call_output_from_trials(f, call, bid, &used);
         if f.op(call).output.is_some() {
             count += 1; // coreaction.cc:1788 — a committed call output is a change
+            if let Some(st) = storage {
+                f.call_specs.entry(call).or_default().output_storage = Some(st);
+            }
         }
     }
     count

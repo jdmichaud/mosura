@@ -1440,6 +1440,12 @@ pub struct CallSpec {
     /// deliberate `beyond-ghidra` extension, licensed by that measurement — see
     /// <subject-survey>/PLAN-register-effects.md.
     pub overwrites: Vec<(Address, u32)>,
+    /// The STORAGE this call's recovered output came back in — recorded by
+    /// [`crate::decompile::recover::resolve_call_output`] when it commits the output (the used
+    /// trials' lowest address and their total size), because the op's output varnode itself may be
+    /// a `unique` (the reassembled whole) rather than the register. The emitter's `value [reg]`
+    /// clause for a non-default result register reads this (docs/tasklist-2026-09-08.md item 11).
+    pub output_storage: Option<(Address, u32)>,
 
     /// Every register offset the callee writes anywhere in its reachable body, or `None` when that
     /// could not be established (`analysis::decompiler::callee_writes_cfg`). Unlike

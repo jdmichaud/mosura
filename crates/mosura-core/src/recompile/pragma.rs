@@ -136,6 +136,31 @@ pub fn nondefault_parm_from_storages(
     Some(names.iter().map(|n| format!("[{n}]")).collect::<Vec<_>>().join(" "))
 }
 
+/// The default return register's family (EAX, AX, AL, AH): a value delivered there needs no
+/// `value` clause — it is Watcom's default.
+fn is_default_return(table: &[(u64, u32, &'static str)], off: u64) -> bool {
+    table
+        .iter()
+        .find(|&&(_, sz, nm)| sz == 4 && nm == "eax")
+        .is_some_and(|&(o, ..)| off >= o && off < o + 4)
+}
+
+/// The `value [reg]` clause for a result delivered in a register other than the default, named at
+/// exactly that offset and size (a sub-register result returns by its own name). None for the
+/// default family, for a storage the table cannot name (a 64-bit pair, memory), and for the frame
+/// and stack pointers Watcom refuses in any clause.
+fn value_clause(table: &[(u64, u32, &'static str)], off: u64, size: u32) -> Option<String> {
+    if is_default_return(table, off) {
+        return None;
+    }
+    let name = table.iter().find(|&&(o, sz, _)| o == off && sz == size).map(|t| t.2)?;
+    if name == "ebp" || name == "esp" {
+        return None;
+    }
+    Some(format!("value [{name}]"))
+}
+
+
 /// The function's own Watcom contract — its `parm` list where the recovered storage is not what
 /// Watcom would assign by position, and its `modify` list where the decompiler established which
 /// registers the function destroys. `None` when neither is needed.
@@ -178,6 +203,18 @@ pub fn own_contract(
         });
     } else if let Some(p) = nondefault_parm_regs(f, table) {
         parts.push(format!("parm {p}"));
+    }
+    // THE RETURN REGISTER when it is not the default (docs/tasklist-2026-09-08.md item 11): a
+    // function that delivers its result in EBX (the regout MVE's `add ebx,eax ; ret`) compiled
+    // without `value [ebx]` returns it in EAX — measured SAME_SHAPE, `ADD EAX,EBX` against the
+    // original's `ADD EBX,EAX` — and every caller then reads the wrong register. The storage is
+    // the recovered prototype's, the same one the printer renders as the function's return.
+    if let Some(slot) = crate::analysis::interface::prototype_of(f).output {
+        if f.spaces.by_name("register") == Some(slot.addr.space) {
+            if let Some(v) = value_clause(table, slot.addr.offset, slot.size) {
+                parts.push(v);
+            }
+        }
     }
     // Only 4-byte general registers, named through the same spec-built table as `parm`.
     // M34 measured this list net-negative (15 regressions, 3 gains) because it OVER-DECLARED:
@@ -330,7 +367,8 @@ pub fn callee_pragmas(
     callee_clobbers: bool,
     order_parms: &std::collections::BTreeMap<u64, String>,
 ) -> std::collections::HashMap<u64, String> {
-    let mut callee_aux: HashMap<u64, (Option<String>, Option<String>)> = HashMap::new();
+    // (parm, value, modify) per callee.
+    let mut callee_aux: HashMap<u64, (Option<String>, Option<String>, Option<String>)> = HashMap::new();
     // EXACTNESS (contract-design Increment 2): recovered in the analysis
     // (CallSpec::cdecl_exact — an argument register surviving its own call on the
     // raw CFG, arity from the whole-program prototype recovery). One site's
@@ -373,6 +411,72 @@ pub fn callee_pragmas(
             e.1.get_or_insert_with(Default::default).extend(m.iter().copied());
         }
     }
+    // WHAT THIS TU'S C READS AS A CALL'S PRODUCT (docs/tasklist-2026-09-08.md items 8 and 11).
+    // The declaration a caller compiles against must say so, or it contradicts the body beside
+    // it: a callee whose recovered result is EBX is read as the call's value (regout's caller,
+    // `pxVar1 = func_0x08048106(..)`, the store then went through EAX), and a register the call
+    // creates (an INDIRECT creation the body reads as `extraout_<reg>`) is one the callee
+    // writes — declaring it preserved lets Watcom keep a live value there across the call
+    // (41 of 751 TUs on the second subject; 2 of 3023 here). The survival veto that narrows
+    // `cdecl_modify` reads a post-call use of a register as "this caller was compiled against
+    // a declaration preserving it"; a read of the callee's OUTPUT is the one post-call use that
+    // is not that, so the pragma widens by exactly the products the C names: `value [reg]`
+    // for a non-default result register (one per callee; sites that disagree declare none)
+    // and `modify` over the result and the read creations. Nothing the C does not read is
+    // added, so a TU without such reads is unchanged.
+    let register = f.spaces.by_name("register");
+    let mut creations: HashMap<crate::decompile::op::OpId, Vec<u64>> = HashMap::new();
+    for opid in f.op_ids() {
+        let o = f.op(opid);
+        if o.is_dead() || o.code() != crate::decompile::opcode::OpCode::Indirect {
+            continue;
+        }
+        let (Some(call), Some(out)) = (o.guarded_op, o.output) else { continue };
+        let vn = f.vn(out);
+        if Some(vn.loc.space) != register || !vn.is_indirect_creation() || vn.descend.is_empty() {
+            continue;
+        }
+        creations.entry(call).or_default().push(vn.loc.offset & !3);
+    }
+    // per callee: the product registers (4-byte bases) and the result register (None = unseen,
+    // Some(None) = the sites disagree)
+    let mut products: HashMap<u64, (std::collections::BTreeSet<u64>, Option<Option<(u64, u32)>>)> =
+        HashMap::new();
+    let mut call_ops: Vec<crate::decompile::op::OpId> = f
+        .op_ids()
+        .filter(|&op| !f.op(op).is_dead() && f.op(op).code() == crate::decompile::opcode::OpCode::Call)
+        .collect();
+    call_ops.sort_unstable();
+    for op in call_ops {
+        let Some(t) = f.op(op).input(0) else { continue };
+        let va = f.vn(t).loc.offset;
+        if va == 0 {
+            continue;
+        }
+        let e = products.entry(va).or_default();
+        // The result's storage: the committed one (`CallSpec::output_storage` — the op's output
+        // varnode may be a reassembled `unique`), else the output varnode when it is the register.
+        let result = f
+            .call_specs
+            .get(&op)
+            .and_then(|cs| cs.output_storage)
+            .map(|(a, sz)| (a.space, a.offset, sz))
+            .or_else(|| f.op(op).output.map(|out| { let vn = f.vn(out); (vn.loc.space, vn.loc.offset, vn.size) }));
+        if let Some((space, off, size)) = result {
+            if Some(space) == register && !is_default_return(&regs.table, off) {
+                e.0.insert(off & !3);
+                let v = (off, size);
+                e.1 = match e.1 {
+                    None => Some(Some(v)),
+                    Some(Some(p)) if p == v => Some(Some(v)),
+                    _ => Some(None),
+                };
+            }
+        }
+        if let Some(cs) = creations.get(&op) {
+            e.0.extend(cs.iter().copied());
+        }
+    }
     // CALLER-SIDE CLOBBER WITNESS (`buildconfig::saved_for_callees`): a register this
     // function saves in its prologue and restores before its returns without ever
     // touching it was preserved for a callee DECLARED to clobber it — the declaration
@@ -394,10 +498,26 @@ pub fn callee_pragmas(
             }
         }
     }
+    // every callee with a contract OR a product this TU reads
+    let mut merged = merged;
+    for (&va, (offs, _)) in &products {
+        if !offs.is_empty() {
+            merged.entry(va).or_default();
+        }
+    }
     for (va, (cleans, modify)) in merged {
         let e = callee_aux.entry(va).or_default();
         if cleans {
             e.0 = Some("parm caller []".to_string());
+        }
+        let mut modify = modify;
+        if let Some((offs, value)) = products.get(&va) {
+            if !offs.is_empty() {
+                modify.get_or_insert_with(Default::default).extend(offs.iter().copied());
+            }
+            if let Some(Some((off, size))) = value {
+                e.1 = value_clause(&regs.table, *off, *size);
+            }
         }
         if let Some(m) = modify {
             let mut regs: Vec<&str> = m
@@ -415,7 +535,7 @@ pub fn callee_pragmas(
             regs.sort();
             regs.dedup();
             let kw = if exact_callees.contains(&va) { "modify exact" } else { "modify" };
-            e.1 = Some(format!("{kw} [{}]", regs.join(" ")));
+            e.2 = Some(format!("{kw} [{}]", regs.join(" ")));
         }
     }
     // A callee can carry a recovered param order without any CallSpec entry (the
@@ -426,15 +546,10 @@ pub fn callee_pragmas(
     }
     let vararg_callees: HashMap<u64, String> = callee_aux
         .into_iter()
-        .filter_map(|(va, (cleans, modify))| {
+        .filter_map(|(va, (cleans, value, modify))| {
             let parm = cleans.or_else(|| order_parms.get(&va).cloned());
-            let spec = match (parm, modify) {
-                (Some(p), Some(m)) => format!("{p} {m}"),
-                (Some(p), None) => p,
-                (None, Some(m)) => m,
-                (None, None) => return None,
-            };
-            Some((va, spec))
+            let parts: Vec<String> = [parm, value, modify].into_iter().flatten().collect();
+            (!parts.is_empty()).then(|| (va, parts.join(" ")))
         })
         .collect();
     vararg_callees
@@ -657,6 +772,34 @@ mod tests {
         f.far_return = false;
         f.own_modify = Some(vec![ebp]);
         assert_eq!(own_contract(&f, &r.table, false, None), None, "a modify list of only EBP is nothing");
+    }
+
+    /// A result delivered in a register other than the default gets a `value [..]` clause between
+    /// `parm` and `modify`; the default family (EAX/AX/AL) never does; EBP never does.
+    #[test]
+    fn own_contract_declares_a_nondefault_return_register() {
+        let (spec, ctx) = crate::lang::load_cached("x86:LE:32:default").expect("language tables");
+        let mut f = crate::decompile::build::raw_funcdata(spec, "f", &[0xc3], 0x1000, ctx);
+        let r = regs();
+        let (eax, ebx, ebp) = (off(&r.table, "eax"), off(&r.table, "ebx"), off(&r.table, "ebp"));
+        let reg = f.spaces.by_name("register").unwrap();
+        let ret = f
+            .op_ids()
+            .find(|&op| f.op(op).code() == crate::decompile::opcode::OpCode::Return)
+            .expect("the RET's RETURN op");
+        let at = |f: &mut crate::decompile::funcdata::Funcdata, o: u64, sz: u32| {
+            f.new_varnode(sz, crate::decompile::space::Address::new(reg, o))
+        };
+        let v = at(&mut f, ebx, 4);
+        f.op_insert_input(ret, 1, v);
+        f.own_modify = Some(vec![ebx]);
+        assert_eq!(own_contract(&f, &r.table, false, None), Some("value [ebx] modify [ebx]".into()));
+        assert_eq!(own_contract(&f, &r.table, true, Some(0)), Some("parm caller [] value [ebx] modify [ebx]".into()), "between parm and modify");
+        assert_eq!(value_clause(&r.table, eax, 4), None, "EAX is the default");
+        assert_eq!(value_clause(&r.table, eax, 1), None, "AL is the default");
+        assert_eq!(value_clause(&r.table, ebx, 1), Some("value [bl]".into()), "a sub-register returns by its own name");
+        assert_eq!(value_clause(&r.table, ebp, 4), None, "EBP is rejected by Watcom");
+        assert_eq!(value_clause(&r.table, eax, 8), None, "a 64-bit pair is the default EDX:EAX");
     }
 
     fn table() -> ContractTable {
