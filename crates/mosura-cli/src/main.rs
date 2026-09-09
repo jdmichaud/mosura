@@ -20,8 +20,13 @@ enum FormatArg {
     Json,
 }
 
+/// The `--version` string: the crate version and the git commit the binary was built from
+/// (`MOSURA_GIT_COMMIT`, stamped by `build.rs`; `unknown` outside a checkout). Compile-time
+/// `env!`, not an environment read — see `build.rs` and the `no_env` guard.
+const CLI_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), " (commit ", env!("MOSURA_GIT_COMMIT"), ")");
+
 #[derive(Parser, Debug)]
-#[command(name = "mosura", version, about = "mosura — decompile, emit and recompile through the mosura library", long_about = None)]
+#[command(name = "mosura", version = CLI_VERSION, about = "mosura — decompile, emit and recompile through the mosura library", long_about = None)]
 struct Cli {
     /// The session directory (`-` or `mem` = an in-memory session for one-shot commands)
     #[arg(short = 'S', long, global = true, default_value = ".mosura", value_name = "DIR")]
@@ -677,7 +682,13 @@ fn run(cli: Cli) -> Res<()> {
             }
         },
         Cmd::Version => {
-            println!("mosura {} (abi {}.{})", mosura::version(), mosura::abi_version() >> 16, mosura::abi_version() & 0xffff);
+            println!(
+                "mosura {} (abi {}.{}) commit {}",
+                mosura::version(),
+                mosura::abi_version() >> 16,
+                mosura::abi_version() & 0xffff,
+                env!("MOSURA_GIT_COMMIT")
+            );
             Ok(())
         }
         Cmd::Toolchain { sub } => match sub {
