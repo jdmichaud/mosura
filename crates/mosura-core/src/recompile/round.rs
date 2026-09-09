@@ -129,6 +129,10 @@ pub struct EmitOpts {
     pub arms_off: Vec<String>,
     pub recovered: bool,
     pub cons_probe: bool,
+    /// `emit.caller-parm=witnessed`: state a callee's `parm [..]` clause on the caller side even
+    /// at Watcom's positional default order, gated on the callee's own read witness
+    /// (`pragma::witnessed_parm_regs`). False = today's rule.
+    pub caller_parm_witnessed: bool,
 }
 
 /// The emit stage's state across functions: the facts, the options, the definition-side contract
@@ -179,7 +183,8 @@ pub struct Failed {
 
 impl EmitState {
     pub fn new(facts: ProgramFacts, opts: EmitOpts) -> EmitState {
-        EmitState { facts, opts, contracts: ContractTable::default(), caches: UpgradeCaches::default(), cleanup_undecided: 0 }
+        let contracts = ContractTable { witnessed: opts.caller_parm_witnessed, ..Default::default() };
+        EmitState { facts, opts, contracts, caches: UpgradeCaches::default(), cleanup_undecided: 0 }
     }
 
     /// Emit one function: the landed decompile under `catch_unwind`, the zap checker's upgrade,

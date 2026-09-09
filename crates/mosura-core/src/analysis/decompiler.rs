@@ -174,10 +174,14 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
             // Only where the compiler can declare one (`ProtoModel::custom_conventions`): under a
             // fixed ABI the convention's own lists are the prototype, and this override replaced
             // them with the body's read ORDER and first-read WIDTHS (ground truth `structval`).
+            let effects = callee_effects(program, spec, ctx, entry.offset, reg, &f);
+            // The read half is kept whatever the convention allows: it is the WITNESS the
+            // caller-side `parm` clause is gated on (`Funcdata::own_param_reads`), which is a
+            // question about this function's bytes, not about the model that describes it.
+            f.own_param_reads = effects.as_ref().map(|(_, reads)| reads.clone());
             if !f.proto_model.custom_conventions {
                 // nothing to recover
-            } else if let Some((writes, reads)) = callee_effects(program, spec, ctx, entry.offset, reg, &f)
-            {
+            } else if let Some((writes, reads)) = effects {
                 if !writes.is_empty() {
                     f.proto_model.output =
                         Some(crate::decompile::recover::recovered_output_list(&writes));

@@ -136,6 +136,94 @@ pub fn nondefault_parm_from_storages(
     Some(names.iter().map(|n| format!("[{n}]")).collect::<Vec<_>>().join(" "))
 }
 
+/// The `parm [..]` clause for an ordered register-storage list, rendered EVEN WHEN the list is
+/// Watcom's positional default — the witnessed form of [`nondefault_parm_from_storages`].
+/// `None` only when a storage is unmappable or is the frame/stack pointer.
+fn parm_from_storages_always(
+    storages: &[(u64, u32)],
+    table: &[(u64, u32, &'static str)],
+) -> Option<Vec<&'static str>> {
+    if storages.is_empty() {
+        return None;
+    }
+    let mut names = Vec::new();
+    for &(off, size) in storages {
+        let n = table.iter().find(|&&(o, sz, _)| o == off && sz == size)?;
+        if n.2 == "ebp" || n.2 == "esp" {
+            return None;
+        }
+        names.push(n.2);
+    }
+    Some(names)
+}
+
+/// The WITNESSED caller-side `parm [..]` clause (`emit.caller-parm=witnessed`,
+/// docs/tasklist-2026-09-08.md item 5).
+///
+/// A caller's declarator is `extern int f();`, so this clause is the only thing in the TU that
+/// pins the callee's ARITY. Today's rule suppresses it whenever the recovered ORDER happens to be
+/// Watcom's positional default, which throws the arity statement away with it — the second
+/// subject's operator measured the stated rate at 1.9% of call sites for that reason, and stating
+/// it at the default too took him to 5.1% with nothing stated wrong.
+///
+/// The suppression cannot simply be dropped. He simulated exactly that against 145 unambiguous
+/// ground truths: 108 WRONG. What makes the relaxation safe is a WITNESS from the callee's own
+/// bytes, and both halves of it are required (his confidence rule, part 2):
+///
+///   * every register the clause NAMES must be proven read-before-written, and
+///   * no register the clause OMITS may be proven read — a callee beginning `MOV EBP,EAX` takes a
+///     parameter that `parm [esi]` does not mention, so that clause is WITHDRAWN, not added.
+///
+/// `Funcdata::own_param_reads` is that proof, and it is `None` when the walk could not follow the
+/// callee (a branch or a call) — which withholds, because "not proven" is not "none".
+pub fn witnessed_parm_regs(
+    f: &crate::decompile::funcdata::Funcdata,
+    table: &[(u64, u32, &'static str)],
+) -> Option<String> {
+    let reg = f.spaces.by_name("register")?;
+    let slots = crate::decompile::printc::rendered_param_slots(f);
+    let mut storages = Vec::new();
+    for s in &slots {
+        // part 1: a whole register in the register space, or the clause is not backed
+        if s.addr.space != reg || s.size != 4 {
+            return None;
+        }
+        storages.push((s.addr.offset, s.size));
+    }
+    let reads: Vec<(u64, u32)> = f
+        .own_param_reads
+        .as_ref()?
+        .iter()
+        .filter(|(a, _)| a.space == reg)
+        .map(|(a, sz)| (a.offset, *sz))
+        .collect();
+    witnessed_parm_from_storages(&storages, &reads, table)
+}
+
+/// The decision behind [`witnessed_parm_regs`], over storage lists: the clause for `storages`
+/// when the proven read-before-write set `reads` names EXACTLY the argument registers the clause
+/// does — every named one proven, no omitted one proven. `None` withholds.
+pub fn witnessed_parm_from_storages(
+    storages: &[(u64, u32)],
+    reads: &[(u64, u32)],
+    table: &[(u64, u32, &'static str)],
+) -> Option<String> {
+    let names = parm_from_storages_always(storages, table)?;
+    // over the four watcall argument registers only: a callee reading ESI is not thereby taking
+    // an ESI parameter under this convention
+    let arg_names: std::collections::BTreeSet<&str> = ["eax", "edx", "ebx", "ecx"].into_iter().collect();
+    let named: std::collections::BTreeSet<&str> = names.iter().copied().collect();
+    let proven: std::collections::BTreeSet<&str> = reads
+        .iter()
+        .filter_map(|&(off, _)| table.iter().find(|&&(o, sz, _)| o == off && sz == 4).map(|t| t.2))
+        .filter(|n| arg_names.contains(n))
+        .collect();
+    if named.iter().any(|n| !arg_names.contains(n)) || named != proven {
+        return None;
+    }
+    Some(names.iter().map(|n| format!("[{n}]")).collect::<Vec<_>>().join(" "))
+}
+
 /// The default return register's family (EAX, AX, AL, AH): a value delivered there needs no
 /// `value` clause — it is Watcom's default.
 fn is_default_return(table: &[(u64, u32, &'static str)], off: u64) -> bool {
@@ -570,6 +658,10 @@ pub fn callee_pragmas(
 /// propagated (the caller's `parm caller []` comes from its own call spec).
 #[derive(Debug, Default, Clone)]
 pub struct ContractTable {
+    /// `emit.caller-parm=witnessed`: state a callee's `parm [..]` clause even when its recovered
+    /// order is Watcom's positional default, gated on the callee's own read witness
+    /// ([`witnessed_parm_regs`]). Default false = today's rule, the nondefault order only.
+    pub witnessed: bool,
     pub parm_map: std::collections::BTreeMap<u64, Option<(String, Vec<u32>)>>,
     pub caller_calls: std::collections::BTreeMap<u64, std::collections::BTreeMap<u64, Option<Vec<u32>>>>,
 }
@@ -580,7 +672,10 @@ impl ContractTable {
     pub fn record(&mut self, va: u64, f: &crate::decompile::funcdata::Funcdata, regs: &WatcomRegs, stack_decl: Option<String>) {
     self.parm_map.insert(
         va,
-        nondefault_parm_regs(&f, &regs.table).or(stack_decl).map(|decl| {
+        (if self.witnessed { witnessed_parm_regs(&f, &regs.table) } else { None })
+            .or_else(|| nondefault_parm_regs(&f, &regs.table))
+            .or(stack_decl)
+            .map(|decl| {
             let sizes = crate::decompile::printc::rendered_param_slots(&f)
                 .iter()
                 .map(|sl| sl.size)
@@ -800,6 +895,38 @@ mod tests {
         assert_eq!(value_clause(&r.table, ebx, 1), Some("value [bl]".into()), "a sub-register returns by its own name");
         assert_eq!(value_clause(&r.table, ebp, 4), None, "EBP is rejected by Watcom");
         assert_eq!(value_clause(&r.table, eax, 8), None, "a 64-bit pair is the default EDX:EAX");
+    }
+
+    /// The WITNESSED caller-side clause (`emit.caller-parm=witnessed`, item 5): stated at the
+    /// positional default too — the clause is the only thing pinning ARITY in a caller — but only
+    /// when the callee's own bytes prove every named register is read and no omitted one is. The
+    /// second half is the one that bites: a callee beginning `MOV EBP,EAX` reads EAX, so a clause
+    /// naming only ESI is WITHDRAWN rather than added (the second subject's func_0x00008051).
+    /// Dropping the witness entirely was measured at 108 wrong of 145 there, which is why the
+    /// relaxation is exactly one predicate and not the whole suppression.
+    #[test]
+    fn the_witnessed_parm_clause_needs_both_halves_of_the_read_witness() {
+        let r = regs();
+        let g = |n: &str| (off(&r.table, n), 4u32);
+        let (eax, edx, ebx, esi) = (g("eax"), g("edx"), g("ebx"), g("esi"));
+        let w = |st: &[(u64, u32)], rd: &[(u64, u32)]| witnessed_parm_from_storages(st, rd, &r.table);
+        // the order IS Watcom's default, so today's rule says nothing — and that silence is the
+        // arity statement being thrown away with the order statement
+        assert_eq!(nondefault_parm_from_storages(&[eax, edx], &r.table), None);
+        // witness agrees with the clause: stated anyway, for the arity
+        assert_eq!(w(&[eax, edx], &[eax, edx]), Some("[eax] [edx]".into()));
+        // a register the clause OMITS is proven read: WITHDRAWN (the func_0x00008051 case)
+        assert_eq!(w(&[esi], &[eax]), None, "a parameter the clause omits withdraws it");
+        assert_eq!(w(&[eax, edx], &[eax, edx, ebx]), None, "an omitted third parameter withdraws it");
+        // a register the clause NAMES is not proven read: withdrawn
+        assert_eq!(w(&[eax, edx], &[eax]), None, "an unproven parameter withdraws the clause");
+        // a non-argument register in the witness is not a parameter and does not withdraw
+        assert_eq!(w(&[eax, edx], &[eax, edx, esi]), Some("[eax] [edx]".into()), "ESI is not an argument register");
+        // a nondefault order is stated by both rules, and they agree
+        assert_eq!(w(&[edx, eax], &[eax, edx]), Some("[edx] [eax]".into()));
+        assert_eq!(nondefault_parm_from_storages(&[edx, eax], &r.table), Some("[edx] [eax]".into()));
+        // EBP is never argument storage: no clause, under either rule
+        assert_eq!(w(&[g("ebp")], &[g("ebp")]), None);
     }
 
     fn table() -> ContractTable {

@@ -36,7 +36,7 @@ pub static PASSES: Op = Op {
     doc: "the whole-program pre-passes of the recovered emit (tail-return marks, prototype pass, param-order evidence, global widths) as a program set; the survey emits under decompile.global-scope=standalone",
     since: "0.1",
     tier: Tier::Product,
-    params: &["program", keys::KNOBS_OFF, keys::DECOMPILE_GLOBAL_SCOPE, keys::DECOMPILE_PROTO_SCOPE, keys::PASSES_PASS_THROUGH],
+    params: &["program", keys::KNOBS_OFF, keys::DECOMPILE_GLOBAL_SCOPE, keys::DECOMPILE_PROTO_SCOPE, keys::PASSES_PASS_THROUGH, keys::EMIT_CALLER_PARM],
     result: "program_summary",
     cache: Cache::Pure { stage: Stage::Decompile, set: SetKind::Program },
     run: passes,
@@ -47,7 +47,7 @@ pub static PROGRAM_EMIT: Op = Op {
     doc: "the whole recovered emission (every emit entry's TU, after the caller-side callee-pragma post-pass) as a program set — the survey's `recovered/` tree; decompile.global-scope defaults to standalone here",
     since: "0.1",
     tier: Tier::Product,
-    params: &["program", keys::KNOBS_OFF, keys::DECOMPILE_GLOBAL_SCOPE, keys::DECOMPILE_PROTO_SCOPE, keys::PASSES_PASS_THROUGH, keys::EMIT_ARMS_OFF, EMIT_KEYS],
+    params: &["program", keys::KNOBS_OFF, keys::DECOMPILE_GLOBAL_SCOPE, keys::DECOMPILE_PROTO_SCOPE, keys::PASSES_PASS_THROUGH, keys::EMIT_CALLER_PARM, keys::EMIT_ARMS_OFF, EMIT_KEYS],
     result: "emission",
     cache: Cache::Pure { stage: Stage::Emit, set: SetKind::Program },
     run: program_emit,
@@ -58,7 +58,7 @@ pub static EMIT: Op = Op {
     doc: "one function's recovered translation unit (the compilable emission), from the program's passes set: format=tu (default) | reference | c | table:report; caller-side callee pragmas are the round's post-pass, not this op's",
     since: "0.1",
     tier: Tier::Product,
-    params: &["program", "entry", "format", keys::KNOBS_OFF, keys::DECOMPILE_GLOBAL_SCOPE, keys::DECOMPILE_PROTO_SCOPE, keys::PASSES_PASS_THROUGH, keys::EMIT_ARMS_OFF, EMIT_KEYS],
+    params: &["program", "entry", "format", keys::KNOBS_OFF, keys::DECOMPILE_GLOBAL_SCOPE, keys::DECOMPILE_PROTO_SCOPE, keys::PASSES_PASS_THROUGH, keys::EMIT_CALLER_PARM, keys::EMIT_ARMS_OFF, EMIT_KEYS],
     result: "text",
     cache: Cache::Pure { stage: Stage::Emit, set: SetKind::Function },
     run: emit,
@@ -205,7 +205,14 @@ fn emit_state<'s>(s: &'s mut Session, o: &Options, pk: &Key) -> Result<&'s mut E
         let arms_off: Vec<String> = o.arms_off();
         let st = EmitState::new(
             ProgramFacts { lang: EMIT_LANG, knobs, worlds, entries, regs, orders, widths },
-            EmitOpts { arms: vec![arm], rec_arm, arms_off, recovered: true, cons_probe: false },
+            EmitOpts {
+                arms: vec![arm],
+                rec_arm,
+                arms_off,
+                recovered: true,
+                cons_probe: false,
+                caller_parm_witnessed: o.get(keys::EMIT_CALLER_PARM)? == "witnessed",
+            },
         );
         s.emit_state = Some((passes_k, tag, st));
     }
