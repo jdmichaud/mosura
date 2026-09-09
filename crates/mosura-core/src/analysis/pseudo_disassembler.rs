@@ -197,6 +197,7 @@ impl PseudoDisassembler {
         let mut count: usize = 0;
         // `if (!entryPoint.isMemoryAddress()) return false;`
         if !program.memory.contains(entry_point) {
+            crate::debug!(crate::debug::Topic::Analysis, "pseudo {:#x}: refused — not a memory address", entry_point.offset);
             return (false, 0);
         }
         let mut body = AddressSet::new();
@@ -214,6 +215,7 @@ impl PseudoDisassembler {
         // (`memory.getLong(entryPoint) == 0`; a short read is the MemoryAccessException arm).
         let head = program.memory.read_window(entry_point, 8);
         if head.len() < 8 || head.iter().all(|&b| b == 0) {
+            crate::debug!(crate::debug::Topic::Analysis, "pseudo {:#x}: refused — starts with 00 bytes, or fewer than 8 readable (:673)", entry_point.offset);
             return (false, count);
         }
 
@@ -228,7 +230,10 @@ impl PseudoDisassembler {
                 let block = program.memory.block_at(t);
                 match block {
                     Some(b) if !b.is_initialized() && b.name() == "EXTERNAL" => {}
-                    _ => return (false, count),
+                    _ => {
+                        crate::debug!(crate::debug::Topic::Analysis, "pseudo {:#x}: refused — no instruction decodes at {:#x} (:706)", entry_point.offset, t.offset);
+                        return (false, count);
+                    }
                 }
                 target_list.retain(|a| *a != t);
                 target = next_target(&body, &mut untried_target_list);
@@ -254,6 +259,7 @@ impl PseudoDisassembler {
 
             // ":726 — check if we are getting into bad instruction runs"
             if repeat_tracker.exceeds_repeat_byte_pattern(&insn) {
+                crate::debug!(crate::debug::Topic::Analysis, "pseudo {:#x}: refused — a run of repeated instruction bytes at {:#x} (:726)", entry_point.offset, t.offset);
                 return (false, count);
             }
 
@@ -304,6 +310,7 @@ impl PseudoDisassembler {
                         // ":806 — if the jump target is the same as the fall-through.
                         // (Instructions with delay slots are allowed; x86 has none.)
                         if fall_thru == Some(*a) {
+                            crate::debug!(crate::debug::Topic::Analysis, "pseudo {:#x}: refused — the jump at {:#x} targets its own fall-through (:806)", entry_point.offset, t.offset);
                             return (false, count);
                         }
                         // ":812 — if this code jumps to an existing function, allow it.
@@ -343,6 +350,7 @@ impl PseudoDisassembler {
                     if self.respect_execute_flag && !exec_set.is_empty() && !exec_set.contains(*f) {
                         if let Some(block) = program.memory.block_at(*f) {
                             if block.is_read() && block.name() != "EXTERNAL" {
+                                crate::debug!(crate::debug::Topic::Analysis, "pseudo {:#x}: refused — {:#x} flows into non-executable memory at {:#x} (:850)", entry_point.offset, t.offset, f.offset);
                                 return (false, count);
                             }
                         }
@@ -360,6 +368,7 @@ impl PseudoDisassembler {
         for t in target_list {
             if body.contains(t) {
                 if !instr_starts.contains(t) {
+                    crate::debug!(crate::debug::Topic::Analysis, "pseudo {:#x}: refused — a jump lands inside an instruction, at {:#x} (:881)", entry_point.offset, t.offset);
                     return (false, count);
                 }
             } else if self.max_instructions.get() == 0 {
@@ -380,6 +389,7 @@ impl PseudoDisassembler {
             );
             return (ok, count);
         }
+        crate::debug!(crate::debug::Topic::Analysis, "pseudo {:#x}: refused — the walk never reached a return (:899; must_terminate={must_terminate}, terminated={did_terminate}, called a function={did_call_valid_subroutine})", entry_point.offset);
         (false, count)
     }
 
@@ -397,21 +407,24 @@ impl PseudoDisassembler {
     ) -> bool {
         // ":960 — check that the body does not wander into non-executable memory.
         if self.respect_execute_flag && !exec_set.is_empty() && !body.subtract(exec_set).is_empty() {
+            crate::debug!(crate::debug::Topic::Analysis, "pseudo {:#x}: refused — the body wanders into non-executable memory (:960)", entry.offset);
             return false;
         }
 
         // ":969 — existing defined Data anywhere in the body disqualifies it.
-        if program.defined_data.iter().any(|(a, _, len)| {
+        if let Some((a, ty, _)) = program.defined_data.iter().find(|(a, _, len)| {
             let last = a.offset + u64::from((*len).max(1)) - 1;
             body.ranges().any(|r| r.space == a.space && a.offset <= r.max && last >= r.min)
         }) {
+            crate::debug!(crate::debug::Topic::Analysis, "pseudo {:#x}: refused — defined data `{}` at {:#x} inside the body (:969)", entry.offset, ty, a.offset);
             return false;
         }
 
         // ":973 — don't allow offcut references (a reference into the body that is not an
         // instruction start). `canHaveOffcutEntry` is the ARM/Thumb low-bit mode; x86 is false.
         let strictly_body = body.subtract(starts);
-        if !program.reference_manager.destinations_in(&strictly_body).is_empty() {
+        if let Some(d) = program.reference_manager.destinations_in(&strictly_body).first() {
+            crate::debug!(crate::debug::Topic::Analysis, "pseudo {:#x}: refused — an off-cut reference into the body, to {:#x} (:973)", entry.offset, d.offset);
             return false;
         }
 
@@ -426,17 +439,23 @@ impl PseudoDisassembler {
             .code_units()
             .any(|(a, u)| matches!(u, crate::analysis::program::CodeUnit::Instruction { .. }) && body.contains(a))
         {
+            crate::debug!(crate::debug::Topic::Analysis, "pseudo {:#x}: refused — existing instructions inside the body (:986)", entry.offset);
             return false;
         }
 
         // ":994 — don't allow one instruction.
         if !did_call_valid_subroutine && starts.min_address() == starts.max_address() {
+            crate::debug!(crate::debug::Topic::Analysis, "pseudo {:#x}: refused — a single instruction (:994)", entry.offset);
             return false;
         }
 
         // ":999 — any internal reference destination that is not the entry point makes it a
         // bad subroutine.
-        program.reference_manager.destinations_in(body).iter().all(|d| *d == entry)
+        if let Some(d) = program.reference_manager.destinations_in(body).iter().find(|d| **d != entry) {
+            crate::debug!(crate::debug::Topic::Analysis, "pseudo {:#x}: refused — a reference into the body at {:#x} that is not the entry (:999)", entry.offset, d.offset);
+            return false;
+        }
+        true
     }
 }
 
