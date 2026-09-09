@@ -752,6 +752,28 @@ fn run(cli: Cli) -> Res<()> {
                 // on a second subject against ~1 s cached). Scope with -o round.scope=... .
                 let t = app.call("program.equiv", &extra)?;
                 app.show(&t)?;
+                // THE SCOPE, said out loud (docs/tasklist-2026-09-08.md item 7): the default
+                // `round.scope=user` leaves library and asm units out, and a census that does
+                // not know it is compared against one that does (590 rows read as 769).
+                let scope = app.opts.get("round.scope").unwrap_or_else(|_| "user".to_string());
+                if let Ok(em) = app.call("program.emit", &[]) {
+                    let (mut total, mut library, mut asm) = (0u64, 0u64, 0u64);
+                    if let Ok(kind) = em.column_index("kind") {
+                        for r in 0..em.rows() {
+                            total += 1;
+                            match em.str(r, kind).unwrap_or("") {
+                                "library" => library += 1,
+                                "asm" => asm += 1,
+                                _ => {}
+                            }
+                        }
+                    }
+                    eprintln!(
+                        "equiv --all: scope {scope} — {} of {total} functions ({library} library, {asm} asm){}",
+                        t.rows(),
+                        if scope == "all" { String::new() } else { "; -o round.scope=all for every function".to_string() }
+                    );
+                }
                 return Ok(());
             }
             let entry = format!("{:#x}", targets(&mut app, func, false)?[0]);
