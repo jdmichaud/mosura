@@ -876,7 +876,29 @@ impl<'a> PrintC<'a> {
                     // named `EAX` "RAX" (measured: 14 such names in the subject corpus, where
                     // the oracle prints `extraout_ECX` / `extraout_CL`).
                     let r = self.f.register_name(vn.loc.offset, vn.size).unwrap_or("var");
-                    return format!("extraout_{r}");
+                    // UNIQUE PER VALUE, not per register (docs/tasklist-2026-09-08.md item 9).
+                    // Each call sets the register afresh, so two calls in one function create two
+                    // distinct values; naming both `extraout_EBX` makes the C read ONE object
+                    // where the machine has two — and the emitter then declares one file-scope
+                    // variable for both, so a read can even precede the call that sets it.
+                    // Ghidra keeps a scope's names distinct (`ScopeInternal::makeNameUnique`,
+                    // database.cc); mirror that: the first value keeps the bare name (so a
+                    // function with one creation is unchanged), a later DISTINCT high variable
+                    // takes `extraout_EBX_1`. Values the merge joined share one high, hence one
+                    // name, which is correct — they are one value.
+                    let base = format!("extraout_{r}");
+                    let id = self.h.high(v);
+                    if let Some(n) = self.names.get(&id) {
+                        return n.clone();
+                    }
+                    let mut name = base.clone();
+                    let mut k = 1;
+                    while self.names.values().any(|n| *n == name) {
+                        name = format!("{base}_{k}");
+                        k += 1;
+                    }
+                    self.names.insert(id, name.clone());
+                    return name;
                 }
             }
         }
@@ -3751,10 +3773,22 @@ impl<'a> PrintC<'a> {
         None
     }
 
-    /// A label name for a goto target basic block, by its entry address.
+    /// A label name for a goto target basic block, by its entry address — INJECTIVE over blocks.
+    ///
+    /// A REP-prefixed string instruction (`repne scasb`) is address-level in the x86 spec
+    /// (`if (ECX==0) goto inst_next; … if (!ZF) goto inst_start;`), so its p-code is two basic
+    /// blocks at ONE address — the ECX test and the scan body. When the structurer leaves both as
+    /// goto targets (a subject that jumps into the middle of such a loop, not compiled code), both
+    /// wanted `LAB_<addr>` and the emitted C defined one label twice (Watcom E1017;
+    /// docs/tasklist-2026-09-08.md item 1). Ghidra collides the same way (`emitLabel` names a block
+    /// from `getEntryAddr`, printc.cc:3164) and never notices because nothing compiles its output.
+    ///
+    /// The n-th block (in block order) sharing a start address gets `LAB_<addr>_<n>` for n>0; the
+    /// first keeps the bare `LAB_<addr>`, so a function with no such collision is byte-identical.
+    /// Every definition and every goto reaches this with the TARGET block id, so they agree by
+    /// construction.
     pub(crate) fn lab_name(&self, b: BlockId) -> String {
-        let addr = self.f.block_range(b).map(|(a, _)| a).unwrap_or(0);
-        format!("LAB_{addr:08x}")
+        block_label_name(self.f, b)
     }
 }
 
@@ -4323,6 +4357,18 @@ fn widen_to_storage(ty: &Datatype, width: u32) -> Datatype {
 /// This is what every caller outside the byte-exact search wants, and what the whole test suite
 /// uses: with [`EmitChoices::default`] the output is what it was before emission became
 /// parameterized, so the port is unaffected by θ existing.
+/// The label name for a basic block — [`PrintC::lab_name`]'s rule as a free function, so the
+/// collision case can be pinned on a synthetic graph.
+pub(crate) fn block_label_name(f: &Funcdata, b: BlockId) -> String {
+    let addr = f.block_range(b).map(|(a, _)| a).unwrap_or(0);
+    let n = (0..b.0).filter(|&o| f.block_range(BlockId(o)).map(|(a, _)| a) == Some(addr)).count();
+    if n == 0 {
+        format!("LAB_{addr:08x}")
+    } else {
+        format!("LAB_{addr:08x}_{n}")
+    }
+}
+
 pub fn print_c(f: &Funcdata) -> String {
     print_c_with(f, &EmitChoices::default())
 }
@@ -5635,5 +5681,34 @@ mod tests {
         assert_eq!(push_char_constant(0x80, 1), None);
         assert_eq!(push_char_constant(0xff, 1), None);
     }
-}
 
+    /// Two basic blocks at ONE address — what a REP-prefixed string instruction's p-code is (the
+    /// ECX test and the scan body) — must not both be named `LAB_<addr>`: the emitted C then
+    /// defines one label twice and no compiler accepts it (docs/tasklist-2026-09-08.md item 1).
+    /// The first keeps the bare name, so a function without the collision is byte-identical.
+    #[test]
+    fn two_blocks_at_one_address_get_distinct_labels() {
+        use crate::decompile::block::{BlockBasic, BlockId};
+        use crate::decompile::space::{Address, SpaceManager};
+        use crate::decompile::SeqNum;
+        let spaces = SpaceManager::standard();
+        let ram = spaces.by_name("ram").unwrap();
+        let at = |o: u64| Address::new(ram, o);
+        let mut f = Funcdata::new("t", at(0x230c0), spaces);
+        let c = f.new_const(4, 0);
+        // two blocks whose ops sit at 0x230c4 (the REP pair), one at 0x230d0
+        let mut mk = |f: &mut Funcdata, pc: u64, uniq: u32| {
+            let op = f.new_op(OpCode::Copy, SeqNum { pc: at(pc), uniq }, vec![c]);
+            let mut b = BlockBasic::default();
+            b.ops.push(op);
+            b
+        };
+        let b0 = mk(&mut f, 0x230c4, 0);
+        let b1 = mk(&mut f, 0x230c4, 1);
+        let b2 = mk(&mut f, 0x230d0, 2);
+        f.set_blocks(vec![b0, b1, b2]);
+        assert_eq!(block_label_name(&f, BlockId(0)), "LAB_000230c4", "the first keeps the bare name");
+        assert_eq!(block_label_name(&f, BlockId(1)), "LAB_000230c4_1", "the second is distinct");
+        assert_eq!(block_label_name(&f, BlockId(2)), "LAB_000230d0", "an unshared address is unchanged");
+    }
+}
