@@ -1,0 +1,14 @@
+# mosura-ground-truth v1 program=codetable2 compiler=watcom arch=x86-32 lang=x86:LE:32:default options=switch-table-refs
+# derived-from=codetable2.watcom-x86-32.norm via=nm+objdump (build artifact, NOT Ghidra)
+compiler watcom
+entry 08049000
+func 08049000 0 _cstart_ code
+func 08049010 0 dispatch2_ code
+func 0804902f 0 ent0_ code
+func 0804903a 0 ent1_ code
+func 08049040 0 ent2_ code
+func 08049046 0 deep2_ code
+func 0804904c 0 jumper2_ code
+func 0804909e 0 main_ code
+switch 8049052
+switch 804906c

@@ -421,6 +421,11 @@ if [ -x "$WATROOT/binl/wcc386" ] && have objcopy; then
   # References" option, which Ghidra ships OFF: under the default nothing here past the naming
   # instructions is reachable, by design (src/codetable_cstart.asm property 2).
   build_watcom codetable "-oc" "-s" "switch-table-refs"
+  # codetable2: the item-12 FOLLOW-ON closure gaps (docs/tasklist-2026-09-08.md §12) — a table entry
+  # whose first instruction is a call (its fall-through and callee must be recovered), and a switch
+  # nested inside an arm of another switch (the analyzer must revisit code it decoded itself). Same
+  # option as codetable.
+  build_watcom codetable2 "-oc" "-s" "switch-table-refs"
   # inlineparam: the INLINE CALL PARAMETER thunk repro (<subject-profile>/notes/function-discovery-backlog.md §9 #5),
   # the blocker holding held-patches/listing-command-channel.patch. The whole fixture is the
   # `_cstart.asm` — the idiom needs a callee that pops its own return address and reads the word

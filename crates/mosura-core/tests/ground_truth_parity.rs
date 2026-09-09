@@ -2676,3 +2676,89 @@ fn switch_table_references() {
         arms.len()
     );
 }
+
+/// The item-12 FOLLOW-ON closure (docs/tasklist-2026-09-08.md §12) on the self-compiled `codetable2`
+/// fixture: a table entry whose first instruction is a `call` (its callee and fall-through must be
+/// recovered), and a switch NESTED inside an arm of another switch (the analyzer must resolve a
+/// table the constant propagator never named). Three legs:
+///
+///  - DEFAULT (option off): the unguarded switches are not resolved and the call-table entries are
+///    not reached — the attribution leg, which is also the first subject's default path;
+///  - option ON: all 8 real functions recovered; `ent0_ -> deep2_` is a call and `deep2_` a
+///    function (W1's recovery); the nested jump resolves to three arms (W2);
+///  - option ON with CONSTANT PROPAGATION DISABLED: the nested jump STILL resolves — reproducing
+///    the operator's condition, where the propagator never walked the arm so no data reference to
+///    the nested table was ever made, and only reading the displacement off the instruction can
+///    resolve it.
+#[test]
+fn switch_table_closure() {
+    use mosura_core::analysis::program::CodeUnit;
+    let bin = ground_truth_dir().join("codetable2.watcom-x86-32");
+    let truth_path = ground_truth_dir().join("codetable2.watcom-x86-32.truth");
+    if !bin.exists() || !truth_path.exists() {
+        eprintln!("skip switch_table_closure: {} absent", bin.display());
+        return;
+    }
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    assert_eq!(truth.options, ["switch-table-refs"], "the fixture declares the option it is verified under");
+    let entry_of = |name: &str| -> u64 {
+        truth.funcs.iter().find(|(_, n)| n == name).map(|(a, _)| *a).unwrap_or_else(|| panic!("truth lists {name}"))
+    };
+    let (deep2, ent0, jumper2) = (entry_of("deep2_"), entry_of("ent0_"), entry_of("jumper2_"));
+    // the two dispatch instructions the truth records, outer then nested (sorted by address).
+    let mut switches = truth.switches.clone();
+    switches.sort_unstable();
+    let (outer_jmp, nested_jmp) = (switches[0], switches[1]);
+    let cspec = Some("watcom");
+    let computed_jumps_from = |p: &mosura_core::analysis::program::Program, from: u64| -> usize {
+        p.reference_manager
+            .refs_from(Address::new(p.default_space, from))
+            .filter(|r| r.ref_type.name() == "COMPUTED_JUMP")
+            .count()
+    };
+
+    // (A) DEFAULT — the unguarded switches are invisible.
+    let off = analysis::analyze_file_with(&bin, &Knobs::default().with_x86_32_cspec(cspec)).expect("analyze off");
+    let ram = off.default_space;
+    let at = |o: u64| Address::new(ram, o);
+    assert!(off.function_manager.function_at(at(deep2)).is_none(), "deep2_ reached under the default");
+    assert_eq!(computed_jumps_from(&off, outer_jmp), 0, "outer switch resolved under the default");
+    assert_eq!(computed_jumps_from(&off, nested_jmp), 0, "nested switch resolved under the default");
+
+    // (B) option ON — full recovery.
+    let on = Knobs::default().with_x86_32_cspec(cspec).with_switch_table_refs(true);
+    let prog = analysis::analyze_file_with(&bin, &on).expect("analyze on");
+    // every real function recovered
+    for (a, n) in &truth.funcs {
+        assert!(prog.function_manager.function_at(at(*a)).is_some(), "{n} @ {a:#x} missing with the option on");
+    }
+    // W1's recovery: deep2_ is a function reached by ent0_'s call, and ent0_'s fall-through decoded.
+    assert!(
+        prog.reference_manager.refs_to(at(deep2)).any(|r| r.ref_type.name() == "UNCONDITIONAL_CALL" && r.from.offset == ent0),
+        "no ent0_ -> deep2_ call"
+    );
+    let ent0_len = match prog.listing.code_unit_at(at(ent0)) {
+        Some(CodeUnit::Instruction { length, .. }) => u64::from(*length),
+        other => panic!("ent0_ is not an instruction: {other:?}"),
+    };
+    assert!(
+        matches!(prog.listing.code_unit_at(at(ent0 + ent0_len)), Some(CodeUnit::Instruction { .. })),
+        "ent0_'s fall-through past the call was not decoded"
+    );
+    // W2: the nested switch resolves to three arms.
+    assert_eq!(computed_jumps_from(&prog, nested_jmp), 3, "nested switch did not resolve to 3 arms");
+    assert_eq!(computed_jumps_from(&prog, outer_jmp), 3, "outer switch did not resolve to 3 arms");
+    let _ = jumper2;
+
+    // (C) option ON, CONSTANT PROPAGATION OFF — the nested switch must still resolve, off the
+    // instruction's own operand, because no data reference to the nested table exists.
+    let ablate = on.clone().with_disabled_analyzers(Some("Constant Propagation"));
+    let no_cp = analysis::analyze_file_with(&bin, &ablate).expect("analyze on, no const-prop");
+    assert_eq!(
+        computed_jumps_from(&no_cp, nested_jmp),
+        3,
+        "with the constant propagator off the nested switch did not resolve — the analyzer is not \
+         reading the table displacement off the instruction (W2)"
+    );
+    eprintln!("codetable2 gate: default hides both switches; option on recovers deep2_ + both switches; nested resolves with const-prop off");
+}
