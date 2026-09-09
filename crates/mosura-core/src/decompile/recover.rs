@@ -949,7 +949,12 @@ fn check_output_trial_use(f: &mut Funcdata) -> u32 {
         // the EAX trial is kept on the bytes' word — every return path writes EAX right
         // before its epilogue — where `ancestorOpUse` would discard a value that is also
         // consumed elsewhere (the buffer a function fills AND returns).
-        let forced = f.tail_return_write && {
+        // MARK `pass_through_return` likewise: every return path ends in a direct CALL to a
+        // callee that returns in EAX, so EAX at the RET is that callee's value — which
+        // `ancestorOpUse` discards because its ancestor is a call ("A call is never a good
+        // indication of a single op use", funcdata_varnode.cc). The whole-program pass supplies
+        // what the walk cannot see: that the callee returns anything at all.
+        let forced = (f.tail_return_write || f.pass_through_return) && {
             let t = &f.active_output.as_ref().unwrap().trial[ti];
             Some(t.addr.space) == f.spaces.by_name("register") && t.addr.offset == 0 && t.size == 4
         };

@@ -761,6 +761,40 @@ pub fn tail_return_write_from_evidence(insns: &[NormInsn]) -> bool {
         })
 }
 
+/// The function PASSES a callee's result THROUGH: on every return path the last instruction
+/// before the epilogue (`POP` / `LEAVE` / `MOV ESP,EBP` / `ADD ESP,n` up to the `RET`) is a
+/// direct `CALL`, so EAX at the `RET` is whatever that callee left there. Ghidra types such a
+/// function `void` — its return-trial walk refuses a CALL output as a value (`ancestorOpUse`,
+/// funcdata_varnode.cc: "A call is never a good indication of a single op use") — and prints
+/// `g(); return;` for what is `return g();` (43 functions of the first subject, 30 of the
+/// second; docs/tasklist-2026-09-08.md item 10). Returns the callees, one per return path;
+/// `None` when any path ends otherwise (a computed call, a write after the call, no return).
+/// Whether they RETURN something is the whole-program pass's question, not the bytes' — see
+/// [`crate::analysis::interface::recover_prototypes_fixpoint`], which marks the function only
+/// when every callee's recovered prototype has the EAX output.
+pub fn pass_through_callees_from_evidence(insns: &[NormInsn]) -> Option<Vec<u64>> {
+    let rets: Vec<usize> = insns.iter().enumerate().filter(|(_, x)| x.text.starts_with("RET")).map(|(i, _)| i).collect();
+    if rets.is_empty() {
+        return None;
+    }
+    let mut callees = Vec::with_capacity(rets.len());
+    for &r in &rets {
+        let mut j = r;
+        let mut found = None;
+        while j > 0 {
+            j -= 1;
+            let t = insns[j].text.as_str();
+            if t.starts_with("POP ") || t == "LEAVE" || t == "MOV ESP,EBP" || t.starts_with("ADD ESP,") {
+                continue;
+            }
+            found = t.strip_prefix("CALL 0x").and_then(|h| u64::from_str_radix(h, 16).ok());
+            break;
+        }
+        callees.push(found?);
+    }
+    Some(callees)
+}
+
 /// The function returns FAR: its return instructions are `RETF` (the subject's FUN_00058840).
 pub fn far_return_from_evidence(insns: &[NormInsn]) -> bool {
     let rets: Vec<&NormInsn> = insns.iter().filter(|x| x.text.starts_with("RET")).collect();
@@ -1967,6 +2001,21 @@ pub fn recover(
 
 #[cfg(test)]
 mod tests {
+
+    /// The pass-through shape: every return path's last instruction before the epilogue is a
+    /// direct CALL, so EAX at the RET is that callee's value (docs/tasklist-2026-09-08.md item 10).
+    /// A write after the call, an indirect call, or no return at all is not the shape.
+    #[test]
+    fn pass_through_callees_are_read_off_every_return_path() {
+        // call 0x1100 ; pop ebx ; ret
+        assert_eq!(pass_through_callees_from_evidence(&lift("e8fb0000005bc3")), Some(vec![0x1100]));
+        // call 0x1100 ; mov eax,ebx ; ret — the call's value is overwritten before the return
+        assert_eq!(pass_through_callees_from_evidence(&lift("e8fb00000089d8c3")), None);
+        // call ebx ; ret — an indirect call names no callee
+        assert_eq!(pass_through_callees_from_evidence(&lift("ffd3c3")), None);
+        // no return instruction at all
+        assert_eq!(pass_through_callees_from_evidence(&lift("90")), None);
+    }
     use super::*;
     use crate::recompile::insn::{NoReloc, normalize};
 

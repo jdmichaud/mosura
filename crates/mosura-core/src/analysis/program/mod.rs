@@ -145,6 +145,13 @@ pub struct Program {
     /// gate discards when the value is also used elsewhere (`recover::check_output_trial_use`,
     /// `buildconfig::tail_return_write_from_evidence`).
     pub tail_return_writes: std::collections::HashSet<u64>,
+    /// Functions that PASS a callee's result THROUGH: every return path ends in a direct call to
+    /// a callee whose recovered prototype returns in EAX, so EAX at the `RET` is that callee's
+    /// value. Ghidra types such a function `void` — its return-trial walk refuses a CALL output
+    /// as a value (`ancestorOpUse`, funcdata_varnode.cc) — and prints `g(); return;` for what is
+    /// `return g();`. Set by [`crate::analysis::interface::mark_pass_through_returns`] from the
+    /// bytes plus the whole-program prototypes, read by `recover::check_output_trial_use`.
+    pub pass_through_returns: std::collections::HashSet<u64>,
     /// The call-site EVIDENCE the pass collected per CALLEE: what every analyzed call to it says
     /// about its returned pointer and slot-0 argument (`analysis::sret::CallEvidence`).
     pub sret_callers: std::collections::HashMap<u64, Vec<crate::analysis::sret::CallEvidence>>,
@@ -230,6 +237,7 @@ impl Program {
             recovered_protos: std::collections::HashMap::new(),
             recovered_sret: std::collections::HashMap::new(),
             tail_return_writes: std::collections::HashSet::new(),
+            pass_through_returns: std::collections::HashSet::new(),
             sret_callers: std::collections::HashMap::new(),
             proto_scope: None,
             noreturn_functions: std::collections::HashSet::new(),

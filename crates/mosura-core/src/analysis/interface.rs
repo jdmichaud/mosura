@@ -252,6 +252,67 @@ pub fn mark_tail_return_writes(prog: &mut Program, lang: &str, probe: &[u64]) ->
         TailReturnMarks { marked: prog.tail_return_writes.len(), probed }
 }
 
+/// Mark the functions that PASS a callee's result through (`Program::pass_through_returns`):
+/// every return path ends in a direct `CALL` (the bytes' half,
+/// [`crate::recompile::buildconfig::pass_through_callees_from_evidence`]) to a callee that
+/// RETURNS IN EAX (the whole-program half, `Program::recovered_protos` — so this must run after
+/// [`install_prototypes`]). Ghidra types such a function `void`; the mark makes its own EAX
+/// output trial survive, so it recovers the value it hands on.
+///
+/// A fixpoint over the marks alone, no re-decompiling: a marked function itself returns in EAX,
+/// so a chain (`a` tail-calls `b` tail-calls `c`) resolves from `c` outward in as many rounds as
+/// the chain is deep. Returns how many functions are marked.
+pub fn mark_pass_through_returns(prog: &mut Program, lang: &str) -> usize {
+    let Some(reg) = prog.spaces.by_name("register") else { return 0 };
+    // EAX is the register space's offset 0, the same slot the output trial is tested at.
+    let returns_in_eax = |p: &FuncProto| {
+        p.output.as_ref().is_some_and(|o| o.addr.space == reg && o.addr.offset == 0 && o.size == 4)
+    };
+    let entry_offs: std::collections::BTreeSet<u64> =
+        prog.function_manager.functions().map(|f| f.entry.offset).collect();
+    // the bytes' half, once per function
+    let mut tails: Vec<(u64, Vec<u64>)> = Vec::new();
+    for &va in &entry_offs {
+        let next = entry_offs.range(va + 1..).next().copied().unwrap_or(va + 0x1000);
+        let end = prog
+            .function_manager
+            .function_at(crate::decompile::space::Address::new(prog.default_space, va))
+            .and_then(|f| f.body().max_address())
+            .map_or(next, |a| (a.offset + 1).min(next))
+            .max(va + 1);
+        let region = prog
+            .memory
+            .read_window(crate::decompile::space::Address::new(prog.default_space, va), (end - va) as usize);
+        let Ok(insns) = crate::recompile::insn::normalize(lang, &region, va, &crate::recompile::insn::NoReloc)
+        else {
+            continue;
+        };
+        if let Some(callees) = crate::recompile::buildconfig::pass_through_callees_from_evidence(&insns) {
+            tails.push((va, callees));
+        }
+    }
+    // the whole-program half, to a fixpoint over the marks
+    loop {
+        let mut added = 0usize;
+        for (va, callees) in &tails {
+            if prog.pass_through_returns.contains(va) {
+                continue;
+            }
+            let all_return = callees.iter().all(|c| {
+                prog.pass_through_returns.contains(c)
+                    || prog.recovered_protos.get(c).is_some_and(returns_in_eax)
+            });
+            if all_return {
+                prog.pass_through_returns.insert(*va);
+                added += 1;
+            }
+        }
+        if added == 0 {
+            return prog.pass_through_returns.len();
+        }
+    }
+}
+
 /// Install the whole-program prototypes on the program (`Program::recovered_protos`): every
 /// function's, or the probe scope's only. Returns how many.
 pub fn install_prototypes(prog: &mut Program, scope: Option<&HashSet<u64>>) -> usize {

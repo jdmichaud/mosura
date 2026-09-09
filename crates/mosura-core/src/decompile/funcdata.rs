@@ -236,6 +236,9 @@ pub struct Funcdata {
     /// value's other uses (`recover::check_output_trial_use`; the subject's FUN_0004984c returns the
     /// buffer it filled, which Ghidra prints as `void`).
     pub tail_return_write: bool,
+    /// This function hands a callee's result through: its EAX output trial is kept even though
+    /// the value's ancestor is a CALL (`Program::pass_through_returns`).
+    pub pass_through_return: bool,
 
     /// Register offsets this function SAVES AND RESTORES (a `push`/`pop` pair). They are
     /// callee-saved storage, never parameters — see `recover_input_params`' custom-register branch.
@@ -454,6 +457,7 @@ impl Funcdata {
             narrow_params: Default::default(),
             extra_stack_params: 0,
             tail_return_write: false,
+            pass_through_return: false,
             own_saved: None,
             not_mapped: super::space::RangeList::default(),
             call_guards_active: false,

@@ -110,6 +110,8 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
         f.knobs = program.knobs.clone();
         // the survey's tail-return-write MARK (see `Program::tail_return_writes`)
         f.tail_return_write = program.tail_return_writes.contains(&entry.offset);
+        // the pass-through-return MARK (see `Program::pass_through_returns`)
+        f.pass_through_return = program.pass_through_returns.contains(&entry.offset);
         // The uninitialized blocks (`.bss`) are loaded memory too — a constant inside one is a
         // data pointer (`ActionConstantPtr` → `&xRam…`), not an integer.
         f.uninitialized_ranges = program

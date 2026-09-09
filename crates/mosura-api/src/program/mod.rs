@@ -558,12 +558,13 @@ pub fn freeze(p: &Program, opts_tag: &str) -> TableSet {
     }
     set.insert("flow_overrides", b.finish(false));
 
-    // facts: tail-return writes (kind 0), sorted
-    let mut tr: Vec<u64> = p.tail_return_writes.iter().copied().collect();
+    // facts: tail-return writes (kind 0) and pass-through returns (kind 1), sorted
+    let mut tr: Vec<(u64, u8)> = p.tail_return_writes.iter().map(|&a| (a, 0u8)).collect();
+    tr.extend(p.pass_through_returns.iter().map(|&a| (a, 1u8)));
     tr.sort_unstable();
     let mut b = TableBuilder::new(&FACTS);
-    for a in tr {
-        b.row().u64(a).u8(0).str("");
+    for (a, kind) in tr {
+        b.row().u64(a).u8(kind).str("");
     }
     set.insert("facts", b.finish(true));
 
@@ -746,8 +747,14 @@ pub fn thaw(set: &TableSet, knobs: Knobs, settings: &DecompileSettings) -> Resul
     }
     let fa = set.table("facts")?;
     for r in 0..fa.rows() {
-        if fa.u64(r, 1)? == 0 {
-            p.tail_return_writes.insert(fa.u64(r, 0)?);
+        match fa.u64(r, 1)? {
+            0 => {
+                p.tail_return_writes.insert(fa.u64(r, 0)?);
+            }
+            1 => {
+                p.pass_through_returns.insert(fa.u64(r, 0)?);
+            }
+            _ => {}
         }
     }
     // protos
