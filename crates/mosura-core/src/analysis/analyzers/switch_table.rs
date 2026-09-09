@@ -202,7 +202,39 @@ impl SwitchTableAnalyzer {
             0,
             MINIMUM_SAFE_ADDRESS,
             OPTION_DEFAULT_RELOCATION_GUIDE_ENABLED,
+            true, // W1: bound the run at its own smallest target — mosura's async disassembly cannot
+                  // stop it the way Ghidra's synchronous per-entry disassembleTarget does
         )
+    }
+
+    /// The table displacement(s) an indexed computed jump/call names in its OWN operand — the
+    /// `const` inputs to the `INT_ADD` that forms `[T + reg*scale]`, kept when they are a mapped
+    /// address at or above the minimum. This is the same value the constant propagator turns into
+    /// a DATA reference, read here directly so the analyzer does not depend on the propagator
+    /// having walked this instruction (it does not walk a nested jump inside a switch arm — W2).
+    fn table_tops_from_operand(&self, program: &Program, site: Address) -> Vec<Address> {
+        let window = program.memory.read_window(site, MAX_INSN_LEN as usize);
+        let Some(insn) = self.spec.disassemble_ctx(&window, site.offset, self.ctx).into_iter().next()
+        else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for op in &insn.ops {
+            if OpCode::from_u32(op.opcode) != Some(OpCode::IntAdd) {
+                continue;
+            }
+            for a in &op.ins {
+                if let PArg::Var(v) = a {
+                    if v.space == "const" && v.offset >= MINIMUM_SAFE_ADDRESS {
+                        let addr = Address::new(self.ram, v.offset);
+                        if program.memory.contains(addr) && !out.contains(&addr) {
+                            out.push(addr);
+                        }
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// `AddressTable.createSwitchTable(program, start_inst, opindex, flagNewCode, monitor)`
@@ -401,15 +433,26 @@ impl Analyzer for SwitchTableAnalyzer {
             let Some(ftype) = self.flow_type(program, site) else { continue };
             // :267 — the references this instruction carries, as of now: the snapshot the loop
             // iterates.
-            let refs: Vec<(Address, RefType)> =
-                program.reference_manager.refs_from(site).map(|r| (r.to, r.ref_type)).collect();
-            let mut checked: HashSet<u64> = HashSet::new();
-            for (target, rt) in refs {
-                // :274-:305 — flow references have their own arms (the external jump and the thunk
-                // check live in their own analyzers; the computed-call arm: module doc).
-                if rt.is_flow() {
-                    continue;
+            // :267 — the DATA references this instruction carries, plus (W2) the table
+            // displacement read straight from the instruction's own operand. The constant
+            // propagator does not follow COMPUTED_JUMP edges into a switch's arms, so a nested
+            // `jmp [T2 + reg*4]` inside an arm this analyzer only just decoded may carry no DATA
+            // reference to T2 at all — its table was never named. Reading the displacement from
+            // the instruction makes the analyzer self-sufficient there; where the DATA ref does
+            // exist the two agree and dedup. (docs/tasklist-2026-09-08.md item 12, W2.)
+            let mut candidates: Vec<Address> = program
+                .reference_manager
+                .refs_from(site)
+                .filter(|r| !r.ref_type.is_flow())
+                .map(|r| r.to)
+                .collect();
+            for t in self.table_tops_from_operand(program, site) {
+                if !candidates.contains(&t) {
+                    candidates.push(t);
                 }
+            }
+            let mut checked: HashSet<u64> = HashSet::new();
+            for target in candidates {
                 // :311 `checkedTargets`; :317-:323 a memory reference into mapped memory.
                 if !checked.insert(target.offset) || !program.memory.contains(target) {
                     continue;

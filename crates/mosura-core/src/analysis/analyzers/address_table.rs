@@ -165,6 +165,7 @@ impl AddressTable {
         skip_amount: u64,
         min_address_offset: u64,
         use_relocation_table: bool,
+        bound_run_at_target: bool,
     ) -> Option<AddressTable> {
         // :1051 — "if the address doesn't start on the processor's instruction alignment it
         // shouldn't be the start of a table". Every caller here passes alignment >= 1, so the
@@ -190,6 +191,34 @@ impl AddressTable {
         let mut ended_by = "the end of the block";
 
         while current >= range_min && current <= range_max {
+            // A table cannot contain its own target as a slot: its slots occupy [top, first target),
+            // and every target is code that follows the table. Ghidra never needs this bound because
+            // `AddressTable.createSwitchTable` disassembles each target SYNCHRONOUSLY inside the walk
+            // (disassembleTarget, :484), so a later slot landing on an earlier target finds an
+            // instruction and `createData` breaks. mosura's disassembly is a SCHEDULED command, not
+            // synchronous, so the walk cannot see a target it just decoded; without this bound the
+            // run reads the first target's own bytes as one more pointer (a `call rel32` at the
+            // target reads `e8 xx xx xx` as an in-image dword) and lays a datum on it, and the
+            // function seeded there can never decode over the datum. So the named-table path
+            // (the "Switch Table References" analyzer) passes `bound_run_at_target` to bound the run
+            // explicitly at its smallest target, reproducing Ghidra's result; the blind scan passes
+            // it false and keeps Ghidra's exact behaviour, so the default path is untouched.
+            // (docs/tasklist-2026-09-08.md item 12, W1.)
+            if bound_run_at_target {
+                // Only a FORWARD target bounds the run — one at or after the table top, i.e. code
+                // that follows the table (the inline case). A target BELOW the table (a compiled
+                // switch keeps its table in data, above the code it jumps to) never overlaps a
+                // slot, so it must not stop the run, or every ordinary table whose cases precede
+                // its table would be refused.
+                if let Some(min_fwd) =
+                    array_elements.iter().map(|a| a.offset).filter(|&o| o >= top_addr.offset).min()
+                {
+                    if current >= min_fwd {
+                        ended_by = "a slot reaching the table's own smallest forward target";
+                        break;
+                    }
+                }
+            }
             // :1080 — get the value in address form of the bytes at the current address.
             let Some(addr_long) = read_uint_le(program, Address::new(top_addr.space, current), addr_size)
             else {
@@ -857,6 +886,7 @@ impl Analyzer for AddressTableAnalyzer {
                     0,
                     MINIMUM_SAFE_ADDRESS,
                     self.relocation_guide_enabled,
+                    false, // the blind scan keeps Ghidra's exact run; only the named-table path bounds at its target
                 );
                 let Some(table) = table else {
                     off += 1;
@@ -952,6 +982,44 @@ mod fall_into_tests {
     /// `Instruction.getFallFrom() != null` is the PREDECESSOR's fall-through, not adjacency: a
     /// routine that starts right after another's `ret` is not fallen into; one that starts right
     /// after a plain instruction is. Both directions, so the pin cannot pass by refusing everything.
+    /// W1 (docs/tasklist-2026-09-08.md item 12): a pointer run must not walk a slot onto its own
+    /// target. An inline table's first target is the code right after it, and that code's first
+    /// bytes can read as an in-image pointer (a `call rel32` is `e8 xx xx xx`), so the naive run
+    /// reads one slot too many and a datum lands on the target, which then cannot decode. Ghidra
+    /// avoids this with a synchronous per-entry `disassembleTarget`; mosura's disassembly is
+    /// scheduled, so the switch-table path passes `bound_run_at_target`. Controlled pair: the SAME
+    /// table, the bound off overruns to five, on stops at four.
+    #[test]
+    fn a_run_does_not_walk_a_slot_onto_its_own_target() {
+        let mut spaces = SpaceManager::standard();
+        let ram = spaces.add("ram", SpaceKind::Processor, 4, 1);
+        let mut p =
+            Program::new(spaces, ram, "x86:LE:32:default", "watcom", Address::new(ram, 0x1000), false, 32);
+        let mut img = vec![0u8; 0x1000];
+        let mut put = |off: usize, val: u32| img[off..off + 4].copy_from_slice(&val.to_le_bytes());
+        // Table at 0x1010: four pointers, the first to 0x1020 — the code immediately after the table.
+        put(0x10, 0x1020);
+        put(0x14, 0x1100);
+        put(0x18, 0x1200);
+        put(0x1c, 0x1300);
+        // 0x1020 (the first target) begins with bytes that read as an in-image pointer: the overrun.
+        put(0x20, 0x1030);
+        p.memory.add_block("CODE", Address::new(ram, 0x1000), 0x1000, true, false, true, Some(img));
+        let top = Address::new(ram, 0x1010);
+        let entries = |bound| {
+            AddressTable::get_entry(&p, top, true, 3, 1, 0, MINIMUM_SAFE_ADDRESS, false, bound)
+                .map(|t| t.number_address_entries())
+        };
+        assert_eq!(entries(false), Some(5), "unbounded, the run overruns into its own first target");
+        let bounded =
+            AddressTable::get_entry(&p, top, true, 3, 1, 0, MINIMUM_SAFE_ADDRESS, false, true).unwrap();
+        assert_eq!(bounded.number_address_entries(), 4, "bounded, the run stops at its first target");
+        assert_eq!(
+            bounded.table_elements().iter().map(|a| a.offset).collect::<Vec<_>>(),
+            vec![0x1020, 0x1100, 0x1200, 0x1300]
+        );
+    }
+
     #[test]
     fn a_ret_does_not_fall_into_its_successor() {
         let (mut p, ram) = program();
