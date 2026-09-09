@@ -50,7 +50,7 @@ fn live_state() -> (mosura_core::analysis::program::Program, EmitState) {
     let orders = ParamOrders::collect(&worlds.landed, LANG, &ents, &regs).unwrap_or_default();
     let widths = if knobs.on(Switch::GlobalWidth) { GlobalWidths::collect(&worlds.landed, LANG, &ents) } else { GlobalWidths { store_w: HashMap::new(), read_w: HashMap::new() } };
     let (arm, rec) = mosura_core::recompile::recovery::measured_arms();
-    let st = EmitState::new(ProgramFacts { lang: LANG, knobs, worlds, entries: ents, regs, orders, widths }, EmitOpts { arms: vec![arm], rec_arm: rec, arms_off: vec![], recovered: true, cons_probe: false });
+    let st = EmitState::new(ProgramFacts { lang: LANG, knobs, worlds, entries: ents, regs, orders, widths }, EmitOpts { arms: vec![arm], rec_arm: rec, arms_off: vec![], recovered: true, cons_probe: false, caller_parm_witnessed: false });
     (pp, st)
 }
 
