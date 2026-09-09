@@ -148,6 +148,14 @@ pub struct Knobs {
     /// are recovered by the decompiler-driven analyzer; this is the path for a table-driven,
     /// hand-written program, whose tables sit inline in the code and whose indices are unguarded.
     pub switch_table_refs: bool,
+    /// Create a function at a code pointer stored in DATA — a menu-item / driver-record handler
+    /// reached only because a pointer-sized word in a data structure holds its address
+    /// (`analyzers::relocation_seed` already disassembles such a target named by the LE fixup
+    /// table; this turns it into a function). A deliberate deviation from Ghidra, which creates
+    /// the pointer and disassembles the target but "never makes a function from a data pointer"
+    /// (DataOperandReferenceAnalyzer.java:39); off by default, for a table/record-driven program
+    /// whose dispatch the analysis cannot otherwise resolve.
+    pub data_pointer_functions: bool,
 }
 
 impl Knobs {
@@ -166,6 +174,12 @@ impl Knobs {
     /// Turn Ghidra's "Switch Table References" path on (builder form; the field is public too).
     pub fn with_switch_table_refs(mut self, on: bool) -> Self {
         self.switch_table_refs = on;
+        self
+    }
+
+    /// Make functions at code pointers stored in data (builder form; the field is public too).
+    pub fn with_data_pointer_functions(mut self, on: bool) -> Self {
+        self.data_pointer_functions = on;
         self
     }
 
@@ -199,6 +213,9 @@ impl Knobs {
         }
         if self.switch_table_refs {
             parts.push("switch-table-refs".to_string());
+        }
+        if self.data_pointer_functions {
+            parts.push("data-pointer-functions".to_string());
         }
         parts
     }
@@ -247,5 +264,8 @@ mod tests {
         let k = k.with_switch_table_refs(true);
         assert_eq!(k.stamp_parts().last().map(String::as_str), Some("switch-table-refs"));
         assert!(!Knobs::default().switch_table_refs, "off by default, as in Ghidra");
+        let k = k.with_data_pointer_functions(true);
+        assert_eq!(k.stamp_parts().last().map(String::as_str), Some("data-pointer-functions"));
+        assert!(!Knobs::default().data_pointer_functions, "off by default (Ghidra makes no function from a data pointer)");
     }
 }

@@ -303,6 +303,15 @@ pub fn analyze(program: &mut Program) {
     if let Some(rs) = analyzers::relocation_seed::RelocationSeedAnalyzer::for_program(program) {
         mgr.add_analyzer(Box::new(rs), program);
     }
+    // BEYOND-GHIDRA, off by default (`Knobs::data_pointer_functions`): make a function at a code
+    // pointer stored in data that no run, reference or fixup reaches — a menu/record handler found
+    // only by scanning data for a pointer-sized word whose value is a valid subroutine
+    // (`analyzers::data_pointer_scan`; docs/tasklist-2026-09-08.md §12). After the address-table
+    // and relocation-seed passes, so it adds only what they leave; the strict validator is its
+    // false-positive defence.
+    if let Some(dp) = analyzers::data_pointer_scan::DataPointerScanAnalyzer::for_program(program) {
+        mgr.add_analyzer(Box::new(dp), program);
+    }
     // Seed disassembly from the loader's functions + entry points. Entry points are
     // filtered to executable memory here (Ghidra `createEntryFunction`'s `isExecute`
     // check — a data export like `__bss_start` is not a function); call targets found

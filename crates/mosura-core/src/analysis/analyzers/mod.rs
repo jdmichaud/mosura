@@ -16,6 +16,7 @@ pub mod relocation_seed;
 pub mod shared_return;
 pub mod thunk;
 pub mod switch;
+pub mod data_pointer_scan;
 pub mod switch_table;
 
 use crate::analysis::analyzer::{Analyzer, AnalyzerType};

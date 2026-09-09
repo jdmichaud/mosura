@@ -9,6 +9,7 @@ pub const LOAD_BASE: &str = "load.base";
 pub const LOAD_CSPEC_X86_32: &str = "load.cspec-x86-32";
 pub const ANALYSIS_DISABLE: &str = "analysis.disable";
 pub const ANALYSIS_SWITCH_TABLE_REFS: &str = "analysis.switch-table-refs";
+pub const ANALYSIS_DATA_POINTER_FUNCTIONS: &str = "analysis.data-pointer-functions";
 pub const KNOBS_OFF: &str = "knobs.off";
 pub const DECOMPILE_GLOBAL_SCOPE: &str = "decompile.global-scope";
 pub const DECOMPILE_PROTO_SCOPE: &str = "decompile.proto-scope";
@@ -55,6 +56,7 @@ pub fn hand_written() -> Vec<OptionSpec> {
         spec!(LOAD_CSPEC_X86_32, OptType::Str, "", Affects::Result, "declare the x86-32 compiler spec at load time (watcom, highc, …) instead of detecting it"),
         spec!(ANALYSIS_DISABLE, OptType::List(&[]), "", Affects::Result, "analyzers to leave out of auto-analysis, by name (an ablation)"),
         spec!(ANALYSIS_SWITCH_TABLE_REFS, OptType::Bool, "false", Affects::Result, "Ghidra's `Switch Table References` option (off by default there too): a computed call or jump names the table of code pointers at its operand, whose entries become references, code and functions — for table-driven programs whose tables sit inline in the code"),
+        spec!(ANALYSIS_DATA_POINTER_FUNCTIONS, OptType::Bool, "false", Affects::Result, "create a function at a code pointer stored in data (a menu/record handler reached only through a pointer in a data structure) — a deviation from Ghidra, which disassembles the target but makes no function from a data pointer; off by default"),
         spec!(DECOMPILE_GLOBAL_SCOPE, OptType::Enum(GLOBAL_SCOPES), "application", Affects::Result, "application: every loaded address is a global (the whole-program emit); standalone: only what the function's own image says"),
         spec!(DECOMPILE_PROTO_SCOPE, OptType::Scope, "all", Affects::Result, "which recovered prototypes a decompile consults: all, none, or a list of callee addresses"),
         // input keys: WHAT an operation runs on; they enter a cache key as input digests

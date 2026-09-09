@@ -239,6 +239,9 @@ impl Options {
         if parse_bool(self.get(keys::ANALYSIS_SWITCH_TABLE_REFS)?) == Some(true) {
             k = k.with_switch_table_refs(true);
         }
+        if parse_bool(self.get(keys::ANALYSIS_DATA_POINTER_FUNCTIONS)?) == Some(true) {
+            k = k.with_data_pointer_functions(true);
+        }
         for name in self.get(keys::KNOBS_OFF)?.split(',').map(str::trim).filter(|s| !s.is_empty()) {
             k.turn_off(name).map_err(Error::InvalidArg)?;
         }
