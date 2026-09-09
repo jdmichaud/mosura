@@ -95,15 +95,25 @@ enum Cmd {
     },
     /// The whole-program passes that feed emission (prototypes, marks, evidence)
     Passes,
+    /// The functions of the current program: entry address and name
     Functions,
+    /// The symbol table: address, name, type, primary, external
     Symbols,
+    /// The references: from → to, reference type, and the p-code op index
     Refs,
+    /// The memory blocks of the loaded image: range, name, permissions, initialized
     Blocks,
+    /// The code units — instructions and data — with length, flow kind, flow targets and type
     Listing,
+    /// The relocation table: address and value
     Relocs,
+    /// The entry points
     Entries,
+    /// Comments by address: kind and text
     Comments,
+    /// The prototypes recovered by `passes`: output storage and model per function (`table proto_slots` for the parameters)
     Protos,
+    /// The whole-program facts recorded by `passes` per function (tail-return writes)
     Facts,
     /// A program table by name (`mosura table` lists them)
     Table { name: Option<String> },
