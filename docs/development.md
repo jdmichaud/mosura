@@ -69,6 +69,10 @@ cargo run -q --example dumpc -- oracle/fixtures/x86_64_tiny.xml           # a bu
 cargo run -q --example dumpc -- oracle/fixtures/x86_64_tiny.xml --raw     # the post-decompile IR; --pre = the lifted p-code before any action
 ```
 
+A trap: `target/*/examples/` keeps the binaries of examples whose sources have since left the tree,
+and they still run — reporting the behaviour of the commit that built them. Delete that directory (or
+`cargo clean -p mosura-core`) before measuring with an example after a restructure.
+
 ## The developer tier
 
 Oracle sweeps, censuses, ground truth through gcc, MVE fixtures and probes are `dev.*` operations behind the
