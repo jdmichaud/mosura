@@ -253,11 +253,18 @@ pub fn mark_tail_return_writes(prog: &mut Program, lang: &str, probe: &[u64]) ->
 }
 
 /// Mark the functions that PASS a callee's result through (`Program::pass_through_returns`):
-/// every return path ends in a direct `CALL` (the bytes' half,
+/// every return path ends in a direct `CALL` reached by no other path (the bytes' half,
 /// [`crate::recompile::buildconfig::pass_through_callees_from_evidence`]) to a callee that
-/// RETURNS IN EAX (the whole-program half, `Program::recovered_protos` — so this must run after
-/// [`install_prototypes`]). Ghidra types such a function `void`; the mark makes its own EAX
-/// output trial survive, so it recovers the value it hands on.
+/// RETURNS IN EAX, and no caller's testimony says the function was declared `void` (the
+/// whole-program half — `Program::recovered_protos` and `Program::sret_callers`, so this must
+/// run after [`install_prototypes`]). Ghidra types such a function `void`; the mark makes its
+/// own EAX output trial survive, so it recovers the value it hands on.
+///
+/// Whether the original was declared `void` or returning is a register-allocation fingerprint,
+/// not a dataflow fact — Watcom uses EAX as the argument scratch in a function that returns and
+/// EBX in one that does not — so the bytes alone cannot decide it, and the callers' testimony is
+/// what does (docs/tasklist-2026-09-08.md item 10). Measured on the first subject: +7 EXACT, 0
+/// lost, every gate OK.
 ///
 /// A fixpoint over the marks alone, no re-decompiling: a marked function itself returns in EAX,
 /// so a chain (`a` tail-calls `b` tail-calls `c`) resolves from `c` outward in as many rounds as
@@ -291,11 +298,22 @@ pub fn mark_pass_through_returns(prog: &mut Program, lang: &str) -> usize {
             tails.push((va, callees));
         }
     }
+    // THE CALLERS' TESTIMONY. A compiled caller reads a call's result only if the callee was
+    // declared to return one, so the call sites testify to the declaration the original was
+    // built against: a caller that consumes the result proves it returns; every caller
+    // discarding it says the declaration was `void`; no callers at all (a dispatch-table
+    // handler) leaves the bytes to decide. Measured on the first subject: the one function
+    // this retyping cost an EXACT (FUN_000214ec — typed as returning, Watcom allocated its
+    // argument scratch in EAX where the original, compiled `void`, used EBX) is discarded by
+    // all six of its callers; the seven it gained have no callers and return.
+    let discarded_by_every_caller = |va: u64| {
+        prog.sret_callers.get(&va).is_some_and(|ev| !ev.is_empty() && ev.iter().all(|e| e.output_dead))
+    };
     // the whole-program half, to a fixpoint over the marks
     loop {
         let mut added = 0usize;
         for (va, callees) in &tails {
-            if prog.pass_through_returns.contains(va) {
+            if prog.pass_through_returns.contains(va) || discarded_by_every_caller(*va) {
                 continue;
             }
             let all_return = callees.iter().all(|c| {
@@ -316,9 +334,18 @@ pub fn mark_pass_through_returns(prog: &mut Program, lang: &str) -> usize {
 /// Install the whole-program prototypes on the program (`Program::recovered_protos`): every
 /// function's, or the probe scope's only. Returns how many.
 pub fn install_prototypes(prog: &mut Program, scope: Option<&HashSet<u64>>) -> usize {
-    prog.recovered_protos = match scope {
-        None => recover_prototypes(prog),
-        Some(scope) => recover_prototypes_for(prog, scope),
-    };
+    let entries: Vec<u64> = prog
+        .function_manager
+        .functions()
+        .map(|f| f.entry.offset)
+        .filter(|o| scope.is_none_or(|s| s.contains(o)))
+        .collect();
+    // The same decompilations that yield the prototypes yield the struct-return facts and the
+    // CALL-SITE EVIDENCE per callee (`analysis::sret::CallEvidence` — whether each caller uses
+    // the call's result). Keep them: the pass-through mark reads the callers' testimony.
+    let pass = recover_pass(prog, entries);
+    prog.recovered_protos = pass.protos;
+    prog.recovered_sret = pass.sret;
+    prog.sret_callers = pass.callers;
     prog.recovered_protos.len()
 }

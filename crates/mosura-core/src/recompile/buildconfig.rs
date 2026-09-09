@@ -777,6 +777,14 @@ pub fn pass_through_callees_from_evidence(insns: &[NormInsn]) -> Option<Vec<u64>
     if rets.is_empty() {
         return None;
     }
+    // Every branch target in the function: a RET whose epilogue run is one of them is a JOIN,
+    // reached by a path that did not just call. `if (g()) h(1); return;` compiles to
+    // `call g ; test al,al ; jz epilogue ; … ; call h ; pop ebp ; ret` — textually the RET follows
+    // `call h`, but the `jz` lands in the epilogue with EAX holding g's result, and typing the
+    // function by "what it hands on" makes the compiler materialize a merge of the two results
+    // the original never had (measured: 14 EXACT lost on the first subject, every one this
+    // shape). The shape that GAINS — 8 EXACT — is the unconditional one, `call ; pop ; ret`.
+    let targets: Vec<u64> = insns.iter().filter(|x| x.is_branch).filter_map(|x| x.target).collect();
     let mut callees = Vec::with_capacity(rets.len());
     for &r in &rets {
         let mut j = r;
@@ -790,7 +798,14 @@ pub fn pass_through_callees_from_evidence(insns: &[NormInsn]) -> Option<Vec<u64>
             found = t.strip_prefix("CALL 0x").and_then(|h| u64::from_str_radix(h, 16).ok());
             break;
         }
-        callees.push(found?);
+        let callee = found?;
+        // the run from the instruction after the call through the RET must receive no branch
+        let lo = insns[j].addr + insns[j].bytes.len() as u64;
+        let hi = insns[r].addr;
+        if targets.iter().any(|&t| t >= lo && t <= hi) {
+            return None;
+        }
+        callees.push(callee);
     }
     Some(callees)
 }
@@ -2009,6 +2024,10 @@ mod tests {
     fn pass_through_callees_are_read_off_every_return_path() {
         // call 0x1100 ; pop ebx ; ret
         assert_eq!(pass_through_callees_from_evidence(&lift("e8fb0000005bc3")), Some(vec![0x1100]));
+        // THE JOIN, the first subject's FUN_00022360 shape: call 0x1100 ; test al,al ; jz +10 ;
+        // mov eax,1 ; call 0x1100 ; pop ebp ; ret — the `jz` lands on the `pop ebp`, so the RET is
+        // reached with EAX holding the FIRST call's result on one path; not a pass-through
+        assert_eq!(pass_through_callees_from_evidence(&lift("e8fb00000084c0740ab801000000e8f00000005dc3")), None, "a RET that is a join is not a pass-through");
         // call 0x1100 ; mov eax,ebx ; ret — the call's value is overwritten before the return
         assert_eq!(pass_through_callees_from_evidence(&lift("e8fb00000089d8c3")), None);
         // call ebx ; ret — an indirect call names no callee

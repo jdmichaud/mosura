@@ -36,7 +36,7 @@ pub static PASSES: Op = Op {
     doc: "the whole-program pre-passes of the recovered emit (tail-return marks, prototype pass, param-order evidence, global widths) as a program set; the survey emits under decompile.global-scope=standalone",
     since: "0.1",
     tier: Tier::Product,
-    params: &["program", keys::KNOBS_OFF, keys::DECOMPILE_GLOBAL_SCOPE, keys::DECOMPILE_PROTO_SCOPE, keys::PASSES_PASS_THROUGH],
+    params: &["program", keys::KNOBS_OFF, keys::DECOMPILE_GLOBAL_SCOPE, keys::DECOMPILE_PROTO_SCOPE],
     result: "program_summary",
     cache: Cache::Pure { stage: Stage::Decompile, set: SetKind::Program },
     run: passes,
@@ -47,7 +47,7 @@ pub static PROGRAM_EMIT: Op = Op {
     doc: "the whole recovered emission (every emit entry's TU, after the caller-side callee-pragma post-pass) as a program set — the survey's `recovered/` tree; decompile.global-scope defaults to standalone here",
     since: "0.1",
     tier: Tier::Product,
-    params: &["program", keys::KNOBS_OFF, keys::DECOMPILE_GLOBAL_SCOPE, keys::DECOMPILE_PROTO_SCOPE, keys::PASSES_PASS_THROUGH, keys::EMIT_ARMS_OFF, EMIT_KEYS],
+    params: &["program", keys::KNOBS_OFF, keys::DECOMPILE_GLOBAL_SCOPE, keys::DECOMPILE_PROTO_SCOPE, keys::EMIT_ARMS_OFF, EMIT_KEYS],
     result: "emission",
     cache: Cache::Pure { stage: Stage::Emit, set: SetKind::Program },
     run: program_emit,
@@ -58,7 +58,7 @@ pub static EMIT: Op = Op {
     doc: "one function's recovered translation unit (the compilable emission), from the program's passes set: format=tu (default) | reference | c | table:report; caller-side callee pragmas are the round's post-pass, not this op's",
     since: "0.1",
     tier: Tier::Product,
-    params: &["program", "entry", "format", keys::KNOBS_OFF, keys::DECOMPILE_GLOBAL_SCOPE, keys::DECOMPILE_PROTO_SCOPE, keys::PASSES_PASS_THROUGH, keys::EMIT_ARMS_OFF, EMIT_KEYS],
+    params: &["program", "entry", "format", keys::KNOBS_OFF, keys::DECOMPILE_GLOBAL_SCOPE, keys::DECOMPILE_PROTO_SCOPE, keys::EMIT_ARMS_OFF, EMIT_KEYS],
     result: "text",
     cache: Cache::Pure { stage: Stage::Emit, set: SetKind::Function },
     run: emit,
@@ -87,12 +87,9 @@ fn run_passes(p: &mosura_core::analysis::program::Program, o: &Options) -> Resul
     if knobs.on(Switch::ProtoPass) {
         let _marks = mark_tail_return_writes(&mut prog, EMIT_LANG, &[]);
         let _n = install_prototypes(&mut prog, None);
-        // after the prototypes: the mark needs to know which callees return a value. OPT-IN —
-        // typing these functions by what they hand on is right where the C is read and costs
-        // EXACT where it is recompiled (see the key's doc), so the default keeps Ghidra's `void`.
-        if o.get(keys::PASSES_PASS_THROUGH)? == "recovered" {
-            let _pt = mosura_core::analysis::interface::mark_pass_through_returns(&mut prog, EMIT_LANG);
-        }
+        // after the prototypes and their call-site evidence: which callees return a value, and
+        // what the callers say about each function's own return (`mark_pass_through_returns`)
+        let _pt = mosura_core::analysis::interface::mark_pass_through_returns(&mut prog, EMIT_LANG);
     }
     // the evidence passes read the LANDED world (no prototypes) — split, collect, and freeze the
     // prototype world (the landed one is its projection at thaw)
@@ -180,9 +177,8 @@ fn emit_state<'s>(s: &'s mut Session, o: &Options, pk: &Key) -> Result<&'s mut E
             pp.tail_return_writes.clear();
             let _ = mark_tail_return_writes(&mut pp, EMIT_LANG, &[]);
             let _ = install_prototypes(&mut pp, None);
-            if o.get(keys::PASSES_PASS_THROUGH)? == "recovered" {
-                let _ = mosura_core::analysis::interface::mark_pass_through_returns(&mut pp, EMIT_LANG);
-            }
+            pp.pass_through_returns.clear();
+            let _ = mosura_core::analysis::interface::mark_pass_through_returns(&mut pp, EMIT_LANG);
         }
         let worlds = Worlds::split(pp);
         let entries = Entries::of(&worlds.landed);
