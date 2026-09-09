@@ -87,6 +87,7 @@ fn knobs_for(truth: &Truth, x86_32_cspec: Option<&str>) -> Knobs {
     for o in &truth.options {
         knobs = match o.as_str() {
             "switch-table-refs" => knobs.with_switch_table_refs(true),
+            "data-pointer-functions" => knobs.with_data_pointer_functions(true),
             other => panic!("{}: the truth declares an unknown analysis option `{other}`", truth.program),
         };
     }
@@ -651,6 +652,109 @@ fn data_pointer_le_seeding() {
         "lestruct gate: 3 isolated data pointers disassembled (0 functions created at them), \
          deep_le @ {deep:#x} recovered by cascade"
     );
+}
+
+/// The item-12 data-held-pointer FOLLOW-ON (docs/tasklist-2026-09-08.md §12, chosen next after the
+/// switch-table port): the controlled ON twin of `data_pointer_le_seeding`. That test pins the
+/// default — an isolated code pointer in a data record is disassembled but NOT a function, faithful
+/// to Ghidra. With `analysis.data-pointer-functions` on, the same three handlers become functions
+/// (the deliberate deviation), the cascade still holds, and nothing outside the truth is invented.
+#[test]
+fn data_pointer_functions_recovers_the_handlers() {
+    let bin = ground_truth_dir().join("lestruct.watcom-le");
+    let truth_path = ground_truth_dir().join("lestruct.watcom-le.truth");
+    if !bin.exists() || !truth_path.exists() {
+        eprintln!("skip data_pointer_functions_recovers_the_handlers: {} absent", bin.display());
+        return;
+    }
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    let entry_of = |name: &str| -> u64 {
+        truth.funcs.iter().find(|(_, n)| n == name).map(|(a, _)| *a).expect("truth lists the symbol")
+    };
+    let knobs = Knobs::default().with_data_pointer_functions(true);
+    let prog = analysis::analyze_le_file_with(&bin, &knobs).expect("analyze lestruct.watcom-le with the option");
+    let ram = prog.default_space;
+    let at = |o: u64| Address::new(ram, o);
+
+    // the three isolated data-pointer handlers are now FUNCTIONS (the deviation).
+    for name in ["h0_", "h1_", "h2_"] {
+        let t = entry_of(name);
+        assert!(
+            prog.function_manager.function_at(at(t)).is_some(),
+            "{name} @ {t:#x}: under analysis.data-pointer-functions a code pointer stored in data              must become a function"
+        );
+    }
+    // the cascade still holds.
+    let deep = entry_of("deep_le_");
+    assert!(prog.function_manager.function_at(at(deep)).is_some(), "deep_le @ {deep:#x} cascade lost");
+    // nothing outside the truth is invented.
+    let truth_addrs: BTreeSet<u64> = truth.funcs.iter().map(|(a, _)| *a).collect();
+    let spurious: Vec<String> = prog
+        .function_manager
+        .functions()
+        .map(|f| f.entry_point().offset)
+        .filter(|a| !truth_addrs.contains(a))
+        .map(|a| format!("{a:08x}"))
+        .collect();
+    assert!(spurious.is_empty(), "functions absent from the truth: {spurious:?}");
+    eprintln!("lestruct data-pointer-functions gate: h0/h1/h2 are functions with the option on, cascade held, 0 spurious");
+}
+
+/// The data-held-pointer FOLLOW-ON on the NO-FIXUP fixture `datastruct` (an ELF whose `relocations`
+/// are empty), which isolates the data-pointer SCAN from `relocation_seed`: a code pointer stored
+/// as a record field, reached only table -> record -> field through an opaque index, named by no
+/// instruction. This is the second subject's shape exactly (docs/tasklist-2026-09-08.md §12).
+/// Controlled pair: under the default the record-field handlers are absent (no run, reference or
+/// fixup reaches them); with `analysis.data-pointer-functions` on, the scan makes them functions,
+/// the cascade recovers what they call, and nothing outside the truth is invented.
+#[test]
+fn data_pointer_scan_recovers_record_fields() {
+    let bin = ground_truth_dir().join("datastruct.watcom-x86-32");
+    let truth_path = ground_truth_dir().join("datastruct.watcom-x86-32.truth");
+    if !bin.exists() || !truth_path.exists() {
+        eprintln!("skip data_pointer_scan_recovers_record_fields: {} absent", bin.display());
+        return;
+    }
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    assert_eq!(truth.options, ["data-pointer-functions"], "the fixture declares the option it is verified under");
+    let entry_of = |name: &str| -> u64 {
+        truth.funcs.iter().find(|(_, n)| n == name).map(|(a, _)| *a).expect("truth lists the symbol")
+    };
+    let (h0, h1, deep) = (entry_of("rec_h0_"), entry_of("rec_h1_"), entry_of("deep_ds_"));
+    let cspec = Some("watcom");
+
+    // (A) DEFAULT — the record-field handlers are invisible; relocations is empty, so
+    // relocation_seed has nothing to see either.
+    let off = analysis::analyze_file_with(&bin, &Knobs::default().with_x86_32_cspec(cspec)).expect("analyze off");
+    let ram = off.default_space;
+    let at = |o: u64| Address::new(ram, o);
+    for (n, a) in [("rec_h0_", h0), ("rec_h1_", h1), ("deep_ds_", deep)] {
+        assert!(off.function_manager.function_at(at(a)).is_none(), "{n} @ {a:#x} recovered under the default");
+    }
+
+    // (B) option ON — the scan makes the field handlers functions; deep_ds cascades; 0 spurious.
+    let on = Knobs::default().with_x86_32_cspec(cspec).with_data_pointer_functions(true);
+    let prog = analysis::analyze_file_with(&bin, &on).expect("analyze on");
+    for (n, a) in [("rec_h0_", h0), ("rec_h1_", h1)] {
+        assert!(
+            prog.function_manager.function_at(at(a)).is_some(),
+            "{n} @ {a:#x}: a code pointer stored in a record field must become a function with the scan on"
+        );
+    }
+    assert!(
+        prog.function_manager.function_at(at(deep)).is_some(),
+        "deep_ds @ {deep:#x} must cascade from rec_h0"
+    );
+    let truth_addrs: BTreeSet<u64> = truth.funcs.iter().map(|(a, _)| *a).collect();
+    let spurious: Vec<String> = prog
+        .function_manager
+        .functions()
+        .map(|f| f.entry_point().offset)
+        .filter(|a| !truth_addrs.contains(a))
+        .map(|a| format!("{a:08x}"))
+        .collect();
+    assert!(spurious.is_empty(), "the scan invented functions absent from the truth: {spurious:?}");
+    eprintln!("datastruct scan gate: no-fixup record-field handlers absent by default, functions with the scan on, cascade held, 0 spurious");
 }
 
 /// ⭐ **THE ANALYZER-CHANNEL GATE (task #7)** — `ConstantPropagationAnalyzer` is an

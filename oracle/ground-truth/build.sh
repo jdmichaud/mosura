@@ -414,6 +414,7 @@ if [ -x "$WATROOT/binl/wcc386" ] && have objcopy; then
   build_watcom globfnptr  # memory-indirect call through a global fn-pointer (call [mem])
   build_watcom regout     # a callee RETURNING in EBX, a register the cspec calls preserved
   build_watcom datafnptr  # code reachable ONLY through a function pointer in DATA (the subject analysis-gap §7)
+  build_watcom datastruct "-oc" "-s" "data-pointer-functions" # a code pointer in a DATA RECORD FIELD, no run/ref/fixup — the data-pointer scan (item 12 follow-on §12)
   # codetable: the second subject's INLINE CODE-POINTER TABLES (docs/tasklist-2026-09-08.md item
   # 12) — routines reachable only through an unaligned pointer run inside _TEXT named by
   # `call cs:[tbl+ebx*4]`, and an UNGUARDED `jmp cs:[jtbl+ebx*4]`. The whole fixture is the
