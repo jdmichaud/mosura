@@ -32,11 +32,16 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # (gcc emits a size column; Watcom emits none) and every arch's indirect-jump mnemonic.
 #   $1 unstripped binary  $2 program  $3 compiler  $4 arch  $5 mosura-lang  $6 tool prefix
 derive_truth_elf() {
-  local bin="$1" prog="$2" cc="$3" arch="$4" lang="$5" pfx="${6:-}"
+  local bin="$1" prog="$2" cc="$3" arch="$4" lang="$5" pfx="${6:-}" opts="${7:-}"
   local nm="${pfx}nm" objdump="${pfx}objdump"
   local truth="$prog.$cc-$arch.truth"
   {
-    echo "# mosura-ground-truth v1 program=$prog compiler=$cc arch=$arch lang=$lang"
+    # `options=` names the NON-DEFAULT analysis options the fixture is verified under (the knob
+    # names `Knobs` spells, comma-separated): a program whose routines are reachable only through
+    # an analysis path Ghidra ships switched off declares that path here, and `ground_truth_parity`
+    # analyzes it with the option on. It is part of the build recipe, like `compiler`, never a
+    # hand-written exception in the test.
+    echo "# mosura-ground-truth v1 program=$prog compiler=$cc arch=$arch lang=$lang${opts:+ options=$opts}"
     echo "# derived-from=$(basename "$bin") via=nm+objdump (build artifact, NOT Ghidra)"
     echo "compiler $cc"
     local entry
@@ -294,6 +299,7 @@ fi
 WATROOT="${GT_WATCOM:-$HOME/tools/open-watcom}"
 #     $1 program  $2 optional wcc386 flags, replacing the default `-oc` (which DISABLES Watcom's
 #     `call X; ret` -> `jmp X` rewrite — pass "" to let tail calls through, as `tailjmp` needs).
+#     $4 optional analysis options the truth declares (see derive_truth_elf).
 build_watcom() {
   # $3 = the stack-checking flag, default `-s` (suppress the stack-overflow probe). It is a
   # SEPARATE parameter from $2 because it changes the ENTRY SHAPE, not the body: without it
@@ -301,7 +307,7 @@ build_watcom() {
   # true entry ahead of everything the pattern set anchors on (docs/function-discovery-backlog
   # §5 cell 1). A cell that drops it must also supply a `__CHK` stub in its `_cstart` asm, or
   # wlink fails `E2028: __CHK is an undefined reference`.
-  local prog="$1" ccopt="${2--oc}" sflag="${3--s}"
+  local prog="$1" ccopt="${2--oc}" sflag="${3--s}" opts="${4:-}"
   local stripped="$prog.watcom-x86-32" norm="$prog.watcom-x86-32.norm"
   log "$prog [wcc386/x86-32]"
   # binl on PATH so wlink finds its config file (wlink.lnk, which defines `system linux`).
@@ -313,7 +319,7 @@ build_watcom() {
   # Normalize Watcom`s ELF into a standard GNU ELF (fixes section headers for the parser; keeps
   # the .symtab for truth derivation); then derive the truth from it and strip the analyzed one.
   objcopy "$prog.watcom-x86-32.raw" "$norm"
-  derive_truth_elf "$norm" "$prog" watcom x86-32 "x86:LE:32:default" ""
+  derive_truth_elf "$norm" "$prog" watcom x86-32 "x86:LE:32:default" "" "$opts"
   strip -o "$stripped" "$norm"
   rm -f "$prog.obj" "$prog"_cstart.o "$prog.watcom-x86-32.raw" "$norm"
 }
@@ -408,6 +414,13 @@ if [ -x "$WATROOT/binl/wcc386" ] && have objcopy; then
   build_watcom globfnptr  # memory-indirect call through a global fn-pointer (call [mem])
   build_watcom regout     # a callee RETURNING in EBX, a register the cspec calls preserved
   build_watcom datafnptr  # code reachable ONLY through a function pointer in DATA (the subject analysis-gap §7)
+  # codetable: the second subject's INLINE CODE-POINTER TABLES (docs/tasklist-2026-09-08.md item
+  # 12) — routines reachable only through an unaligned pointer run inside _TEXT named by
+  # `call cs:[tbl+ebx*4]`, and an UNGUARDED `jmp cs:[jtbl+ebx*4]`. The whole fixture is the
+  # `_cstart.asm`. Verified under `switch-table-refs`, the port of Ghidra's "Switch Table
+  # References" option, which Ghidra ships OFF: under the default nothing here past the naming
+  # instructions is reachable, by design (src/codetable_cstart.asm property 2).
+  build_watcom codetable "-oc" "-s" "switch-table-refs"
   # inlineparam: the INLINE CALL PARAMETER thunk repro (<subject-profile>/notes/function-discovery-backlog.md §9 #5),
   # the blocker holding held-patches/listing-command-channel.patch. The whole fixture is the
   # `_cstart.asm` — the idiom needs a callee that pops its own return address and reads the word

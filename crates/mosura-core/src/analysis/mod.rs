@@ -268,6 +268,16 @@ pub fn analyze(program: &mut Program) {
     // A6: external-jump flow override — a PLT tail-call `jmp *[GOT]` into the EXTERNAL block
     // becomes COMPUTED_CALL_TERMINATOR (Ghidra OperandReferenceAnalyzer.checkForExternalJump).
     mgr.add_analyzer(Box::new(analyzers::external_jump::ExternalJumpAnalyzer::new()), program);
+    // Ghidra's "Switch Table References" — the other half of the same `OperandReferenceAnalyzer`,
+    // OFF by default there (OperandReferenceAnalyzer.java:108) and here: `Knobs::switch_table_refs`
+    // turns it on (`analysis.switch-table-refs`). A computed call or jump names its table of code
+    // pointers at the operand's displacement, alignment 1; the entries become references, code,
+    // labels and function bodies (`analyzers::switch_table`).
+    if program.knobs.switch_table_refs {
+        if let Some(st) = analyzers::switch_table::SwitchTableAnalyzer::for_program(program) {
+            mgr.add_analyzer(Box::new(st), program);
+        }
+    }
     // "Non-Returning Functions - Discovered" (Ghidra `FindNoReturnFunctionsAnalyzer`, an
     // INSTRUCTION_ANALYZER at `DISASSEMBLY.after()`). Distinct from `analyzers::noreturn`, which
     // is the *Known* one and matches library names; this one infers non-return from the shape of

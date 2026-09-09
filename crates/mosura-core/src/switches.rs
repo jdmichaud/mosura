@@ -140,6 +140,14 @@ pub struct Knobs {
     /// caller with out-of-band knowledge (a build recipe, a project file, a hypothesis under
     /// test) states the compiler the image itself does not reveal.
     pub x86_32_cspec: Option<String>,
+    /// Ghidra's "Switch Table References" option of the Reference analyzer
+    /// (OperandReferenceAnalyzer.java:70; `OPTION_DEFAULT_SWITCH_TABLE_ENABLED = false`, :108):
+    /// a computed call or jump names the table of code pointers at its operand's displacement,
+    /// whose entries become references, code and function bodies
+    /// (`analyzers::switch_table`). Off by default, as in Ghidra — a compiled program's switches
+    /// are recovered by the decompiler-driven analyzer; this is the path for a table-driven,
+    /// hand-written program, whose tables sit inline in the code and whose indices are unguarded.
+    pub switch_table_refs: bool,
 }
 
 impl Knobs {
@@ -152,6 +160,12 @@ impl Knobs {
     /// Disable analyzers by name, comma-separated (builder form; the field is public too).
     pub fn with_disabled_analyzers(mut self, list: Option<&str>) -> Self {
         self.disabled_analyzers = list.map(str::to_string);
+        self
+    }
+
+    /// Turn Ghidra's "Switch Table References" path on (builder form; the field is public too).
+    pub fn with_switch_table_refs(mut self, on: bool) -> Self {
+        self.switch_table_refs = on;
         self
     }
 
@@ -182,6 +196,9 @@ impl Knobs {
         }
         if let Some(d) = &self.disabled_analyzers {
             parts.push(format!("disabled-analyzers={d}"));
+        }
+        if self.switch_table_refs {
+            parts.push("switch-table-refs".to_string());
         }
         parts
     }
@@ -227,5 +244,8 @@ mod tests {
             k.stamp_parts(),
             vec!["ret-split", "callee-effects", "cspec=watcom", "disabled-analyzers=Function Start Search"]
         );
+        let k = k.with_switch_table_refs(true);
+        assert_eq!(k.stamp_parts().last().map(String::as_str), Some("switch-table-refs"));
+        assert!(!Knobs::default().switch_table_refs, "off by default, as in Ghidra");
     }
 }

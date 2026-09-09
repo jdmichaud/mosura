@@ -34,6 +34,12 @@ struct Truth {
     /// leaves it exactly as it was.
     data_pointer_only: BTreeSet<u64>,
     switches: Vec<u64>, // indirect-jump dispatch addresses — from objdump
+    /// The NON-DEFAULT analysis options the fixture is verified under (the header's `options=`,
+    /// written by `build.sh` from the recipe): a program whose routines are reachable only through
+    /// an analysis path Ghidra ships switched off declares that path, and [`ground_truth_parity`]
+    /// analyzes it with the path on — see [`knobs_for`]. Empty for every fixture built before the
+    /// field existed, which leaves them exactly as they were.
+    options: Vec<String>,
 }
 
 fn parse_truth(text: &str) -> Truth {
@@ -41,11 +47,15 @@ fn parse_truth(text: &str) -> Truth {
     let (mut funcs, mut switches) = (Vec::new(), Vec::new());
     let mut sizes: Vec<(u64, u64)> = Vec::new();
     let mut data_pointer_only = BTreeSet::new();
+    let mut options = Vec::new();
     for line in text.lines() {
         if let Some(rest) = line.strip_prefix("# mosura-ground-truth") {
             for tok in rest.split_whitespace() {
                 if let Some(p) = tok.strip_prefix("program=") {
                     program = p.to_string();
+                }
+                if let Some(o) = tok.strip_prefix("options=") {
+                    options = o.split(',').filter(|s| !s.is_empty()).map(str::to_string).collect();
                 }
             }
         } else if let Some(c) = line.strip_prefix("compiler ") {
@@ -66,7 +76,21 @@ fn parse_truth(text: &str) -> Truth {
             switches.push(u64::from_str_radix(rest.trim(), 16).unwrap());
         }
     }
-    Truth { program, compiler, funcs, sizes, data_pointer_only, switches }
+    Truth { program, compiler, funcs, sizes, data_pointer_only, switches, options }
+}
+
+/// The [`Knobs`] a fixture is analyzed under: its declared x86-32 compiler spec plus every
+/// analysis option its truth declares (`options=`). An option this cannot name is a build error,
+/// not a skip — a truth is never allowed to declare something the analysis does not understand.
+fn knobs_for(truth: &Truth, x86_32_cspec: Option<&str>) -> Knobs {
+    let mut knobs = Knobs::default().with_x86_32_cspec(x86_32_cspec);
+    for o in &truth.options {
+        knobs = match o.as_str() {
+            "switch-table-refs" => knobs.with_switch_table_refs(true),
+            other => panic!("{}: the truth declares an unknown analysis option `{other}`", truth.program),
+        };
+    }
+    knobs
 }
 
 /// The four Function Start Search analyzers, by the names the manager registers them under.
@@ -200,10 +224,13 @@ fn ground_truth_parity() {
         // retired the by-name skips this loop used to need for `wprologue_sf` and `wprobe`.
         let declared = (truth.compiler == "watcom" && bin.extension().is_some_and(|x| x == "watcom-x86-32"))
             .then_some("watcom");
+        // ...and under the analysis options the truth declares (`options=`; see `knobs_for`): the
+        // recipe's word again, never a by-name exception here.
+        let knobs = knobs_for(&truth, declared);
         let prog = if bin.extension().is_some_and(|x| x == "watcom-le") {
-            analysis::analyze_le_file(&bin).expect("analyze LE ground-truth binary")
+            analysis::analyze_le_file_with(&bin, &knobs).expect("analyze LE ground-truth binary")
         } else {
-            analysis::analyze_file_as(&bin, declared).expect("analyze ground-truth binary")
+            analysis::analyze_file_with(&bin, &knobs).expect("analyze ground-truth binary")
         };
 
         let truth_addrs: BTreeSet<u64> = truth.funcs.iter().map(|(a, _)| *a).collect();
@@ -2499,4 +2526,153 @@ fn regex_lite_contains(c: &str, open: &str, close: &str) -> bool {
     let rest = &c[i + open.len()..];
     let Some(j) = rest.find(close) else { return false };
     !rest[..j].contains(';') && !rest[..j].contains('\n')
+}
+
+/// The second subject's INLINE CODE-POINTER TABLES (docs/tasklist-2026-09-08.md item 12) on the
+/// self-compiled `codetable` fixture — the port of Ghidra's "Switch Table References"
+/// (`analyzers::switch_table`; src/codetable_cstart.asm lists the properties), in BOTH directions:
+///
+///  - under the DEFAULT (the option off, as Ghidra ships it) nothing past the two naming
+///    instructions is reached: no entry is decoded or a function, `deep_` is missing, and the
+///    jump's arms lie outside `jumper_`'s body — the attribution leg, which is also what keeps the
+///    first subject's identity gate meaningful;
+///  - with the option ON: the four entries are decoded, each carries a `COMPUTED_CALL` from the
+///    naming call and a `DATA` reference from its slot, and each IS a function (the one deviation
+///    the module owns); `deep_` cascades by the ordinary direct-call route; the table top holds
+///    pointer data at exactly four slots (the code bytes after the run end it, and are no
+///    function) and the `callTable` label; the unguarded jump's four arms carry `COMPUTED_JUMP`s,
+///    the `case_0x<i>` labels, and lie inside `jumper_`'s body; and no function exists that the
+///    truth does not list.
+#[test]
+fn switch_table_references() {
+    use mosura_core::analysis::program::{CodeUnit, Program};
+    let bin = ground_truth_dir().join("codetable.watcom-x86-32");
+    let truth_path = ground_truth_dir().join("codetable.watcom-x86-32.truth");
+    if !bin.exists() || !truth_path.exists() {
+        eprintln!("skip switch_table_references: {} absent", bin.display());
+        return;
+    }
+    let truth = parse_truth(&std::fs::read_to_string(&truth_path).unwrap());
+    assert_eq!(truth.options, ["switch-table-refs"], "the fixture declares the option it is verified under");
+    let entry_of = |name: &str| -> u64 {
+        truth.funcs.iter().find(|(_, n)| n == name).map(|(a, _)| *a).unwrap_or_else(|| panic!("truth lists {name}"))
+    };
+    let (dispatch, jumper, deep) = (entry_of("dispatch_"), entry_of("jumper_"), entry_of("deep_"));
+    let entries: Vec<(&str, u64)> = ["h0_", "h1_", "h2_", "h3_"].iter().map(|n| (*n, entry_of(n))).collect();
+    let jmp = *truth.switches.first().expect("the truth lists the unguarded jmp");
+    // The table tops are not symbols: they are the DATA reference the naming instruction carries —
+    // the constant propagator's, present under either option — into the bytes between the
+    // instruction and the first entry.
+    let table_top = |p: &Program, lo: u64, hi: u64| -> u64 {
+        p.reference_manager
+            .references()
+            .filter(|r| r.ref_type.name() == "DATA" && (lo..hi).contains(&r.from.offset) && (lo..hi).contains(&r.to.offset))
+            .map(|r| r.to.offset)
+            .min()
+            .unwrap_or_else(|| panic!("no DATA reference from [{lo:#x}, {hi:#x}) into itself — the naming instruction lost its table"))
+    };
+
+    // (A) THE DEFAULT — the shape is invisible, by design.
+    let off = Knobs::default().with_x86_32_cspec(Some("watcom"));
+    let without = analysis::analyze_file_with(&bin, &off).expect("analyze codetable (default)");
+    let ram = without.default_space;
+    let at = |o: u64| Address::new(ram, o);
+    let tbl = table_top(&without, dispatch, entries[0].1);
+    assert_ne!(tbl % 4, 0, "the call table at {tbl:#x} must not be 4-aligned, or the blind scan finds it (property 2)");
+    let jtbl = table_top(&without, jmp, jmp + 0x40);
+    for (name, e) in &entries {
+        assert!(
+            without.function_manager.function_at(at(*e)).is_none()
+                && !matches!(without.listing.code_unit_at(at(*e)), Some(CodeUnit::Instruction { .. })),
+            "{name} @ {e:#x} is reached under the default — the fixture no longer isolates the named-table path"
+        );
+    }
+    assert!(without.function_manager.function_at(at(deep)).is_none(), "deep_ @ {deep:#x} is reached under the default");
+    let arms_off: Vec<u64> = without
+        .reference_manager
+        .refs_from(at(jmp))
+        .filter(|r| r.ref_type.name() == "COMPUTED_JUMP")
+        .map(|r| r.to.offset)
+        .collect();
+    assert!(arms_off.is_empty(), "the unguarded jmp @ {jmp:#x} resolved under the default: {arms_off:x?}");
+
+    // (B) THE OPTION ON.
+    let on = off.clone().with_switch_table_refs(true);
+    let prog = analysis::analyze_file_with(&bin, &on).expect("analyze codetable (switch-table-refs)");
+    // (1) the entries: decoded, referenced from the call and from their slot, and functions.
+    for (i, (name, e)) in entries.iter().enumerate() {
+        assert!(
+            matches!(prog.listing.code_unit_at(at(*e)), Some(CodeUnit::Instruction { .. })),
+            "{name} @ {e:#x} was never disassembled"
+        );
+        let inbound: Vec<(u64, &'static str)> =
+            prog.reference_manager.refs_to(at(*e)).map(|r| (r.from.offset, r.ref_type.name())).collect();
+        assert!(
+            inbound.iter().any(|(f, k)| *k == "COMPUTED_CALL" && (dispatch..tbl).contains(f)),
+            "{name} @ {e:#x}: no COMPUTED_CALL from the naming call, got {inbound:x?}"
+        );
+        assert!(
+            inbound.iter().any(|(f, k)| *k == "DATA" && *f == tbl + 4 * i as u64),
+            "{name} @ {e:#x}: no DATA reference from its slot {:#x}, got {inbound:x?}",
+            tbl + 4 * i as u64
+        );
+        assert!(
+            prog.function_manager.function_at(at(*e)).is_some(),
+            "{name} @ {e:#x} is not a function: the instruction calls through the table (the deviation \
+             `analyzers::switch_table` owns)"
+        );
+    }
+    // (2) the cascade — `deep_` is called only from `h0_`.
+    assert!(prog.function_manager.function_at(at(deep)).is_some(), "deep_ @ {deep:#x} must cascade from h0_");
+    assert!(
+        prog.reference_manager.refs_to(at(deep)).any(|r| r.ref_type.name() == "UNCONDITIONAL_CALL" && r.from.offset == entries[0].1),
+        "deep_ @ {deep:#x}: no direct call from h0_"
+    );
+    // (3) the table: exactly four pointer slots, the code after the run untouched, the label.
+    for i in 0..4u64 {
+        assert!(
+            matches!(prog.listing.code_unit_at(at(tbl + 4 * i)), Some(CodeUnit::Data { type_name, .. }) if type_name.ends_with('*')),
+            "slot {i} @ {:#x} holds no pointer datum",
+            tbl + 4 * i
+        );
+    }
+    assert!(
+        !matches!(prog.listing.code_unit_at(at(tbl + 16)), Some(CodeUnit::Data { .. })) && prog.function_manager.function_at(at(tbl + 16)).is_none(),
+        "the code bytes after the run @ {:#x} were taken for a slot or a function",
+        tbl + 16
+    );
+    assert!(prog.symbol_table.symbols_at(at(tbl)).any(|s| s.name() == "callTable"), "no `callTable` label at {tbl:#x}");
+    // (4) the unguarded jump: four arms referenced, labelled, inside the body.
+    let arms: Vec<u64> = prog
+        .reference_manager
+        .refs_from(at(jmp))
+        .filter(|r| r.ref_type.name() == "COMPUTED_JUMP")
+        .map(|r| r.to.offset)
+        .collect();
+    assert_eq!(arms.len(), 4, "four COMPUTED_JUMP references from the jmp @ {jmp:#x}, got {arms:x?}");
+    let body = prog.function_manager.function_at(at(jumper)).expect("jumper_ is a function").body().clone();
+    for (i, a) in arms.iter().enumerate() {
+        assert!(matches!(prog.listing.code_unit_at(at(*a)), Some(CodeUnit::Instruction { .. })), "arm {i} @ {a:#x} not decoded");
+        assert!(body.contains(at(*a)), "arm {i} @ {a:#x} lies outside jumper_'s body");
+        assert!(
+            prog.symbol_table.symbols_at(at(*a)).any(|s| s.name() == format!("case_0x{i:x}")),
+            "arm {i} @ {a:#x} carries no case label"
+        );
+    }
+    assert!(prog.symbol_table.symbols_at(at(jtbl)).any(|s| s.name() == "switchTable"), "no `switchTable` label at {jtbl:#x}");
+    // (5) nothing invented: every function is one the truth lists.
+    let truth_addrs: BTreeSet<u64> = truth.funcs.iter().map(|(a, _)| *a).collect();
+    let spurious: Vec<String> = prog
+        .function_manager
+        .functions()
+        .map(|f| f.entry_point().offset)
+        .filter(|a| !truth_addrs.contains(a))
+        .map(|a| format!("{a:08x}"))
+        .collect();
+    assert!(spurious.is_empty(), "functions absent from the truth: {spurious:?}");
+    eprintln!(
+        "codetable gate: call table @ {tbl:#x} (4 entries, functions), jump table @ {jtbl:#x} ({} arms in the body), \
+         nothing under the default",
+        arms.len()
+    );
 }
