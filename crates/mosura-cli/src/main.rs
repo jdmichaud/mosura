@@ -419,6 +419,7 @@ fn run(cli: Cli) -> Res<()> {
     for kv in &cli.set {
         let (k, v) = kv.split_once('=').ok_or_else(|| usage(format!("`-o {kv}`: expected KEY=VALUE")))?;
         app.opts.set(k.trim(), v.trim())?;
+        app.explicit.insert(k.trim().to_string());
     }
     if let Some(topics) = &cli.debug {
         app.opts.set("debug.topics", topics)?;

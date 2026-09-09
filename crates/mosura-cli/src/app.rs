@@ -30,6 +30,10 @@ pub struct App {
     pub progress: bool,
     /// `-o key=value` and the typed sugar, validated against the registry.
     pub opts: Options,
+    /// The keys the user set explicitly (`-o KEY=VALUE`), so a key an operation does not accept
+    /// is reported rather than silently dropped by the projection (a `round run
+    /// -o passes.pass-through-return=recovered` measured nothing for exactly that reason).
+    pub explicit: std::collections::BTreeSet<String>,
     /// Operation name → its parameter list (from the `ops` table), for projecting `opts`.
     op_params: BTreeMap<String, Vec<String>>,
     diagnostic_keys: BTreeSet<String>,
@@ -63,7 +67,7 @@ impl App {
             Some("-") | Some("mem") => None,
             _ => Some(session.to_path_buf()),
         };
-        Ok(App { ctx, format, progress, opts, op_params, diagnostic_keys, session_dir, session: None, toolchain_installs: BTreeMap::new(), machine_config: None, opened: BTreeSet::new() })
+        Ok(App { ctx, format, progress, opts, op_params, diagnostic_keys, session_dir, session: None, toolchain_installs: BTreeMap::new(), machine_config: None, opened: BTreeSet::new(), explicit: BTreeSet::new() })
     }
 
     /// Apply the machine config: only `Environment` keys may live there (none in this version).
@@ -113,6 +117,9 @@ impl App {
             let k = reg.str(r, 0)?;
             let accepted = params.iter().any(|p| p == k) || self.diagnostic_keys.contains(k) || (emit_ok && k.starts_with("emit.") && k != "emit.arms-off");
             if !accepted {
+                if self.explicit.contains(k) {
+                    eprintln!("warning: -o {k} is not an option of {op} and was ignored (`mosura ops` lists what each operation accepts)");
+                }
                 continue;
             }
             let v = self.opts.get(k)?;
