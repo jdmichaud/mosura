@@ -238,6 +238,13 @@ impl AddressTable {
 
         // :1163 — "if table too small, don't even check later".
         if count < minimum_table_size {
+            if count > 1 {
+                crate::debug!(
+                    crate::debug::Topic::Analysis,
+                    "addrtable {:#x}: run of {count} < minimum {minimum_table_size} — no table",
+                    top_addr.offset
+                );
+            }
             return None;
         }
 
@@ -261,9 +268,11 @@ impl AddressTable {
             // instruction ("data is OK").
             if let Some((start, _)) = program.listing.code_unit_containing(top_addr, MAX_INSN_LEN) {
                 if start != top_addr {
+                    crate::debug!(crate::debug::Topic::Analysis, "addrtable {:#x}: a code unit starting {:#x} covers the top — no table", top_addr.offset, start.offset);
                     return None;
                 }
                 if matches!(program.listing.code_unit_at(top_addr), Some(CodeUnit::Instruction { .. })) {
+                    crate::debug!(crate::debug::Topic::Analysis, "addrtable {:#x}: an INSTRUCTION is defined at the top — no table", top_addr.offset);
                     return None;
                 }
             }
@@ -724,6 +733,17 @@ impl AddressTableAnalyzer {
 
             // :265 — "if all are valid code, disassemble".
             let valid_code_list = t.function_entries(program, &self.pdis, 0);
+            crate::debug!(
+                crate::debug::Topic::Analysis,
+                "addrtable {:#x}: {} entries, {} valid code{}",
+                t.top_address().offset,
+                t.number_address_entries(),
+                valid_code_list.len(),
+                match t.table_elements().iter().find(|a| !valid_code_list.contains(a)) {
+                    Some(bad) => format!(" — first NOT valid: {:#x} (the whole table is refused)", bad.offset),
+                    None => String::new(),
+                }
+            );
             if valid_code_list.len() >= t.number_address_entries() {
                 for addr in valid_code_list {
                     // :277 — "even though they are valid code, don't do them if there is
