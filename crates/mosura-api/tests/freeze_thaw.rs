@@ -175,7 +175,10 @@ fn the_prototype_pass_world_round_trips() {
             with_model += proto.model.is_some() as usize;
         }
         assert_eq!(format!("{:?}", q.recovered_sret.iter().collect::<std::collections::BTreeMap<_, _>>()), format!("{:?}", p.recovered_sret.iter().collect::<std::collections::BTreeMap<_, _>>()), "{name}: sret");
-        assert_eq!(format!("{:?}", q.sret_callers), format!("{:?}", p.sret_callers), "{name}: sret callers");
+        // sorted, like the sret line above it: the callers map is a HashMap, and until the pass
+        // kept its call-site evidence this compared two empty maps
+        assert_eq!(format!("{:?}", q.sret_callers.iter().collect::<std::collections::BTreeMap<_, _>>()), format!("{:?}", p.sret_callers.iter().collect::<std::collections::BTreeMap<_, _>>()), "{name}: sret callers");
+        assert!(!p.sret_callers.is_empty(), "{name}: the pass keeps its call-site evidence");
         assert_eq!(q.tail_return_writes, p.tail_return_writes, "{name}: tail-return marks");
         assert_eq!(q.tail_return_writes.len(), marks.marked, "{name}: marks count");
         let set2 = freeze(&q, "default");
