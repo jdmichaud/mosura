@@ -279,6 +279,11 @@ pub fn dispatch_inner(s: &mut Session, op: &str, params: &Options) -> Result<Tab
 /// Run one operation: NotFound for an unknown name, InvalidArg for a key the op does not take, a
 /// panic inside the body → `Error::Internal` carrying its message (unless the context aborts).
 pub fn dispatch(ctx: &Context, s: &mut Session, op: &str, params: &Options, progress: &mut dyn Progress) -> Result<Table> {
+    // The DIAGNOSTIC keys (`debug.*`) are the caller's choice for THIS operation — they never
+    // enter a cache key — and this is where they reach the library: `Options::debug_config`
+    // was built and tested, then never called, so `mosura analyze --debug analysis` printed
+    // nothing (measured: the analysis manager's own per-analyzer tracing stayed silent).
+    mosura_core::debug::configure(params.debug_config()?);
     let op = find(op)?;
     validate_params(op, params)?;
     if ctx.abort_on_panic {
