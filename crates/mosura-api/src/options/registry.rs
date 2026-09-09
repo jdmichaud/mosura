@@ -131,7 +131,15 @@ mod tests {
             assert!(s.key.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '.' || c == '-'), "{}", s.key);
             assert!(!s.doc.is_empty(), "{} has a doc line", s.key);
         }
-        assert_eq!(r.iter().filter(|s| s.key.starts_with("emit.") && s.key != keys::EMIT_ARMS_OFF).count(), EmitChoices::axes().len());
+        // every `emit.<axis>` key IS an emit axis, so the family cannot drift from the arms
+        // layer. The hand-written `emit.*` keys are the exceptions, named here so a new one is a
+        // deliberate act: `emit.arms-off` (the arm switches) and `emit.caller-parm` (which rule
+        // states a callee's caller-side `parm` clause).
+        let hand_written_emit_keys = [keys::EMIT_ARMS_OFF, keys::EMIT_CALLER_PARM];
+        assert_eq!(
+            r.iter().filter(|s| s.key.starts_with("emit.") && !hand_written_emit_keys.contains(&s.key)).count(),
+            EmitChoices::axes().len()
+        );
         assert!(matches!(lookup(keys::KNOBS_OFF).unwrap().ty, OptType::List(v) if v.len() == Switch::ALL.len()));
         assert!(matches!(lookup(keys::EMIT_ARMS_OFF).unwrap().ty, OptType::List(v) if v.len() == Recovered::ARMS.len()));
         assert!(matches!(lookup(keys::DEBUG_TOPICS).unwrap().ty, OptType::List(v) if v.len() == Topic::ALL.len() + 1));
