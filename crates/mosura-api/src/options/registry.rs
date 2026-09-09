@@ -132,10 +132,9 @@ mod tests {
             assert!(!s.doc.is_empty(), "{} has a doc line", s.key);
         }
         // every `emit.<axis>` key IS an emit axis, so the family cannot drift from the arms
-        // layer. The hand-written `emit.*` keys are the exceptions, named here so a new one is a
-        // deliberate act: `emit.arms-off` (the arm switches) and `emit.caller-parm` (which rule
-        // states a callee's caller-side `parm` clause).
-        let hand_written_emit_keys = [keys::EMIT_ARMS_OFF, keys::EMIT_CALLER_PARM];
+        // layer; `emit.arms-off` (the arm switches) is the one hand-written exception, named
+        // here so a second one is a deliberate act.
+        let hand_written_emit_keys = [keys::EMIT_ARMS_OFF];
         assert_eq!(
             r.iter().filter(|s| s.key.starts_with("emit.") && !hand_written_emit_keys.contains(&s.key)).count(),
             EmitChoices::axes().len()

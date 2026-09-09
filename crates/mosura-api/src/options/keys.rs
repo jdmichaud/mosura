@@ -12,7 +12,6 @@ pub const KNOBS_OFF: &str = "knobs.off";
 pub const DECOMPILE_GLOBAL_SCOPE: &str = "decompile.global-scope";
 pub const DECOMPILE_PROTO_SCOPE: &str = "decompile.proto-scope";
 pub const PASSES_PASS_THROUGH: &str = "passes.pass-through-return";
-pub const EMIT_CALLER_PARM: &str = "emit.caller-parm";
 pub const EMIT_ARMS_OFF: &str = "emit.arms-off";
 pub const DEBUG_TOPICS: &str = "debug.topics";
 pub const DEBUG_WATCH_CALL: &str = "debug.watch-call";
@@ -40,7 +39,6 @@ pub const LOADERS: &[&str] = &["default", "native", "le", "x32", "com", "raw", "
 pub const ROUND_SCOPES: &[&str] = &["user", "all", "list"];
 pub const GLOBAL_SCOPES: &[&str] = &["application", "standalone"];
 pub const PASS_THROUGH_RETURNS: &[&str] = &["ghidra", "recovered"];
-pub const CALLER_PARMS: &[&str] = &["recovered", "witnessed"];
 
 const SINCE: &str = "0.1";
 
@@ -59,7 +57,6 @@ pub fn hand_written() -> Vec<OptionSpec> {
         spec!(ANALYSIS_DISABLE, OptType::List(&[]), "", Affects::Result, "analyzers to leave out of auto-analysis, by name (an ablation)"),
         spec!(DECOMPILE_GLOBAL_SCOPE, OptType::Enum(GLOBAL_SCOPES), "application", Affects::Result, "application: every loaded address is a global (the whole-program emit); standalone: only what the function's own image says"),
         spec!(DECOMPILE_PROTO_SCOPE, OptType::Scope, "all", Affects::Result, "which recovered prototypes a decompile consults: all, none, or a list of callee addresses"),
-        spec!(EMIT_CALLER_PARM, OptType::Enum(CALLER_PARMS), "recovered", Affects::Result, "the caller-side `parm [..]` clause a TU declares for a callee: recovered (default) states it only where the callee's recovered order differs from Watcom's positional default; witnessed states it at the default order too — the clause is the only thing pinning ARITY in a caller — gated on the callee's own bytes proving every named register is read before written and no omitted one is"),
         spec!(PASSES_PASS_THROUGH, OptType::Enum(PASS_THROUGH_RETURNS), "ghidra", Affects::Result, "a function whose every return path ends in a call to a callee that returns in EAX: ghidra (default) types it void, as Ghidra's return-trial walk does; recovered types it as returning that callee's value — right where the decompiler's C is read, measured -6 EXACT on a compiled-code corpus, so it is opt-in"),
         // input keys: WHAT an operation runs on; they enter a cache key as input digests
         spec!("input", OptType::Str, "", Affects::Input, "the session input a program operation runs on: a label or a digest (the only input when omitted)"),

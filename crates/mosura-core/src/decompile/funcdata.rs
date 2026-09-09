@@ -238,8 +238,8 @@ pub struct Funcdata {
     pub tail_return_write: bool,
     /// The registers this function's OWN BYTES prove it reads before writing, in read order
     /// (`analysis::decompiler::callee_effects` — a linear walk that gives up at the first branch
-    /// or call, so `None` means "not proven", never "none"). The witness behind
-    /// `emit.caller-parm=witnessed` (docs/tasklist-2026-09-08.md item 5).
+    /// or call, so `None` means "not proven", never "none"). The witness behind the caller-side
+    /// `parm` clause at the default order (`pragma::witnessed_parm_regs`, item 5).
     pub own_param_reads: Option<Vec<(super::space::Address, u32)>>,
     /// This function hands a callee's result through: its EAX output trial is kept even though
     /// the value's ancestor is a CALL (`Program::pass_through_returns`).

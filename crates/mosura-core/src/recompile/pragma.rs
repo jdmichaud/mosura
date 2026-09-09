@@ -157,8 +157,7 @@ fn parm_from_storages_always(
     Some(names)
 }
 
-/// The WITNESSED caller-side `parm [..]` clause (`emit.caller-parm=witnessed`,
-/// docs/tasklist-2026-09-08.md item 5).
+/// The WITNESSED caller-side `parm [..]` clause (docs/tasklist-2026-09-08.md item 5).
 ///
 /// A caller's declarator is `extern int f();`, so this clause is the only thing in the TU that
 /// pins the callee's ARITY. Today's rule suppresses it whenever the recovered ORDER happens to be
@@ -658,10 +657,6 @@ pub fn callee_pragmas(
 /// propagated (the caller's `parm caller []` comes from its own call spec).
 #[derive(Debug, Default, Clone)]
 pub struct ContractTable {
-    /// `emit.caller-parm=witnessed`: state a callee's `parm [..]` clause even when its recovered
-    /// order is Watcom's positional default, gated on the callee's own read witness
-    /// ([`witnessed_parm_regs`]). Default false = today's rule, the nondefault order only.
-    pub witnessed: bool,
     pub parm_map: std::collections::BTreeMap<u64, Option<(String, Vec<u32>)>>,
     pub caller_calls: std::collections::BTreeMap<u64, std::collections::BTreeMap<u64, Option<Vec<u32>>>>,
 }
@@ -672,7 +667,14 @@ impl ContractTable {
     pub fn record(&mut self, va: u64, f: &crate::decompile::funcdata::Funcdata, regs: &WatcomRegs, stack_decl: Option<String>) {
     self.parm_map.insert(
         va,
-        (if self.witnessed { witnessed_parm_regs(&f, &regs.table) } else { None })
+        // The callee's `parm [..]` clause for its callers: at the positional default order only
+        // on the callee's own read witness (`witnessed_parm_regs` — the clause is the only thing
+        // in a caller's TU that pins the callee's ARITY, and it is a codegen no-op at that order,
+        // measured: 113 fresh compiles, 0 verdicts moved); at a nondefault order from the
+        // recovered prototype, as always (measured EXACT on compiled code, where the caller's
+        // bytes follow the declaration the original was built against — the one place this
+        // deliberately keeps the prototype's word over the witness's).
+        witnessed_parm_regs(&f, &regs.table)
             .or_else(|| nondefault_parm_regs(&f, &regs.table))
             .or(stack_decl)
             .map(|decl| {
@@ -897,7 +899,7 @@ mod tests {
         assert_eq!(value_clause(&r.table, eax, 8), None, "a 64-bit pair is the default EDX:EAX");
     }
 
-    /// The WITNESSED caller-side clause (`emit.caller-parm=witnessed`, item 5): stated at the
+    /// The WITNESSED caller-side clause (item 5): stated at the
     /// positional default too — the clause is the only thing pinning ARITY in a caller — but only
     /// when the callee's own bytes prove every named register is read and no omitted one is. The
     /// second half is the one that bites: a callee beginning `MOV EBP,EAX` reads EAX, so a clause

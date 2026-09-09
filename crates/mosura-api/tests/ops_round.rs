@@ -80,7 +80,7 @@ fn live_emission() -> Vec<(usize, u64, String, Option<String>)> {
     let widths = if knobs.on(Switch::GlobalWidth) { GlobalWidths::collect(&worlds.landed, LANG, &ents) } else { GlobalWidths { store_w: HashMap::new(), read_w: HashMap::new() } };
     let (arm, rec) = mosura_core::recompile::recovery::measured_arms();
     let entries = ents.list.clone();
-    let mut st = EmitState::new(ProgramFacts { lang: LANG, knobs, worlds, entries: ents, regs, orders, widths }, EmitOpts { arms: vec![arm], rec_arm: rec, arms_off: vec![], recovered: true, cons_probe: false, caller_parm_witnessed: false });
+    let mut st = EmitState::new(ProgramFacts { lang: LANG, knobs, worlds, entries: ents, regs, orders, widths }, EmitOpts { arms: vec![arm], rec_arm: rec, arms_off: vec![], recovered: true, cons_probe: false });
     mosura_core::decompile::structure::set_force_loop_overflow(true);
     let mut out: Vec<(usize, u64, String, Option<String>)> = entries.iter().enumerate().map(|(i, (va, n))| (i, *va, n.clone(), st.emit_function(i, *va, n).ok().map(|e| e.recovered_tu.unwrap_or(e.reference_tu)))).collect();
     mosura_core::decompile::structure::set_force_loop_overflow(false);
