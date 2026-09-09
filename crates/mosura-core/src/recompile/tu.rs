@@ -441,6 +441,7 @@ pub fn build_tu(
     let self_name = format!("FUN_{self_va:08x}");
     let mut funcs: HashSet<String> = HashSet::new(); // func_0x.. / FUN_.. callees -> extern fn
     let mut ptr_idents: HashSet<String> = HashSet::new(); // used with [] -> pointer-typed global
+    let mut cast_calls: Vec<String> = Vec::new(); // called globals re-typed `char *`: their calls get a `(code *)` cast
     let mut scalar_idents: HashSet<(String, char)> = HashSet::new(); // (name, type-prefix)
     let mut smells: BTreeSet<String> = BTreeSet::new();
 
@@ -584,10 +585,17 @@ pub fn build_tu(
                 extra.push(format!("extern char {cap}[];"));
                 continue;
             }
-            let ty = ram_addr_of(cap)
+            let mut ty = ram_addr_of(cap)
                 .and_then(|a| gsizes.get(&a).copied())
                 .and_then(|sz| sized_ctype(pfx, sz))
                 .unwrap_or_else(|| ctype_for(pfx).to_string());
+            // Arithmetic on a `void *` is not C (Watcom E1066). The decompiler's arithmetic on a
+            // pointer-to-void is in BYTES — the second subject's table walked backwards by six
+            // bytes an entry whose entries are then called (docs/tasklist-2026-09-08.md item 2)
+            // — and a byte pointer says exactly that, with every `*(int4 *)p` cast still legal.
+            if ty == "void *" && used_in_pointer_arithmetic(c, cap) {
+                ty = "char *".to_string();
+            }
             let vq = if ram_addr_of(cap).is_some_and(|a| volatiles.contains(&a)) { "volatile " } else { "" };
             extra.push(format!("{vq}{ty} {cap};"));
         }
@@ -609,18 +617,99 @@ pub fn build_tu(
         // prefix: key on whether this global is actually CALLED through, which is unambiguous and
         // is the only case where the distinction changes the emitted instruction.
         let called = c.contains(&format!("(*{n})("));
-        let ty = if called { "code *" } else { "int *" };
+        // A pointer-to-code or pointer-to-char global (`pc…`, and `pv…` for void) that the body
+        // WALKS (`p + 6`, `*(int2 *)(p + 4)`) is a table read as data — the second subject's
+        // dispatch table stepped backwards six bytes an entry (docs/tasklist-2026-09-08.md
+        // item 2). The decompiler's arithmetic on such a pointer is in BYTES, and arithmetic on
+        // a `code *` is not C (Watcom E1066), so it is the byte pointer; a bare call through it
+        // is cast back to `code *` at the site. An `int *` walk stays in elements, as printed.
+        let byte_pointee = n.starts_with("pc") || n.starts_with("pv");
+        let arith = byte_pointee && used_in_pointer_arithmetic(c, n);
+        let ty = if arith {
+            if called {
+                cast_calls.push(n.clone());
+            }
+            "char *"
+        } else if called {
+            "code *"
+        } else {
+            "int *"
+        };
         names.insert(format!("{ty}{n};"));
     }
     for d in names {
         decls.push_str(&d);
         decls.push('\n');
     }
+    let mut c = c.to_string();
+    for n in &cast_calls {
+        c = c.replace(&format!("(*{n})("), &format!("(*(code *){n})("));
+    }
+    let c = c.as_str();
+
+    // A FLOAT DIVISION BY A LITERAL ZERO is a constant expression Watcom refuses to build.
+    let c = &route_float_zero_divisors(c);
 
     // Prelude is prepended at compile time from <out>/prelude.h (fast iteration); src files
     // carry only the synthesized declarations + the decompiled body.
     let tu = format!("{decls}\n{c}");
     (tu, smells.into_iter().collect())
+}
+
+/// Whether the body does pointer arithmetic on `n` — printc spaces every binary operator, so the
+/// forms are `n + …` and `n - …` (a unary minus or an index never matches).
+fn used_in_pointer_arithmetic(c: &str, n: &str) -> bool {
+    c.contains(&format!("{n} + ")) || c.contains(&format!("{n} - "))
+}
+
+/// Route every float division by a LITERAL zero through a file-scope `volatile` zero of the same
+/// width (`/ (float10)0` → `/ fzero_10`), returning the rewritten body and the widths it needs
+/// declared. `E1167: Division or remainder by zero in a constant expression` is Watcom refusing
+/// the x87 detection idiom — `fVar1 = (float10)1 / (float10)0;` makes an infinity ON PURPOSE and
+/// compares it with its negation to tell a 287 from a 387 (the first subject's `__init_80x87`, the
+/// second subject's FUN_000002ba; docs/tasklist-2026-09-08.md item 3). The decompiler folded the
+/// operands faithfully; a `volatile` read cannot be folded, so the unit builds. Only a bare `0`
+/// literal qualifies (`0.5`, `0x10`, `0e0` and identifiers are left alone), and a unit without the
+/// shape is returned unchanged.
+fn route_float_zero_divisors(c: &str) -> String {
+    let mut out = c.to_string();
+    let mut widths: Vec<&str> = Vec::new();
+    for w in ["10", "8", "4"] {
+        let pat = format!("/ (float{w})0");
+        let mut res = String::with_capacity(out.len());
+        let mut rest = out.as_str();
+        let mut hit = false;
+        while let Some(i) = rest.find(&pat) {
+            let after = rest.as_bytes().get(i + pat.len()).copied();
+            let literal_zero = !after.is_some_and(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'.');
+            res.push_str(&rest[..i]);
+            if literal_zero {
+                res.push_str(&format!("/ fzero_{w}"));
+                hit = true;
+            } else {
+                res.push_str(&pat);
+            }
+            rest = &rest[i + pat.len()..];
+        }
+        res.push_str(rest);
+        out = res;
+        if hit {
+            widths.push(w);
+        }
+    }
+    if widths.is_empty() {
+        return out;
+    }
+    // The zeros are LOCALS of the function that needs them, not file-scope data: a file-scope
+    // definition puts initialized data in the object, which the verifier then cannot match
+    // against the original function alone (measured: the first subject's `__init_80x87` went
+    // COMPILE_FAIL → OBJ_ERROR). printc opens the body with `{` on its own line, so the
+    // declarations go straight after it, where the other locals are.
+    let decls: String = widths.iter().map(|w| format!("  volatile float{w} fzero_{w} = (float{w})0;\n")).collect();
+    match out.find("\n{\n") {
+        Some(i) => format!("{}\n{{\n{decls}{}", &out[..i], &out[i + 3..]),
+        None => out,
+    }
 }
 
 pub fn classify_ident(
@@ -1118,5 +1207,37 @@ int *puRam000a82a0;
         // an indexed use excludes the member
         let ci = "sRam00080000[1] = 1;\nsRam00080002 = 2;\nsRam00080004 = 3;\n";
         assert_eq!(aggregate_ram_globals(ci, &insns, &sizes2, &HashSet::new(), true).0, ci);
+    }
+
+    /// A pointer-to-void or pointer-to-code global that the body WALKS is a byte pointer
+    /// (Watcom E1066 on either; the decompiler's arithmetic on both is in bytes), a bare call
+    /// through a re-typed one is cast back to `code *`, and a global that is only called or only
+    /// dereferenced keeps its type.
+    #[test]
+    fn a_walked_pointer_to_void_or_code_global_is_a_byte_pointer() {
+        let c = "void FUN_00001000(void)\n{\n  int4 iVar1;\n\n  for (; *(int2 *)(pcRam00048470 + 4) != 0; pcRam00048470 = pcRam00048470 + 0xfffffffa) {\n    iVar1 = func_0x00023118(*(int4 *)pcRam00048470, *(int2 *)(pcRam00048470 + 4));\n    if (iVar1 == 0) {\n      (**(code * *)pcRam00048470)();\n    }\n  }\n  (*pcRam00049000)();\n  pcRam00049000 = pcRam00049000 + 6;\n  (*pcRam0004a000)();\n  return;\n}\n";
+        let (tu, _) = build_tu(c, 0x1000, false, &HashMap::new(), &HashSet::new(), &HashMap::new(), &[]);
+        assert!(tu.contains("char *pcRam00048470;\n"), "walked and read as data (called only through a cast): a byte pointer\n{tu}");
+        assert!(tu.contains("char *pcRam00049000;\n"), "called AND walked: a byte pointer\n{tu}");
+        assert!(tu.contains("(*(code *)pcRam00049000)();"), "its bare call is cast back\n{tu}");
+        assert!(tu.contains("code *pcRam0004a000;\n"), "only called: still the function pointer\n{tu}");
+        assert!(tu.contains("(*pcRam0004a000)();"), "and its call is untouched\n{tu}");
+        assert!(!tu.contains("void *pcRam"), "no void pointer is walked\n{tu}");
+    }
+
+    /// A float division by a literal zero — the x87 detection idiom the decompiler folds to
+    /// `(float10)1 / (float10)0` — is routed through a file-scope `volatile` zero so Watcom cannot
+    /// fold it (E1167); a unit without the shape is byte-identical.
+    #[test]
+    fn a_float_division_by_a_literal_zero_goes_through_a_volatile_zero() {
+        let c = "xunknown2 FUN_00001000(void)\n{\n  float10 fVar1;\n  float8 dVar2;\n\n  fVar1 = (float10)1 / (float10)0;\n  dVar2 = (float8)3 / (float8)0.5 + (float8)1 / (float8)0x10 + (float8)2 / (float8)0;\n  return 0;\n}\n";
+        let (tu, _) = build_tu(c, 0x1000, false, &HashMap::new(), &HashSet::new(), &HashMap::new(), &[]);
+        assert!(tu.contains("{\n  volatile float10 fzero_10 = (float10)0;\n  volatile float8 fzero_8 = (float8)0;\n"), "the zeros are locals of the function, not file-scope data:\n{tu}");
+        assert!(tu.contains("fVar1 = (float10)1 / fzero_10;"), "{tu}");
+        assert!(tu.contains("/ (float8)0.5 + (float8)1 / (float8)0x10 + (float8)2 / fzero_8;"), "only the bare literal zero: {tu}");
+        assert!(!tu.contains("fzero_4"), "no float4 division here");
+        let plain = "int4 FUN_00001000(void)\n{\n  return 1 / 0x10;\n}\n";
+        let (tu2, _) = build_tu(plain, 0x1000, false, &HashMap::new(), &HashSet::new(), &HashMap::new(), &[]);
+        assert!(!tu2.contains("fzero"), "a unit without the shape is untouched: {tu2}");
     }
 }
