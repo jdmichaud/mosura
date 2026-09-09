@@ -1,0 +1,45 @@
+# Saved 2026-09-09 from worktree /data/mosura-foreign (branch foreign-scope, base 0a6a39a), uncommitted at cleanup.
+# Paths are the pre-P0b layout (crates/mosura/src/...); today's is crates/mosura-core/src/.
+diff --git a/crates/mosura/src/decompile/structure.rs b/crates/mosura/src/decompile/structure.rs
+index a65ee8b..27bff82 100644
+--- a/crates/mosura/src/decompile/structure.rs
++++ b/crates/mosura/src/decompile/structure.rs
+@@ -916,6 +916,7 @@ impl Structured {
+             let n = self.install(vec![b, orblock], FlowKind::CondOr, out, ins);
+             // The deferred per-side negations: bl flipped when i==1, orblock flipped when j==0.
+             self.blocks[n].cond_flip = (i == 1, j == 0);
++            FLIP_CENSUS.with(|c| c.set((c.get().0 + 1, c.get().1 + ((i == 1 || j == 0) as u32))));
+             return true;
+         }
+         false
+@@ -3182,6 +3183,7 @@ fn dump_cfg_partition(f: &Funcdata) {
+ }
+ 
+ pub fn structure(f: &Funcdata) -> Structured {
++    FLIP_CENSUS.with(|c| c.set((0, 0)));
+     if crate::debug::on(crate::debug::Topic::Structure) {
+         dump_cfg_partition(f);
+     }
+@@ -3372,9 +3374,22 @@ pub fn structure(f: &Funcdata) -> Structured {
+     if n != 0 {
+         s.scope_break();
+     }
++    if std::env::var_os("MOSURA_FLIP_CENSUS").is_some() {
++        let (folds, flips) = FLIP_CENSUS.with(|c| c.get());
++        if folds != 0 {
++            eprintln!("FLIPCENSUS {} folds={folds} flips={flips}", f.name);
++        }
++    }
+     s
+ }
+ 
++// PROBE ONLY (Order G 3c-a, never lands): per-function count of short-circuit folds and of those
++// that chose a FLIPPED (i,j) orientation — the sites where Ghidra's `ruleBlockOr` would have
++// reversed edges and we record a print-only `cond_flip` instead.
++thread_local! {
++    static FLIP_CENSUS: std::cell::Cell<(u32, u32)> = const { std::cell::Cell::new((0, 0)) };
++}
++
+ /// Materialize the structurer's branch-direction negations in the IR (the mosura analogue of the
+ /// `negateCondition` calls Ghidra's `CollapseStructure` makes during `ActionBlockStructure`). Runs
+ /// the structuring collapse to find every `if`/`while`/`do-while` whose body sits on the false edge,

@@ -1,0 +1,281 @@
+# Saved 2026-09-09 from worktree /data/mosura-b1 (branch shortcircuit-edges, base 89fe837), uncommitted at cleanup.
+# Paths are the pre-P0b layout (crates/mosura/src/...); today's is crates/mosura-core/src/.
+diff --git a/crates/mosura/src/decompile/pipeline.rs b/crates/mosura/src/decompile/pipeline.rs
+index 0e875c4..85caaaa 100644
+--- a/crates/mosura/src/decompile/pipeline.rs
++++ b/crates/mosura/src/decompile/pipeline.rs
+@@ -808,6 +808,7 @@ impl Action for ActionBlockStructure {
+             return 0;
+         }
+         let s = super::structure::structure(data);
++        beta_probe(data);
+         // Freeze the first collapse's per-block complexity verdicts (Ghidra collapses once per
+         // CFG and never revisits them; see `Funcdata::structure_complex`). Later re-deriving
+         // builds (orientation stages, FinalStructure, printc's fallback) reuse this vector.
+@@ -1914,3 +1915,40 @@ mod tests {
+         }
+     }
+ }
++
++
++/// PROBE ONLY (Order I beta0, never lands): arm the composite-targeted negate for THIS function's
++/// structurings, so `rule_short_circuit` performs Ghidra's `negateCondition` structurally instead of
++/// deferring it to print. Report convergence; the emitted tree is the payoff evidence.
++fn beta_probe(data: &Funcdata) {
++    use super::structure::{beta_on, BETA_DIVERGED, BETA_SITES, BETA_SWAPPED};
++    if !beta_on() {
++        return;
++    }
++    // The tree just built by our caller IS the probe's (beta_on is armed process-wide), so report
++    // its counters rather than structuring again.
++    let swapped = BETA_SWAPPED.with(|c| c.get());
++    let diverged = BETA_DIVERGED.with(|d| d.get());
++    if swapped != 0 {
++        let pcs: Vec<String> = BETA_SITES.with(|v| {
++            v.borrow()
++                .iter()
++                .filter_map(|&(b, i, j, side)| {
++                    let blk = data.block(super::block::BlockId(b));
++                    blk.ops
++                        .iter()
++                        .rev()
++                        .copied()
++                        .find(|&o| data.op(o).code() == super::opcode::OpCode::Cbranch)
++                        .map(|op| (op, i, j, side))
++                })
++                .map(|(op, i, j, side)| {
++                    format!("{:x}/i{i}j{j}{}", data.op(op).seqnum.pc.offset, side as char)
++                })
++                .collect()
++        });
++        println!("BETA0 {} swapped={swapped} diverged={diverged} foldpcs={}", data.name, pcs.join(","));
++    }
++    BETA_SWAPPED.with(|c| c.set(0));
++    BETA_DIVERGED.with(|d| d.set(false));
++}
+diff --git a/crates/mosura/src/decompile/printc.rs b/crates/mosura/src/decompile/printc.rs
+index dbb8c76..daac91f 100644
+--- a/crates/mosura/src/decompile/printc.rs
++++ b/crates/mosura/src/decompile/printc.rs
+@@ -54,6 +54,8 @@ pub(crate) fn operand_oriented(f: &super::funcdata::Funcdata, s: &Structured, id
+             f.block(bid).ops.iter().rev().copied().find(|&op| f.op(op).code() == OpCode::Cbranch)
+         })
+         .is_some_and(|cbr| f.op(cbr).is_fallthru_true())
++        // PROBE ONLY (beta0): the distributed NOT flipped this leaf's sense structurally.
++        ^ super::structure::BETA_SENSE.with(|b| b.borrow().contains(&idx))
+ }
+ 
+ 
+@@ -2594,6 +2596,26 @@ impl<'a> PrintC<'a> {
+     /// `!a && !b`, recursing so the leading `!` never survives on a compound condition.
+     pub(crate) fn render_cond_expr(&mut self, s: &Structured, idx: usize, neg: bool) -> String {
+         let comps = s.blocks[idx].components.clone();
++        // W-3 TRACE (probe only): the DECISIONS, per recursion level — the inputs are known
++        // identical at correct and wrong sites, so the divergence must be here.
++        if std::env::var_os("MOSURA_CONDTRACE").is_some() && self.arm_order_address {
++            let (f0, f1) = s.blocks[idx].cond_flip;
++            let leaf = exit_basic(s, idx).map(|b| {
++                let cbr = self.f.block(b).ops.iter().rev().copied()
++                    .find(|&o| self.f.op(o).code() == OpCode::Cbranch);
++                let outs = self.f.blocks()[b.0 as usize].out_edges.iter().map(|e| e.0).collect::<Vec<_>>();
++                match cbr {
++                    Some(c) => format!("blk{} pc={:x} bf={} ft={} outs={:?}", b.0,
++                        self.f.op(c).seqnum.pc.offset, self.f.op(c).is_boolean_flip(),
++                        self.f.op(c).is_fallthru_true(), outs),
++                    None => format!("blk{} (no cbranch) outs={:?}", b.0, outs),
++                }
++            }).unwrap_or_else(|| "-".into());
++            println!(
++                "CONDTRACE fn={} node={idx} kind={:?} neg_in={neg} flip=({f0},{f1}) oriented={} comps={:?} leaf[{leaf}]",
++                self.f.name, s.blocks[idx].kind, operand_oriented(self.f, s, idx), comps,
++            );
++        }
+         match s.blocks[idx].kind {
+             FlowKind::CondAnd | FlowKind::CondOr => {
+                 let is_and = matches!(s.blocks[idx].kind, FlowKind::CondAnd);
+@@ -3331,6 +3353,63 @@ impl<'a> PrintC<'a> {
+         }
+         let fb = &s.blocks[idx];
+         let (mut comps, mut negated) = (fb.components.clone(), fb.negated);
++        // PROBE ONLY (Order I W-1, never lands): one row per emitted `if`, so a fold site maps to
++        // its EMITTED LINE instead of being matched by body constant. Diagnostics only — the
++        // rendering is untouched by this flag.
++        if std::env::var_os("MOSURA_IFTABLE").is_some() {
++            let cond = comps[0];
++            let (f0, f1) = s.blocks[cond].cond_flip;
++            let kind = format!("{:?}", s.blocks[cond].kind);
++            let pc = exit_basic(s, cond)
++                .and_then(|bid| {
++                    self.f.block(bid).ops.iter().rev().copied()
++                        .find(|&o| self.f.op(o).code() == OpCode::Cbranch)
++                })
++                .map(|op| format!("{:x}", self.f.op(op).seqnum.pc.offset))
++                .unwrap_or_else(|| "-".into());
++            let txt: String =
++                self.render_cond_expr(s, cond, negated).chars().take(110).collect();
++            // WRONG-CODE DETECTOR (probe only): does the printed sense match the CFG edge the
++            // then-body actually sits on? Leaf-conditioned ifs only — a compound's edge semantics
++            // belong to its leaves, not to the composite. Mismatch = wrong code BY CONSTRUCTION.
++            if !matches!(s.blocks[cond].kind, FlowKind::CondAnd | FlowKind::CondOr) {
++                if let (Some(cb), Some(then_e)) = (exit_basic(s, cond), entry_basic(s, comps[1])) {
++                    let outs = &self.f.blocks()[cb.0 as usize].out_edges;
++                    if outs.len() == 2 {
++                        let cbr = self.f.block(cb).ops.iter().rev().copied()
++                            .find(|&o| self.f.op(o).code() == OpCode::Cbranch);
++                        if let Some(cbr) = cbr {
++                            // out_edges = [fallthrough, taken]; fallthru_true means the
++                            // FALL-THROUGH is taken when the condition is TRUE.
++                            // A CBRANCH is taken when its condition is TRUE unless `boolean_flip`;
++                            // `fallthru_true` says the FALL-THROUGH is taken when TRUE. Our
++                            // `block_negate_condition` sets BOTH and leaves the edges intact, so the
++                            // true-edge index depends on the PAIR, not on either flag alone.
++                            let bf = self.f.op(cbr).is_boolean_flip();
++                            let ft = self.f.op(cbr).is_fallthru_true();
++                            let true_edge = if bf || ft { 0 } else { 1 };
++                            let want = if negated { 1 - true_edge } else { true_edge };
++                            if let Some(got) = outs.iter().position(|&e| e == then_e) {
++                                if got != want {
++                                    println!(
++                                        "WRONGIF fn={} condpc={pc} want={want} got={got} negated={negated} bf={bf} ft={ft} recovered_pass={}",
++                                        self.f.name,
++                                        self.arm_order_address,
++                                    );
++                                }
++                            }
++                        }
++                    }
++                }
++            }
++            println!(
++                "IFROW fn={} condpc={pc} kind={kind} flip=({f0},{f1}) ifneg={} oriented={} haselse={} TEXT={txt}",
++                self.f.name,
++                negated,
++                operand_oriented(self.f, s, cond),
++                matches!(fb.kind, FlowKind::IfElse),
++            );
++        }
+         if let Some(&c) = self.sparse_cond_override.get(&idx) {
+             comps[0] = c;
+         }
+diff --git a/crates/mosura/src/decompile/structure.rs b/crates/mosura/src/decompile/structure.rs
+index a65ee8b..3a5dc54 100644
+--- a/crates/mosura/src/decompile/structure.rs
++++ b/crates/mosura/src/decompile/structure.rs
+@@ -845,6 +845,45 @@ impl Structured {
+     /// [`render_cond_expr`](super::printc) XORs into each operand's print negation. The two canonical
+     /// orientations `(i=0,j=1)`/`(i=1,j=0)` carry no flip and reproduce the previous 2-case fold
+     /// byte-for-byte; the swapped `(i=0,j=0)`/`(i=1,j=1)` orientations are the newly-recovered folds.
++
++    /// PROBE ONLY (Order I beta0, never lands): `FlowBlock::negateCondition` for our transient tree.
++    ///
++    /// Ghidra `BlockCondition::negateCondition` (block.cc:3023) distributes the NOT to BOTH children
++    /// with `toporbottom=false`, swaps `opc` AND<->OR, then calls `FlowBlock::negateCondition` on
++    /// ITSELF with the caller's flag. `FlowBlock::negateCondition(false)` is a no-op (block.cc:3010),
++    /// so **only the node the caller named swaps its edges** — the children flip sense only. A leaf
++    /// (`BlockBasic::negateCondition`, block.cc:2996) flips both `boolean_flip` and `fallthru_true`;
++    /// its CFG edges swap but the structured copy's swap only under `toporbottom` (`BlockCopy`,
++    /// block.hh:534). We keep ONE edge list per node, so the leaf's structured swap is what we honour
++    /// and the CFG is left untouched — this probe never mutates the Funcdata.
++    fn negate_node(&mut self, n: usize, toporbottom: bool) {
++        match self.blocks[n].kind {
++            FlowKind::CondAnd | FlowKind::CondOr => {
++                let (c0, c1) = (self.blocks[n].components[0], self.blocks[n].components[1]);
++                self.negate_node(c0, false);
++                self.negate_node(c1, false);
++                self.blocks[n].kind = if matches!(self.blocks[n].kind, FlowKind::CondAnd) {
++                    FlowKind::CondOr
++                } else {
++                    FlowKind::CondAnd
++                };
++            }
++            _ => {
++                // leaf: flip the printed sense (our `fallthru_true` analogue)
++                BETA_SENSE.with(|f| {
++                    let mut f = f.borrow_mut();
++                    if !f.insert(n) {
++                        f.remove(&n);
++                    }
++                });
++            }
++        }
++        if toporbottom && self.blocks[n].out_edges.len() == 2 {
++            self.blocks[n].out_edges.swap(0, 1);
++            BETA_SWAPPED.with(|c| c.set(c.get() + 1));
++        }
++    }
++
+     fn rule_short_circuit(&mut self, b: usize, ins: &[Vec<(usize, usize)>]) -> bool {
+         if self.out(b).len() != 2 {
+             return false;
+@@ -915,7 +954,21 @@ impl Structured {
+             // oracle-verified, TODO.md's priority wrong-code entry).
+             let n = self.install(vec![b, orblock], FlowKind::CondOr, out, ins);
+             // The deferred per-side negations: bl flipped when i==1, orblock flipped when j==0.
+-            self.blocks[n].cond_flip = (i == 1, j == 0);
++            if beta_on() {
++                // beta0: perform Ghidra's negates structurally instead of deferring them to print.
++                // `cond_flip` is deliberately NOT set here — setting it too would re-apply the
++                // negation at print time (the double negation that inverted 391 predicates).
++                if i == 1 {
++                    if let Some(bid) = self.exit_basic(b) { BETA_SITES.with(|v| v.borrow_mut().push((bid.0, i as u8, j as u8, b'b'))); }
++                    self.negate_node(b, true);
++                }
++                if j == 0 {
++                    if let Some(bid) = self.exit_basic(orblock) { BETA_SITES.with(|v| v.borrow_mut().push((bid.0, i as u8, j as u8, b'o'))); }
++                    self.negate_node(orblock, true);
++                }
++            } else {
++                self.blocks[n].cond_flip = (i == 1, j == 0);
++            }
+             return true;
+         }
+         false
+@@ -1724,6 +1777,7 @@ impl Structured {
+         while isolated_count < self.order.len() {
+             spins += 1;
+             if spins > cap {
++                BETA_DIVERGED.with(|d| d.set(true));
+                 debug_assert!(false, "structure collapse did not converge in {cap} goto selections");
+                 break;
+             }
+@@ -1733,6 +1787,7 @@ impl Structured {
+                 // Ghidra throws here (the TraceDAG has already scored every non-DAG goto); a
+                 // well-formed graph never reaches this, so stop instead of looping forever.
+                 SelectGoto::Stuck => {
++                    BETA_DIVERGED.with(|d| d.set(true));
+                     debug_assert!(false, "structure collapse stuck: TraceDAG scored no goto and no extra roots");
+                     break;
+                 }
+@@ -3182,6 +3237,8 @@ fn dump_cfg_partition(f: &Funcdata) {
+ }
+ 
+ pub fn structure(f: &Funcdata) -> Structured {
++    BETA_SENSE.with(|b| b.borrow_mut().clear());
++    BETA_SITES.with(|v| v.borrow_mut().clear());
+     if crate::debug::on(crate::debug::Topic::Structure) {
+         dump_cfg_partition(f);
+     }
+@@ -3866,3 +3923,23 @@ pub fn force_loop_overflow() -> bool {
+ pub fn set_force_loop_overflow(on: bool) {
+     FORCE_LOOP_OVERFLOW.with(|c| c.set(on));
+ }
++
++
++// ===== PROBE ONLY (Order I beta0, never lands) =====
++/// PROBE ONLY: armed once from the environment, so EVERY structuring of every function performs
++/// the structural negate — the configuration a real beta ships, and the one the emitted tree sees.
++pub fn beta_on() -> bool {
++    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    *ON.get_or_init(|| std::env::var_os("MOSURA_BETA_PROBE").is_some())
++}
++
++thread_local! {
++    pub static BETA_SWAPPED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
++    pub static BETA_DIVERGED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++    /// Structured nodes whose printed sense the distributed NOT flipped.
++    pub static BETA_SENSE: std::cell::RefCell<std::collections::HashSet<usize>> =
++        std::cell::RefCell::new(std::collections::HashSet::new());
++    /// The exit basic block of each node a flipped fold negated — resolved to a pc by the driver,
++    /// so a witness's fold SITE is located rather than inferred from reading two renderings.
++    pub static BETA_SITES: std::cell::RefCell<Vec<(u32, u8, u8, u8)>> = const { std::cell::RefCell::new(Vec::new()) };
++}

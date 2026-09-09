@@ -1,0 +1,104 @@
+# Saved 2026-09-09 from worktree /data/mosura-w5 (branch prefer-complement-composite, base f632070), uncommitted at cleanup.
+# Paths are the pre-P0b layout (crates/mosura/src/...); today's is crates/mosura-core/src/.
+diff --git a/crates/mosura/src/decompile/structure.rs b/crates/mosura/src/decompile/structure.rs
+index a65ee8b..2a78599 100644
+--- a/crates/mosura/src/decompile/structure.rs
++++ b/crates/mosura/src/decompile/structure.rs
+@@ -1124,7 +1124,20 @@ impl Structured {
+     /// the root (like [`collect_negations`](Self::collect_negations)) so superseded intermediate
+     /// composites are skipped. Consumed by [`ActionPreferComplement`] to materialize the normal-form
+     /// flip in the IR.
+-    pub fn if_else_splits(&self) -> Vec<BlockId> {
++    /// The if/else split points, each as the FULL leaf set its complement would have to flip.
++    ///
++    /// Ghidra takes `getBlock(0)->getSplitPoint()` (`BlockIf::preferComplement`, block.cc:3093),
++    /// and for a `BlockCondition` that split point is **the composite itself** (block.hh:631) —
++    /// whose `flipInPlaceTest` (block.cc:2990) requires BOTH children's split points to be
++    /// flippable or returns 2 (decline), and whose `flipInPlaceExecute` (block.cc:3008) flips the
++    /// connective AND both children. So a compound condition is complemented **all-or-nothing**.
++    ///
++    /// Returning only `exit_basic(cond)` — a compound's LAST leaf — complemented one half of a
++    /// De Morgan pair, which is a different boolean: measured as wrong code on FUN_0001aab0
++    /// (1aba9, 1aed9; the bytes take the call when the tested word is non-zero, the emitted guard
++    /// took it when zero). Each entry here is therefore the leaf set of one split, and the caller
++    /// flips every leaf or none.
++    pub fn if_else_splits(&self) -> Vec<Vec<BlockId>> {
+         let mut out = Vec::new();
+         for &r in &self.roots {
+             self.collect_if_else_splits(r, &mut out);
+@@ -1132,11 +1145,11 @@ impl Structured {
+         out
+     }
+ 
+-    fn collect_if_else_splits(&self, idx: usize, out: &mut Vec<BlockId>) {
++    fn collect_if_else_splits(&self, idx: usize, out: &mut Vec<Vec<BlockId>>) {
+         if matches!(self.blocks[idx].kind, FlowKind::IfElse) {
+             if let Some(&cond) = self.blocks[idx].components.first() {
+-                if let Some(bid) = self.exit_basic(cond) {
+-                    out.push(bid);
++                if let Some(leaves) = self.split_leaves(cond) {
++                    out.push(leaves);
+                 }
+             }
+         }
+@@ -1145,6 +1158,21 @@ impl Structured {
+         }
+     }
+ 
++    /// The leaves a complement of `idx` must flip — `FlowBlock::getSplitPoint` recursed through the
++    /// composite (block.hh:631 + `BlockCondition::flipInPlaceTest`'s two `getSplitPoint()` calls).
++    /// `None` when any part has no split point, which is Ghidra's `return 2` decline.
++    fn split_leaves(&self, idx: usize) -> Option<Vec<BlockId>> {
++        match self.blocks[idx].kind {
++            FlowKind::CondAnd | FlowKind::CondOr => {
++                let c = &self.blocks[idx].components;
++                let mut a = self.split_leaves(*c.first()?)?;
++                a.extend(self.split_leaves(*c.get(1)?)?);
++                Some(a)
++            }
++            _ => Some(vec![self.exit_basic(idx)?]),
++        }
++    }
++
+     /// `ruleBlockIfElse` (blockaction.cc:1416): both arms reconverge to one block.
+     fn rule_if_else(&mut self, b: usize, ins: &[Vec<(usize, usize)>]) -> bool {
+         if self.out(b).len() != 2 || self.blocks[b].is_switch_out() {
+@@ -3454,16 +3482,31 @@ impl super::action::Action for ActionPreferComplement {
+         let s = structure(data);
+         let splits = s.if_else_splits();
+         let mut changed = 0;
+-        for bid in splits {
+-            let Some(&cbr) = data.block(bid).ops.last() else {
+-                continue;
+-            };
+-            let (result, fliplist) = data.op_flip_in_place_test(cbr);
+-            if result != 0 {
++        for leaves in splits {
++            // ALL-OR-NOTHING, per `BlockCondition::flipInPlaceTest` (block.cc:2990): every leaf's
++            // split point must be flippable, or the whole complement declines. Flipping one leaf of
++            // a compound complements half a De Morgan pair — a different boolean, and measured wrong
++            // code before this was ported (FUN_0001aab0 @1aba9/@1aed9).
++            let mut fliplist = Vec::new();
++            let ok = leaves.iter().all(|&bid| {
++                data.block(bid).ops.last().copied().is_some_and(|cbr| {
++                    let (result, mut sub) = data.op_flip_in_place_test(cbr);
++                    if result != 0 {
++                        return false;
++                    }
++                    fliplist.append(&mut sub);
++                    true
++                })
++            });
++            if !ok {
+                 continue;
+             }
++            // `BlockCondition::flipInPlaceExecute` (block.cc:3008) flips both children; the
++            // connective follows from the leaves under the printer's De Morgan algebra.
+             data.op_flip_in_place_execute(&fliplist);
+-            data.flip_in_place_execute(bid);
++            for &bid in &leaves {
++                data.flip_in_place_execute(bid);
++            }
+             changed = 1;
+         }
+         // The cache stays empty either way — ActionFinalStructure rebuilds on the final ops.
