@@ -112,9 +112,16 @@ closed; custom compiler lowering and unrelated output/platform contracts remain 
 Related report: **#6**. Distinguish the reported consumer union conversion from the original
 producer/caller storage protocol, then validate the value and flag through one joined result.
 
-- [>] Compare native returns/calls with archived raw output and current declarations.
-- [ ] Compile a generic value-and-flag MVE and capture the mapped C++ oracle.
-- [ ] Gate both channels at definitions and callers, port any missing consumers, and validate.
+- [x] Compare native returns/calls with archived raw output and current declarations.
+  The quoted integer-to-double union conversion was introduced by a consumer rewrite.
+  The original protocol does return EDI plus CF; an explicit five-byte joined result
+  preserves both channels in the current producers and callers.
+- [x] Compile a generic value-and-flag MVE and capture the mapped C++ oracle.
+  `value_flag_result.S` builds four functions on i386 and x86-64. With identical EDI input
+  and join(CF, EDI) output declarations, the oracle retains both return fields, both
+  flag-dependent result branches and the loop-carried value passed to the next call.
+  The logical structure has size five and alignment one; physical flag storage is one byte.
+- [>] Gate both channels at definitions and callers, port any missing consumers, and validate.
 - [ ] Recheck the reported call chain and keep consumer rewrites outside the port.
 
 ## Completed package: declared multiple register results

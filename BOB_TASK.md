@@ -47,6 +47,8 @@ stored storage-piece table pass their API gates; default emission is unchanged f
 The reported producer chain and its immediate consumers pass 1280/1280 IR value cases.
 This closes the declared result scope; automatic recovery, compiler lowering and later callbacks
 remain separate work. The active result scope is #6 (a value and condition flag).
+Its source-built i386/x86-64 example now matches the mapped C++ oracle for both fields
+and the retry-loop input; the semantic gate and reported call-chain checks are in progress.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.

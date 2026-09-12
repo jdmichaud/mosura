@@ -192,6 +192,16 @@ if have gcc && have objcopy; then
   strip -o indirect_contract.gcc-x86-64 indirect_contract.gcc-x86-64.unstripped
   rm -f indirect_contract.gcc-x86-64.unstripped
 
+  # A value and carry flag returned together, including loop-carried result input.
+  for bits in 32 64; do
+    gcc -m"$bits" -nostdlib -static -no-pie -Wl,-e,_start src/value_flag_result.S \
+      -o "value_flag_result.gcc-x86-$bits.unstripped"
+    derive_truth_elf "value_flag_result.gcc-x86-$bits.unstripped" value_flag_result gcc "x86-$bits" \
+      "x86:LE:$bits:default" ""
+    strip -o "value_flag_result.gcc-x86-$bits" "value_flag_result.gcc-x86-$bits.unstripped"
+    rm -f "value_flag_result.gcc-x86-$bits.unstripped"
+  done
+
   # A callback input whose predecessor definitions require a phi despite its call-output guard.
   for bits in 32 64; do
     gcc -m"$bits" -nostdlib -static -no-pie -Wl,-e,_start src/branch_argument.S -o branch_argument.gcc-x86-"$bits".unstripped

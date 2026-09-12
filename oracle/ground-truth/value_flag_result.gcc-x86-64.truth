@@ -1,0 +1,8 @@
+# mosura-ground-truth v1 program=value_flag_result compiler=gcc arch=x86-64 lang=x86:LE:64:default
+# derived-from=value_flag_result.gcc-x86-64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 0000000000401000
+func 0000000000401000 0000000000000023 _start code
+func 0000000000401023 000000000000000e advance code
+func 0000000000401031 0000000000000013 choose code
+func 0000000000401044 000000000000000a repeat code
