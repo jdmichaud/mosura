@@ -73,7 +73,8 @@ The option participates in cache identity and is applied to both cached and thaw
 changing later requests that omit it. It is accepted by `function.decompile`; compiler emission and
 round operations do not accept it. Multiple noncontiguous result registers, stack results, mutable
 pointer output declarations and custom compiler lowering remain separate work. This interface does
-not supply callee input declarations or replace missing input-contract recovery.
+not itself supply callee inputs. [Function input declarations](function-input-contracts.md)
+provide the matching definition/caller input list; automatic input-contract recovery is separate.
 
 ## Compiler-spec extensions
 

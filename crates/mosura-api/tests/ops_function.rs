@@ -26,6 +26,68 @@ fn opts(pairs: &[(&str, &str)]) -> Options {
 }
 
 #[test]
+fn declared_function_inputs_are_typed_and_request_local() {
+    let c = ctx();
+    let dir = mosura_core::paths::ground_truth_dir();
+    for bits in [32, 64] {
+        let stem = format!("function_inputs.gcc-x86-{bits}");
+        let truth = std::fs::read_to_string(dir.join(format!("{stem}.truth"))).unwrap();
+        let entry = |name: &str| truth.lines().find_map(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            (fields.first() == Some(&"func") && fields.get(3) == Some(&name))
+                .then(|| fields[1].to_string())
+        }).unwrap();
+        let target = entry("combine");
+        let input_text = ["combine", "relay", "unused"].map(|n| format!("{}=EDI:uint4,AH:uint1", entry(n))).join(";");
+        let output_text = ["combine", "relay", "unused"].map(|n| format!("{}=EAX:uint4", entry(n))).join(";");
+        let declared = |target: &str| opts(&[("entry", target),
+            ("decompile.function-inputs", &input_text), ("decompile.function-outputs", &output_text)]);
+        let default = opts(&[("entry", &target)]);
+        let mut s = Session::open(None).unwrap();
+        s.add_input(&std::fs::read(dir.join(&stem)).unwrap(), &stem, None).unwrap();
+        dispatch(&c, &mut s, "program.analyze", &Options::new(), &mut NoProgress).unwrap();
+        let baseline = text(&dispatch(&c, &mut s, "function.decompile", &default, &mut NoProgress).unwrap());
+        for name in ["combine", "relay", "unused"] {
+            // Each fresh function after the first must thaw; its first request has no cached set.
+            if name != "combine" { s.last_program = None; }
+            let request = declared(&entry(name));
+            let output = text(&dispatch(&c, &mut s, "function.decompile", &request, &mut NoProgress).unwrap());
+            assert!(output.contains("uint4 param_1, uint1 param_2"), "{bits}/{name}: {output}");
+            let keys = s.set_keys(SetKind::Function).unwrap();
+            let cached = text(&dispatch(&c, &mut s, "function.decompile", &request, &mut NoProgress).unwrap());
+            assert_eq!(cached, output);
+            assert_eq!(s.set_keys(SetKind::Function).unwrap(), keys, "reuse the same result set");
+        }
+        let restored = text(&dispatch(&c, &mut s, "function.decompile", &default, &mut NoProgress).unwrap());
+        assert_eq!(baseline, restored, "declarations must not leak into later requests");
+        let keys = s.set_keys(SetKind::Function).unwrap().len();
+        let swapped = format!("{target}=AH:uint1,EDI:uint4");
+        let reordered = opts(&[("entry", &target), ("decompile.function-inputs", &swapped)]);
+        let output = text(&dispatch(&c, &mut s, "function.decompile", &reordered, &mut NoProgress).unwrap());
+        assert!(output.contains("uint1 param_1, uint4 param_2"), "{output}");
+        let empty = format!("{target}=void");
+        let request = opts(&[("entry", &target), ("decompile.function-inputs", &empty)]);
+        let output = text(&dispatch(&c, &mut s, "function.decompile", &request, &mut NoProgress).unwrap());
+        assert!(output.lines().next().unwrap().contains("(void)"), "{output}");
+        assert_eq!(s.set_keys(SetKind::Function).unwrap().len(), keys + 2,
+            "order and explicit empty declarations distinguish result keys");
+        assert_eq!(s.set_keys(SetKind::Program).unwrap().len(), 1, "declarations are result facts");
+        for suffix in ["NO_SUCH_REGISTER:uint4", "AH:uint4", "EAX:uint4,AH:uint1", "EDI:uint4,edi:uint4"] {
+            let value = format!("{target}={suffix}");
+            let request = opts(&[("entry", &target), ("decompile.function-inputs", &value)]);
+            assert!(matches!(dispatch(&c, &mut s, "function.decompile", &request, &mut NoProgress),
+                Err(Error::InvalidArg(_))), "must reject {value}");
+        }
+        assert!(matches!(dispatch(&c, &mut s, "function.emit", &declared(&target), &mut NoProgress),
+            Err(Error::InvalidArg(_))), "unsupported compiler lowering must not be accepted");
+    }
+    for value in ["123=EDI", "123=EDI:wat", "123=AH:int0", "123=", "123=void,AH:uint1", "123=void;123=void"] {
+        assert!(matches!(Options::new().set("decompile.function-inputs", value), Err(Error::InvalidArg(_))),
+            "must reject {value}");
+    }
+}
+
+#[test]
 fn declared_function_outputs_are_typed_and_request_local() {
     let c = ctx();
     let dir = mosura_core::paths::ground_truth_dir();

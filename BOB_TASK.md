@@ -13,7 +13,7 @@ Withdrawn consumer items were reconciled with the reporter's handoff and ledger.
 closure does not claim a mosura code fix.
 The [detailed tracker](docs/bob-issue-tracker.md) records evidence and commits; update both trackers.
 
-Validated scopes: #1, #7, #9 and #11, using explicit decompilation declarations. Outside scope: #88's verified
+Validated declaration scopes: #1, #7, #9, #11 and #14, using explicit decompilation declarations. Outside scope: #88's verified
 consumer rewrite, 22 withdrawn consumer issues/proofs, two cleanup/shared-state reports whose requested behavior is absent from the original bytes,
 the local/global naming collisions, a loop-value constant substitution, and a packed-register
 width/order mismatch introduced in consumer rewrites.
@@ -28,10 +28,12 @@ The final workspace passed 1312/1312 executed tests (23 ignored).
 find exactly 5/5 functions, the reported callback's 38-byte body is recovered, default emission
 is identical for 751/751 TUs, and the final workspace passes 1313/1313 tests (23 ignored).
 The target-boundary correction is `11490ba0`; mixed-memory coverage is `a7186842`.
-The active item is #14: declare non-default function inputs consistently at definitions and calls.
-A source-built i386/x86-64 fixture and mapped C++ oracle now pin the next declaration contract.
-Current high-byte call-input checks also show that enclosing function input declarations remain
-necessary; preserving an argument alone does not define the function's incoming register state.
+#14 is now validated for explicit function/indirect input declarations. The source-built
+regressions cover high bytes, unused parameters, restarts and compiler-spec extensions.
+Both reported bodies retain their call inputs and loop-dependent values. The final workspace
+passes 1316/1316 tests (23 ignored); default emission remains identical for 751/751 TUs.
+Core implementation: `e482d6a8`. Public API: `decompile.function-inputs`.
+The active item is #32: validate the reported high-byte call inputs with declared enclosing inputs.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.
@@ -46,7 +48,7 @@ necessary; preserving an argument alone does not define the function's incoming 
 - [x] **#11** Input contracts: preserve the explicit descriptor input at all four calls (validated scope).
 - [ ] **#12** Platform models: recover external file-read calls, arguments and results.
 - [ ] **#13** Results: support an explicit condition-flag result consistently at callee and callers.
-- [>] **#14** Input contracts: recover missing non-default register parameter sets.
+- [x] **#14** Input contracts: preserve explicit input sets at definitions and calls (validated scope).
 - [ ] **#15** Results: propagate producer outputs to callers instead of uninitialized inputs.
 - [ ] **#16** Platform models: model directory-enumeration operations and termination conditions.
 - [ ] **#17** Input contracts: preserve non-default coordinate parameter storage and order.
@@ -64,7 +66,7 @@ necessary; preserving an argument alone does not define the function's incoming 
 - [-] **#29** Consumer scope: validate application coordinate transforms and dimensions. Withdrawn upstream.
 - [ ] **#30** Input contracts: restore arguments across a series of vector-table calls.
 - [ ] **#31** Results: preserve multiple non-default register outputs as one consistent contract.
-- [ ] **#32** Input contracts: support parameter storage in high register bytes.
+- [>] **#32** Input contracts: support parameter storage in high register bytes.
 - [ ] **#33** Results: preserve the correct returned register in a caller's predicate.
 - [ ] **#34** Data flow: preserve cursor-like state across callbacks and nested calls.
 - [-] **#35** Consumer scope: verify that external thunks forward their declared parameters. Withdrawn upstream.

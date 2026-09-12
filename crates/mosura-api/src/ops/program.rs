@@ -106,10 +106,11 @@ pub fn program_of(s: &mut Session, o: &Options) -> Result<(Key, Arc<Program>)> {
 }
 
 fn validate_contracts(knobs: &mosura_core::switches::Knobs, language: &str) -> Result<()> {
-    if knobs.indirect_inputs.is_empty() && knobs.function_outputs.is_empty() { return Ok(()); }
+    if knobs.indirect_inputs.is_empty() && knobs.function_outputs.is_empty() && knobs.function_inputs.is_empty() { return Ok(()); }
     let (spec, _) = mosura_core::lang::load_cached(language)
         .ok_or_else(|| Error::InvalidArg(format!("cannot load register names for {language}")))?;
     mosura_core::decompile::deindirect::validate_indirect_inputs(knobs, spec).map_err(Error::InvalidArg)?;
+    mosura_core::decompile::prototypetypes::validate_function_inputs(knobs, spec).map_err(Error::InvalidArg)?;
     mosura_core::decompile::prototypetypes::validate_function_outputs(knobs, spec).map_err(Error::InvalidArg)
 }
 

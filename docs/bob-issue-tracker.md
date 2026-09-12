@@ -11,7 +11,7 @@ A downstream repair is not a mosura fix. Each numbered report stays open until i
 mosura behavior is checked, or triage establishes that it belongs solely to the downstream project.
 The checklist below records completed work; the register below preserves every report ID.
 
-## Active package: explicit function inputs
+## Completed package: explicit function inputs
 
 Related reports: **#14**, with shared declaration gaps in **#21, #25, #32**.
 
@@ -27,11 +27,39 @@ Related reports: **#14**, with shared declaration gaps in **#21, #25, #32**.
   The i386 EDI offset is 0x1c; the x86-64 offset is 0x38, checked against the language tables.
   Current mosura lacks the corresponding function declarations; its raw C exposes missing
   incoming values. This is a feature gap, not a comparison under identical supplied facts.
-- [>] Add the declaration-to-definition/caller regression before porting the locked-input
+- [x] Add the declaration-to-definition/caller regression before porting the locked-input
   branches of ActionPrototypeTypes and ActionInputPrototype. Retain declaration provenance
   so explicit inputs are not confused with speculative recovered prototypes.
-- [ ] Bind one declared input contract consistently at the definition and its direct calls.
-- [ ] Validate storage, width, order, restarts and unchanged defaults; then validate report scopes.
+  With the typed declaration data present but no consumers, the regression fails at the
+  i386 definition: EAX:4 is recovered instead of the declared EDI:4, AH:1 pair.
+- [x] Bind one declared input contract consistently at the definition and its direct calls
+  (`e482d6a8`).
+  The source-built regression passes for both architectures. Heritage now includes inputs
+  with no descendants, and input justification consults the declared storage before the ABI.
+  The graph is evaluated from the declared inputs, including boundary values and nested calls.
+  The nested constant indirect target is now source-built too; both architectures preserve the
+  contract through the resulting restart. A separate AArch64 fixture and mapped C++ oracle
+  confirm the compiler specification's zero extension of a declared w0 input.
+- [x] Expose and validate the declaration through the request-local API.
+  Live, cached and thawed requests preserve typed order and unused parameters. Missing,
+  reordered and empty lists have distinct result keys; invalid storage is rejected.
+- [x] Check unchanged default emission: 751/751 TUs are byte-identical to the prior package.
+- [x] Complete workspace gates and validate the reported scopes.
+  The final workspace exits 0: 1316/1316 tests pass, 23 ignored. IR parity is 9/9;
+  ground truth 39/39 executed tests; disassembly golden 1/1, CLI goldens and all guards pass.
+  Default emission is identical for 751/751 TUs and the stored arms tables agree.
+  The two reported bodies retain all 2/2 and 5/5 calls respectively. The first has the
+  incremented/restored four-input calls. The second retains both loop-carried input sets,
+  packed bytes and its consistent four-input direct calls. #14 is closed for this declaration
+  scope; automatic inference, compiler lowering and full typed-pointer interfaces remain open.
+  See [function input contracts](function-input-contracts.md).
+
+## Active validation: high-byte call inputs
+
+Related report: **#32**. The explicit AH slot declaration preserves all five reported
+load/constant/conditional arguments. The new enclosing EDI/EBP/EBX declarations remove the
+uninitialized incoming state from the two parameterized bodies. Complete the scope record
+separately from the public API commit; unrelated nested output contracts remain open.
 
 ## Completed package: pointer records in mixed memory
 
@@ -328,7 +356,7 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #29 | Consumer review: validate application coordinate transforms and dimensions. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #30 | Input contracts: restore arguments across a series of vector-table calls. | Queued |
 | #31 | Results: preserve multiple non-default register outputs as one consistent contract. | Queued |
-| #32 | Input contracts: support parameter storage in high register bytes. | Queued |
+| #32 | Input contracts: support parameter storage in high register bytes. | Active: complete the high-byte witness scope after enclosing input declarations |
 | #33 | Results: preserve the correct returned register in a caller's predicate. | Queued |
 | #34 | Data flow: preserve cursor-like state across callbacks and nested calls. | Queued |
 | #35 | Consumer review: verify that external thunks forward their declared parameters. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
