@@ -14,13 +14,15 @@ closure does not claim a mosura code fix.
 The [detailed tracker](docs/bob-issue-tracker.md) records evidence and commits; update both trackers.
 
 Validated input scopes: #1, #7 and #11, using explicit decompilation declarations. Outside scope: #88's verified
-consumer rewrite, 22 withdrawn consumer issues/proofs, and two cleanup/shared-state reports
-whose requested behavior is absent from the original bytes.
+consumer rewrite, 22 withdrawn consumer issues/proofs, two cleanup/shared-state reports whose requested behavior is absent from the original bytes,
+and the local/global naming collisions introduced in consumer rewrites.
 Related generic defects remain open: in particular #26 does not close #27, and #99 does not close missing call inputs.
 Compiler lowering, full typed-pointer contracts, outputs and clobbers remain open.
 Typed scalar/flag results and compiler-spec extensions are now implemented and gated.
-#13 remains open for its nested result/input contracts. The next active fix is #9's lost
-branch-selected input, reproduced in a self-compiled MVE and compared with Ghidra's IR.
+#13 remains open for its nested result/input contracts. The active fix is #9's lost
+branch-selected input: its self-compiled regression failed before the port and now passes on
+both x86 variants. External input/branch validation matches the bytes. Default emission changes
+17/751 functions, so package validation includes a compiled corpus round before closure.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.
@@ -48,7 +50,7 @@ branch-selected input, reproduced in a self-compiled MVE and compared with Ghidr
 - [ ] **#24** Input contracts: distinguish call-produced values from incoming function parameters.
 - [ ] **#25** Input contracts: preserve non-default register arguments in callback helpers.
 - [-] **#26** Consumer scope: validate linker placement and shared address-backed storage. Withdrawn upstream.
-- [ ] **#27** Naming: prevent local declarations from shadowing referenced globals.
+- [-] **#27** Consumer naming: the five local/global collisions were introduced by downstream rewrites.
 - [ ] **#28** Platform models: recover device detection and initialization call contracts.
 - [-] **#29** Consumer scope: validate application coordinate transforms and dimensions. Withdrawn upstream.
 - [ ] **#30** Input contracts: restore arguments across a series of vector-table calls.

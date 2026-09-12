@@ -20,9 +20,20 @@ Related report: **#9**. Other loop/call data-flow reports require their own witn
 - [x] Trace mosura: heritage substitutes an incoming register, then DCE removes the selection.
 - [x] Add the repository MVE gate and show its failure before porting: x86-64 control passes,
   x86-32 fails because the callback receives an incoming register instead of the selected value.
-- [>] Port phi placement from the full write set, following Ghidra's `calcMultiequals` input.
-- [ ] Validate IR parity, package gates and changed emission; commit the fix.
-- [ ] Validate the external report and update its scope marker.
+- [x] Port phi placement from the full write set, following Ghidra's `calcMultiequals` input.
+  The focused source-based gate now passes on both x86 variants (five selection boundaries each).
+- [>] Validate IR parity, package gates and changed emission; commit the fix.
+- [x] Validate the external input/branch witness: all three selected addresses and both
+  additional register inputs match the native instruction sequence.
+- [ ] Update the scope marker after the package gates and commit.
+
+Default emission comparison: 751 TUs on each side; 17 changed, zero added or missing. This is
+a behavior change and requires a compiled round, not the identity gate. The raw diff is retained
+for per-function verdict investigation.
+The first round attempt exposed a separate orchestration bug: a round-only scope option changes
+the lookup key after `program.emit` has already projected it away. A strengthened API regression
+fails at the missing emission set before compiler selection. The fix is committed independently as `a8e5c4a8`; the API round harness passes 4/4.
+No verdicts from the failed attempt are counted.
 
 ## Completed primitive: explicit scalar result contracts
 
@@ -90,8 +101,8 @@ Additional scoped validation of the landed input implementation (`b0b1375a`):
   A self-compiled three-way integer selection reproduces this on x86-32; the x86-64 control
   retains it. With the same EAX call input, Ghidra's C++ IR preserves the three-input MULTIEQUAL.
   The mosura action trace shows heritage replacing the call input with an incoming value before
-  DCE removes the definitions. The MVE and trace are prepared; the next package must add the
-  repository gate before changing phi placement.
+  DCE removes the definitions. Fixture commit `ed6e6f6f` records the reduction. The repository gate failed before the
+  full-write-set port and now passes; package and external-report validation remain in progress.
 - [ ] **#86:** seven declared register inputs appear at the call. Value-by-value validation
   is still pending; arity alone is not completion evidence.
 - [ ] **Additional ordered-storage witness:** #7's first function already reorders two global
@@ -152,6 +163,23 @@ alone does not close the entire indirect-call class.
   current discovery and raw p-code before attributing missing branches or routines to DCE.
 - [ ] **Finish triaging the remaining reports, including #86–99 added since the handoff.**
 
+## Naming scope review (#27)
+
+The five reported self-loads occur in consumer C that introduces descriptive local names matching
+its own renamed globals. The archived raw decompilation keeps those namespaces distinct: one
+case loads a global into `iVar2`, another reads the global directly in its predicates, the packet
+case separates `xVar2` from the global read, and the final state update reads its global directly.
+All five current raw C bodies were also checked: their declarations are generated local names
+(or there are no locals), without the consumer's colliding names. Missing inputs in a current
+body remain separate reports and do not establish a naming defect.
+
+The consumer's own naming table explicitly says it assigned the same name to a local and a
+global in one case. Its repair script also renames struct tags and fields to accommodate its
+address-backed object macros. Neither this renaming nor those macros are mosura output.
+This closes the five submitted naming witnesses as consumer scope, without changing PrintC.
+Reopen with an unmodified mosura output and matching symbol declarations that reproduce a
+collision; that would need a source-controlled naming MVE.
+
 ## Report register
 
 **Investigating** means evidence or a draft exists, not that the report is fixed.
@@ -170,7 +198,7 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #6 | Results: represent a value and condition flag returned together. | Queued |
 | #7 | Explicit byte inputs at indirect calls. | Validated input scope: both calls retain the original size-1 value; separate storage-order witness remains open |
 | #8 | Results: preserve multiple register outputs consumed after a call. | Queued |
-| #9 | Data flow: preserve branches whose operands come from indirect-call contracts. | Self-compiled x86-32 MVE and C++ IR comparison reproduce lost phi; repository gate and fix pending |
+| #9 | Data flow: preserve branches whose operands come from indirect-call contracts. | MVE failed before full-write-set phi port and now passes; package gates and report validation in progress |
 | #10 | Data flow: combine two byte writes into the correct wider register value. | Queued |
 | #11 | Explicit descriptor inputs through mutable hooks. | Validated input scope: all four calls match native argument setup; consumer installation/coordinate changes excluded |
 | #12 | Platform models: recover external file-read calls, arguments and results. | Queued |
@@ -188,7 +216,7 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #24 | Input contracts: distinguish call-produced values from incoming function parameters. | Queued |
 | #25 | Input contracts: preserve non-default register arguments in callback helpers. | Queued: helper input contracts; consumer walker excluded |
 | #26 | Consumer review: validate linker placement and shared address-backed storage. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger; underlying #27 remains open |
-| #27 | Naming: prevent local declarations from shadowing referenced globals. | Queued |
+| #27 | Consumer local/global naming collisions. | Outside scope: all five collisions originate in downstream rewritten locals, absent from archived raw and current naming |
 | #28 | Platform models: recover device detection and initialization call contracts. | Queued |
 | #29 | Consumer review: validate application coordinate transforms and dimensions. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #30 | Input contracts: restore arguments across a series of vector-table calls. | Queued |
