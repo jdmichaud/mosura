@@ -19,6 +19,148 @@ use mosura_core::decompile::printc::print_c;
 use mosura_core::decompile::space::Address;
 use mosura_core::paths::ground_truth_dir;
 
+/// A joined result may contain a narrow condition flag as well as a full register.
+/// Execute both result-dependent branches and the loop which passes the value back.
+#[test]
+fn declared_value_and_flag_result_reaches_branches_and_loop_inputs() {
+    use mosura_core::decompile::{Funcdata, OpCode, VarnodeId, block::BlockId};
+    use mosura_core::decompile::fspec::{RegisterOutput, RegisterParameter};
+    use mosura_core::decompile::types::Datatype;
+    use std::collections::HashMap;
+
+    fn eval(code: OpCode, args: &[(u64, u32)], size: u32) -> u64 {
+        match code {
+            OpCode::Piece => (args[0].0 << (args[1].1 * 8)) | args[1].0,
+            OpCode::Subpiece => (args[0].0 >> (args[1].0 * 8)) & ((1u64 << (size * 8)) - 1),
+            _ => mosura_core::decompile::rules::eval_const(code, args, size)
+                .unwrap_or_else(|| panic!("unexpected protocol operation {code:?}")),
+        }
+    }
+
+    fn value(f: &Funcdata, v: VarnodeId, values: &HashMap<VarnodeId, u64>) -> u64 {
+        if let Some(&n) = values.get(&v) { return n; }
+        let vn = f.vn(v);
+        if vn.is_constant() { return vn.constant_value(); }
+        let op = f.op(vn.def.unwrap_or_else(|| panic!("unbound protocol value\n{}", f.print_raw())));
+        let args: Vec<_> = op.inrefs.iter().map(|&v| (value(f, v, values), f.vn(v).size)).collect();
+        eval(op.code(), &args, vn.size)
+    }
+
+    fn run(f: &Funcdata, producer: &Funcdata, x: u32) -> (u64, Vec<u32>) {
+        let input = &f.func_proto().params[0];
+        let mut values = HashMap::new();
+        for v in (0..f.num_varnodes()).map(|i| VarnodeId(i as u32)) {
+            let vn = f.vn(v);
+            if vn.is_input() && (vn.loc, vn.size) == (input.addr, input.size) {
+                values.insert(v, u64::from(x));
+            }
+        }
+        let mut calls = Vec::new();
+        let mut block = BlockId(0);
+        let mut previous = None;
+        // Source-defined maximum: four calls for x=0; fewer for every other input.
+        for _ in 0..32 {
+            let b = f.block(block);
+            // Phi assignments are simultaneous, using the values on the incoming edge.
+            let phis: Vec<_> = b.ops.iter().map(|&id| f.op(id))
+                .filter(|op| !op.is_dead() && op.code() == OpCode::Multiequal)
+                .map(|op| {
+                    let edge = b.in_edges.iter().position(|p| Some(*p) == previous).unwrap();
+                    (op.output.unwrap(), value(f, op.input(edge).unwrap(), &values))
+                }).collect();
+            values.extend(phis);
+            let mut next = b.out_edges.first().copied();
+            for &id in &b.ops {
+                let op = f.op(id);
+                if op.is_dead() { continue; }
+                match op.code() {
+                    OpCode::Multiequal | OpCode::Branch => {},
+                    OpCode::Return => return (value(f, op.input(1).unwrap(), &values), calls),
+                    OpCode::Cbranch => {
+                        // The final graph retains its original edge order; orientation
+                        // is recorded in fallthru_true, including materialized negations.
+                        let take = (value(f, op.input(1).unwrap(), &values) != 0)
+                            ^ op.is_boolean_flip() ^ op.is_fallthru_true();
+                        next = Some(b.out_edges[usize::from(take)]);
+                    }
+                    OpCode::Call => {
+                        assert_eq!(f.vn(op.input(0).unwrap()).loc, producer.addr);
+                        assert_eq!(op.num_inputs(), 2);
+                        let x = value(f, op.input(1).unwrap(), &values) as u32;
+                        calls.push(x);
+                        let (result, nested) = run(producer, producer, x);
+                        assert!(nested.is_empty());
+                        values.insert(op.output.expect("one joined CALL result"), result);
+                    }
+                    _ => {
+                        let out = op.output.expect("fixture uses pure integer operations");
+                        let args: Vec<_> = op.inrefs.iter()
+                            .map(|&v| (value(f, v, &values), f.vn(v).size)).collect();
+                        let result = eval(op.code(), &args, f.vn(out).size);
+                        values.insert(out, result);
+                    }
+                }
+            }
+            previous = Some(block);
+            block = next.expect("source path must return");
+        }
+        panic!("loop did not consume its updated value\n{}", f.print_raw());
+    }
+
+    for bits in [32, 64] {
+        let stem = format!("value_flag_result.gcc-x86-{bits}");
+        let truth = parse_truth(&std::fs::read_to_string(ground_truth_dir().join(format!("{stem}.truth"))).unwrap());
+        let entry = |name: &str| truth.funcs.iter().find(|(_, n)| n == name).unwrap().0;
+        let mut p = analysis::analyze_file(&ground_truth_dir().join(stem)).unwrap();
+        for name in ["advance", "choose", "repeat"] {
+            p.knobs.function_inputs.insert(entry(name), vec![RegisterParameter {
+                register: "EDI".into(), datatype: Datatype::Uint(4),
+            }]);
+            p.knobs.function_outputs.insert(entry(name), if name == "advance" {
+                RegisterOutput { registers: vec!["CF".into(), "EDI".into()],
+                    datatype: Datatype::Struct(5, vec![(0, Datatype::Uint(4)), (4, Datatype::Bool)]) }
+            } else {
+                RegisterOutput { registers: vec!["EAX".into()], datatype: Datatype::Uint(4) }
+            });
+        }
+        let producer = decompile_function(&p, Address::new(p.default_space, entry("advance"))).unwrap();
+        let (spec, _) = mosura_core::lang::load_cached(&p.language_id).unwrap();
+        for name in ["advance", "choose", "repeat"] {
+            let f = decompile_function(&p, Address::new(p.default_space, entry(name))).unwrap();
+            let c = print_c(&f);
+            assert!(c.contains(".field_0x0") && c.contains(".field_0x4"), "both formal fields survive\n{c}");
+            assert!(!c.contains("CONCAT") && !c.contains("extraout_"), "the joined result has a typed definition\n{c}");
+            let reg = f.spaces.by_name("register").unwrap();
+            assert_eq!(f.func_proto().params.len(), 1);
+            assert_eq!((f.func_proto().params[0].addr, f.func_proto().params[0].size),
+                (Address::new(reg, spec.register_offset("EDI").unwrap()), 4));
+            for op in f.op_ids().map(|id| f.op(id)).filter(|op| !op.is_dead()) {
+                let joined = if op.code() == OpCode::Call { op.output }
+                    else if name == "advance" && op.code() == OpCode::Return { op.input(1) }
+                    else { None };
+                if let Some(v) = joined {
+                    let vn = f.vn(v);
+                    assert_eq!(vn.size, 5);
+                    assert_eq!(f.spaces.find_join(vn.loc).unwrap().pieces, vec![
+                        (Address::new(reg, spec.register_offset("CF").unwrap()), 1),
+                        (Address::new(reg, spec.register_offset("EDI").unwrap()), 4),
+                    ]);
+                }
+            }
+            for x in [0u32, 1, 2, 3, 17, 0x7fff_ffff, 0x8000_0000, u32::MAX] {
+                let flag = x >= 3;
+                let result = x.wrapping_add(if flag { 7 } else { 1 });
+                let (expected, calls) = match name {
+                    "advance" => (u64::from(result) | (u64::from(flag) << 32), vec![]),
+                    "choose" => (u64::from(if flag { result ^ 0x8000_0000 } else { result + 100 }), vec![x]),
+                    _ => (u64::from(if flag { result } else { 10 }), if flag { vec![x] } else { (x..=3).collect() }),
+                };
+                assert_eq!(run(&f, &producer, x), (expected, calls), "{bits}/{name}/{x:#x}");
+            }
+        }
+    }
+}
+
 /// One result can occupy several non-contiguous registers. The return expression
 /// and each caller must agree on the logical value and the physical piece order.
 #[test]

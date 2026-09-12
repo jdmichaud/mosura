@@ -28,6 +28,11 @@ Storage and type are independent: a join can also hold a scalar, and one registe
 structure. Existing `hex=REGISTER:type` and `hex=void` declarations keep their meaning.
 Separate function declarations with semicolons.
 
+A simultaneous value and condition flag uses the same storage model. For example,
+`join(CF,EDI):struct5(0:uint4,4:bool)` puts EDI in the four-byte value field and CF in
+the one-byte boolean field. The five-byte logical layout is an assembly interface fact;
+it does not imply that a C compiler returns that structure through those registers.
+
 The declaration applies to both a function definition and its direct calls. Supply matching
 [input declarations](function-input-contracts.md) when the function also has non-default inputs.
 Omitting the output option on a later request restores ordinary recovery; declarations change
@@ -86,6 +91,22 @@ storage and a `result_tuple` structure containing three uint4 fields. Its return
 one 12-byte CALL result and extract offsets 8, 4 and 0. The producer's C assigns three fields;
 the caller computes `first + second ^ third` from that aggregate. This comparison supplies
 identical interface facts to both engines; it is not a claim of automatic ABI recovery.
+
+`oracle/ground-truth/src/value_flag_result.S` exercises mixed-width result pieces on both
+x86 modes. Its producer returns an updated EDI and CF, one caller selects an expression with
+CF, and another repeats the call with the returned EDI until CF is set. The build supplies
+four function boundaries. The ground-truth gate executes the final IR, including simultaneous
+phi assignments, branch orientation and the actual decompiled producer at each call. It checks
+all three functions on eight boundary inputs per architecture, including the sequence of
+values passed around the retry loop. This validates the existing joined-result port; it did
+not establish a new production defect or require a new core change.
+
+The mapped C++ oracle uses the same five-byte structure (field offsets zero and four,
+alignment one) and `<addr space="join" piece1="CF" piece2="EDI"/>`. Both engines retain
+the same return fields, flag-dependent result branches and loop-carried input. Register
+addresses are taken from each language: EDI is at register offset 0x1c on i386 and 0x38
+on x86-64. A local host-C execution check also covers the 48 function/input cases with
+ordinary host declarations; that check validates logical C behavior, not compiler ABI lowering.
 
 The existing unlocked return-recovery and double-precision consumers still need their own
 `constructJoinAddress` port. Adding explicit join storage does not complete those paths.

@@ -1,6 +1,6 @@
 # Bob's issue tracker
 
-Updated 2026-09-12. Owner: Alice. Working branch: `fix/multiple-register-results`.
+Updated 2026-09-12. Owner: Alice. Working branch: `fix/value-and-flag-results`.
 
 Short checklist: [BOB_TASK.md](../BOB_TASK.md). Its markers are `[ ]` queued/triage,
 `[>]` active, `[x]` fixed and validated for the stated scope, and `[-]` outside scope/not planned.
@@ -122,7 +122,21 @@ producer/caller storage protocol, then validate the value and flag through one j
   flag-dependent result branches and the loop-carried value passed to the next call.
   The logical structure has size five and alignment one; physical flag storage is one byte.
 - [>] Gate both channels at definitions and callers, port any missing consumers, and validate.
-- [ ] Recheck the reported call chain and keep consumer rewrites outside the port.
+  The focused IR gate passes all 48 function/input cases and their call-input sequences.
+  Recovered logical C also passes all 48 cases under host declarations. These checks validate
+  the existing joined-result implementation; no new production change was needed.
+  The full workspace validation is running.
+- [x] Recheck the reported call chain and keep consumer rewrites outside the port.
+  Both producers retain all six native exits: four decrement/CLC and two increment/STC.
+  A raw-IR value audit passes 5040/5040 producer cases, covering ordinary, sign-boundary
+  and wraparound values, each result and its two serial state updates. It also checks
+  3168 callback operand cases, including the exchanged registers and byte input.
+  All four reported caller sites extract the flag and value from the same five-byte CALL
+  result. Their retry phis consume the previous result value; the other inputs retain the
+  native exchange/order. All 48/48 caller result/flag cases pass the expression audit.
+  Native return paths and call edges are supplied explicitly to this audit. Callback side
+  effects, full outer-loop execution, automatic recovery and compiler lowering are excluded.
+  The consumer-authored union conversion remains outside this declared result scope.
 
 ## Completed package: declared multiple register results
 

@@ -114,8 +114,10 @@ compiled artifact. The disassembly parser accepts GNU and LLVM whitespace layout
   accepted by emission.
 - The earlier discovery-only run covered 103/103 evaluated binaries, including 4/4 functions in
   the flag fixture. That predates the extension fixture and is not the current package census.
-- General multi-register result contracts and the remaining declaration/storage interfaces are
-  still open. A completed primitive does not close every reported result-channel defect.
+- Explicit joined-register results are now implemented and separately validated in
+  [joined result storage](joined-result-storage.md), including a simultaneous value and flag.
+  Automatic result recovery and the remaining declaration/storage interfaces stay open.
+  A completed primitive does not close every reported result-channel defect.
 
 If a consumer gives the predicate the opposite meaning in its own replacement implementation,
 that is a consumer integration error. Changing the generic printer's predicate polarity cannot
