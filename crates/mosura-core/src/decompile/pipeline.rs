@@ -922,11 +922,11 @@ impl Action for ActionLikelyTrash {
 /// * **join** (`!isInputLocked() && isDoublePrecisOn()`, coreaction.cc:1636): fuses two adjacent
 ///   argument slots that are the halves of one double-precision value. It needs
 ///   `FuncCallSpecs::doInputJoin` → `Architecture::constructJoinAddress` and
-///   `ParamActive::joinTrial`, i.e. the **JOIN address space**, which mosura has no counterpart
-///   for (`ParamEntry` models no join records either). BLOCKED(join space).
+///   `ParamActive::joinTrial`. Join storage now exists for explicit results; these argument-
+///   recovery consumers and joined `ParamEntry` models remain unported.
 /// * **locked-parameter split** (coreaction.cc:1667): searches a *locked* prototype's parameters
-///   for hi/lo components. mosura has no locked prototype parameters in a batch decompile, so the
-///   block has nothing to iterate. BLOCKED(locked prototypes).
+///   for hi/lo components. Locked input declarations now exist, but this branch remains
+///   unported; declaration availability no longer justifies treating it as unreachable.
 ///
 /// The split block is independent of both: it reads only the active trial container and the
 /// model's input `ParamList`, so porting it alone lands a whole mechanism, not half of one.
@@ -1248,9 +1248,8 @@ pub fn cleanup_pool() -> ActionPool {
         // duplicated into each, so it prints inline instead of forcing a temporary.
         .with(RuleExtensionPush)
         // RulePieceStructure (coreaction.cc:5704): a CONCAT tree that is really building a
-        // STRUCTURE is split along the structure's own field boundaries. Inert until type recovery
-        // ever gives a value a struct/array type (measured: 0 such varnodes on the corpus), but
-        // ported and wired so it is correct when that lands — see docs/coverage.md.
+        // STRUCTURE is split along the structure's own field boundaries. Explicit composite
+        // result declarations exercise this path in the register-results source fixture.
         .with(RulePieceStructure)
 }
 

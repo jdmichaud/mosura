@@ -123,8 +123,20 @@ Do not infer an output contract from every register a function happens to write.
   Both architectures return a 12-byte aggregate in join storage (ECX, EBX, EAX in
   significance order). Each caller extracts offsets 8, 4 and 0 from that one CALL
   result. The producer and caller C agree on the aggregate and its three fields.
-- [>] Add the declaration-to-producer/caller regression and port the join-storage consumers.
-- [ ] Validate the public declaration surface, default emission and workspace gates.
+- [x] Add the declaration-to-producer/caller regression and port the join-storage consumers.
+  With declaration storage present but no join heritage, the regression fails on a free
+  12-byte return value. Heritage preserves the values; the required composite grouping,
+  field extraction and nonprinting cast consumers then preserve the C representation too.
+  The focused gate passes for both x86 modes and all six input values at both boundaries.
+  See [joined result storage](joined-result-storage.md) for the ported path and its scope.
+- [x] Validate default emission and workspace gates before committing the core port.
+  Final isolated `cargo test --workspace`: exit 0, 1317/1317 executed tests pass, 23 ignored;
+  ground truth 40/40 (one ignored), IR parity 9/9 and disassembly golden 1/1.
+  One of 751 default TUs changes cast spelling. The full corpus has zero verdict flips,
+  zero similarity movers, no membership drift, no EXACT lost and all eight gates green.
+  The repeat caches 751/751 TUs with zero flips or movers. A signed-half execution check
+  passes all 50 combinations; its former cast-spelling assertion now checks signed reads.
+- [>] Expose and validate joined declarations through the public text option.
 - [ ] Recheck the reported producer chain before closing the result scope.
 
 ## Completed package: pointer records in mixed memory

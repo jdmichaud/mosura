@@ -228,14 +228,17 @@ fn stored_global_is_named_at_the_call_the_original_reloads() {
     assert!(c.contains(&format!("({stored})")), "the call names the stored global `{stored}`:\n{c}\nreference:\n{reference}");
 }
 
-/// A sign-extension of an unsigned-typed piece re-signs the operand at its own width: the
-/// split local's high half is `(int4)(int2)` like its low half, never a zero-extending `(int4)`
-/// of the unsigned accessor.
+/// Both split-local arguments sign-extend at their narrow width. After nonprinting
+/// copies stop receiving casts, both accessors already have signed int2 type;
+/// an additional `(int2)` cast at the call is unnecessary.
 #[test]
-fn sign_extension_re_signs_an_unsigned_operand() {
+fn split_local_arguments_remain_signed_at_their_narrow_width() {
     let (f, insns) = decompiled("x86_watcom_split_local.xml");
     let (c, _) = recovered_print(&f, &insns);
-    assert!(c.matches("(int4)(int2)").count() >= 2, "both halves sign-extend from a signed narrow cast:\n{c}");
+    for access in ["(int4)*(int2 *)&uStack_10", "(int4)*((int2 *)&uStack_10 + 1)"] {
+        assert_eq!(c.matches(access).count(), 2,
+            "both calls read and sign-extend each signed narrow half:\n{c}");
+    }
 }
 
 /// `sparse-switch`, the tail clause: the reference prints the three tests as one `if`; the

@@ -131,7 +131,9 @@ impl Rule for RuleConstFold {
         // leaving only add-tree reassociation churn. `TypeOpPtradd` carries the same flag
         // (typeop.cc:2227); the remaining nocollapse TypeOps are specials `eval_const` cannot
         // evaluate anyway.
-        if code == OpCode::Ptrsub || code == OpCode::Ptradd {
+        if code == OpCode::Ptrsub || code == OpCode::Ptradd
+            || data.op(op).flags & super::op::flags::NO_COLLAPSE != 0
+        {
             return 0;
         }
         let Some(out) = data.op(op).output else { return 0 };
@@ -7990,10 +7992,8 @@ impl Rule for RuleBooleanDedup {
 /// shift is lumped in too. This is what re-expands RuleSubNormal's non-zero-offset SUBPIECEs into
 /// the shift + least-sig-truncation shape the printer renders as `(int2)(x >> 0x30)`.
 ///
-/// Ghidra first checks `doesSpecialPrinting()`/`isPieceStructured()` to preserve structure-field
-/// extractions for field printing; mosura has no TypePartialStruct/special-print machinery (P4/P8
-/// debt), so that guard is vacuously absent. Ghidra also types the new shift output
-/// (uint for `>>`, int for `s>>`); mosura varnodes carry no datatype at rule time.
+/// Structured values retain SUBPIECE field extraction through the `special_print` flag.
+/// The primitive path rewrites the operation as a shift and least-significant truncation.
 pub struct RuleSubRight;
 
 impl Rule for RuleSubRight {
@@ -8004,6 +8004,12 @@ impl Rule for RuleSubRight {
         vec![OpCode::Subpiece]
     }
     fn apply_op(&mut self, op: OpId, data: &mut Funcdata) -> u32 {
+        if data.op(op).flags & super::op::flags::SPECIAL_PRINT != 0 { return 0; }
+        let input = data.op(op).input(0).unwrap();
+        if data.vn(input).get_type().is_piece_structured() {
+            data.op_mut(op).flags |= super::op::flags::SPECIAL_PRINT;
+            return 0;
+        }
         let c = data.vn(data.op(op).input(1).unwrap()).constant_value();
         if c == 0 {
             return 0; // SUBPIECE is not least sig
@@ -10618,11 +10624,11 @@ impl Rule for RulePtrsubCharConstant {
 /// Ghidra `PieceNode` (ruleaction.hh): one edge of a CONCAT tree — the PIECE op, which input slot,
 /// the byte offset of that piece within the structured whole, and whether it is a leaf.
 #[derive(Clone, Copy)]
-struct PieceNode {
-    op: OpId,
-    slot: usize,
-    type_offset: i64,
-    leaf: bool,
+pub(super) struct PieceNode {
+    pub(super) op: OpId,
+    pub(super) slot: usize,
+    pub(super) type_offset: i64,
+    pub(super) leaf: bool,
 }
 
 /// Ghidra `PieceNode::isLeaf` (ruleaction.cc): the tree stops here — the value has its own symbol,
@@ -10656,7 +10662,7 @@ fn piece_node_is_leaf(data: &Funcdata, root_vn: VarnodeId, vn: VarnodeId, rel_of
 /// Ghidra `PieceNode::gatherPieces` (ruleaction.cc): walk the CONCAT tree depth-first, recording an
 /// edge per input with its offset into the whole. Little-endian: input 1 is the LOW half, so it
 /// keeps the base offset and input 0 sits above it.
-fn piece_node_gather(
+pub(super) fn piece_node_gather(
     data: &Funcdata,
     stack: &mut Vec<PieceNode>,
     root_vn: VarnodeId,
@@ -10667,7 +10673,7 @@ fn piece_node_gather(
     for i in 0..2 {
         let Some(vn) = data.op(op).input(i) else { continue };
         let other = data.op(op).input(1 - i).map_or(0, |v| data.vn(v).size as i64);
-        let offset = if i == 1 { base_offset } else { base_offset + other };
+        let offset = if data.spaces.is_big_endian(data.vn(vn).loc.space) == (i == 0) { base_offset } else { base_offset + other };
         let res = piece_node_is_leaf(data, root_vn, vn, offset - root_offset);
         stack.push(PieceNode { op, slot: i, type_offset: offset, leaf: res });
         if !res {
@@ -10834,19 +10840,10 @@ fn piece_structure_determine_datatype(
 /// really building a STRUCTURE gets split along the structure's own field boundaries, so each field
 /// lands in its own storage instead of being assembled into one opaque value.
 ///
-/// ⚠️ **Structurally inert on today's targets.** The gate is `determineDatatype` →
-/// `Varnode::getStructuredType`, which needs a varnode whose type (or whose mapped symbol's type)
-/// is a struct or array. A probe at this rule's own pool slot was invoked 7254 times across the
-/// corpus and found ZERO such varnodes: `Datatype::Struct` is constructed nowhere in mosura, and
-/// `Array` only ever appears as a POINTEE. So the rule cannot fire until type recovery produces a
-/// structured type for a value. It is ported anyway, faithfully and wired, on the
-/// `RuleFuncPtrEncoding` principle — unit-tested against hand-built preconditions, so it is correct
-/// when the producer lands rather than absent.
-///
-/// Two of Ghidra's steps are unreachable here rather than omitted: the union read-resolution
-/// transfers (`inheritResolution`/`resolveInFlow`), which are gated on `needsResolution` and mosura
-/// models no unions; and `Merge::registerProtoPartialRoot`, which feeds a merge-time
-/// proto-partial pass mosura does not have.
+/// Explicit composite result declarations exercise this path in the source-built register
+/// result fixture. Piece addresses are normalized through join storage and unmapped roots
+/// are registered with `Merge::groupPartials`. Union read-resolution transfers remain absent
+/// because the type model has no union variant.
 pub struct RulePieceStructure;
 
 impl Rule for RulePieceStructure {
@@ -10890,12 +10887,14 @@ impl Rule for RulePieceStructure {
             // If we found some, regenerate the tree.
         }
         data.op_mut(op).set_partial_root();
+        let mut any_addrtied = data.vn(outvn).is_addrtied();
         let base = data.vn(outvn).loc;
         let base_addr = Address::new(base.space, (base.offset as i64 - base_offset) as u64);
         for node in stack {
             let Some(vn) = data.op(node.op).input(node.slot) else { continue };
             let addr =
                 Address::new(base_addr.space, (base_addr.offset as i64 + node.type_offset) as u64);
+            let addr = data.spaces.renormalize_join_address(addr, data.vn(vn).size);
             if data.vn(vn).loc == addr
                 && (!node.leaf || !piece_structure_separate_symbol(data, outvn, vn))
             {
@@ -10903,6 +10902,7 @@ impl Rule for RulePieceStructure {
                 if !data.vn(vn).is_addrtied() && !data.vn(vn).is_proto_partial() {
                     data.vn_mut(vn).set_proto_partial();
                 }
+                any_addrtied |= data.vn(vn).is_addrtied();
                 continue;
             }
             if node.leaf {
@@ -10912,6 +10912,7 @@ impl Rule for RulePieceStructure {
                 let copy_op = data.new_op(OpCode::Copy, SeqNum { pc, uniq }, vec![vn]);
                 let size = data.vn(vn).size;
                 let new_vn = data.new_output(copy_op, size, addr);
+                any_addrtied |= data.vn(new_vn).is_addrtied();
                 if let Some(newtype) = ct.get_exact_piece(node.type_offset, size) {
                     data.vn_mut(new_vn).update_type(newtype);
                 }
@@ -10944,6 +10945,7 @@ impl Rule for RulePieceStructure {
                 }
             }
         }
+        if !any_addrtied { data.proto_partial_roots.push(op); }
         1
     }
 }

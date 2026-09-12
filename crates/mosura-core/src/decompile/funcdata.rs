@@ -39,6 +39,8 @@ pub struct Funcdata {
     /// Ghidra `FuncProto::isOutputLocked` and its typed output parameter.
     /// Explicit prototype facts survive rebuilding the analysis graph.
     pub locked_output: Option<super::fspec::ProtoParameter>,
+    /// Ghidra Merge::protoPartial: roots registered by RulePieceStructure.
+    pub proto_partial_roots: Vec<OpId>,
     /// Ghidra's input-locked prototype. `Some([])` explicitly declares no inputs.
     pub locked_inputs: Option<Vec<super::fspec::ProtoParameter>>,
     varnodes: Vec<Varnode>,
@@ -460,6 +462,7 @@ impl Funcdata {
             globaldisjoint: super::heritage::LocationMap::default(),
             active_output: None,
             locked_output: None,
+            proto_partial_roots: Vec::new(),
             locked_inputs: None,
             return_bytes_consumed: 0,
             structure: None,
@@ -1240,7 +1243,8 @@ impl Funcdata {
         self.structure_reset();
         use super::op::flags as opf;
         use super::varnode::flags as vnf;
-        const OP_KEEP: u32 = opf::STARTBASIC | opf::NO_INDIRECT_COLLAPSE | opf::INDIRECT_STORE | opf::CALCULATED_BOOL;
+        const OP_KEEP: u32 = opf::STARTBASIC | opf::NO_INDIRECT_COLLAPSE | opf::INDIRECT_STORE
+            | opf::CALCULATED_BOOL | opf::NO_COLLAPSE | opf::SPECIAL_PRINT;
         const VN_KEEP: u32 = vnf::EXTERNREF
             | vnf::VOLATILE
             | vnf::INCIDENTAL_COPY
@@ -2567,7 +2571,11 @@ impl Funcdata {
             SpaceKind::Spacebase => 's',
             _ => 'r',
         };
-        let mut s = format!("{c}0x{:x}:{}", vn.loc.offset, vn.size);
+        let mut s = if let Some(record) = self.spaces.find_join(vn.loc) {
+            let parts: Vec<_> = record.pieces.iter().map(|(a, size)|
+                format!("{}:0x{:x}:{size}", self.spaces.get(a.space).name, a.offset)).collect();
+            format!("j{{{}}}:{}", parts.join(","), vn.size)
+        } else { format!("{c}0x{:x}:{}", vn.loc.offset, vn.size) };
         // Ghidra `Varnode::printRaw` (varnode.cc): after the storage, mark the varnode's role —
         // `(i)` for a function input, `(<seqnum>)` for a written value naming its DEFINING OP, and
         // `(free)` for one that is neither inserted in the SSA tree nor constant.

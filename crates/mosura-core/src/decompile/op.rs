@@ -82,6 +82,11 @@ pub mod flags {
     pub const INDIRECT_STORE: u32 = 0x4000;
     /// Ghidra `PcodeOp::calculated_bool`: a dynamically known Boolean result.
     pub const CALCULATED_BOOL: u32 = 0x8000;
+    /// Ghidra `PcodeOp::nocollapse`: retain typed aggregate construction even
+    /// when all its pieces are constant.
+    pub const NO_COLLAPSE: u32 = 0x10000;
+    /// Ghidra `PcodeOp::special_print`: a SUBPIECE renders as a composite field.
+    pub const SPECIAL_PRINT: u32 = 0x20000;
 }
 
 /// A p-code operation. Created via [`Funcdata`](super::funcdata::Funcdata).

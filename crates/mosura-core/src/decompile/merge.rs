@@ -162,7 +162,7 @@ fn mergeable(f: &Funcdata, v: VarnodeId) -> bool {
 /// unification (`Merge::mergeAddrTied`) FIRST, then the required marker merges (`Merge::mergeMarker`);
 /// then `ActionMergeCopy`'s COPY input/output merges (`Merge::mergeOpcode(COPY)`), then
 /// `ActionMergeType`'s speculative cover-based merging of non-interfering same-storage varnodes.
-/// (mosura has no `groupPartials` — the VariablePiece debt.) The addrtied-before-marker order matters
+/// Registered CONCAT trees are grouped between address-tied and marker merging. This order matters
 /// now that `merge_markers` gates each union on `merge_test_required`: the marker gate must see the
 /// address-tied HighVariables already aggregated, exactly as Ghidra does.
 pub fn merge(f: &Funcdata) -> (HighVariables, VariablePieces) {
@@ -297,8 +297,8 @@ pub(crate) fn explicit_leading(f: &Funcdata, v: VarnodeId) -> Option<bool> {
         //   - a lone `INT_ZEXT` whose output is itself addrtied and contains this varnode at its
         //     least-significant base (`0 == vnout->contains(*vn)`, :3031-3034);
         //   - a lone `PIECE` where this varnode is NOT the root of its CONCAT tree
-        //     (`PieceNode::findRoot`, :3036-3043; the `isPartialRoot` re-assert needs the
-        //     protoPartial marking mosura lacks — never set, so the escape stands).
+        //     (`PieceNode::findRoot`, :3036-3043), except a structure-building root, whose
+        //     fields remain explicit and whose internal CONCAT operations are hidden.
         // Any other use, or several uses, stays explicit. The SUBPIECE `overlapJoin` sub-case
         // (:3023-3028) also answers explicit — same as the default, handled at its print slot by
         // [`copy_marker_nonprinting`].
@@ -330,13 +330,19 @@ pub(crate) fn explicit_leading(f: &Funcdata, v: VarnodeId) -> Option<bool> {
                 }
             }
             OpCode::Piece => {
-                if piece_find_root(f, v) == v {
+                let root = piece_find_root(f, v);
+                if root == v || f.vn(root).def.is_some_and(|d| f.op(d).is_partial_root()) {
                     return Some(true);
                 }
             }
             _ => return Some(true),
         }
         return None; // fall through to the trailing/implied heuristics (coreaction.cc:3049…)
+    }
+    if vn.is_mapped() || vn.is_proto_partial() { return Some(true); }
+    if vn.def.is_some_and(|d| f.op(d).code() == OpCode::Piece
+        && f.op(d).input(0).is_some_and(|v| f.vn(v).is_proto_partial())) {
+        return Some(true);
     }
     None
 }
@@ -349,11 +355,11 @@ pub(crate) fn explicit_leading(f: &Funcdata, v: VarnodeId) -> Option<bool> {
 /// (`PcodeOp::compareOrder`, :841-846); mosura compares block-schedule position within a shared
 /// block and keeps the first candidate across blocks (the cross-block tie needs a dominator walk
 /// no merge-phase caller carries; a piece feeding position-matched PIECEs in two different blocks
-/// reconverges to the same root either way). mosura has no protoPartial marking, so only the
-/// addrtied climb is live, and no join space, so the `renormalize` is a no-op.
+/// reconverges to the same root either way). Address comparison normalizes join subranges,
+/// so a physical register piece can belong to a non-contiguous logical whole.
 fn piece_find_root(f: &Funcdata, v: VarnodeId) -> VarnodeId {
     let mut v = v;
-    while f.vn(v).is_addrtied() {
+    while f.vn(v).is_addrtied() || f.vn(v).is_proto_partial() {
         let vn = f.vn(v);
         let mut piece_op: Option<OpId> = None;
         for &d in &vn.descend {
@@ -364,11 +370,11 @@ fn piece_find_root(f: &Funcdata, v: VarnodeId) -> VarnodeId {
             let Some(out) = op.output else { continue };
             let slot = if op.input(0) == Some(v) { 0usize } else { 1 };
             let mut addr = f.vn(out).loc;
-            if slot == 0 {
-                let Some(sib) = op.input(1) else { continue };
+            if f.spaces.is_big_endian(addr.space) == (slot == 1) {
+                let Some(sib) = op.input(1 - slot) else { continue };
                 addr.offset = addr.offset.wrapping_add(f.vn(sib).size as u64);
             }
-            if addr == vn.loc {
+            if f.spaces.normalized_address_eq(addr, vn.size, vn.loc) {
                 piece_op = match piece_op {
                     None => Some(d),
                     Some(prev) => {
@@ -1416,7 +1422,59 @@ fn merge_addrtied(f: &Funcdata, h: &mut HighVariables) -> VariablePieces {
         }
         i = j;
     }
+    group_partials(f, h, &mut pieces);
     pieces
+}
+
+/// Ghidra `Merge::groupPartialRoot`: reconstruct a registered CONCAT tree.
+/// A tree is eligible only while the root and every proto-partial node remain
+/// single-instance HighVariables. These declarations have whole-value types,
+/// so their root's symbol-relative offset is zero.
+fn partial_tree(f: &Funcdata, h: &mut HighVariables, op: OpId) -> Option<(VarnodeId, Vec<super::rules::PieceNode>, bool)> {
+    if f.op(op).is_dead() || !f.op(op).is_partial_root() { return None; }
+    let root = f.op(op).output?;
+    let high = h.high(root);
+    if h.members[high as usize].len() != 1 { return None; }
+    let mut nodes = Vec::new();
+    super::rules::piece_node_gather(f, &mut nodes, root, op, 0, 0);
+    let valid = nodes.iter().all(|node| {
+        let v = f.op(node.op).input(node.slot).unwrap();
+        let high = h.high(v);
+        f.vn(v).is_proto_partial() && h.members[high as usize].len() == 1
+    });
+    Some((root, nodes, valid))
+}
+
+fn group_partials(f: &Funcdata, h: &mut HighVariables, pieces: &mut VariablePieces) {
+    for &op in &f.proto_partial_roots {
+        let Some((root, nodes, true)) = partial_tree(f, h, op) else { continue };
+        let group = pieces.groups.len() as u32;
+        let mut ids = Vec::new();
+        let nodes = std::iter::once((root, 0)).chain(nodes.iter().map(|n| (
+            f.op(n.op).input(n.slot).unwrap(), n.type_offset as u32,
+        )));
+        for (v, offset) in nodes {
+            let id = pieces.pieces.len() as u32;
+            pieces.piece_of[v.0 as usize] = Some(id);
+            pieces.pieces.push(Piece { group, offset, size: f.vn(v).size, members: vec![v] });
+            ids.push(id);
+        }
+        pieces.groups.push(Group { size: f.vn(root).size, pieces: ids });
+    }
+}
+
+/// The mutating rejection branch runs at groupPartials' pipeline slot, before
+/// marker merges and explicitness classification. Later snapshots recompute groups.
+fn clear_invalid_partials(f: &mut Funcdata) {
+    let mut h = HighVariables::new(f.num_varnodes());
+    let _ = merge_addrtied(f, &mut h);
+    for op in f.proto_partial_roots.clone() {
+        let Some((_, nodes, false)) = partial_tree(f, &mut h, op) else { continue };
+        for node in nodes {
+            let v = f.op(node.op).input(node.slot).unwrap();
+            f.vn_mut(v).flags &= !super::varnode::flags::PROTO_PARTIAL;
+        }
+    }
 }
 
 /// `Merge::mergeOpcode(CPUI_COPY)` (merge.cc:326) — in linear block order, try to merge each
@@ -1475,8 +1533,7 @@ fn merge_copy(
 /// `Merge::mergeTestBasic` (merge.cc:255) — a Varnode may take part in a merge only if it has a
 /// Cover and is neither implied nor a spacebase. The implied exclusion reads the [`mark_explicit`]
 /// classification (Ghidra's varnode flags set by `ActionMarkImplied` just before the COPY merge).
-/// (Ghidra also excludes `isProtoPartial`; mosura has no VariablePiece so that case is
-/// inapplicable.)
+/// Proto-partial values stay in their structured whole rather than entering speculative merges.
 fn merge_test_basic(
     f: &Funcdata,
     covers: &HashMap<VarnodeId, Cover>,
@@ -1486,7 +1543,7 @@ fn merge_test_basic(
     if !covers.contains_key(&v) {
         return false;
     }
-    explicit[v.0 as usize] && !f.vn(v).is_spacebase()
+    explicit[v.0 as usize] && !f.vn(v).is_spacebase() && !f.vn(v).is_proto_partial()
 }
 
 /// Ghidra's `high->piece`: the VariablePiece of a HighVariable, identified by any member Varnode
@@ -2672,6 +2729,7 @@ impl super::action::Action for ActionMergeMarkerTrim {
     }
     fn apply(&mut self, data: &mut Funcdata) -> u32 {
         let before = data.num_ops();
+        clear_invalid_partials(data);
         merge_marker_trim(data);
         (data.num_ops() - before) as u32
     }

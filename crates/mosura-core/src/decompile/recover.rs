@@ -996,9 +996,9 @@ fn check_output_trial_use(f: &mut Funcdata) -> u32 {
 /// register of the combined size is actually named there before skipping the join space). mosura's
 /// used trials can only be contiguous pieces of the ONE entry [`derive_output_map`] selected — a
 /// register the compiler spec names — so the low address IS that check's answer; the formal
-/// JoinRecord branch (non-contiguous pieces, i.e. a register-PAIR return convention) needs join-
-/// space support mosura lacks and commits the least-significant piece only, exactly as the same
-/// case in [`build_call_output_from_trials`] does.
+/// non-contiguous recovery branch still lacks its `constructJoinAddress` consumer and commits
+/// the least-significant piece only, as [`build_call_output_from_trials`] does. Explicit joined
+/// result declarations bypass this inference path and are expanded by heritage.
 fn build_return_output(f: &mut Funcdata) {
     // The used trials, in trial order — Ghidra breaks at the first not-used trial (coreaction.cc:1843).
     let used: Vec<(u32, Address, u32)> = {

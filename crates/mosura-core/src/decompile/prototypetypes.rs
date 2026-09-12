@@ -33,11 +33,12 @@ pub fn parse_function_outputs(text: &str) -> Result<BTreeMap<u64, RegisterOutput
         let value = value.trim();
         let output = if value == "void" {
             RegisterOutput {
-                register: String::new(),
+                registers: Vec::new(),
                 datatype: Datatype::Void,
             }
         } else {
-            parse_register_parameter(value, "output")?
+            let p = parse_register_parameter(value, "output")?;
+            RegisterOutput { registers: vec![p.register], datatype: p.datatype }
         };
         if result.insert(address, output).is_some() {
             return Err(format!("duplicate output declaration at {address:#x}"));
@@ -104,26 +105,28 @@ pub fn validate_function_outputs(
     let registers = spec.register_table();
     for (entry, result) in &knobs.function_outputs {
         if result.datatype == Datatype::Void {
-            if !result.register.is_empty() {
+            if !result.registers.is_empty() {
                 return Err("void output must not name a register".into());
             }
             continue;
         }
-        let &((_, size), _) = registers
-            .iter()
-            .find(|(_, n)| n.eq_ignore_ascii_case(&result.register))
-            .ok_or_else(|| {
-                format!(
-                    "output at {entry:#x}: unknown register `{}`",
-                    result.register
-                )
-            })?;
-        if size != result.datatype.size() {
-            return Err(format!(
-                "output at {entry:#x}: register `{}` has {size} bytes, type has {}",
-                result.register,
-                result.datatype.size()
-            ));
+        if result.registers.is_empty() {
+            return Err(format!("output at {entry:#x}: missing register storage"));
+        }
+        let mut pieces: Vec<(u64, u32)> = Vec::new();
+        let mut total = 0u32;
+        for name in &result.registers {
+            let &((offset, size), _) = registers.iter()
+                .find(|(_, n)| n.eq_ignore_ascii_case(name))
+                .ok_or_else(|| format!("output at {entry:#x}: unknown register `{name}`"))?;
+            if pieces.iter().any(|&(off, sz)| offset < off + u64::from(sz) && off < offset + u64::from(size)) {
+                return Err(format!("output at {entry:#x}: overlapping register `{name}`"));
+            }
+            pieces.push((offset, size));
+            total = total.checked_add(size).ok_or("output storage size overflow")?;
+        }
+        if total != result.datatype.size() {
+            return Err(format!("output at {entry:#x}: registers have {total} bytes, type has {}", result.datatype.size()));
         }
     }
     Ok(())
@@ -219,34 +222,30 @@ pub fn bind_output_declarations(f: &mut Funcdata) {
     let Some(register) = f.spaces.by_name("register") else {
         return;
     };
-    let resolve = |entry: u64| -> Option<ProtoParameter> {
+    let resolve = |f: &mut Funcdata, entry: u64| -> Option<ProtoParameter> {
         let result = f.knobs.function_outputs.get(&entry)?;
-        let offset = if result.datatype == Datatype::Void {
-            0
-        } else {
-            let (&(offset, _), _) = f
-                .reg_names
-                .iter()
-                .find(|(_, n)| n.eq_ignore_ascii_case(&result.register))?;
-            offset
+        let datatype = result.datatype.clone();
+        let pieces: Vec<_> = result.registers.iter().map(|name| {
+            let (&(offset, size), _) = f.reg_names.iter()
+                .find(|(_, n)| n.eq_ignore_ascii_case(name))?;
+            Some((Address::new(register, offset), size))
+        }).collect::<Option<_>>()?;
+        let addr = match pieces.as_slice() {
+            [] => Address::new(register, 0),
+            [(addr, _)] => *addr,
+            _ => f.spaces.find_add_join(&pieces, 0),
         };
-        Some(ProtoParameter {
-            addr: Address::new(register, offset),
-            datatype: result.datatype.clone(),
-        })
+        Some(ProtoParameter { addr, datatype })
     };
-    let own = resolve(f.addr.offset);
-    let calls: Vec<_> = f
-        .op_ids()
+    let own = resolve(f, f.addr.offset);
+    let targets: Vec<_> = f.op_ids()
         .filter(|&id| !f.op(id).is_dead() && f.op(id).code() == OpCode::Call)
         .filter_map(|id| {
             let target = f.vn(f.op(id).input(0)?);
-            (target.loc.space == f.addr.space)
-                .then(|| resolve(target.loc.offset))
-                .flatten()
-                .map(|p| (id, p))
-        })
-        .collect();
+            (target.loc.space == f.addr.space).then_some((id, target.loc.offset))
+        }).collect();
+    let calls: Vec<_> = targets.into_iter()
+        .filter_map(|(id, entry)| resolve(f, entry).map(|p| (id, p))).collect();
     f.locked_output = own;
     for (id, param) in calls {
         f.call_specs.entry(id).or_default().locked_output = Some(param);

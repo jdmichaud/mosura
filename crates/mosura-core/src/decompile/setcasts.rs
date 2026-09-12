@@ -145,7 +145,9 @@ fn apply(data: &mut Funcdata) {
             let o = data.op(op);
             // `if (op->notPrinted()) continue;` — markers (MULTIEQUAL/INDIRECT) and dead ops don't
             // print, so they take no casts; and skip an existing CAST (`opc == CPUI_CAST`).
-            if o.is_marker() || o.is_dead() || o.code() == OpCode::Cast {
+            if o.is_marker() || o.is_dead() || o.code() == OpCode::Cast
+                || data.nonprinting.as_ref().is_some_and(|ops| ops.contains(&op))
+            {
                 continue;
             }
             // `MOSURA_PTRFIT=1` still measures the guard for BOTH ops (the PTRSUB refit is not

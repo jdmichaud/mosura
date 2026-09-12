@@ -289,6 +289,16 @@ impl Datatype {
         self.size()
     }
 
+    /// Ghidra `TypeStruct::findTruncation`: the immediate field containing a
+    /// byte range, with its field offset and the residual offset inside the field.
+    pub fn find_truncation(&self, offset: u64, size: u32) -> Option<(u64, Datatype, u64)> {
+        let Datatype::Struct(_, fields) = self else { return None };
+        let (base, ty) = fields.iter().find(|(base, ty)| *base <= offset
+            && offset - *base < u64::from(ty.size()))?;
+        let residual = offset - *base;
+        (residual + u64::from(size) <= u64::from(ty.size())).then(|| (*base, ty.clone(), residual))
+    }
+
     /// Ghidra `Datatype::getSubType(off, newoff)`: descend one level to the sub-component that
     /// contains byte `off`, returning it with the residual offset into it. Arrays drill to the
     /// element; structs to the field; scalars have no sub-component (`None`).

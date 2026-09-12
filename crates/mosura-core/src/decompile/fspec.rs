@@ -1754,8 +1754,13 @@ pub struct RegisterParameter {
     pub datatype: super::types::Datatype,
 }
 
-/// A void result has an empty register name and `Datatype::Void`.
-pub type RegisterOutput = RegisterParameter;
+/// A declared result, with physical pieces ordered most significant first, as in
+/// Ghidra's JoinRecord. One register needs no join; void has an empty list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegisterOutput {
+    pub registers: Vec<String>,
+    pub datatype: super::types::Datatype,
+}
 
 /// Ghidra `ProtoParameter`: declared storage and type. Its type determines size;
 /// a void parameter has no meaningful storage address.

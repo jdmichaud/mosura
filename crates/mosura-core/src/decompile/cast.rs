@@ -17,13 +17,10 @@
 //!     (cast.cc) are unreachable and unported. Revival: a typedef variant.
 //!   - **enum** — no `Datatype` variant. Ghidra treats an enum as TYPE_UINT/TYPE_INT in every
 //!     `castStandard` branch, so its absence changes no decision today. Revival: an enum variant.
-//!   - **struct** — ⚠️ **THE VARIANT IS NOT ABSENT, BUT IT IS UNINHABITED.** `Datatype::Struct(size,
-//!     fields)` has existed since `154b022` (2026-06-25), so the original "no struct metatype" was
-//!     false when written. But **nothing in the tree ever CONSTRUCTS one**: every occurrence across
-//!     `types.rs`, `varmap.rs`, `ptrarith.rs`, `setcasts.rs` and this file is a consumer — a
-//!     `matches!`, a match arm, a field read. Measured consequence: **0 of 37 corpus SUBPIECEs and
-//!     0 of 1704 the subject SUBPIECEs have a struct-typed input.** So every `TypeStruct::*` port is inert
-//!     until struct types are PRODUCED, not merely declarable. Union is absent outright.
+//!   - **struct** — explicit prototypes now supply composite values. The joined-result
+//!     source fixture exercises `TypeStruct::findTruncation` and the SUBPIECE token consumer.
+//!     Earlier corpus-only measurements of zero structured inputs no longer justify a deferral.
+//!     Union remains absent outright.
 //!   - **variable-length** — no `is_variable_length` anywhere in `decompile/`, so `castStandard`'s
 //!     `isVariableLength() && isptr && hasSameVariableBase()` escape (cast.cc:336) is unported and
 //!     a size change there always casts. Revival: the flag, with `hasSameVariableBase`.
@@ -464,43 +461,17 @@ pub fn output_token(f: &Funcdata, op: OpId) -> Datatype {
         }
         // TypeOpPtradd::getOutputToken (typeop.cc:2244): cast to the base pointer's type
         OpCode::Ptradd => high_type_read_facing(f, o.input(0).unwrap()),
-        // TypeOpSubpiece::getOutputToken (typeop.cc:2142) — "SUBPIECE prints as cast to whatever its
-        // output is": the token IS the output's own variable type, so `castOutput`'s
-        // `tokenct == outHighType` short-circuit is satisfied and a SUBPIECE never takes an output
-        // cast. Only an `unknown` output falls back, to `int` of the output's size.
-        //
-        // ⚠️ CORRECTION (additive — the original claim is kept so the error is legible). This read:
-        // "The leading `findTruncation` arm ... is inapplicable: mosura's `Datatype` has no struct or
-        // union metatype, so no truncation can ever be found. Deferred with the aggregate lattice."
-        // **THE PREMISE WAS FALSE WHEN IT WAS WRITTEN.** `Datatype::Struct(size, fields)` landed in
-        // `154b022` on 2026-06-25; this comment was written in `844d5b1` on 2026-07-27, a month
-        // later, and `Datatype::Struct` is already consumed by ptrarith.rs, setcasts.rs and
-        // varmap.rs. What is genuinely absent is UNION — there is no `Datatype::Union` variant.
-        //
-        // ⚠️ SECOND CORRECTION, AND IT IS OF THE FIRST ONE. The paragraph above went on to say "its
-        // struct half rests on a lattice we have", and that was MY over-correction: it read the
-        // EXISTENCE OF A VARIANT as the existence of a lattice. The census has now been run and the
-        // answer is the opposite.
-        //
-        //   1. Does the struct path need union? **NO.** `TypeStruct::findTruncation` (type.cc:1624)
-        //      is a pure field lookup — `getFieldIter` binary-searches the field containing the
-        //      offset, then rejects when `newoff + sz` spans past that field's end. The union
-        //      versions (`TypeUnion` :2185, `TypePartialUnion` :2440) are separate virtual overrides
-        //      on separate classes. So the original "struct OR union" framing was wrong twice over.
-        //   2. What is its reach? **ZERO.** 0 of 37 corpus SUBPIECEs and 0 of 1704 the subject SUBPIECEs
-        //      have a struct-typed input 0.
-        //   3. Why zero? **`Datatype::Struct` IS NEVER CONSTRUCTED.** Declared at types.rs:42 and
-        //      read in five modules, but nothing anywhere builds one. The variant is UNINHABITED.
-        //
-        // So the deferral STANDS, now for a measured reason rather than a false one: porting
-        // `findTruncation` would be inert. **Revival condition: something must PRODUCE a
-        // `Datatype::Struct`** — struct type recovery, or a symbol table supplying composite types.
-        // Re-check in one command: `grep -rn "Datatype::Struct(" src/decompile/` and look for a
-        // constructor rather than a `matches!`/match-arm/field-read.
-        //
-        // The general lesson, which cost this session a wrong claim in two landed commits: **a
-        // declared variant is not an inhabited lattice.** See AGENT.md.
+        // TypeOpSubpiece::getOutputToken: prefer an exact formal field type;
+        // otherwise a truncation token has its output's type (unknown falls back to int).
         OpCode::Subpiece => {
+            let input = o.input(0).unwrap();
+            let mut off = f.vn(o.input(1).unwrap()).constant_value();
+            if f.spaces.is_big_endian(f.vn(input).loc.space) {
+                off = u64::from(f.vn(input).size - f.vn(out).size) - off;
+            }
+            if let Some((_, ty, _)) = high_type_read_facing(f, input).find_truncation(off, f.vn(out).size) {
+                if ty.size() == f.vn(out).size { return ty; }
+            }
             let dt = high_type_read_facing(f, out);
             if matches!(dt, Datatype::Unknown(_)) {
                 Datatype::base_int(f.vn(out).size)

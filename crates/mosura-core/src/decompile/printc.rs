@@ -774,11 +774,46 @@ impl<'a> PrintC<'a> {
         }
         let ty = self.type_of(v).name();
         let base_name = self.name_of(base);
+        let base_type = self.type_of(base);
+        if base_type.is_piece_structured() {
+            return Some(self.partial_composite(base_name, base_type, u64::from(off), size,
+                &self.type_of(v), allow_cast));
+        }
         Some(if off == 0 && allow_cast {
             format!("({ty}){base_name}")
         } else {
             format!("{base_name}._{off}_{size}_")
         })
+    }
+
+    /// Ghidra `pushPartialSymbol`: descend through formal structure fields and
+    /// array elements before using a cast or an unnamed partial field.
+    fn partial_composite(&self, mut text: String, mut ty: Datatype, mut off: u64,
+        size: u32, out_type: &Datatype, allow_cast: bool) -> String
+    {
+        loop {
+            if off == 0 && size == ty.size() { return text; }
+            if let Some((base, field, residual)) = ty.find_truncation(off, size) {
+                text.push_str(&format!(".field_0x{base:x}"));
+                ty = field;
+                off = residual;
+                continue;
+            }
+            if let Datatype::Array(ref element, count) = ty {
+                let stride = u64::from(element.align_size());
+                if stride != 0 && off / stride < u64::from(count)
+                    && off % stride + u64::from(size) <= u64::from(element.size()) {
+                    text.push_str(&format!("[{}]", off / stride));
+                    off %= stride;
+                    ty = (**element).clone();
+                    continue;
+                }
+            }
+            if allow_cast && is_subpiece_cast(out_type, &ty, off) {
+                return format!("({}){text}", out_type.name());
+            }
+            return format!("{text}._{off}_{size}_");
+        }
     }
 
     /// [`Self::name_of`] for an assignment target: a partial symbol renders without the cast form,
@@ -1967,6 +2002,25 @@ impl<'a> PrintC<'a> {
             // otherwise as the functional `SUB<insize><outsize>(x, off)` (`opFunc`,
             // `TypeOpSubpiece::getOperatorName`). The cast target is the output type.
             OpCode::Subpiece => {
+                if o.flags & super::op::flags::SPECIAL_PRINT != 0 {
+                    let input = a(0);
+                    let ty = self.type_of(input);
+                    if ty.is_piece_structured() {
+                        let size = self.f.vn(o.output.unwrap()).size;
+                        let mut off = self.f.vn(a(1)).constant_value();
+                        if self.f.spaces.is_big_endian(self.f.vn(input).loc.space) {
+                            off = u64::from(self.f.vn(input).size - size) - off;
+                        }
+                        let base = self.operand(input, 16, false);
+                        let out_type = self.type_of(o.output.unwrap());
+                        if self.is_explicit(input) {
+                            return (self.partial_composite(base, ty, off, size, &out_type, true), 16);
+                        }
+                        if let Some((field, _, 0)) = ty.find_truncation(off, size) {
+                            return (format!("{base}.field_0x{field:x}"), 16);
+                        }
+                    }
+                }
                 let in0 = a(0);
                 let off =
                     if self.f.vn(a(1)).is_constant() { self.f.vn(a(1)).constant_value() } else { 1 };

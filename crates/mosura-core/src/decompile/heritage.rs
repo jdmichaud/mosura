@@ -2520,6 +2520,133 @@ fn dead_removed(f: &Funcdata, spc: SpaceId) -> bool {
     f.deadremoved.get(spc.0 as usize).copied().unwrap_or(0) > 0
 }
 
+/// Ghidra `Heritage::splitJoinLevel` (heritage.cc:2067): split each current
+/// group in half by its number of physical pieces, preserving significance order.
+fn split_join_level(f: &mut Funcdata, last: &[VarnodeId], pieces: &[(Address, u32)]) -> Vec<(VarnodeId, Option<VarnodeId>)> {
+    let mut next = Vec::new();
+    let mut recnum = 0;
+    for &vn in last {
+        let size = f.vn(vn).size;
+        if size == pieces[recnum].1 {
+            next.push((vn, None));
+            recnum += 1;
+            continue;
+        }
+        let mut end = recnum;
+        let mut accum = 0;
+        while accum < size {
+            accum += pieces[end].1;
+            end += 1;
+        }
+        assert_eq!(accum, size, "join pieces do not partition the varnode");
+        let half = (end - recnum) / 2;
+        let most_size: u32 = pieces[recnum..recnum + half].iter().map(|p| p.1).sum();
+        let most = if half == 1 { f.new_varnode(most_size, pieces[recnum].0) }
+            else { f.new_unique(most_size) };
+        let least = if end - recnum == 2 {
+            f.new_varnode(pieces[recnum + 1].1, pieces[recnum + 1].0)
+        } else { f.new_unique(size - most_size) };
+        next.push((most, Some(least)));
+        recnum = end;
+    }
+    next
+}
+
+/// Ghidra `Heritage::splitJoinRead` (heritage.cc:2118): reconstruct a free
+/// logical read using PIECEs before its consumer, then heritage the real registers.
+fn split_join_read(f: &mut Funcdata, vn: VarnodeId, pieces: &[(Address, u32)]) {
+    let mut anchor = f.lone_descend(vn).expect("a free join read has one consumer");
+    let primitive = !f.vn(vn).is_typelock() || f.vn(vn).get_type().is_primitive_whole();
+    let mut last = vec![vn];
+    while last.len() < pieces.len() {
+        let next = split_join_level(f, &last, pieces);
+        for (&current, &(most, least)) in last.iter().zip(&next) {
+            let Some(least) = least else { continue };
+            let concat = f.new_op(OpCode::Piece, f.op(anchor).seqnum, vec![most, least]);
+            f.op_set_output(concat, current);
+            f.op_insert_before(concat, anchor);
+            if primitive {
+                f.vn_mut(most).set_precis_hi();
+                f.vn_mut(least).set_precis_lo();
+            } else {
+                f.op_mut(concat).flags |= super::op::flags::NO_COLLAPSE;
+            }
+            anchor = concat;
+        }
+        last = next.into_iter().flat_map(|(most, least)| std::iter::once(most).chain(least)).collect();
+    }
+}
+
+/// Ghidra `Heritage::splitJoinWrite` (heritage.cc:2171): split a logical
+/// definition into physical pieces after its defining operation (or at entry).
+fn split_join_write(f: &mut Funcdata, vn: VarnodeId, pieces: &[(Address, u32)]) {
+    let mut anchor = f.vn(vn).def;
+    let primitive = !f.vn(vn).is_typelock() || f.vn(vn).get_type().is_primitive_whole();
+    let mut last = vec![vn];
+    while last.len() < pieces.len() {
+        let next = split_join_level(f, &last, pieces);
+        for (&current, &(most, least)) in last.iter().zip(&next) {
+            let Some(least) = least else { continue };
+            let seq = if f.vn(vn).is_input() {
+                super::op::SeqNum { pc: f.op(f.block(super::block::BlockId(0)).ops[0]).seqnum.pc, uniq: 0 }
+            } else { f.op(anchor.expect("join definition")).seqnum };
+            let off = f.new_const(4, u64::from(f.vn(least).size));
+            let split = f.new_op(OpCode::Subpiece, seq, vec![current, off]);
+            f.op_set_output(split, most);
+            if let Some(op) = anchor { f.op_insert_after(split, op); }
+            else { f.op_insert_begin(split, super::block::BlockId(0)); }
+            let zero = f.new_const(4, 0);
+            let low_split = f.new_op(OpCode::Subpiece, f.op(split).seqnum, vec![current, zero]);
+            f.op_set_output(low_split, least);
+            f.op_insert_after(low_split, split);
+            if primitive {
+                f.vn_mut(most).set_precis_hi();
+                f.vn_mut(least).set_precis_lo();
+            }
+            anchor = Some(low_split);
+        }
+        last = next.into_iter().flat_map(|(most, least)| std::iter::once(most).chain(least)).collect();
+    }
+}
+
+/// Ghidra `Heritage::processJoins` (heritage.cc:2281): expand logical storage
+/// before collecting SSA locations. Join space itself never participates in SSA.
+fn process_joins(f: &mut Funcdata) {
+    let Some(join) = f.spaces.by_name("join") else { return };
+    let mut nodes: Vec<_> = (0..f.num_varnodes()).map(|i| VarnodeId(i as u32))
+        .filter(|&id| {
+            let n = f.vn(id);
+            n.loc.space == join && (n.is_input() || n.def.is_some() || !n.descend.is_empty())
+        }).collect();
+    nodes.sort_by_key(|&id| (f.vn(id).loc.offset, f.vn(id).size, id.0));
+    for vn in nodes {
+        let record = f.spaces.find_join(f.vn(vn).loc).expect("interned join storage").clone();
+        assert_eq!(record.size, f.vn(vn).size, "joined varnode size must match its record");
+        if f.vn(vn).is_free() {
+            if record.pieces.len() == 1 {
+                let anchor = f.lone_descend(vn).expect("free float join read");
+                let (addr, size) = record.pieces[0];
+                let input = f.new_varnode(size, addr);
+                let op = f.new_op(OpCode::FloatFloat2float, f.op(anchor).seqnum, vec![input]);
+                f.op_set_output(op, vn);
+                f.op_insert_before(op, anchor);
+            } else { split_join_read(f, vn, &record.pieces); }
+        }
+        if f.heritage_pass != f.spaces.get(record.pieces[0].0.space).delay { continue; }
+        if record.pieces.len() == 1 {
+            let anchor = f.vn(vn).def;
+            let seq = anchor.map(|a| f.op(a).seqnum).unwrap_or(super::op::SeqNum {
+                pc: f.op(f.block(super::block::BlockId(0)).ops[0]).seqnum.pc, uniq: 0,
+            });
+            let op = f.new_op(OpCode::FloatFloat2float, seq, vec![vn]);
+            let (addr, size) = record.pieces[0];
+            f.new_output(op, size, addr);
+            if let Some(anchor) = anchor { f.op_insert_after(op, anchor); }
+            else { f.op_insert_begin(op, super::block::BlockId(0)); }
+        } else { split_join_write(f, vn, &record.pieces); }
+    }
+}
+
 /// Ghidra `Heritage::clearStackPlaceholders` (heritage.cc:2048): tear down every call site's
 /// stack-pointer tracker. Called once per space carrying placeholders, immediately before that space
 /// is heritaged — by then the tracker has either done its job (`RuleLoadVarnode` resolved it during
@@ -2543,6 +2670,7 @@ pub fn heritage_pass(f: &mut Funcdata, dom: &Dominators) -> u32 {
     if f.num_blocks() == 0 {
         return 0;
     }
+    process_joins(f);
     let pass = f.heritage_pass;
     // (The pass-0 `refine_overlaps` laned pre-partition is RETIRED: it was the hand-scoped
     // stand-in for the `refinement()` carve-out, which now runs at its real slot inside

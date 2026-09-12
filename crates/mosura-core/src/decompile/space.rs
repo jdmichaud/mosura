@@ -278,11 +278,22 @@ fn heritage_delay(kind: SpaceKind, name: &str) -> i32 {
     }
 }
 
-/// The registry of address spaces for one architecture (Ghidra's `AddrSpaceManager`).
+/// Ghidra `JoinRecord`: one logical value backed by physical storage pieces.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JoinRecord {
+    /// Physical pieces, ordered most significant first.
+    pub pieces: Vec<(Address, u32)>,
+    pub addr: Address,
+    pub size: u32,
+}
+
+/// The registry of address spaces and logical joins for one architecture.
 #[derive(Clone, Debug)]
 pub struct SpaceManager {
     spaces: Vec<Space>,
     by_name: HashMap<String, SpaceId>,
+    joins: Vec<JoinRecord>,
+    join_allocate: u64,
 }
 
 impl SpaceManager {
@@ -290,7 +301,9 @@ impl SpaceManager {
     /// `stack`). Real specs come from the SLEIGH `.sla`; this is the default for tests
     /// and the initial build-from-lifter path.
     pub fn standard() -> SpaceManager {
-        let mut m = SpaceManager { spaces: Vec::new(), by_name: HashMap::new() };
+        let mut m = SpaceManager {
+            spaces: Vec::new(), by_name: HashMap::new(), joins: Vec::new(), join_allocate: 0,
+        };
         m.add("const", SpaceKind::Constant, 8, 1);
         m.add("ram", SpaceKind::Processor, 8, 1);
         let register = m.add("register", SpaceKind::Processor, 4, 1);
@@ -326,7 +339,91 @@ impl SpaceManager {
             debug_assert_eq!(s.id.0 as usize, i, "space ids are dense and in order");
             by_name.insert(s.name.clone(), s.id);
         }
-        SpaceManager { spaces, by_name }
+        SpaceManager { spaces, by_name, joins: Vec::new(), join_allocate: 0 }
+    }
+
+    /// Ghidra `AddrSpaceManager::findAddJoin`: intern a logical register/memory
+    /// value whose pieces are ordered most significant first. A single piece
+    /// requires an explicit logical size (the floating-point extension case).
+    pub fn find_add_join(&mut self, pieces: &[(Address, u32)], logical_size: u32) -> Address {
+        assert!(!pieces.is_empty(), "cannot create a join without pieces");
+        assert!(pieces.len() != 1 || logical_size != 0,
+            "a single-piece join needs a logical size");
+        assert!(logical_size == 0 || pieces.len() == 1,
+            "a multi-piece join cannot specify a logical size");
+        let size = if logical_size != 0 { logical_size } else {
+            pieces.iter().map(|p| p.1).sum()
+        };
+        assert!(size != 0, "cannot create a zero-size join");
+        if let Some(record) = self.joins.iter().find(|r| r.pieces == pieces && r.size == size) {
+            return record.addr;
+        }
+        let space = self.by_name("join").unwrap_or_else(|| self.add("join", SpaceKind::Special, 8, 1));
+        self.spaces[space.0 as usize].big_endian = self.spaces[0].big_endian;
+        let addr = Address::new(space, self.join_allocate);
+        self.join_allocate += (u64::from(size) + 15) & !15;
+        self.joins.push(JoinRecord { pieces: pieces.to_vec(), addr, size });
+        addr
+    }
+
+    /// Ghidra `JoinRecord::getEquivalentAddress`: translate a byte position
+    /// inside logical storage to its physical piece and byte position.
+    fn join_equivalent_address(&self, record: &JoinRecord, offset: u64) -> Option<(Address, usize)> {
+        let mut off = offset.checked_sub(record.addr.offset)?;
+        let indices: Vec<_> = if self.is_big_endian(record.pieces[0].0.space) {
+            (0..record.pieces.len()).collect()
+        } else { (0..record.pieces.len()).rev().collect() };
+        for pos in indices {
+            let (mut addr, size) = record.pieces[pos];
+            if off < u64::from(size) {
+                addr.offset += off;
+                return Some((addr, pos));
+            }
+            off -= u64::from(size);
+        }
+        None
+    }
+
+    /// Physical pieces of a subrange, as used by `renormalizeJoinAddress`.
+    fn join_range(&self, addr: Address, size: u32) -> Option<Vec<(Address, u32)>> {
+        let r = self.joins.iter().find(|r| r.addr.space == addr.space
+            && r.addr.offset <= addr.offset && addr.offset < r.addr.offset + u64::from(r.size))?;
+        let (first, p1) = self.join_equivalent_address(r, addr.offset)?;
+        let (last, p2) = self.join_equivalent_address(r, addr.offset.checked_add(u64::from(size).checked_sub(1)?)?)?;
+        if p1 == p2 { return Some(vec![(first, size)]); }
+        let mut pieces = r.pieces[p1.min(p2)..=p1.max(p2)].to_vec();
+        let truncate_first = (first.offset - r.pieces[p1].0.offset) as u32;
+        let truncate_last = r.pieces[p2].1 - (last.offset - r.pieces[p2].0.offset) as u32 - 1;
+        let high_index = pieces.len() - 1;
+        let (start, end) = if p2 < p1 { (high_index, 0) } else { (0, high_index) };
+        pieces[start].0 = first;
+        pieces[start].1 -= truncate_first;
+        pieces[end].1 -= truncate_last;
+        Some(pieces)
+    }
+
+    /// Ghidra `AddrSpaceManager::renormalizeJoinAddress`: a subrange may name
+    /// one physical piece, or a new join of several pieces.
+    pub fn renormalize_join_address(&mut self, addr: Address, size: u32) -> Address {
+        if self.by_name("join") != Some(addr.space) { return addr; }
+        if self.find_join(addr).is_some_and(|r| r.size == size) { return addr; }
+        let pieces = self.join_range(addr, size).expect("join subrange must be covered");
+        if pieces.len() == 1 { pieces[0].0 } else { self.find_add_join(&pieces, 0) }
+    }
+
+    /// Compare after join normalization without allocating an address merely
+    /// for comparison. Any matching join already exists as `other`'s record.
+    pub fn normalized_address_eq(&self, addr: Address, size: u32, other: Address) -> bool {
+        if self.by_name("join") != Some(addr.space) { return addr == other; }
+        if self.find_join(addr).is_some_and(|r| r.size == size) { return addr == other; }
+        let Some(pieces) = self.join_range(addr, size) else { return false };
+        if pieces.len() == 1 { pieces[0].0 == other }
+        else { self.find_join(other).is_some_and(|r| r.size == size && r.pieces == pieces) }
+    }
+
+    /// Ghidra `findJoin`: lookup requires the beginning of an interned record.
+    pub fn find_join(&self, addr: Address) -> Option<&JoinRecord> {
+        self.joins.iter().find(|r| r.addr == addr)
     }
 
     pub fn set_deadcode_delay(&mut self, space: SpaceId, delay: i32) {

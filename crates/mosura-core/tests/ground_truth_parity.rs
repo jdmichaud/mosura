@@ -19,6 +19,99 @@ use mosura_core::decompile::printc::print_c;
 use mosura_core::decompile::space::Address;
 use mosura_core::paths::ground_truth_dir;
 
+/// One result can occupy several non-contiguous registers. The return expression
+/// and each caller must agree on the logical value and the physical piece order.
+#[test]
+fn declared_register_results_preserve_all_pieces_at_definitions_and_calls() {
+    use mosura_core::decompile::{Funcdata, OpCode, VarnodeId};
+    use mosura_core::decompile::fspec::{RegisterOutput, RegisterParameter};
+    use mosura_core::decompile::types::Datatype;
+
+    fn tuple(x: u32) -> u128 {
+        u128::from(x.wrapping_add(7))
+            | (u128::from(x.wrapping_mul(3)) << 32)
+            | (u128::from(x ^ 0x8000_0000) << 64)
+    }
+    fn value(f: &Funcdata, id: VarnodeId, input: Address, x: u32, producer: u64) -> u128 {
+        let v = f.vn(id);
+        if v.is_constant() { return u128::from(v.constant_value()); }
+        if v.is_input() {
+            assert_eq!((v.loc, v.size), (input, 4), "unexpected incoming value\n{}", f.print_raw());
+            return u128::from(x);
+        }
+        let op = f.op(v.def.unwrap_or_else(|| panic!("unbound result piece {:?}/{}\n{}", v.loc, v.size, f.print_raw())));
+        let a = |n| value(f, op.input(n).unwrap(), input, x, producer);
+        let result = match op.code() {
+            OpCode::Copy | OpCode::Cast | OpCode::IntZext => a(0),
+            OpCode::IntAdd => a(0).wrapping_add(a(1)),
+            OpCode::IntMult => a(0).wrapping_mul(a(1)),
+            OpCode::IntXor => a(0) ^ a(1),
+            OpCode::IntAnd => a(0) & a(1),
+            OpCode::IntRight => a(0) >> a(1),
+            OpCode::Subpiece => a(0) >> (a(1) * 8),
+            OpCode::Piece => (a(0) << (f.vn(op.input(1).unwrap()).size * 8)) | a(1),
+            OpCode::Call => {
+                assert_eq!(f.vn(op.input(0).unwrap()).loc.offset, producer);
+                assert_eq!(op.num_inputs(), 2);
+                tuple(a(1) as u32)
+            }
+            other => panic!("unexpected result expression {other:?}\n{}", f.print_raw()),
+        };
+        if v.size >= 16 { result } else { result & ((1u128 << (v.size * 8)) - 1) }
+    }
+    for bits in [32, 64] {
+        let stem = format!("register_results.gcc-x86-{bits}");
+        let truth = parse_truth(&std::fs::read_to_string(ground_truth_dir().join(format!("{stem}.truth"))).unwrap());
+        let entry = |name: &str| truth.funcs.iter().find(|(_, n)| n == name).unwrap().0;
+        let mut p = analysis::analyze_file(&ground_truth_dir().join(stem)).unwrap();
+        for name in ["produce", "consume"] {
+            p.knobs.function_inputs.insert(entry(name), vec![RegisterParameter {
+                register: "EDI".into(), datatype: Datatype::Uint(4),
+            }]);
+        }
+        p.knobs.function_outputs.insert(entry("produce"), RegisterOutput {
+            registers: vec!["ECX".into(), "EBX".into(), "EAX".into()],
+            datatype: Datatype::Struct(12, vec![(0, Datatype::Uint(4)), (4, Datatype::Uint(4)), (8, Datatype::Uint(4))]),
+        });
+        p.knobs.function_outputs.insert(entry("consume"), RegisterOutput {
+            registers: vec!["EAX".into()], datatype: Datatype::Uint(4),
+        });
+        let (spec, _) = mosura_core::lang::load_cached(&p.language_id).unwrap();
+        for name in ["produce", "consume"] {
+            let f = decompile_function(&p, Address::new(p.default_space, entry(name))).unwrap();
+            let c = print_c(&f);
+            for off in [0, 4, 8] {
+                assert!(c.contains(&format!(".field_0x{off:x}")), "each result is a formal aggregate field\n{c}");
+            }
+            assert!(!c.contains("CONCAT") && !c.contains("SUB124") && !c.contains("uint12"),
+                "typed aggregate construction/extraction must remain field operations\n{c}");
+            let input = Address::new(f.spaces.by_name("register").unwrap(), spec.register_offset("EDI").unwrap());
+            let returns: Vec<_> = f.op_ids().filter(|&id| !f.op(id).is_dead() && f.op(id).code() == OpCode::Return).collect();
+            assert_eq!(returns.len(), 1);
+            let ret = f.op(returns[0]).input(1).expect("declared result at RETURN");
+            assert_eq!(f.vn(ret).size, if name == "produce" { 12 } else { 4 });
+            for x in [0u32, 1, 17, 0x7fff_ffff, 0x8000_0000, u32::MAX] {
+                let expected = if name == "produce" { tuple(x) } else {
+                    u128::from(x.wrapping_add(7).wrapping_add(x.wrapping_mul(3)) ^ (x ^ 0x8000_0000))
+                };
+                assert_eq!(value(&f, ret, input, x, entry("produce")), expected,
+                    "{bits}/{name}/{x:#x}: all physical pieces contribute to the logical result");
+            }
+            if name == "consume" {
+                let calls: Vec<_> = f.op_ids().filter(|&id| !f.op(id).is_dead() && f.op(id).code() == OpCode::Call).collect();
+                assert_eq!(calls.len(), 1);
+                let output = f.vn(f.op(calls[0]).output.expect("one aggregate CALL result"));
+                assert_eq!(output.size, 12);
+                let record = f.spaces.find_join(output.loc).expect("non-contiguous storage requires a join record");
+                let expected: Vec<_> = ["ECX", "EBX", "EAX"].iter().map(|r| (
+                    Address::new(input.space, spec.register_offset(r).unwrap()), 4,
+                )).collect();
+                assert_eq!(record.pieces, expected);
+            }
+        }
+    }
+}
+
 /// Mapped inputs are one contract at the definition and every direct call. The pinned
 /// C++ oracle retains both EDI:uint4 and AH:uint1, including an unused trailing input.
 #[test]
@@ -60,13 +153,13 @@ fn declared_function_inputs_preserve_storage_types_and_unused_parameters() {
         ];
         for name in ["combine", "relay", "unused"] {
             p.knobs.function_inputs.insert(entry(name), params.clone());
-            p.knobs.function_outputs.insert(entry(name), RegisterParameter {
-                register: "EAX".into(), datatype: Datatype::Uint(4),
+            p.knobs.function_outputs.insert(entry(name), mosura_core::decompile::fspec::RegisterOutput {
+                registers: vec!["EAX".into()], datatype: Datatype::Uint(4),
             });
         }
         p.knobs.function_inputs.insert(entry("_start"), vec![]);
-        p.knobs.function_outputs.insert(entry("_start"), RegisterParameter {
-            register: String::new(), datatype: Datatype::Void,
+        p.knobs.function_outputs.insert(entry("_start"), mosura_core::decompile::fspec::RegisterOutput {
+            registers: Vec::new(), datatype: Datatype::Void,
         });
         let (spec, _) = mosura_core::lang::load_cached(&p.language_id).unwrap();
         for name in ["combine", "relay", "unused", "_start"] {
@@ -127,8 +220,8 @@ fn declared_function_input_uses_the_compiler_specs_extension() {
     p.knobs.function_inputs.insert(entry, vec![RegisterParameter {
         register: "w0".into(), datatype: Datatype::Uint(4),
     }]);
-    p.knobs.function_outputs.insert(entry, RegisterParameter {
-        register: "x0".into(), datatype: Datatype::Uint(8),
+    p.knobs.function_outputs.insert(entry, mosura_core::decompile::fspec::RegisterOutput {
+        registers: vec!["x0".into()], datatype: Datatype::Uint(8),
     });
     let f = decompile_function(&p, Address::new(p.default_space, entry)).unwrap();
     let ret = f.op_ids().find(|&id| !f.op(id).is_dead() && f.op(id).code() == OpCode::Return).unwrap();
@@ -324,10 +417,10 @@ fn declared_result_uses_compiler_spec_extension() {
     let entry = |name: &str| truth.funcs.iter().find(|(_, n)| n == name).unwrap().0;
     let mut program = analysis::analyze_file(&bin).expect("analyze result-extension MVE");
     program.knobs.function_outputs.insert(entry("narrow_result"), RegisterOutput {
-        register: "w0".into(), datatype: Datatype::Uint(4),
+        registers: vec!["w0".into()], datatype: Datatype::Uint(4),
     });
     program.knobs.function_outputs.insert(entry("upper_result"), RegisterOutput {
-        register: "x0".into(), datatype: Datatype::Uint(8),
+        registers: vec!["x0".into()], datatype: Datatype::Uint(8),
     });
     let f = decompile_function(&program, Address::new(program.default_space, entry("upper_result"))).unwrap();
     let ret = f.op_ids().find(|&id| !f.op(id).is_dead() && f.op(id).code() == OpCode::Return).unwrap();
@@ -385,7 +478,7 @@ fn declared_flag_result_reaches_callee_and_callers() {
         && baseline.op(id).code() == OpCode::Return).all(|id| baseline.op(id).num_inputs() == 1),
         "the default ABI does not declare a flag result");
     program.knobs.function_outputs.insert(entry("flag_test"), RegisterOutput {
-        register: "ZF".into(), datatype: Datatype::Bool,
+        registers: vec!["ZF".into()], datatype: Datatype::Bool,
     });
     let f = decompile_function(&program, address("flag_test")).unwrap();
     let ret = f.op_ids().find(|&id| !f.op(id).is_dead() && f.op(id).code() == OpCode::Return).unwrap();
@@ -414,7 +507,7 @@ fn declared_flag_result_reaches_callee_and_callers() {
     }
     for name in ["flag_set", "flag_clear"] {
         program.knobs.function_outputs.insert(entry(name), RegisterOutput {
-            register: "CF".into(), datatype: Datatype::Bool,
+            registers: vec!["CF".into()], datatype: Datatype::Bool,
         });
         let f = decompile_function(&program, address(name)).unwrap();
         let c = print_c(&f);
@@ -430,7 +523,7 @@ fn declared_flag_result_reaches_callee_and_callers() {
         assert_eq!(f.vn(result).constant_value(), u64::from(name == "flag_set"));
     }
     program.knobs.function_outputs.insert(entry("if_zero"), RegisterOutput {
-        register: String::new(), datatype: Datatype::Void,
+        registers: Vec::new(), datatype: Datatype::Void,
     });
     let f = decompile_function(&program, address("if_zero")).unwrap();
     assert!(f.op_ids().filter(|&id| !f.op(id).is_dead() && f.op(id).code() == OpCode::Return)

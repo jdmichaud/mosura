@@ -1184,8 +1184,8 @@ impl SplitVarnode {
     }
 
     /// Ghidra `SplitVarnode::createJoinedWhole`. Ghidra's non-contiguous fallback builds a `join`
-    /// address; mosura has no join space, so that case returns `false` and the caller declines
-    /// rather than mis-joining pieces held in unrelated storage.
+    /// address. This recovery path still lacks the `constructJoinAddress` consumer and returns
+    /// `false` for non-contiguous storage; explicit joined result declarations use heritage directly.
     pub fn create_joined_whole(&mut self, data: &mut Funcdata) -> bool {
         let (Some(lo), Some(hi)) = (self.lo, self.hi) else { return false };
         data.vn_mut(lo).set_precis_lo();
@@ -1750,8 +1750,8 @@ impl SplitVarnode {
     }
 
     /// Ghidra `SplitVarnode::replaceIndirectOp` (double.cc): a whole-width INDIRECT guarding the
-    /// same affector. Declines when the output pieces cannot be joined into real storage (mosura
-    /// has no `join` space — see [`Self::create_joined_whole`]).
+    /// same affector. Non-contiguous construction still needs the `constructJoinAddress`
+    /// consumer in [`Self::create_joined_whole`]; explicit prototype joins exist separately.
     pub fn replace_indirect_op(
         data: &mut Funcdata,
         out: &mut SplitVarnode,

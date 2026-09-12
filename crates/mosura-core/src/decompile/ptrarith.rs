@@ -47,13 +47,10 @@
 //!     `TypeStruct` (type.cc:1669/1698) and `TypeSpacebase` (type.cc:2971/3020). The **spacebase**
 //!     pair is ported as `sb_nearest_backward`/`sb_nearest_forward` below and is LIVE (called from
 //!     `apply`). Only the `TypeStruct` pair is unported.
-//!     ⚠️ **CORRECTION to this line's own first draft**, which said "and since `Datatype::Struct`
-//!     exists, it is not lattice-blocked either, merely unwritten." That read the existence of a
-//!     VARIANT as the existence of a lattice. `Datatype::Struct` is **never constructed anywhere**
-//!     — declared at types.rs:42, consumed in five modules, built by none — so the `TypeStruct`
-//!     pair would be **inert** if ported, exactly like `findTruncation` (see `cast.rs`). It IS
-//!     blocked, just not by the missing variant everyone kept naming. Revival: something must
-//!     PRODUCE a struct type.
+//!     The previous deferral claimed struct types were never constructed. Explicit composite
+//!     prototypes now construct them, and `findTruncation` has a live joined-result witness.
+//!     That does not port `TypeStruct::nearestArrayedComponentBackward/Forward`: these two
+//!     pointer-arithmetic consumers remain unimplemented and need their own pointer witness.
 //!   - **union bookkeeping — ⚠️ ONE OF THREE PORTED, AND MIS-GROUPED.**
 //!     `isTypeRecoveryExceeded`/`setTypeRecoveryExceeded` are ported (`funcdata.rs`) and LIVE
 //!     (`pipeline.rs`), and in Ghidra they are a general type-recovery pass counter, not union
@@ -887,9 +884,8 @@ const PTRSUB_UNDO_DEPTH_LIMIT: i32 = 8;
 ///
 /// Ghidra dispatches to `TypeStruct::nearestArrayedComponent*` or the `TypeSpacebase` pair. Only the
 /// spacebase pair exists here ([`sb_nearest_backward`]/[`sb_nearest_forward`]); the struct pair is
-/// unported and would be **inert** if written, because `Datatype::Struct` is never constructed (see
-/// this file's header). So the struct arm answers `false`, which is what Ghidra answers when no
-/// arrayed component is found.
+/// unported. Explicit composite result types no longer justify the old absence-of-structs
+/// deferral; the struct pointer path still needs its own `nearestArrayedComponent*` port.
 fn test_for_array_slack(
     syms: &[super::varmap::StackSymbol],
     dt: &Datatype,
@@ -900,7 +896,7 @@ fn test_for_array_slack(
         return true;
     }
     if !spacebase {
-        return false; // struct pair unported-and-inert
+        return false; // TypeStruct::nearestArrayedComponent* remains unported
     }
     if off < 0 {
         sb_nearest_forward(syms, off).is_some()

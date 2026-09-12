@@ -230,7 +230,7 @@ impl Knobs {
             parts.push(format!("indirect-inputs@{slot:x}={}", regs.join(",")));
         }
         for (entry, result) in &self.function_outputs {
-            parts.push(format!("function-output@{entry:x}={}:{:?}", result.register, result.datatype));
+            parts.push(format!("function-output@{entry:x}={}:{:?}", result.registers.join(","), result.datatype));
         }
         for (entry, params) in &self.function_inputs {
             parts.push(format!("function-inputs@{entry:x}={params:?}"));
