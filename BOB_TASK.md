@@ -54,6 +54,7 @@ audits. Source fixture: `768900d3`; semantic gate: `627d12ea`. The full workspac
 1319/1319 tests pass, 23 ignored, including ground truth 41/41 and IR parity 9/9.
 No production change was needed. Callback effects, complete outer loops, automatic recovery
 and compiler lowering remain outside this validation.
+The active item is #18: audit the paired result, its nested producer inputs and caller stores.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.
@@ -72,7 +73,7 @@ and compiler lowering remain outside this validation.
 - [ ] **#15** Results: propagate producer outputs to callers instead of uninitialized inputs.
 - [ ] **#16** Platform models: model directory-enumeration operations and termination conditions.
 - [ ] **#17** Input contracts: preserve non-default coordinate parameter storage and order.
-- [ ] **#18** Results: preserve a secondary scalar result from a multi-result call.
+- [>] **#18** Results: preserve a secondary scalar result from a multi-result call.
 - [-] **#19** Consumer scope: validate application viewport dimensions; no generic defect established. Withdrawn upstream.
 - [ ] **#20** Results: bind multiple device-read outputs to their actual consumers.
 - [x] **#21** Input contracts: retain shared declarations and caller values at all native sites (validated scope).

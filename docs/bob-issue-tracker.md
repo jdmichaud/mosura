@@ -1,6 +1,6 @@
 # Bob's issue tracker
 
-Updated 2026-09-12. Owner: Alice. Working branch: `fix/value-and-flag-results`.
+Updated 2026-09-12. Owner: Alice. Working branch: `fix/secondary-result-contracts`.
 
 Short checklist: [BOB_TASK.md](../BOB_TASK.md). Its markers are `[ ]` queued/triage,
 `[>]` active, `[x]` fixed and validated for the stated scope, and `[-]` outside scope/not planned.
@@ -106,6 +106,17 @@ explicit incoming inputs. A separate formatting helper receives its declared inp
 
 This is validation of `e482d6a8`/`f4a4e7cd`, not a new production change. The input scope is
 closed; custom compiler lowering and unrelated output/platform contracts remain open.
+
+## Active package: secondary result contracts
+
+Related report: **#18**. Audit the source of both result fields through nested calls, then
+check the caller's adjacent stores and uses under the same declaration. Distinguish result
+storage from automatic ABI recovery and shared-global type/aliasing work.
+
+- [>] Compare the current producer/caller graph and declarations with native instructions.
+- [ ] Validate nested input/result contracts and both returned values across boundary inputs.
+- [ ] Check the caller's paired stores and subsequent field uses.
+- [ ] Reduce any new defect to a source-built MVE before changing production code.
 
 ## Completed validation: value and condition-flag results
 
@@ -477,7 +488,7 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #15 | Results: propagate producer outputs to callers instead of uninitialized inputs. | Queued |
 | #16 | Platform models: model directory-enumeration operations and termination conditions. | Queued |
 | #17 | Input contracts: preserve non-default coordinate parameter storage and order. | Queued |
-| #18 | Results: preserve a secondary scalar result from a multi-result call. | Queued |
+| #18 | Results: preserve a secondary scalar result from a multi-result call. | Active: nested producer and paired-store audit |
 | #19 | Consumer review: validate application viewport dimensions; no generic defect established. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #20 | Results: bind multiple device-read outputs to their actual consumers. | Queued |
 | #21 | Input contracts: retain shared declarations and caller values. | Validated declaration scope: 31/31 native call PCs, 35 contexts, constant and computed input witnesses |
