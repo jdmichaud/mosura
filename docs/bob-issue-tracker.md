@@ -22,7 +22,9 @@ Related report: **#9**. Other loop/call data-flow reports require their own witn
   x86-32 fails because the callback receives an incoming register instead of the selected value.
 - [x] Port phi placement from the full write set, following Ghidra's `calcMultiequals` input.
   The focused source-based gate now passes on both x86 variants (five selection boundaries each).
-- [>] Validate IR parity, package gates and changed emission; commit the fix.
+- [x] Validate the final workspace: 1309/1309 executed tests passed, 23 ignored; IR parity
+  9/9, ground truth 35/35 (one ignored), disassembly golden 1/1, all repository guards green.
+- [>] Resolve changed-emission compile failures and complete the eight corpus gates; commit the fix.
 - [x] Validate the external input/branch witness: all three selected addresses and both
   additional register inputs match the native instruction sequence.
 - [ ] Update the scope marker after the package gates and commit.
@@ -34,6 +36,15 @@ The first round attempt exposed a separate orchestration bug: a round-only scope
 the lookup key after `program.emit` has already projected it away. A strengthened API regression
 fails at the missing emission set before compiler selection. The fix is committed independently as `a8e5c4a8`; the API round harness passes 4/4.
 No verdicts from the failed attempt are counted.
+The completed host rounds both attempted 751 TUs. Baseline: 14 EXACT, 14 SAME_SHAPE,
+366 MISMATCH, 357 COMPILE_FAIL. Candidate: 14 EXACT, 14 SAME_SHAPE, 364 MISMATCH,
+359 COMPILE_FAIL. Both new compilation failures are unsupported named-model keywords
+in Watcom TUs whose parameter pragmas already encode their storage. A three-instruction
+self-compiled register-convention MVE reproduces this; the C++ oracle retains the model name
+and the new ground-truth gate fails before target declaration lowering. The correction is
+confined to Watcom TU synthesis, with a representability check for the actual contract.
+The final workspace run completed with exit 0; an earlier doctest link failure from overlapping
+Cargo builds is superseded by this isolated run.
 
 ## Completed primitive: explicit scalar result contracts
 
@@ -132,8 +143,7 @@ alone does not close the entire indirect-call class.
 - [x] **22 consumer issues/proofs withdrawn in the complete handoff.** The reporter explicitly
   excluded #19, #26, #29, #35, #38, #44, #50, #72, #75, #76, #78, #79, #81, #82, #83, #84,
   #85, #89, #91, #93, #97 and #99. Their ledger classifications and descriptions were checked
-  against that withdrawal. These are scope closures, not mosura fixes. #26's underlying naming
-  issue remains #27; the original missing-input class mentioned in #99 remains open separately.
+  against that withdrawal. These are scope closures, not mosura fixes. #26's naming concern was independently reviewed under #27; the original missing-input class mentioned in #99 remains open separately.
 - [x] **Compound report #25 clarified.** The consumer walker is outside scope; the two helpers'
   missing register inputs remain open in #25. The checklist now tracks that generic contract gap.
 
@@ -162,6 +172,18 @@ alone does not close the entire indirect-call class.
 - [ ] **Missing control flow and discovery (#3, #9, #42, #58–59, #67, #73, #87).** Recheck
   current discovery and raw p-code before attributing missing branches or routines to DCE.
 - [ ] **Finish triaging the remaining reports, including #86–99 added since the handoff.**
+
+## Loop substitution scope review (#5)
+
+- [-] The submitted witness is a downstream linear register interpreter replacing a callback's
+  loop-dependent index and selected narrow argument with first-iteration constants. The archived
+  raw mosura body retains the induction variable, indexed load and conditional selection. The
+  consumer's own rewrite source documents this substitution and now excludes loop sites.
+- Current raw decompilation also retains the induction variable in both callback arguments and
+  indexed loads. Its incomplete callback contract is a separate open issue; this review does not
+  claim that every current argument is correct or that other loop data-flow reports are closed.
+- Reopen this item with an unmodified mosura output and matching original bytes that demonstrate
+  the claimed loop-to-initial-constant substitution before consumer rewriting.
 
 ## Naming scope review (#27)
 
@@ -194,7 +216,7 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #2 | Input contracts: reject parameters unsupported by caller/callee data flow. | Queued |
 | #3 | Input contracts: propagate contracts through mutable function-pointer tables. | Investigating: input package; report validation pending |
 | #4 | Storage: preserve aliasing between differently typed views of one address. | Queued: raw cross-width alias evidence received; existing linker alias support needs validation |
-| #5 | Data flow: preserve loop-carried values instead of folding them to initialization. | Queued |
+| #5 | Consumer loop-value substitution. | Outside scope: archived raw output preserves the loop expression; the consumer rewrite introduced the constant |
 | #6 | Results: represent a value and condition flag returned together. | Queued |
 | #7 | Explicit byte inputs at indirect calls. | Validated input scope: both calls retain the original size-1 value; separate storage-order witness remains open |
 | #8 | Results: preserve multiple register outputs consumed after a call. | Queued |
@@ -215,7 +237,7 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #23 | Results: support explicit carry-flag return contracts. | Queued |
 | #24 | Input contracts: distinguish call-produced values from incoming function parameters. | Queued |
 | #25 | Input contracts: preserve non-default register arguments in callback helpers. | Queued: helper input contracts; consumer walker excluded |
-| #26 | Consumer review: validate linker placement and shared address-backed storage. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger; underlying #27 remains open |
+| #26 | Consumer review: validate linker placement and shared address-backed storage. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger; naming concern independently reviewed under #27 |
 | #27 | Consumer local/global naming collisions. | Outside scope: all five collisions originate in downstream rewritten locals, absent from archived raw and current naming |
 | #28 | Platform models: recover device detection and initialization call contracts. | Queued |
 | #29 | Consumer review: validate application coordinate transforms and dimensions. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |

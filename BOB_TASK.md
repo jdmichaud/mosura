@@ -15,20 +15,22 @@ The [detailed tracker](docs/bob-issue-tracker.md) records evidence and commits; 
 
 Validated input scopes: #1, #7 and #11, using explicit decompilation declarations. Outside scope: #88's verified
 consumer rewrite, 22 withdrawn consumer issues/proofs, two cleanup/shared-state reports whose requested behavior is absent from the original bytes,
-and the local/global naming collisions introduced in consumer rewrites.
-Related generic defects remain open: in particular #26 does not close #27, and #99 does not close missing call inputs.
+the local/global naming collisions, and a loop-value constant substitution introduced in consumer rewrites.
+Related generic defects remain open: #27 was reviewed independently, and #99 does not close missing call inputs.
 Compiler lowering, full typed-pointer contracts, outputs and clobbers remain open.
 Typed scalar/flag results and compiler-spec extensions are now implemented and gated.
 #13 remains open for its nested result/input contracts. The active fix is #9's lost
 branch-selected input: its self-compiled regression failed before the port and now passes on
 both x86 variants. External input/branch validation matches the bytes. Default emission changes
-17/751 functions, so package validation includes a compiled corpus round before closure.
+17/751 functions. The final workspace suite passed (1309/1309 executed tests, 23 ignored).
+The compiled comparison retains all 14 exact matches but exposes two new compilation failures;
+those downstream emission failures must be resolved before the package is committed.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.
 - [ ] **#3** Input contracts: propagate contracts through mutable function-pointer tables.
 - [ ] **#4** Storage: preserve aliasing between differently typed views of one address.
-- [ ] **#5** Data flow: preserve loop-carried values instead of folding them to initialization.
+- [-] **#5** Consumer rewrite: its linear register substitution replaced preserved loop values with constants.
 - [ ] **#6** Results: represent a value and condition flag returned together.
 - [x] **#7** Input contracts: preserve explicit byte inputs at both reported indirect calls (validated scope).
 - [ ] **#8** Results: preserve multiple register outputs consumed after a call.
