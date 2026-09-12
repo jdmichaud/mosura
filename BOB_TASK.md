@@ -2,111 +2,118 @@
 
 Updated 2026-09-12. Owner: Alice.
 
-Checked means the stated scope is fixed and validated, or confirmed to be a downstream issue.
-Unchecked means still open, including reports awaiting triage. The list contains all 99 reports
-in Bob's current ledger. See [the detailed tracker](docs/bob-issue-tracker.md) for evidence and
-commits. Update both trackers when an item's status changes.
+Report numbers are traceability links to the external ledger, not application-specific features
+for mosura to implement. Each description names a generic capability or an ownership question.
+Reports sharing a root cause should be solved together, with a separate commit for each separable
+issue. Code, fixtures and commit messages describe the generic mechanism and self-compiled MVE.
 
-Completed: #1's explicit decompilation inputs, validated by Bob; #88's downstream triage,
-confirmed by Bob. Custom-convention compiler lowering, outputs and clobbers remain open.
-Next: reproduce #13's flag result in a self-compiled MVE and compare Ghidra's IR.
+Checked means the stated scope is fixed and validated, or confirmed outside mosura's scope.
+Unchecked includes pending triage; it does not mean mosura accepts the report as its own defect.
+“Consumer review” is a provisional classification until checked against unmodified output.
+The [detailed tracker](docs/bob-issue-tracker.md) records evidence and commits; update both trackers.
 
-- [x] **#1** Restore the box painter's five indirect-call inputs through explicit declarations.
-- [ ] **#2** Remove register parameters that callers never supply.
-- [ ] **#3** Restore inputs across the remaining driver-vector calls.
-- [ ] **#4** Preserve shared storage across differently typed globals at one address.
-- [ ] **#5** Preserve values carried across loop iterations.
-- [ ] **#6** Preserve both the value and flag results of disc stepping.
-- [ ] **#7** Restore indirect-call inputs in the box painter's sibling routines.
-- [ ] **#8** Preserve all three mouse-read results.
-- [ ] **#9** Restore cursor-redraw inputs and dependent control flow.
-- [ ] **#10** Track a register assembled from two byte writes.
-- [ ] **#11** Resolve the driver hook's contract and raw-image call.
-- [ ] **#12** Recover configuration-file reading.
-- [ ] **#13** Preserve the key predicate's flag result and caller interpretation.
-- [ ] **#14** Restore the in-game menu's missing register inputs.
-- [ ] **#15** Recover the key poll's outputs and its caller's locals.
-- [ ] **#16** Model DOS directory searches and their loop exits.
-- [ ] **#17** Restore centered-title positioning arguments.
-- [ ] **#18** Preserve the aim-camera rebuild's cosine result.
-- [ ] **#19** Triage the downstream viewport and status-strip dimensions.
-- [ ] **#20** Recover mouse results used by the play-frame tick.
-- [ ] **#21** Restore the shared text painter's call contracts.
-- [ ] **#22** Preserve all projection and clipping results.
-- [ ] **#23** Preserve carry results from hot-key handlers.
-- [ ] **#24** Recover the camera-validation routine's actual inputs.
-- [ ] **#25** Triage downstream scene-node classification.
-- [ ] **#26** Confirm downstream placement preserves one object per storage location.
-- [ ] **#27** Prevent locals from shadowing globals in self-assignments.
-- [ ] **#28** Recover mouse detection and initialization contracts.
-- [ ] **#29** Triage the downstream render viewport center.
-- [ ] **#30** Restore the status strip's six vector-call inputs.
-- [ ] **#31** Preserve the rotation routine's three register results.
-- [ ] **#32** Recover shade inputs passed in AH.
-- [ ] **#33** Recover the modal menu's correct mouse-button result.
-- [ ] **#34** Preserve the table-scene handler's display-list cursor.
-- [ ] **#35** Confirm the downstream span-begin thunk forwards its argument.
-- [ ] **#36** Preserve the span-base pointer across page flipping.
-- [ ] **#37** Preserve distinct normals for the second hemisphere.
-- [ ] **#38** Confirm the downstream scene walker's remaining classifications.
-- [ ] **#39** Triage recovered in-game menu handlers.
-- [ ] **#40** Preserve row-dependent ink in menu repaint loops.
-- [ ] **#41** Preserve the abort-to-menu routine's carry result.
-- [ ] **#42** Recover the yes/no modal's body and correct input register.
-- [ ] **#43** Recover the modal menu's action-vector call contract.
-- [ ] **#44** Confirm the downstream text-kerning repair.
-- [ ] **#45** Recover the DOS clock's DX result used for RNG seeding.
-- [ ] **#46** Recover configuration-file writing.
-- [ ] **#47** Triage video-setup reconstruction against the original bytes.
-- [ ] **#48** Restore popup-frame glyph positions.
-- [ ] **#49** Restore list-box painter inputs and row ink.
-- [ ] **#50** Confirm left-button zoom is intended behavior.
-- [ ] **#51** Preserve the table-input loop's AL result.
-- [ ] **#52** Preserve rotation outputs used by camera recentering.
-- [ ] **#53** Preserve the scheduler predicate's carry result.
-- [ ] **#54** Recover the HUD's computer-progress counters.
-- [ ] **#55** Audit the computer evaluation's four reported contract gaps.
-- [ ] **#56** Triage the four reconstructed aim-search verdicts.
-- [ ] **#57** Recover rejection results in the pocket-visibility chain.
-- [ ] **#58** Recover the reported nine-ball computer-player behavior.
-- [ ] **#59** Validate each nine-ball witness and attribute its defect.
-- [ ] **#60** Restore camera-install arguments during shot recording.
-- [ ] **#61** Preserve the root solver's carry result.
-- [ ] **#62** Restore scan-code arguments in frame-boundary key handling.
-- [ ] **#63** Preserve carry and EBP results through the re-spot chain.
-- [ ] **#64** Restore the mouse-release wait during menu activation.
-- [ ] **#65** Recover sound-voice slot selection and sequencer contracts.
-- [ ] **#66** Preserve the sound-stop polling port and loop behavior.
-- [ ] **#67** Recover the menu patcher's missing dispatch behavior.
-- [ ] **#68** Recover the popup action's entry-ID argument.
-- [ ] **#69** Preserve mouse position after popup setting changes.
-- [ ] **#70** Recover popup cursor cleanup and menu repaint behavior.
-- [ ] **#71** Preserve the ball-collision carry result used for sound.
-- [ ] **#72** Triage downstream loss of frame-presentation branches.
-- [ ] **#73** Recover save/load list discovery, arguments and EAX results.
-- [ ] **#74** Recover reachable R/T key handling.
-- [ ] **#75** Triage downstream font selection and scaling above 640 pixels.
-- [ ] **#76** Triage downstream display-page selection during configuration.
-- [ ] **#77** Preserve separate saved backgrounds for two cursors.
-- [ ] **#78** Triage downstream Configure-page repainting.
-- [ ] **#79** Triage downstream projection-center updates after mode changes.
-- [ ] **#80** Recover tracking-line coordinate arguments.
-- [ ] **#81** Triage downstream draw-page index and pointer synchronization.
-- [ ] **#82** Triage duplicate downstream cursor drawing after Configure.
-- [ ] **#83** Triage downstream status-strip cleanup on return to the front end.
-- [ ] **#84** Triage downstream cursor-cover validity tracking.
-- [ ] **#85** Triage downstream cursor-cover corruption after duplicate drawing.
-- [ ] **#86** Restore the driver call's seven-register input contract.
-- [ ] **#87** Discover the Preferences action in a mixed code/data block.
-- [x] **#88** Confirm the transparent-byte comparison defect was introduced downstream.
-- [ ] **#89** Triage downstream mouse-event accumulation and gain.
-- [ ] **#90** Preserve mouse-delta results consumed by the play tick.
-- [ ] **#91** Review the Preferences audit's non-defect classification.
-- [ ] **#92** Recover input order and widths for Preferences repainting.
-- [ ] **#93** Triage the downstream page-clear memory span.
-- [ ] **#94** Recover line-clipper input order, multiple outputs and carry.
-- [ ] **#95** Restore line-editor call inputs and missing calls.
-- [ ] **#96** Recover DOS file I/O and replace unsupported emitter placeholders.
-- [ ] **#97** Triage downstream load-result handling across exits.
-- [ ] **#98** Preserve the line editor's carry result.
-- [ ] **#99** Triage downstream branched-argument repair and restore missing inputs.
+Completed: #1's explicit decompilation inputs; #88's consumer-side comparison rewrite.
+Compiler lowering, full typed-pointer contracts, outputs and clobbers remain open.
+Current work: #13's self-compiled flag-result MVE reproduces the loss. The C++ oracle preserves
+both branch polarities with an explicit result declaration. Implementation and its regression gate
+remain pending; default ABI recovery must not infer flag returns merely from flag writes.
+
+- [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
+- [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.
+- [ ] **#3** Input contracts: propagate contracts through mutable function-pointer tables.
+- [ ] **#4** Storage: preserve aliasing between differently typed views of one address.
+- [ ] **#5** Data flow: preserve loop-carried values instead of folding them to initialization.
+- [ ] **#6** Results: represent a value and condition flag returned together.
+- [ ] **#7** Input contracts: validate explicit indirect inputs across additional call sites.
+- [ ] **#8** Results: preserve multiple register outputs consumed after a call.
+- [ ] **#9** Data flow: preserve branches whose operands come from indirect-call contracts.
+- [ ] **#10** Data flow: combine two byte writes into the correct wider register value.
+- [ ] **#11** Indirect calls: distinguish runtime pointer storage, target identity and call contracts.
+- [ ] **#12** Platform models: recover external file-read calls, arguments and results.
+- [ ] **#13** Results: support an explicit condition-flag result consistently at callee and callers.
+- [ ] **#14** Input contracts: recover missing non-default register parameter sets.
+- [ ] **#15** Results: propagate producer outputs to callers instead of uninitialized inputs.
+- [ ] **#16** Platform models: model directory-enumeration operations and termination conditions.
+- [ ] **#17** Input contracts: preserve non-default coordinate parameter storage and order.
+- [ ] **#18** Results: preserve a secondary scalar result from a multi-result call.
+- [ ] **#19** Consumer review: validate application viewport dimensions; no generic defect established.
+- [ ] **#20** Results: bind multiple device-read outputs to their actual consumers.
+- [ ] **#21** Input contracts: keep shared callee declarations consistent across call sites.
+- [ ] **#22** Results: represent multiple data results together with classification/clip results.
+- [ ] **#23** Results: support explicit carry-flag return contracts.
+- [ ] **#24** Input contracts: distinguish call-produced values from incoming function parameters.
+- [ ] **#25** Consumer review: validate application node classification outside the decompiler.
+- [ ] **#26** Consumer review: validate linker placement and shared address-backed storage.
+- [ ] **#27** Naming: prevent local declarations from shadowing referenced globals.
+- [ ] **#28** Platform models: recover device detection and initialization call contracts.
+- [ ] **#29** Consumer review: validate application coordinate transforms and dimensions.
+- [ ] **#30** Input contracts: restore arguments across a series of vector-table calls.
+- [ ] **#31** Results: preserve multiple non-default register outputs as one consistent contract.
+- [ ] **#32** Input contracts: support parameter storage in high register bytes.
+- [ ] **#33** Results: preserve the correct returned register in a caller's predicate.
+- [ ] **#34** Data flow: preserve cursor-like state across callbacks and nested calls.
+- [ ] **#35** Consumer review: verify that external thunks forward their declared parameters.
+- [ ] **#36** Data flow: preserve returned pointer state across a call.
+- [ ] **#37** Data flow: preserve distinct definitions across repeated computation stages.
+- [ ] **#38** Consumer review: validate remaining application dispatch classifications.
+- [ ] **#39** Discovery: recover callback entry points and verify their function boundaries.
+- [ ] **#40** Data flow: retain loop-dependent narrow-register values.
+- [ ] **#41** Results: preserve a carry-only return from a control routine.
+- [ ] **#42** Discovery/contracts: recover a missing body and its actual register inputs.
+- [ ] **#43** Indirect calls: model code addresses stored in action/dispatch records.
+- [ ] **#44** Consumer review: validate application spacing and layout logic.
+- [ ] **#45** Platform models: propagate a system-service register result to its consumer.
+- [ ] **#46** Platform models: recover external file-write calls, arguments and results.
+- [ ] **#47** Platform models: audit reconstructed device-configuration operations.
+- [ ] **#48** Input contracts: preserve per-call position arguments across repeated calls.
+- [ ] **#49** Input contracts: retain drawing inputs and per-iteration narrow values.
+- [ ] **#50** Consumer review: verify reported behavior is intentional rather than a tool defect.
+- [ ] **#51** Results: retain a narrow accumulator result used as a control signal.
+- [ ] **#52** Results: propagate a multi-register result through chained calls.
+- [ ] **#53** Results: retain a carry-only predicate used by subsequent control flow.
+- [ ] **#54** Data flow: trace displayed counters back to their actual producer values.
+- [ ] **#55** Contracts: audit several call boundaries in a larger computation chain.
+- [ ] **#56** Results: audit reconstructed predicate contracts against their producer bytes.
+- [ ] **#57** Results: preserve rejection predicates across a call chain.
+- [ ] **#58** Data flow: reduce reported algorithm reconstruction failures to independent MVEs.
+- [ ] **#59** Triage: attribute each witness to a generic mechanism and deduplicate reports.
+- [ ] **#60** Input contracts: restore inputs when caller setup precedes a nested call.
+- [ ] **#61** Results: keep flag status separate from a simultaneous floating-point result.
+- [ ] **#62** Input contracts: preserve a narrow event identifier passed to a service call.
+- [ ] **#63** Results: propagate both a flag and a non-default register result through a chain.
+- [ ] **#64** Data flow: preserve externally supplied polling conditions and loop exits.
+- [ ] **#65** Contracts: recover state-selection arguments and sequencing across service calls.
+- [ ] **#66** Platform/data flow: preserve I/O port values and polling-loop state.
+- [ ] **#67** Control flow: recover reachable work before and after indirect dispatch.
+- [ ] **#68** Input contracts: distinguish an object identifier from an iteration index.
+- [ ] **#69** Data flow: preserve device-coordinate state across configuration callbacks.
+- [ ] **#70** Triage: separate missing callback/state flow from consumer cleanup and repaint policy.
+- [ ] **#71** Results: retain a carry status that controls a downstream side effect.
+- [ ] **#72** Consumer review: verify reconstructed dispatch retains every original branch.
+- [ ] **#73** Discovery/contracts: recover an indirect producer, its inputs and its result.
+- [ ] **#74** Control flow: preserve reachable input-dependent branches.
+- [ ] **#75** Consumer review: validate application resource selection and scale factors.
+- [ ] **#76** Consumer review: validate application display-buffer selection.
+- [ ] **#77** Storage/data flow: distinguish independent state objects and their saved contents.
+- [ ] **#78** Consumer review: validate application repaint-state transitions.
+- [ ] **#79** Consumer review: validate application state updates after configuration changes.
+- [ ] **#80** Input contracts: distinguish numeric coordinates from pointer-valued arguments.
+- [ ] **#81** Consumer review: keep paired indices and pointers consistent in an adapter.
+- [ ] **#82** Consumer review: audit duplicate rendering callbacks and their ordering.
+- [ ] **#83** Consumer review: validate application cleanup when switching contexts.
+- [ ] **#84** Consumer review: audit validity/lifetime tracking for saved state.
+- [ ] **#85** Consumer review: audit repeated operations that overwrite saved state.
+- [ ] **#86** Input contracts: support complete declarations with many register inputs.
+- [ ] **#87** Discovery: find referenced functions in mixed executable/data memory blocks.
+- [x] **#88** Comparison triage: confirmed signedness mismatch introduced by a consumer rewrite.
+- [ ] **#89** Consumer review: validate event accumulation independently of timing or resolution.
+- [ ] **#90** Results: consume device-read results instead of unrelated incoming parameters.
+- [ ] **#91** Consumer review: inspect verification evidence; no independent defect alleged.
+- [ ] **#92** Input contracts: preserve declared indirect parameter order and widths.
+- [ ] **#93** Consumer review: validate an adapter's memory-clear extent.
+- [ ] **#94** Contracts: preserve input order, multiple outputs and a flag result together.
+- [ ] **#95** Input contracts/control flow: recover missing indirect inputs and missing calls.
+- [ ] **#96** Platform models/emission: represent external file I/O without semantic placeholders.
+- [ ] **#97** Consumer review: verify result handling matches each exit path.
+- [ ] **#98** Results: retain a flag result used to continue or abandon an operation.
+- [ ] **#99** Triage: separate consumer branch-repair errors from the original missing call input.
