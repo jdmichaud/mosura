@@ -257,5 +257,13 @@ fn buildconfig_reads_the_originals_prologue() {
     // a toolchain is needed for recompile; verify needs an object input
     assert!(matches!(dispatch(&c, &mut s, "function.recompile", &opts(&[("entry", &format!("{entry:#x}"))]), &mut NoProgress), Err(Error::NotFound(_))));
     assert!(matches!(dispatch(&c, &mut s, "function.verify", &opts(&[("entry", &format!("{entry:#x}"))]), &mut NoProgress), Err(Error::InvalidArg(_))));
-    assert!(matches!(dispatch(&c, &mut s, "round.run", &opts(&[("round", "r1")]), &mut NoProgress), Err(Error::NotFound(_))), "no toolchain open");
+    // Composite-only scope options must not change the key used to retrieve the emission.
+    // Stop at the absent compiler, after reading the emitted tree and its arms stamp.
+    let before = s.set_keys(SetKind::Program).unwrap().len();
+    let error = dispatch(&c, &mut s, "round.run",
+        &opts(&[("round", "r1"), ("round.scope", "all")]), &mut NoProgress).unwrap_err();
+    assert!(matches!(&error, Error::NotFound(message) if message.contains("toolchain")),
+        "the round must reach compiler selection, not lose its emission set: {error}");
+    let after = s.set_keys(SetKind::Program).unwrap().len();
+    assert!(after <= before + 2, "the round creates only its canonical passes/emission pair");
 }

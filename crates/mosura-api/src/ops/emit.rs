@@ -301,8 +301,15 @@ fn pick(set: &TableSet, format: &str) -> Result<Table> {
 /// context (the binary is the emitter's oracle; the application context's anchored forms cost
 /// EXACTs, measured) — the default here unless the caller says otherwise.
 pub fn emission_options(o: &Options) -> Result<Options> {
-    let mut e = o.clone();
-    if !o.is_set(keys::DECOMPILE_GLOBAL_SCOPE) {
+    // Composite operations also carry round, compiler and verification options. Project
+    // those away exactly as dispatch_inner does before deriving either emission key.
+    let mut e = Options::new();
+    for (k, v) in o.explicit() {
+        if crate::ops::accepts(&PROGRAM_EMIT, k) {
+            e.set(k, v)?;
+        }
+    }
+    if !e.is_set(keys::DECOMPILE_GLOBAL_SCOPE) {
         e.set(keys::DECOMPILE_GLOBAL_SCOPE, "standalone")?;
     }
     Ok(e)
