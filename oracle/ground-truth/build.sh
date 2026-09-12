@@ -222,6 +222,16 @@ if have gcc && have objcopy; then
     rm -f "widened_dividend.gcc-x86-$bits.unstripped"
   done
 
+  # Byte-offset global accesses and their element-indexed addressing control.
+  for bits in 32 64; do
+    gcc -m"$bits" -nostdlib -static -no-pie -Wl,-e,_start src/indexed_globals.S \
+      -o "indexed_globals.gcc-x86-$bits.unstripped"
+    derive_truth_elf "indexed_globals.gcc-x86-$bits.unstripped" indexed_globals gcc "x86-$bits" \
+      "x86:LE:$bits:default" ""
+    strip -o "indexed_globals.gcc-x86-$bits" "indexed_globals.gcc-x86-$bits.unstripped"
+    rm -f "indexed_globals.gcc-x86-$bits.unstripped"
+  done
+
   # A callback input whose predecessor definitions require a phi despite its call-output guard.
   for bits in 32 64; do
     gcc -m"$bits" -nostdlib -static -no-pie -Wl,-e,_start src/branch_argument.S -o branch_argument.gcc-x86-"$bits".unstripped

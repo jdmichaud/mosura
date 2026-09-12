@@ -1,0 +1,7 @@
+# mosura-ground-truth v1 program=indexed_globals compiler=gcc arch=x86-32 lang=x86:LE:32:default
+# derived-from=indexed_globals.gcc-x86-32.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 08049000
+func 08049000 0000000b _start code
+func 0804900b 00000019 copy_words code
+func 08049024 0000001b copy_scaled code

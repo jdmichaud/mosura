@@ -113,9 +113,31 @@ Related report: **#31**. Follow each of three returned registers into consecutiv
 while preserving the caller's saved cursor and loop-carried values. Separate explicit result
 contracts from automatic recovery, arithmetic correctness and compiler ABI lowering.
 
-- [>] Ground the producer, its input/output storage and every reported caller in current IR and bytes.
-- [ ] Validate the producer's three values with complete declarations and source-owned reductions if needed.
-- [ ] Audit repeated stores, field order, saved cursors and loop-carried state at the callers.
+- [x] Ground the producer, its input/output storage and the reported stores in current IR and bytes.
+  The producer loads all operands from globals and returns three registers. The reported
+  table loops and three fixed field groups contain eight native call PCs across five bodies.
+  The full reference inventory contains 27 direct call PCs; the other callers are separate
+  contexts, not silently included in this report's validation denominator.
+- [x] Validate the producer's three values with the explicit result declaration.
+  Unicorn execution of the native bytes, actual recovered C compiled with GCC, and an
+  independent modular-arithmetic model agree in 4213/4213 cases. This checks all three
+  fields, their reverse row order and the rounding carry, including arbitrary entry registers.
+  It does not establish physical compiler ABI lowering or target support for wide locals.
+- [>] Audit repeated stores, field order, saved cursors and loop-carried state at the callers.
+  The declared joined calls supply the correct field offsets in the reported consumers.
+  Indexed global accesses expose a separate TU declaration defect: the IR and mapped C++
+  oracle use byte-based pointers, but the TU builder defaults their globals to four-byte
+  integers, multiplying the stride again. The printer's pointer expression is faithful.
+- [x] Reduce the declaration defect to self-compiled source before changing production code.
+  `indexed_globals.S` supplies five adjacent word copies with byte-offset and scaled-index
+  addressing on i386 and x86-64. Build-derived truth names three functions per artifact.
+  The ordinary declaration gate fails on all four copy bodies; actual GCC execution of
+  the synthesized C fails on the first source-defined case. The C++ oracle with matching
+  byte-sized global symbols retains the same pointer expressions and byte declarations.
+- [ ] Preserve the declared base types through TU synthesis and validate the word-copy gate.
+  Completion requires adjacent copies with both addressing forms and both pointer widths,
+  plus unchanged surrounding memory. Differently typed shared-global views remain tracked
+  under #4; avoid replacing declaration facts with a text rewrite or a guessed stride.
 - [ ] Validate any implementation changes and record each separable fix in its own commit.
 
 ## Completed validation: partial-word result consumers

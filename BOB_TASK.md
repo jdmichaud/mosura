@@ -72,6 +72,12 @@ untouched. Native and recovered C stores agree in 599/599 boundary and random ca
 Earlier flag contracts, subsequent callback effects and physical ABI lowering remain separate.
 Validation: `ca3ee49f`. The active item is #31: three-register results consumed by repeated
 record stores, including preservation of the caller's loop cursor.
+Its producer agrees with native execution and independent modular arithmetic in 4213/4213
+three-field cases. Declared callers bind the fields correctly, but indexed global addressing
+exposed a separate declaration-width defect. A self-compiled word-copy MVE reproduces it on
+both pointer widths; the declaration gate and actual emitted-C execution fail before a fix.
+The mapped C++ oracle confirms the byte-sized base declaration. #31 remains active while
+this emission dependency and the complete repeated-store audit are handled.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.
