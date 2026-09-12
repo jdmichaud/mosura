@@ -130,6 +130,7 @@ pub fn op_nzmask_local(f: &Funcdata, op: OpId, cliploop: bool, dom: &Dominators)
     let in_val = |slot: usize| f.vn(o.input(slot).unwrap()).constant_value();
 
     match o.code() {
+        OpCode::Call | OpCode::Callind | OpCode::Cpoolref if o.is_calculated_bool() => 1,
         // Ops whose result is strictly boolean: only the low bit may be set.
         OpCode::IntEqual
         | OpCode::IntNotequal

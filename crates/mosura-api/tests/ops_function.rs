@@ -25,6 +25,50 @@ fn opts(pairs: &[(&str, &str)]) -> Options {
     o
 }
 
+#[test]
+fn declared_function_outputs_are_typed_and_request_local() {
+    let c = ctx();
+    let dir = mosura_core::paths::ground_truth_dir();
+    let truth = std::fs::read_to_string(dir.join("flag_result.gcc-x86-64.truth")).unwrap();
+    let entry = |name: &str| truth.lines().find_map(|line| {
+        let parts: Vec<_> = line.split_whitespace().collect();
+        (parts.first() == Some(&"func") && parts.get(3) == Some(&name)).then(|| parts[1].to_string())
+    }).unwrap();
+    let target = entry("flag_test");
+    let declaration = format!("{target}=ZF:bool");
+    let declared = opts(&[("entry", &target), ("decompile.function-outputs", &declaration)]);
+    let default = opts(&[("entry", &target)]);
+    let mut s = Session::open(None).unwrap();
+    s.add_input(&std::fs::read(dir.join("flag_result.gcc-x86-64")).unwrap(), "flag_result", None).unwrap();
+    dispatch(&c, &mut s, "program.analyze", &Options::new(), &mut NoProgress).unwrap();
+    for thaw in [false, true] {
+        if thaw { s.last_program = None; }
+        let baseline = text(&dispatch(&c, &mut s, "function.decompile", &default, &mut NoProgress).unwrap());
+        assert!(baseline.starts_with("void "));
+        let output = text(&dispatch(&c, &mut s, "function.decompile", &declared, &mut NoProgress).unwrap());
+        assert!(output.starts_with("bool ") && output.contains("== 0"), "{output}");
+        let restored = text(&dispatch(&c, &mut s, "function.decompile", &default, &mut NoProgress).unwrap());
+        assert_eq!(baseline, restored, "declarations must not leak into later requests");
+        let caller = entry("if_zero");
+        let request = opts(&[("entry", &caller), ("decompile.function-outputs", &declaration)]);
+        let output = text(&dispatch(&c, &mut s, "function.decompile", &request, &mut NoProgress).unwrap());
+        assert!(output.contains("bool ") && output.contains("if ("), "{output}");
+    }
+    assert_eq!(s.set_keys(SetKind::Program).unwrap().len(), 1);
+    assert_eq!(s.set_keys(SetKind::Function).unwrap().len(), 3,
+        "default, declared callee and declared caller have distinct reusable keys");
+    for value in [format!("{target}=NO_SUCH_REGISTER:bool"), format!("{target}=EAX:bool")] {
+        let request = opts(&[("entry", &target), ("decompile.function-outputs", &value)]);
+        assert!(matches!(dispatch(&c, &mut s, "function.decompile", &request, &mut NoProgress),
+            Err(Error::InvalidArg(_))));
+    }
+    for value in ["123=ZF", "123=ZF:wat", "123=ZF:bool;123=ZF:bool", "123=ZF:int0"] {
+        assert!(matches!(Options::new().set("decompile.function-outputs", value), Err(Error::InvalidArg(_))));
+    }
+    assert!(matches!(dispatch(&c, &mut s, "function.emit", &declared, &mut NoProgress),
+        Err(Error::InvalidArg(_))), "an unsupported compiler lowering must not be accepted");
+}
+
 fn text(t: &mosura_api::Table) -> String {
     mosura_api::render::render(t, Format::Text).unwrap()
 }

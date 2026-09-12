@@ -83,6 +83,7 @@ impl Action for ActionHeritage {
             // `guard_calls`' `characterizeAsInputParam` queries over the compiler spec.
             super::recover::init_active_output(data);
             super::recover::init_active_input(data);
+            super::prototypetypes::link_call_outputs(data);
             // Probe pass: fully simplify a copy (heritage + rules + dead-code, no call-guards),
             // then run Ghidra's AliasChecker on the resulting graph to find which stack slots are
             // aliased — their address escapes to a call. This decides which slots heritage's

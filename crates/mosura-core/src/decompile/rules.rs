@@ -2525,47 +2525,17 @@ impl Rule for RuleBoolNegate {
     }
 }
 
-/// Ghidra `PcodeOp::booloutput` — the opcodes whose output is a 1-bit boolean value (the `TypeOp`
-/// constructors that set `PcodeOp::booloutput`, typeop.cc): the integer/float comparisons, the
-/// carry/borrow flag ops, and the `BOOL_*` / `FLOAT_NAN` ops.
-fn is_booloutput(opc: OpCode) -> bool {
-    use OpCode::*;
-    matches!(
-        opc,
-        IntEqual
-            | IntNotequal
-            | IntLess
-            | IntLessequal
-            | IntSless
-            | IntSlessequal
-            | IntCarry
-            | IntScarry
-            | IntSborrow
-            | BoolNegate
-            | BoolXor
-            | BoolAnd
-            | BoolOr
-            | FloatEqual
-            | FloatNotequal
-            | FloatLess
-            | FloatLessequal
-            | FloatNan
-    )
-}
-
-/// Ghidra `Varnode::isBooleanValue` (varnode.cc:942) + `PcodeOp::isCalculatedBool` (op.hh:211): a
-/// written Varnode holds a boolean iff its defining op produces a 1-bit boolean output. Ghidra's
-/// `isCalculatedBool` is `(calculated_bool | booloutput) != 0`; mosura does not track the dynamic
-/// `calculated_bool` flag, so we test the static `booloutput` opcode set ([`is_booloutput`]). For an
-/// unwritten Varnode Ghidra returns true only for a typelocked 1-byte `bool` input when type
-/// recovery is on (`useAnnotation`); the simplification pool runs before type recovery starts, so we
-/// mirror the `false` result there.
+/// Ghidra `Varnode::isBooleanValue` + `PcodeOp::isCalculatedBool`: written
+/// values include both static Boolean opcodes and dynamically declared Boolean
+/// call results. Unwritten values use locked Boolean input annotations. The current
+/// pipeline always enables type recovery (distinct from its start phase).
 fn is_boolean_value(data: &Funcdata, vn: VarnodeId) -> bool {
     let v = data.vn(vn);
     if !v.is_written() {
-        return false;
+        return v.is_input() && v.is_typelock()
+            && v.size == 1 && v.get_type() == super::types::Datatype::Bool;
     }
-    is_booloutput(data.op(v.def.unwrap()).code())
+    data.op(v.def.unwrap()).is_calculated_bool()
 }
 
 /// Ghidra `RuleLogic2Bool` (ruleaction.cc:3118): convert a logical (bitwise) operator on boolean

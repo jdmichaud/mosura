@@ -36,6 +36,9 @@ pub struct Funcdata {
     /// copied from the program by the analysis→decompiler bridge; `Default` (everything on) on a
     /// hand-built `Funcdata`. A pipeline action reads its switch here, never from the environment.
     pub knobs: crate::switches::Knobs,
+    /// Ghidra `FuncProto::isOutputLocked` and its typed output parameter.
+    /// Explicit prototype facts survive rebuilding the analysis graph.
+    pub locked_output: Option<super::fspec::ProtoParameter>,
     varnodes: Vec<Varnode>,
     ops: Vec<PcodeOp>,
     blocks: Vec<BlockBasic>,
@@ -454,6 +457,7 @@ impl Funcdata {
             heritage_pass: 0,
             globaldisjoint: super::heritage::LocationMap::default(),
             active_output: None,
+            locked_output: None,
             return_bytes_consumed: 0,
             structure: None,
             structure_complex: None,
@@ -1226,14 +1230,14 @@ impl Funcdata {
     ///
     /// Flag copying is the intersection of Ghidra's lists with what mosura models. Ghidra carries
     /// `nocollapse/startmark/nonprinting/halt/badinstruction/unimplemented/noreturn/missing/
-    /// calculated_bool/ptrflow` on ops and `special_prop/special_print/incidental_copy/
+    /// ptrflow` on ops and `special_prop/special_print/incidental_copy/
     /// is_cpool_transformed/stop_type_propagation/store_unmapped` as op addlflags; mosura has no
     /// counterpart for those, so they are simply absent rather than approximated.
     pub fn clone_block_ops(&mut self, b: super::block::BlockId, bprime: super::block::BlockId, inedge: usize) {
         self.structure_reset();
         use super::op::flags as opf;
         use super::varnode::flags as vnf;
-        const OP_KEEP: u32 = opf::STARTBASIC | opf::NO_INDIRECT_COLLAPSE | opf::INDIRECT_STORE;
+        const OP_KEEP: u32 = opf::STARTBASIC | opf::NO_INDIRECT_COLLAPSE | opf::INDIRECT_STORE | opf::CALCULATED_BOOL;
         const VN_KEEP: u32 = vnf::EXTERNREF
             | vnf::VOLATILE
             | vnf::INCIDENTAL_COPY

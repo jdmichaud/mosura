@@ -28,6 +28,7 @@ pub mod expression;
 pub mod fasthash;
 pub mod float;
 pub mod fspec;
+pub mod prototypetypes;
 pub mod funcdata;
 pub mod heritage;
 pub mod jumpbasic;

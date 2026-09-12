@@ -1,4 +1,4 @@
-//! The program table schemas (design §5.6), v1 each. Column order is the row layout.
+//! The versioned program table schemas (design §5.6). Column order is the row layout.
 
 use crate::schema::{ColType as T, Column as C, Schema};
 
@@ -22,7 +22,7 @@ pub static PROTOS: Schema = Schema { name: "protos", version: 1, columns: &[C::h
 pub static PROTO_SLOTS: Schema = Schema { name: "proto_slots", version: 1, columns: &[C::hex("fn", T::U64), C::new("idx", T::U32), C::new("space", T::U32), C::hex("offset", T::U64), C::new("size", T::U32)] };
 pub static PROTO_MODELS: Schema = Schema { name: "proto_models", version: 1, columns: &[C::new("id", T::U32), C::new("parent", T::I64), C::new("name", T::Str), C::new("print_in_decl", T::Bool), C::new("extrapop", T::I64), C::new("custom_conventions", T::Bool), C::new("has_input", T::Bool), C::new("has_output", T::Bool)] };
 pub static PARAM_LISTS: Schema = Schema { name: "param_lists", version: 1, columns: &[C::new("model", T::U32), C::new("which", T::U8), C::new("is_output", T::Bool), C::new("resource_start", T::ListU32)] };
-pub static PARAM_ENTRIES: Schema = Schema { name: "param_entries", version: 1, columns: &[C::new("model", T::U32), C::new("which", T::U8), C::new("idx", T::U32), C::new("group", T::U32), C::new("type_class", T::U8), C::new("space", T::U32), C::hex("addressbase", T::U64), C::new("size", T::U32), C::new("minsize", T::U32), C::new("alignment", T::U32)] };
+pub static PARAM_ENTRIES: Schema = Schema { name: "param_entries", version: 2, columns: &[C::new("model", T::U32), C::new("which", T::U8), C::new("idx", T::U32), C::new("group", T::U32), C::new("type_class", T::U8), C::new("space", T::U32), C::hex("addressbase", T::U64), C::new("size", T::U32), C::new("minsize", T::U32), C::new("alignment", T::U32), C::new("extension", T::U8)] };
 pub static EFFECTS: Schema = Schema { name: "effects", version: 1, columns: &[C::new("model", T::U32), C::new("idx", T::U32), C::new("space", T::U32), C::hex("offset", T::U64), C::new("size", T::U32), C::new("effect", T::U8)] };
 pub static MODEL_RANGES: Schema = Schema { name: "model_ranges", version: 1, columns: &[C::new("model", T::U32), C::new("which", T::U8), C::new("spc", T::U32), C::hex("first", T::U64), C::hex("last", T::U64)] };
 pub static LIKELYTRASH: Schema = Schema { name: "likelytrash", version: 1, columns: &[C::new("model", T::U32), C::new("idx", T::U32), C::new("space", T::U32), C::hex("offset", T::U64), C::new("size", T::U32)] };

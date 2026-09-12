@@ -30,7 +30,7 @@ pub static DECOMPILE: Op = Op {
     doc: "decompile one function (entry) of a program: format=c (default) | raw | table:<prototype|jumptables|calls>",
     since: "0.1",
     tier: Tier::Product,
-    params: &["program", "entry", "format", keys::KNOBS_OFF, keys::DECOMPILE_GLOBAL_SCOPE, keys::DECOMPILE_PROTO_SCOPE, keys::DECOMPILE_INDIRECT_INPUTS, EMIT_KEYS],
+    params: &["program", "entry", "format", keys::KNOBS_OFF, keys::DECOMPILE_GLOBAL_SCOPE, keys::DECOMPILE_PROTO_SCOPE, keys::DECOMPILE_INDIRECT_INPUTS, keys::DECOMPILE_FUNCTION_OUTPUTS, EMIT_KEYS],
     result: "text",
     cache: Cache::Pure { stage: Stage::Decompile, set: SetKind::Function },
     run: decompile,

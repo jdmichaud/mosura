@@ -864,6 +864,7 @@ fn return_trial_kept(f: &Funcdata, ret: OpId, slot: usize) -> bool {
 /// any storage, no trial was ever usable, and EVERY function recovered a `void` return, deleting
 /// its return value as dead code.
 pub fn init_active_output(f: &mut Funcdata) {
+    if super::prototypetypes::lock_return_output(f) { return; }
     let reg = f.spaces.by_name("register");
     let mut active = ParamActive::new(reg);
     // funcdata_varnode.cc:588 — a nonzero delay is capped at 3 passes.
@@ -1983,8 +1984,8 @@ pub fn resolve_call_output(f: &mut Funcdata) -> u32 {
         .filter(|&op| !f.op(op).is_dead() && matches!(f.op(op).code(), OpCode::Call | OpCode::Callind))
         .collect();
     for call in calls {
-        if f.op(call).output.is_some() {
-            continue; // already has a recovered output
+        if f.op(call).output.is_some() || f.call_specs.get(&call).is_some_and(|cs| cs.locked_output.is_some()) {
+            continue; // already recovered, or explicitly locked (including void)
         }
         let Some(bid) = f.op(call).parent else { continue };
         let block_ops = f.block(bid).ops.clone();
@@ -2086,6 +2087,7 @@ pub(crate) fn recovered_input_list(reads: &[(Address, u32)]) -> ParamList {
             .iter()
             .enumerate()
             .map(|(i, &(addr, size))| ParamEntry {
+                extension: Default::default(),
                 group: i as u32,
                 type_class: 0, // TYPECLASS_GENERAL
                 space: addr.space,
@@ -2116,6 +2118,7 @@ pub(crate) fn recovered_output_list(recovered: &[(Address, u32)]) -> ParamList {
             .iter()
             .enumerate()
             .map(|(i, &(addr, size))| ParamEntry {
+                extension: Default::default(),
                 group: i as u32,
                 type_class: 0, // TYPECLASS_GENERAL
                 space: addr.space,

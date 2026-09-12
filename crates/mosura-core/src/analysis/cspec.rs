@@ -829,7 +829,14 @@ fn decode_pentry(
         }
         _ => return None,
     };
-    Some(ParamEntry { group, type_class, space, addressbase, size, minsize, alignment })
+    let extension = match pentry.attribute("extension") {
+        Some("zero") => crate::decompile::fspec::ParamExtension::Zero,
+        Some("sign") => crate::decompile::fspec::ParamExtension::Sign,
+        Some("inttype") => crate::decompile::fspec::ParamExtension::Integer,
+        Some("left") => crate::decompile::fspec::ParamExtension::Left,
+        _ => crate::decompile::fspec::ParamExtension::None,
+    };
+    Some(ParamEntry { extension, group, type_class, space, addressbase, size, minsize, alignment })
 }
 
 /// Forward arg→storage for the integer/general **register** class — the analysis-side slice

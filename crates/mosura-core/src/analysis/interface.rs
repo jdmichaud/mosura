@@ -164,6 +164,7 @@ pub fn prototype_of(f: &Funcdata) -> FuncProto {
 }
 
 fn return_storage(f: &Funcdata) -> Option<ProtoSlot> {
+    if f.locked_output.is_some() { return crate::decompile::fspec::recover_output(f); }
     use crate::decompile::opcode::OpCode;
     let ret = f
         .op_ids()

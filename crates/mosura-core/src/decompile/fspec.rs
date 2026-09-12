@@ -42,11 +42,25 @@ pub enum Containment {
     ContainedBy,
 }
 
+/// Ghidra ParamEntry's small-size extension and justification flags, decoded
+/// from the compiler specification's `extension` attribute.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ParamExtension {
+    #[default]
+    None = 0,
+    Zero = 1,
+    Sign = 2,
+    Integer = 3,
+    Left = 4,
+}
+
 /// Ghidra `ParamEntry` (fspec.hh:84): one storage resource for a parameter or return value.
 /// A register entry has `alignment == 0` — an *exclusion* entry that holds exactly one
 /// parameter; the stack entry has `alignment != 0` — a non-exclusion area of many aligned slots.
 #[derive(Clone, Debug)]
 pub struct ParamEntry {
+    pub extension: ParamExtension,
     /// Resource group index. Exclusion entries sharing a group are mutually exclusive (at most
     /// one is a used parameter); distinct groups are distinct parameter positions.
     pub group: u32,
@@ -62,6 +76,24 @@ pub struct ParamEntry {
 }
 
 impl ParamEntry {
+    /// Ghidra `ParamEntry::assumedExtension` (fspec.cc:365): report an
+    /// extension only for a justified small value inside the declared container.
+    pub fn assumed_extension(&self, spaces: &SpaceManager, addr: Address, size: u32) -> Option<(OpCode, ProtoSlot)> {
+        let opcode = match self.extension {
+            ParamExtension::Zero => OpCode::IntZext,
+            ParamExtension::Sign => OpCode::IntSext,
+            ParamExtension::Integer => OpCode::Piece,
+            _ => return None,
+        };
+        let container_size = if self.alignment == 0 { self.size } else { self.alignment };
+        if size >= container_size || self.justified_contain_with(spaces, addr, size) != Some(0) {
+            return None;
+        }
+        let offset = if self.alignment == 0 { self.addressbase } else {
+            addr.offset - (addr.offset - self.addressbase) % self.alignment as u64
+        };
+        Some((opcode, ProtoSlot { addr: Address::new(self.space, offset), size: container_size }))
+    }
     fn is_exclusion(&self) -> bool {
         self.alignment == 0
     }
@@ -100,10 +132,7 @@ impl ParamEntry {
     /// its `Address` carries, and `isLeftJustified()` (fspec.hh:82) is
     /// `force_left_justify || !spaceid->isBigEndian()`.
     pub fn justified_contain_with(&self, spaces: &SpaceManager, addr: Address, sz: u32) -> Option<u64> {
-        // Ghidra's `force_left_justify` flag (fspec.hh:82, set from the `<pentry>`'s
-        // `extension="left"`) has no counterpart in mosura's ParamEntry — no cspec this port
-        // reads sets it. Revival condition: model the flag, then OR it in here.
-        let left = !spaces.is_big_endian(self.space);
+        let left = self.extension == ParamExtension::Left || !spaces.is_big_endian(self.space);
         self.justified_contain_impl(addr, sz, left)
     }
 
@@ -777,6 +806,7 @@ pub fn sysv_input(spaces: &SpaceManager) -> Option<ParamList> {
     let mut entry = Vec::new();
     for i in 0..8u32 {
         entry.push(ParamEntry {
+            extension: Default::default(),
             group: i,
             type_class: type_class::FLOAT,
             space: reg,
@@ -788,6 +818,7 @@ pub fn sysv_input(spaces: &SpaceManager) -> Option<ParamList> {
     }
     for (i, off) in [RDI, RSI, RDX, RCX, R8, R9].into_iter().enumerate() {
         entry.push(ParamEntry {
+            extension: Default::default(),
             group: 8 + i as u32,
             type_class: type_class::GENERAL,
             space: reg,
@@ -799,6 +830,7 @@ pub fn sysv_input(spaces: &SpaceManager) -> Option<ParamList> {
     }
     // Stack overflow: a non-exclusion area of 8-byte slots starting just above the return addr.
     entry.push(ParamEntry {
+        extension: Default::default(),
         group: 14,
         type_class: type_class::GENERAL,
         space: stack,
@@ -819,10 +851,10 @@ pub fn sysv_input(spaces: &SpaceManager) -> Option<ParamList> {
 pub fn sysv_output(spaces: &SpaceManager) -> Option<ParamList> {
     let reg = spaces.by_name("register")?;
     let entry = vec![
-        ParamEntry { group: 0, type_class: type_class::FLOAT, space: reg, addressbase: XMM_BASE, size: 8, minsize: 4, alignment: 0 },
-        ParamEntry { group: 1, type_class: type_class::FLOAT, space: reg, addressbase: XMM_BASE + XMM_STRIDE, size: 8, minsize: 4, alignment: 0 },
-        ParamEntry { group: 2, type_class: type_class::GENERAL, space: reg, addressbase: RAX, size: 8, minsize: 1, alignment: 0 },
-        ParamEntry { group: 3, type_class: type_class::GENERAL, space: reg, addressbase: RDX, size: 8, minsize: 1, alignment: 0 },
+        ParamEntry { extension: Default::default(), group: 0, type_class: type_class::FLOAT, space: reg, addressbase: XMM_BASE, size: 8, minsize: 4, alignment: 0 },
+        ParamEntry { extension: Default::default(), group: 1, type_class: type_class::FLOAT, space: reg, addressbase: XMM_BASE + XMM_STRIDE, size: 8, minsize: 4, alignment: 0 },
+        ParamEntry { extension: Default::default(), group: 2, type_class: type_class::GENERAL, space: reg, addressbase: RAX, size: 8, minsize: 1, alignment: 0 },
+        ParamEntry { extension: Default::default(), group: 3, type_class: type_class::GENERAL, space: reg, addressbase: RDX, size: 8, minsize: 1, alignment: 0 },
     ];
     Some(ParamList { entry, resource_start: vec![0, 2, 4], is_output: true })
 }
@@ -1335,6 +1367,9 @@ impl ParamTrial {
 /// (fspec.cc:5940) reads it too. So it gets its own map, keyed the same way.
 #[derive(Clone, Debug, Default)]
 pub struct CallSpec {
+    /// Ghidra's output-locked prototype parameter. `Some(Void)` is an explicit
+    /// void result and must not reopen output recovery.
+    pub locked_output: Option<ProtoParameter>,
     /// Ghidra `FuncProto::isInputLocked` with a non-variadic register prototype:
     /// explicit parameter storage, including an empty list for no parameters.
     /// Unlike a recovered read-set, this declaration is exact and must not open
@@ -1711,6 +1746,23 @@ pub struct ProtoSlot {
     pub size: u32,
 }
 
+/// An explicit register result supplied independently of default ABI recovery.
+/// The register name is resolved against the selected SLEIGH language. A void
+/// declaration has an empty register name and `Datatype::Void`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegisterOutput {
+    pub register: String,
+    pub datatype: super::types::Datatype,
+}
+
+/// Ghidra `ProtoParameter`: declared storage and type. Its type determines size;
+/// a void parameter has no meaningful storage address.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProtoParameter {
+    pub addr: Address,
+    pub datatype: super::types::Datatype,
+}
+
 /// Ghidra `FuncProto` (fspec.hh:1343) — the recovered function prototype, reduced to the storage
 /// surface A6's parameter-ID consumes: the ordered input parameters and the return storage.
 #[derive(Clone, Debug, Default)]
@@ -1976,6 +2028,10 @@ pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
 /// realistic return value that return-recovery (`recover::resolve_return`) left on the RETURN ops.
 /// `None` when every RETURN is void.
 pub fn recover_output(f: &Funcdata) -> Option<ProtoSlot> {
+    if let Some(param) = &f.locked_output {
+        return (param.datatype != super::types::Datatype::Void)
+            .then_some(ProtoSlot { addr: param.addr, size: param.datatype.size() });
+    }
     for op in f.op_ids() {
         let o = f.op(op);
         if o.code() == OpCode::Return && o.num_inputs() > 1 {
@@ -2269,6 +2325,7 @@ mod tests {
         let stack = spaces.by_name("stack").unwrap();
         let mut pl = ParamList { entry: Vec::new(), resource_start: vec![0], is_output: false };
         pl.entry.push(ParamEntry {
+            extension: Default::default(),
             group: 0,
             type_class: 0,
             space: stack,
@@ -2292,6 +2349,7 @@ mod tests {
         let mut pl = ParamList { entry: Vec::new(), resource_start: vec![0], is_output: false };
         // One 8-byte register entry at register+0x20, accepting parameters of 1..=8 bytes.
         pl.entry.push(ParamEntry {
+            extension: Default::default(),
             group: 0,
             type_class: 0,
             space: reg,
@@ -2321,6 +2379,7 @@ mod tests {
         let reg = spaces.by_name("register").unwrap();
         let mut pl = ParamList { entry: Vec::new(), resource_start: vec![0], is_output: false };
         pl.entry.push(ParamEntry {
+            extension: Default::default(),
             group: 0,
             type_class: 0,
             space: reg,

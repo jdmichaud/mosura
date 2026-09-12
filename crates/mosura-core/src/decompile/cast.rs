@@ -339,7 +339,6 @@ pub fn input_cast(f: &Funcdata, op: OpId, slot: usize) -> Option<Datatype> {
         //   CBRANCH   typeop.cc:TypeOpCbranch::getInputLocal — slot 1 is BOOL, slot 0 a `code *`
         //   CALLIND   TypeOpCallind::getInputLocal — slot 0 is a `code *`
         //   CALLOTHER TypeOpCallother::getInputLocal — per-userop table, not modelled
-        //   RETURN    TypeOpReturn::getInputLocal — the enclosing prototype's output type
         //   INDIRECT  TypeOpIndirect::getInputLocal — slot 1 is a `code *`
         //   INSERT / EXTRACT — Ghidra's metatypes are (UNKNOWN,INT) / (INT,INT) (typeop.cc), which
         //     `op_meta` lacks entirely; x86 never lifts either, so this is unmeasurable here.
@@ -354,11 +353,12 @@ pub fn input_cast(f: &Funcdata, op: OpId, slot: usize) -> Option<Datatype> {
         // type system asks for it.
         OpCode::Cbranch
         | OpCode::Callother
-        | OpCode::Return
         | OpCode::Indirect
         | OpCode::Insert
         | OpCode::Extract => None,
 
+        // RETURN now uses this base path: TypeOpReturn::getInputLocal supplies a
+        // matching locked prototype output, and otherwise keeps the unknown fallback.
         // ── the base `TypeOp::getInputCast` (typeop.cc:295) ──
         // INT_ADD, INT_LEFT, INT_SBORROW/SCARRY/CARRY, the FLOAT ops, BOOL ops, CALL, CAST and the
         // shifts' slot ≠ 0 (whose overrides delegate here explicitly, typeop.cc:1555/1597).

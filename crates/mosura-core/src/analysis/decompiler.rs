@@ -20,6 +20,7 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
     // function's* decode (an unreadable `.pspec` gave an all-zero context register = 16-bit
     // real mode) — see `lang::load_cached`.
     let (spec, ctx) = crate::lang::load_cached(&program.language_id)?;
+    crate::decompile::prototypetypes::validate_function_outputs(&program.knobs, spec).ok()?;
     // The decompiler reads code + any jump/data tables out of the image, so pass every
     // initialized block (code reached via the entry, tables via constant addresses).
     let chunks: Vec<(u64, &[u8])> = program
@@ -127,6 +128,7 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
         // even when a function has not yet been added to the analysis manager.
         f.known_functions = entries.iter().copied()
             .chain(program.recovered_protos.keys().copied())
+            .chain(program.knobs.function_outputs.keys().copied())
             .map(|offset| Address::new(entry.space, offset)).collect();
         if let Some(previous) = prev {
             f.indirect_overrides = previous.indirect_overrides.clone();
@@ -144,6 +146,7 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
         // the whole-image wrapper it emits the same truncated function.
         record_callee_effects(program, spec, ctx, &mut f);
         crate::decompile::deindirect::apply_input_overrides(&mut f);
+        crate::decompile::prototypetypes::bind_output_declarations(&mut f);
         // SELF-EVIDENCE PROTOTYPE — the same scan, turned on THIS function. A callee that returns
         // in a register the default model calls `<unaffected>` is not merely mis-typed at its call
         // sites: decompiling it ON ITS OWN, nothing consumes the value, so the instruction that

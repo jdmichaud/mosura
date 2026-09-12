@@ -80,6 +80,8 @@ pub mod flags {
     /// `ActionLikelyTrash::traceTrash`, which follows such an INDIRECT's output instead of treating
     /// it as a trash sink.
     pub const INDIRECT_STORE: u32 = 0x4000;
+    /// Ghidra `PcodeOp::calculated_bool`: a dynamically known Boolean result.
+    pub const CALCULATED_BOOL: u32 = 0x8000;
 }
 
 /// A p-code operation. Created via [`Funcdata`](super::funcdata::Funcdata).
@@ -358,8 +360,12 @@ impl PcodeOp {
     pub fn is_fallthru_true(&self) -> bool {
         self.flags & flags::FALLTHRU_TRUE != 0
     }
-    /// Ghidra `PcodeOp::isBoolOutput` — the op's output is a 1-bit boolean (the `booloutput`
-    /// opflag). This is the same opcode set nzmask treats as boolean-result (`op_nzmask_local`).
+    /// Ghidra `PcodeOp::isCalculatedBool`: static Boolean opcode or dynamic flag.
+    pub fn is_calculated_bool(&self) -> bool {
+        self.flags & flags::CALCULATED_BOOL != 0 || self.is_bool_output()
+    }
+
+    /// Ghidra `PcodeOp::isBoolOutput`: the static `booloutput` opcode flag.
     pub fn is_bool_output(&self) -> bool {
         use OpCode::*;
         matches!(

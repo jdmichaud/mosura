@@ -4929,11 +4929,14 @@ fn print_c_inner(
     }
 
     let ret = p.return_value();
-    // Return type: the returned Varnode's inferred HighVariable type — Ghidra's
+    // PrintC::emitPrototypeOutput (printc.cc:2194) reads the prototype's output
+    // type, including a locked declaration when the body returns a constant.
+    // For unlocked prototypes, the returned Varnode's inferred HighVariable type — Ghidra's
     // `ActionOutputPrototype` → `FuncProto::updateOutputTypes` (fspec.cc:4159), which sets the output
     // type to `triallist[0]->getHigh()->getType()` when the prototype is not output-locked (the
     // stripped-binary case). No downgrade to `undefined`; `void` when there is no returned value.
-    let ret_ty = ret.map_or("void".to_string(), |v| {
+    let ret_ty = f.locked_output.as_ref().map(|param| param.datatype.name()).unwrap_or_else(||
+        ret.map_or("void".to_string(), |v| {
         // Width comes from the CONVENTION's return storage, not from the returned Varnode.
         // Later pipeline stages legitimately narrow that Varnode — a comparison result reaching a
         // RETURN ends up one byte wide even though the recovered output trial is the full
@@ -4984,7 +4987,7 @@ fn print_c_inner(
         } else {
             fit_to_storage(&base, w).name()
         }
-    });
+    }));
     // Signature parameters in convention order, each typed from its backing input Varnode.
     let plist: Vec<String> = sig_params
         .iter()

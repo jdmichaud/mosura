@@ -86,7 +86,7 @@ pub fn program_of(s: &mut Session, o: &Options) -> Result<(Key, Arc<Program>)> {
     let settings = o.decompile_settings()?;
     if let Some((lk, p)) = &s.last_program {
         if *lk == k {
-            validate_input_contracts(&knobs, &p.language_id)?;
+            validate_contracts(&knobs, &p.language_id)?;
             if p.knobs == knobs && p.global_scope_all_loaded == settings.global_scope_all_loaded
                 && p.proto_scope == settings.proto_scope {
                 return Ok((k, Arc::clone(p)));
@@ -100,16 +100,17 @@ pub fn program_of(s: &mut Session, o: &Options) -> Result<(Key, Arc<Program>)> {
     }
     let set = s.read_set(SetKind::Program, &k)?;
     let p = Arc::new(thaw(&set, knobs, &settings)?);
-    validate_input_contracts(&p.knobs, &p.language_id)?;
+    validate_contracts(&p.knobs, &p.language_id)?;
     s.last_program = Some((k, Arc::clone(&p)));
     Ok((k, p))
 }
 
-fn validate_input_contracts(knobs: &mosura_core::switches::Knobs, language: &str) -> Result<()> {
-    if knobs.indirect_inputs.is_empty() { return Ok(()); }
+fn validate_contracts(knobs: &mosura_core::switches::Knobs, language: &str) -> Result<()> {
+    if knobs.indirect_inputs.is_empty() && knobs.function_outputs.is_empty() { return Ok(()); }
     let (spec, _) = mosura_core::lang::load_cached(language)
         .ok_or_else(|| Error::InvalidArg(format!("cannot load register names for {language}")))?;
-    mosura_core::decompile::deindirect::validate_indirect_inputs(knobs, spec).map_err(Error::InvalidArg)
+    mosura_core::decompile::deindirect::validate_indirect_inputs(knobs, spec).map_err(Error::InvalidArg)?;
+    mosura_core::decompile::prototypetypes::validate_function_outputs(knobs, spec).map_err(Error::InvalidArg)
 }
 
 // ── program.load / program.analyze ──

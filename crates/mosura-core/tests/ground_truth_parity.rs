@@ -19,6 +19,128 @@ use mosura_core::decompile::printc::print_c;
 use mosura_core::decompile::space::Address;
 use mosura_core::paths::ground_truth_dir;
 
+#[test]
+fn declared_result_uses_compiler_spec_extension() {
+    use mosura_core::decompile::{fspec::RegisterOutput, opcode::OpCode, types::Datatype};
+    let bin = ground_truth_dir().join("result_extension.clang-aarch64");
+    let truth = parse_truth(&std::fs::read_to_string(ground_truth_dir()
+        .join("result_extension.clang-aarch64.truth")).unwrap());
+    let entry = |name: &str| truth.funcs.iter().find(|(_, n)| n == name).unwrap().0;
+    let mut program = analysis::analyze_file(&bin).expect("analyze result-extension MVE");
+    program.knobs.function_outputs.insert(entry("narrow_result"), RegisterOutput {
+        register: "w0".into(), datatype: Datatype::Uint(4),
+    });
+    program.knobs.function_outputs.insert(entry("upper_result"), RegisterOutput {
+        register: "x0".into(), datatype: Datatype::Uint(8),
+    });
+    let f = decompile_function(&program, Address::new(program.default_space, entry("upper_result"))).unwrap();
+    let ret = f.op_ids().find(|&id| !f.op(id).is_dead() && f.op(id).code() == OpCode::Return).unwrap();
+    let mut output = f.op(ret).input(1).expect("caller returns the upper word");
+    // A locked return keeps a storage-anchoring COPY in both decompilers.
+    while let Some(op) = f.vn(output).def.filter(|&op| f.op(op).code() == OpCode::Copy) {
+        output = f.op(op).input(0).unwrap();
+    }
+    assert!(f.vn(output).is_constant(), "the ABI zero extension must clear the upper word:\n{}", f.print_raw());
+    assert_eq!(f.vn(output).constant_value(), 0);
+}
+
+/// A declared flag result must be live at the producer RETURN and defined by
+/// each consuming CALL. The ABI does not supply this assembly protocol.
+#[test]
+fn declared_flag_result_reaches_callee_and_callers() {
+    use mosura_core::decompile::{fspec::RegisterOutput, opcode::OpCode, types::Datatype};
+    use mosura_core::decompile::{Funcdata, VarnodeId};
+    // Execute the optimized caller's branch and constant-return graph with the
+    // callee result supplied as 0 or 1. This checks semantics independently of
+    // block orientation or whether the printer spells an explicit negation.
+    fn value(f: &Funcdata, vn: VarnodeId, result: VarnodeId, flag: u64) -> u64 {
+        if vn == result { return flag; }
+        let v = f.vn(vn);
+        if v.is_constant() { return v.constant_value(); }
+        let op = f.op(v.def.expect("condition must derive from the call result"));
+        let args: Vec<_> = op.inrefs.iter().map(|&v| (value(f, v, result, flag), f.vn(v).size)).collect();
+        mosura_core::decompile::rules::eval_const(op.code(), &args, v.size)
+            .expect("fixture condition/return uses only pure scalar operations")
+    }
+    fn returned(f: &Funcdata, result: VarnodeId, flag: u64) -> u64 {
+        let mut block = mosura_core::decompile::block::BlockId(0);
+        for _ in 0..f.num_blocks() {
+            let b = f.block(block);
+            let control = b.ops.iter().rev().map(|&id| f.op(id)).find(|op| !op.is_dead()
+                && matches!(op.code(), OpCode::Return | OpCode::Cbranch | OpCode::Branch));
+            match control {
+                Some(op) if op.code() == OpCode::Return => return value(f, op.input(1).unwrap(), result, flag),
+                Some(op) if op.code() == OpCode::Cbranch => {
+                    let take = (value(f, op.input(1).unwrap(), result, flag) != 0) ^ op.is_boolean_flip();
+                    block = b.out_edges[usize::from(take)];
+                }
+                _ => block = b.out_edges[0],
+            }
+        }
+        panic!("acyclic fixture did not reach a return");
+    }
+    let bin = ground_truth_dir().join("flag_result.gcc-x86-64");
+    let truth = parse_truth(&std::fs::read_to_string(bin.with_extension("gcc-x86-64.truth")).unwrap());
+    let entry = |name: &str| truth.funcs.iter().find(|(_, n)| n == name).unwrap().0;
+    let mut program = analysis::analyze_file(&bin).expect("analyze flag-result MVE");
+    let address = |name: &str| Address::new(program.default_space, entry(name));
+    let baseline = decompile_function(&program, address("flag_test")).unwrap();
+    assert!(baseline.op_ids().filter(|&id| !baseline.op(id).is_dead()
+        && baseline.op(id).code() == OpCode::Return).all(|id| baseline.op(id).num_inputs() == 1),
+        "the default ABI does not declare a flag result");
+    program.knobs.function_outputs.insert(entry("flag_test"), RegisterOutput {
+        register: "ZF".into(), datatype: Datatype::Bool,
+    });
+    let f = decompile_function(&program, address("flag_test")).unwrap();
+    let ret = f.op_ids().find(|&id| !f.op(id).is_dead() && f.op(id).code() == OpCode::Return).unwrap();
+    assert_eq!(f.op(ret).num_inputs(), 2, "the declared predicate must survive:\n{}", f.print_raw());
+    let value = f.op(ret).input(1).unwrap();
+    assert_eq!(f.vn(value).get_type(), Datatype::Bool);
+    assert_eq!(f.op(f.vn(value).def.unwrap()).code(), OpCode::IntEqual);
+    assert!(print_c(&f).contains("== 0"), "ZF means the tested bits are clear:\n{}", print_c(&f));
+    let register = f.spaces.by_name("register").unwrap();
+    let (spec, _) = mosura_core::lang::load_cached(&program.language_id).unwrap();
+    let zf = Address::new(register, spec.register_offset("ZF").unwrap());
+    for name in ["if_zero", "if_nonzero"] {
+        let f = decompile_function(&program, address(name)).unwrap();
+        let call = f.op_ids().find(|&id| !f.op(id).is_dead() && f.op(id).code() == OpCode::Call).unwrap();
+        let out = f.op(call).output.expect("the call must define the declared result");
+        assert_eq!((f.vn(out).loc, f.vn(out).size), (zf, 1), "{name}: exact output storage");
+        assert_eq!(f.vn(out).get_type(), Datatype::Bool, "{name}: exact output type");
+        assert_eq!(f.vn(out).get_nzmask(), 1, "{name}: declared Boolean call result is one bit");
+        assert!(!f.vn(out).descend.is_empty(), "{name}: branch must consume the call result");
+        assert!(f.op_ids().any(|id| !f.op(id).is_dead() && f.op(id).code() == OpCode::Cbranch),
+            "{name}: preserve both alternatives");
+        for flag in [0, 1] {
+            let expected = if (flag != 0) == (name == "if_zero") { 17 } else { 29 };
+            assert_eq!(returned(&f, out, flag), expected, "{name}, ZF={flag}: preserve original polarity");
+        }
+    }
+    for name in ["flag_set", "flag_clear"] {
+        program.knobs.function_outputs.insert(entry(name), RegisterOutput {
+            register: "CF".into(), datatype: Datatype::Bool,
+        });
+        let f = decompile_function(&program, address(name)).unwrap();
+        let c = print_c(&f);
+        assert!(c.starts_with("bool "), "the declared type survives a constant return: {c}");
+        let ret = f.op_ids().find(|&id| !f.op(id).is_dead() && f.op(id).code() == OpCode::Return).unwrap();
+        let mut result = f.op(ret).input(1).unwrap();
+        assert_eq!(f.vn(result).get_type(), Datatype::Bool, "the RETURN consumes the declared type");
+        while let Some(def) = f.vn(result).def.filter(|&id| f.op(id).code() == OpCode::Copy) {
+            result = f.op(def).input(0).unwrap();
+        }
+        assert!(f.vn(result).is_constant(), "constant carry remains constant: {}", f.print_raw());
+        assert_eq!(f.vn(result).get_type(), Datatype::Bool);
+        assert_eq!(f.vn(result).constant_value(), u64::from(name == "flag_set"));
+    }
+    program.knobs.function_outputs.insert(entry("if_zero"), RegisterOutput {
+        register: String::new(), datatype: Datatype::Void,
+    });
+    let f = decompile_function(&program, address("if_zero")).unwrap();
+    assert!(f.op_ids().filter(|&id| !f.op(id).is_dead() && f.op(id).code() == OpCode::Return)
+        .all(|id| f.op(id).num_inputs() == 1), "locked void does not reopen return recovery");
+}
+
 /// The callee's known prototype must reach both constant-target indirect calls,
 /// including the branch whose argument setup was eliminated before target recovery.
 /// A writable slot with the same initializer remains indirect: its initial bytes
@@ -71,6 +193,7 @@ fn known_indirect_target_restores_both_call_contracts() {
     model.name = "custom_bx_bp".into();
     model.input = Some(ParamList {
         entry: params.iter().enumerate().map(|(i, p)| ParamEntry {
+            extension: Default::default(),
             group: i as u32, type_class: 0, space: p.addr.space,
             addressbase: p.addr.offset, size: p.size, minsize: 1, alignment: 0,
         }).collect(),

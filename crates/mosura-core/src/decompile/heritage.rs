@@ -1607,6 +1607,7 @@ fn guard_calls(f: &mut Funcdata, range: Loc) {
             // walkable — without it the trial is marked definitely-not-used and BOTH arguments
             // (the return and the constant 0x2b behind it) are dropped from the emitted call.
             let possibleoutput = f.op(call).output.is_none()
+                && !f.call_specs.get(&call).is_some_and(|cs| cs.locked_output.is_some())
                 && f.called_model().characterize_as_output(trans_addr, size)
                     == super::fspec::Containment::ContainsJustified;
             let seq = f.op(call).seqnum;

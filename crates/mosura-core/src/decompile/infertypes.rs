@@ -68,6 +68,12 @@ fn base(meta: Meta, size: u32) -> Datatype {
 pub(crate) fn output_type_local(f: &Funcdata, op: OpId) -> Datatype {
     let o = f.op(op);
     let size = o.output.map(|v| f.vn(v).size).unwrap_or(1);
+    // TypeOpCall/Callind::getOutputLocal: a locked non-void prototype supplies the type.
+    if matches!(o.code(), OpCode::Call | OpCode::Callind) {
+        if let Some(param) = f.call_specs.get(&op).and_then(|cs| cs.locked_output.as_ref()) {
+            if param.datatype != Datatype::Void { return param.datatype.clone(); }
+        }
+    }
     base(op_meta(o.code()).0, size)
 }
 
@@ -76,6 +82,15 @@ pub(crate) fn output_type_local(f: &Funcdata, op: OpId) -> Datatype {
 pub(crate) fn input_type_local(f: &Funcdata, op: OpId, slot: usize) -> Datatype {
     let o = f.op(op);
     let size = o.input(slot).map(|v| f.vn(v).size).unwrap_or(1);
+    // TypeOpReturn::getInputLocal (typeop.cc:901): a matching, non-void
+    // prototype output supplies the type of each returned value, including constants.
+    if slot != 0 && o.code() == OpCode::Return && o.parent.is_some() {
+        if let Some(param) = &f.locked_output {
+            if param.datatype != Datatype::Void && param.datatype.size() == size {
+                return param.datatype.clone();
+            }
+        }
+    }
     // A shift's AMOUNT operand is the one place Ghidra opts out of the char preference:
     // `TypeOpIntLeft/IntRight/IntSright::getInputLocal` return `getBaseNoChar(size,TYPE_INT)` for
     // slot 1 (typeop.cc:1514/1539/1604), so a 1-byte shift count stays `int1` instead of becoming

@@ -282,7 +282,7 @@ impl ModelWriter {
             if let Some(l) = list {
                 self.param_lists.row().u32(id).u8(which).bool(l.is_output).list_u32(&l.resource_start);
                 for (i, e) in l.entry.iter().enumerate() {
-                    self.param_entries.row().u32(id).u8(which).u32(i as u32).u32(e.group).u8(e.type_class).u32(e.space.0).u64(e.addressbase).u32(e.size).u32(e.minsize).u32(e.alignment);
+                    self.param_entries.row().u32(id).u8(which).u32(i as u32).u32(e.group).u8(e.type_class).u32(e.space.0).u64(e.addressbase).u32(e.size).u32(e.minsize).u32(e.alignment).u8(e.extension as u8);
                 }
             }
         }
@@ -355,6 +355,14 @@ fn read_model(set: &TableSet, id: u32) -> Result<ProtoModel> {
                 ents.push((
                     entries.u64(r, 2)? as u32,
                     ParamEntry {
+                        extension: match entries.u64(r, 10)? {
+                            0 => mosura_core::decompile::fspec::ParamExtension::None,
+                            1 => mosura_core::decompile::fspec::ParamExtension::Zero,
+                            2 => mosura_core::decompile::fspec::ParamExtension::Sign,
+                            3 => mosura_core::decompile::fspec::ParamExtension::Integer,
+                            4 => mosura_core::decompile::fspec::ParamExtension::Left,
+                            other => return Err(Error::Format(format!("unknown parameter extension {other}"))),
+                        },
                         group: entries.u64(r, 3)? as u32,
                         type_class: entries.u64(r, 4)? as u8,
                         space: SpaceId(entries.u64(r, 5)? as u32),

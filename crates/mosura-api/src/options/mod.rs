@@ -170,6 +170,9 @@ impl Options {
         if key == keys::DECOMPILE_INDIRECT_INPUTS {
             mosura_core::decompile::deindirect::parse_indirect_inputs(value).map_err(Error::InvalidArg)?;
         }
+        if key == keys::DECOMPILE_FUNCTION_OUTPUTS {
+            mosura_core::decompile::prototypetypes::parse_function_outputs(value).map_err(Error::InvalidArg)?;
+        }
         self.values.insert(spec.key, value.trim().to_string());
         Ok(())
     }
@@ -233,6 +236,8 @@ impl Options {
         let mut k = Knobs::default();
         k.indirect_inputs = mosura_core::decompile::deindirect::parse_indirect_inputs(
             self.get(keys::DECOMPILE_INDIRECT_INPUTS)?).map_err(Error::InvalidArg)?;
+        k.function_outputs = mosura_core::decompile::prototypetypes::parse_function_outputs(
+            self.get(keys::DECOMPILE_FUNCTION_OUTPUTS)?).map_err(Error::InvalidArg)?;
         let cspec = self.get(keys::LOAD_CSPEC_X86_32)?;
         if !cspec.is_empty() {
             k = k.with_x86_32_cspec(Some(cspec));

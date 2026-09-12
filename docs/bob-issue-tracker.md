@@ -11,7 +11,7 @@ A downstream repair is not a mosura fix. Each numbered report stays open until i
 mosura behavior is checked, or triage establishes that it belongs solely to the downstream project.
 The checklist below records completed work; the register below preserves every report ID.
 
-## Active package: explicit result contracts
+## Completed primitive: explicit scalar result contracts
 
 Related reports: **#13, #23, #53**; multi-result contracts need their own validation.
 [Generic mechanism and oracle evidence](flag-result-contracts.md).
@@ -23,11 +23,15 @@ Related reports: **#13, #23, #53**; multi-result contracts need their own valida
   The initial flag-result gate failed; an additional AArch64 MVE exposed missing result extension.
 - [x] Implement the locked-output branches and check both predicate polarities in the MVE.
   Compiler-spec result extensions and constant-return prototype consumers are included.
-  The carry extension failed before the consumer port and now passes the focused gate.
+  The constant-carry type regression failed before the consumer port and now passes the IR gate.
 - [x] Commit the constant-carry fixture (`ec4732e3`) and the extension fixture (`ae494077`).
 - [x] Compare final default emission: 751/751 translation units identical; equal arms stamps.
-- [>] Run the final workspace suite after completing the constant-return type consumer.
-- [ ] Commit the result-contract implementation with its gate results.
+- [x] Finish final validation: workspace 1308/1308 executed tests passed (23 ignored),
+  IR parity 9/9, ground-truth parity 34/34 (1 ignored), disassembly golden 1/1 and CLI golden
+  harness 1/1 (1 ignored). All repository guards pass.
+  The literal-spelling assertion exposed a separate existing printer gap; the result gate now
+  compares Boolean IR types and exact 0/1 values. The generic constant printer remains open.
+- [x] Commit the result-contract implementation with its gate results (this package).
 - [ ] Validate the remaining external report scopes.
 
 An arbitrary flag write does not establish a return contract. The generic problem is representing
@@ -70,7 +74,11 @@ Additional scoped validation of the landed input implementation (`b0b1375a`):
   Runtime hook installation and changed coordinate semantics belong to the consumer.
 - [ ] **#9:** an explicit three-register declaration restores the two loaded coordinates, but
   the selected immediate still becomes an incoming register and its branches disappear.
-  The earlier input fixture does not cover this join; a separate MVE is required.
+  A self-compiled three-way integer selection reproduces this on x86-32; the x86-64 control
+  retains it. With the same EAX call input, Ghidra's C++ IR preserves the three-input MULTIEQUAL.
+  The mosura action trace shows heritage replacing the call input with an incoming value before
+  DCE removes the definitions. The MVE and trace are prepared; the next package must add the
+  repository gate before changing phi placement.
 - [ ] **#86:** seven declared register inputs appear at the call. Value-by-value validation
   is still pending; arity alone is not completion evidence.
 - [ ] **Additional ordered-storage witness:** #7's first function already reorders two global
@@ -115,9 +123,8 @@ alone does not close the entire indirect-call class.
 ## Next work packages
 
 - [ ] **Flag results (#13, #23, #53 and related reports).** The undeclared CLI drops the flag-only
-  predicate in #13. The local implementation now preserves the explicit typed result; the
-  self-compiled flag and result-extension regressions pass. Package gates and report validation
-  remain pending, including the nested callee's separate output channel.
+  predicate in #13. The gated scalar-result implementation preserves the explicit typed result. Report validation
+  remains open, including the nested callee's separate result channel.
   Bob is ready to validate this case once the work is complete.
 - [ ] **Shared global storage (#4; distinguish downstream #26 and naming #27).** Reproduce
   overlapping reads/writes in self-compiled source and check the existing address-based linker
@@ -150,11 +157,11 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #6 | Results: represent a value and condition flag returned together. | Queued |
 | #7 | Explicit byte inputs at indirect calls. | Validated input scope: both calls retain the original size-1 value; separate storage-order witness remains open |
 | #8 | Results: preserve multiple register outputs consumed after a call. | Queued |
-| #9 | Data flow: preserve branches whose operands come from indirect-call contracts. | Reproduced after explicit input declaration: selected value and branches still missing; join MVE pending |
+| #9 | Data flow: preserve branches whose operands come from indirect-call contracts. | Self-compiled x86-32 MVE and C++ IR comparison reproduce lost phi; repository gate and fix pending |
 | #10 | Data flow: combine two byte writes into the correct wider register value. | Queued |
 | #11 | Explicit descriptor inputs through mutable hooks. | Validated input scope: all four calls match native argument setup; consumer installation/coordinate changes excluded |
 | #12 | Platform models: recover external file-read calls, arguments and results. | Queued |
-| #13 | Results: support an explicit condition-flag result consistently at callee and callers. | Active: typed result and compiler-spec extension implemented locally; focused MVEs pass; package gates and report validation pending |
+| #13 | Results: support an explicit condition-flag result consistently at callee and callers. | Partial: scalar result declarations gated; nested input/multiple-result contracts and report validation remain open |
 | #14 | Input contracts: recover missing non-default register parameter sets. | Queued |
 | #15 | Results: propagate producer outputs to callers instead of uninitialized inputs. | Queued |
 | #16 | Platform models: model directory-enumeration operations and termination conditions. | Queued |

@@ -80,15 +80,15 @@ fn sample_model(name: &str, depth: u32) -> ProtoModel {
     m.custom_conventions = depth == 1;
     m.input = Some(ParamList {
         entry: vec![
-            ParamEntry { group: 0, type_class: 1, space: SpaceId(1), addressbase: 0, size: 4, minsize: 1, alignment: 0 },
-            ParamEntry { group: 1, type_class: 1, space: SpaceId(1), addressbase: 8, size: 4, minsize: 1, alignment: 0 },
-            ParamEntry { group: 2, type_class: 0, space: SpaceId(3), addressbase: 4, size: 500, minsize: 4, alignment: 4 },
+            ParamEntry { extension: mosura_core::decompile::fspec::ParamExtension::Zero, group: 0, type_class: 1, space: SpaceId(1), addressbase: 0, size: 4, minsize: 1, alignment: 0 },
+            ParamEntry { extension: mosura_core::decompile::fspec::ParamExtension::Sign, group: 1, type_class: 1, space: SpaceId(1), addressbase: 8, size: 4, minsize: 1, alignment: 0 },
+            ParamEntry { extension: mosura_core::decompile::fspec::ParamExtension::Integer, group: 2, type_class: 0, space: SpaceId(3), addressbase: 4, size: 500, minsize: 4, alignment: 4 },
         ],
         resource_start: vec![0, 2],
         is_output: false,
     });
     m.output = if depth == 0 {
-        Some(ParamList { entry: vec![ParamEntry { group: 0, type_class: 1, space: SpaceId(1), addressbase: 0, size: 4, minsize: 1, alignment: 0 }], resource_start: vec![0], is_output: true })
+        Some(ParamList { entry: vec![ParamEntry { extension: mosura_core::decompile::fspec::ParamExtension::Left, group: 0, type_class: 1, space: SpaceId(1), addressbase: 0, size: 4, minsize: 1, alignment: 0 }], resource_start: vec![0], is_output: true })
     } else {
         None
     };

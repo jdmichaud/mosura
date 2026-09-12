@@ -18,10 +18,9 @@ consumer rewrite, 22 withdrawn consumer issues/proofs, and two cleanup/shared-st
 whose requested behavior is absent from the original bytes.
 Related generic defects remain open: in particular #26 does not close #27, and #99 does not close missing call inputs.
 Compiler lowering, full typed-pointer contracts, outputs and clobbers remain open.
-Current work: explicit typed results and compiler-spec extensions are implemented locally.
-The constant-return type gap is fixed locally and its regression passes. The fixture changes
-are committed; final workspace checks are running and emission identity passed.
-Report validation remains pending, so #13 remains active.
+Typed scalar/flag results and compiler-spec extensions are now implemented and gated.
+#13 remains open for its nested result/input contracts. The next active fix is #9's lost
+branch-selected input, reproduced in a self-compiled MVE and compared with Ghidra's IR.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.
@@ -31,11 +30,11 @@ Report validation remains pending, so #13 remains active.
 - [ ] **#6** Results: represent a value and condition flag returned together.
 - [x] **#7** Input contracts: preserve explicit byte inputs at both reported indirect calls (validated scope).
 - [ ] **#8** Results: preserve multiple register outputs consumed after a call.
-- [ ] **#9** Data flow: preserve branches whose operands come from indirect-call contracts.
+- [>] **#9** Data flow: preserve branches whose operands come from indirect-call contracts.
 - [ ] **#10** Data flow: combine two byte writes into the correct wider register value.
 - [x] **#11** Input contracts: preserve the explicit descriptor input at all four calls (validated scope).
 - [ ] **#12** Platform models: recover external file-read calls, arguments and results.
-- [>] **#13** Results: support an explicit condition-flag result consistently at callee and callers.
+- [ ] **#13** Results: support an explicit condition-flag result consistently at callee and callers.
 - [ ] **#14** Input contracts: recover missing non-default register parameter sets.
 - [ ] **#15** Results: propagate producer outputs to callers instead of uninitialized inputs.
 - [ ] **#16** Platform models: model directory-enumeration operations and termination conditions.
