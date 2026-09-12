@@ -11,14 +11,19 @@ A downstream repair is not a mosura fix. Each numbered report stays open until i
 mosura behavior is checked, or triage establishes that it belongs solely to the downstream project.
 The checklist below records completed work; the register below preserves every report ID.
 
-## Active package: pointer records in mixed memory
+## Active package: explicit function inputs
 
-The population audit exposed an independent target-boundary gap. A record pointing inside
-a MOV operand produces a sixth function although the source has five. The instruction bytes
-at that address decode as NOP; RET, so the existing subroutine validator accepts them.
-The address-table boundary rule rejects that offcut before decoding. The source gate passes
-for separate-data i386 and x86-64 fixtures (5/5 functions each; default controls 2/5).
-Mixed-memory coverage and final package gates remain in progress.
+Related reports: **#14**, with shared declaration gaps in **#21, #25, #32**.
+
+- [x] Inspect current explicit high-byte call inputs against the reported instructions.
+  All five AH call operands retain their loads/constants and the conditional selection.
+  The enclosing function still has undeclared incoming state, so #32 remains open.
+- [>] Reduce the function-definition input contract to a source-built MVE and compare the
+  pinned C++ oracle's mapped parameters before porting its locked-input machinery.
+- [ ] Bind one declared input contract consistently at the definition and its direct calls.
+- [ ] Validate storage, width, order, restarts and unchanged defaults; then validate report scopes.
+
+## Completed package: pointer records in mixed memory
 
 Related report: **#87**. This concerns the existing opt-in `analysis.data-pointer-functions`
 extension, whose deliberate function-creation policy remains separate from faithful Ghidra analysis.
@@ -26,10 +31,31 @@ extension, whose deliberate function-creation policy remains separate from faith
 - [x] Reproduce the omission with the same small assembly source in two memory layouts.
   Default analysis discovers 2/5 functions in either layout. The option discovers 5/5 with
   separate data, but still only 2/5 when code and writable records share an executable block.
-- [>] Promote the source-built MVE and pin the failure before changing scan coverage.
-- [ ] Apply the appropriate initialized-memory and instruction-range rules; retain strict
+- [x] Promote the source-built MVE and pin the failure before changing scan coverage.
+  Both i386 and x86-64 layout pairs reproduce 2/5 versus 5/5 discovery. The source also
+  embeds a code address in an instruction operand to reject scanning instruction bytes.
+  The regression fails on the mixed i386 layout before the production change: 2/5 functions.
+  The separate-data control passes, including its exact function-set check.
+- [x] Apply the appropriate initialized-memory and instruction-range rules; retain strict
   subroutine validation and verify the option-off control and absence of spurious functions.
-- [ ] Complete package gates and validate the reported callback entry.
+  The focused regression passes: all four option-on fixtures find exactly 5/5 functions,
+  and all four default controls retain exactly the two directly reachable entries.
+  The external population audit then exposed target instruction offcuts: terminating decode
+  alone accepted 430 entries inside previously listed instructions. An extended source MVE
+  reproduces this independently in separate data (6 entries for 5 source functions). The
+  failing gate now pins a record pointing into a MOV operand whose bytes decode as NOP; RET.
+  The target-boundary correction is committed separately as `11490ba0`; its isolated
+  staged-tree regression passes for both architectures. Final discovery contains no new
+  entries inside the default listing's instructions (0/993 added candidates).
+- [x] Validate the reported callback entry and its complete native listing: 38/38 bytes,
+  ten decoded instructions, preserving the increment, unsigned limit, reset, call and result.
+- [x] Complete the final workspace and default-emission identity gates: exit 0,
+  1313/1313 executed tests passed (23 ignored); IR parity 9/9, ground truth 37/37
+  (one ignored), disassembly golden 1/1, CLI goldens and all repository guards green.
+  The final default emission is byte-identical for 751/751 TUs, zero added or missing.
+  The option-on population is 1744 entries versus 751 by default, with no lost default entry.
+  These 993 additions are candidates, not a claim that every one is a source function.
+  [Mechanism, source MVE and policy boundary](data-pointer-discovery.md).
 
 ## Completed package: call-input phi placement
 
@@ -257,7 +283,7 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #11 | Explicit descriptor inputs through mutable hooks. | Validated input scope: all four calls match native argument setup; consumer installation/coordinate changes excluded |
 | #12 | Platform models: recover external file-read calls, arguments and results. | Queued |
 | #13 | Results: support an explicit condition-flag result consistently at callee and callers. | Partial: scalar result declarations gated; nested input/multiple-result contracts and report validation remain open |
-| #14 | Input contracts: recover missing non-default register parameter sets. | Queued |
+| #14 | Input contracts: recover missing non-default register parameter sets. | Active: trace explicit input declarations through function definitions and call sites |
 | #15 | Results: propagate producer outputs to callers instead of uninitialized inputs. | Queued |
 | #16 | Platform models: model directory-enumeration operations and termination conditions. | Queued |
 | #17 | Input contracts: preserve non-default coordinate parameter storage and order. | Queued |
@@ -330,7 +356,7 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #84 | Consumer review: audit validity/lifetime tracking for saved state. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #85 | Consumer review: audit repeated operations that overwrite saved state. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #86 | Input contracts: support complete declarations with many register inputs. | Queued: seven-register indirect input contract |
-| #87 | Discovery: find referenced functions in mixed executable/data memory blocks. | Active: source-built memory-layout pair reproduces the opt-in omission; promoting the regression |
+| #87 | Discovery: pointer-held callbacks in mixed memory. | Validated opt-in scope: source MVE, complete reported entry/body, workspace and default-emission identity |
 | #88 | Comparison triage: confirmed signedness mismatch introduced by a consumer rewrite. | Closed triage, confirmed by Bob: raw and current CLI compare signed byte to -1; downstream rewrite |
 | #89 | Consumer review: validate event accumulation independently of timing or resolution. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #90 | Results: consume device-read results instead of unrelated incoming parameters. | Queued: multiple result registers |

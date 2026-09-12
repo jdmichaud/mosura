@@ -6,22 +6,21 @@
 //! target, but "never makes a function from a data pointer" (DataOperandReferenceAnalyzer.java:39;
 //! AddressTableAnalyzer.java:281,294). [`RelocationSeedAnalyzer`](super::relocation_seed) already
 //! disassembles such a target when the LE fixup table names its slot. Neither reaches a handler
-//! stored as a FIELD in a data record on a flat image with no relocations: the second subject's
-//! menu handlers sit at `record + 0xc`, reached only `table -> record -> field` through a runtime
-//! index, so no instruction carries the field's address (nothing references it), the fields are
-//! isolated between non-pointer members (no run for [`AddressTableAnalyzer`](super::address_table)),
-//! the index is opaque to the constant propagator, and an X-32 image keeps no fixups
-//! (docs/tasklist-2026-09-08.md §12, the data-held-pointer shape). The only static evidence they
-//! are code is that a pointer-sized word in data holds a valid subroutine's address.
+//! stored as a field in a data record on a flat image with no relocations. A runtime index can
+//! keep the field's address opaque to constant propagation, while non-pointer record members
+//! prevent a run for [`AddressTableAnalyzer`](super::address_table). The static evidence is a
+//! pointer-sized word in data holding a valid subroutine's address.
 //!
-//! So this pass scans initialized, non-executable memory for a pointer-sized word whose value is a
+//! So this pass scans initialized memory outside defined instructions for a word whose value is a
 //! valid subroutine in executable memory, and — crossing Ghidra's policy deliberately, which is why
 //! it is gated by [`Knobs::data_pointer_functions`](crate::switches::Knobs) and off by default —
 //! makes a function there. The strict validator carries it: a blind scan of a data segment turns up
 //! hundreds of words that merely LAND in the code range (fixed-point constants and the like), and
 //! [`PseudoDisassembler::is_valid_subroutine`] (`mustTerminate`) is what separates a real routine
 //! from a number, the same validator `relocation_seed` trusts for an isolated pointer. It is the
-//! whole false-positive defence, so it is not relaxed.
+//! target validator, so it is not relaxed. Executable blocks can also contain pointer records;
+//! their instruction bytes are excluded using the listing, following `AddressTableAnalyzer`'s
+//! `removeDefined` range rule. Pointer windows never cross an instruction or block boundary.
 //!
 //! # Additive, and after the faithful analyzers
 //!
@@ -99,61 +98,66 @@ impl Analyzer for DataPointerScanAnalyzer {
             }
         }
 
-        // Scan each initialized, non-executable block for a pointer-sized word — at ANY alignment,
-        // because a record field need not fall on a pointer boundary (the subject's records stride
-        // 0x1e) — whose value is a valid subroutine not already a function.
+        // The initialized/permission rules match removeNonSearchableMemory (:347). Execute
+        // permission does not classify every byte as code. Scan each remaining range at any
+        // alignment, because a record field need not fall on a pointer boundary.
         let mut funcs = AddressSet::new();
         let mut seen: HashSet<u64> = HashSet::new();
         let blocks: Vec<(Address, u64)> = program
             .memory
             .blocks()
-            .filter(|b| b.is_initialized() && !b.is_execute())
+            .filter(|b| b.is_initialized() && (b.is_read() || b.is_write() || b.is_execute()))
             .map(|b| (b.start(), b.size()))
             .collect();
         for (start, size) in blocks {
-            let bytes = program.memory.read_window(start, size as usize);
-            if bytes.len() < addr_size {
-                continue;
-            }
-            for off in 0..=(bytes.len() - addr_size) {
-                let w = &bytes[off..off + addr_size];
-                let val = if addr_size == 4 {
-                    let a: [u8; 4] = w.try_into().unwrap();
-                    u64::from(if big_endian { u32::from_be_bytes(a) } else { u32::from_le_bytes(a) })
-                } else {
-                    let a: [u8; 8] = w.try_into().unwrap();
-                    if big_endian { u64::from_be_bytes(a) } else { u64::from_le_bytes(a) }
-                };
-                if val < MINIMUM_SAFE_ADDRESS {
+            let mut block = AddressSet::new();
+            block.add_range(start.space, start.offset, start.offset + size - 1);
+            for range in block.subtract(&instructions).ranges() {
+                let bytes = program.memory.read_window(
+                    Address::new(range.space, range.min), range.length() as usize);
+                if bytes.len() < addr_size {
                     continue;
                 }
-                let target = Address::new(self.ram, val);
-                if !exec.contains(target) {
-                    continue;
+                for off in 0..=(bytes.len() - addr_size) {
+                    let w = &bytes[off..off + addr_size];
+                    let val = if addr_size == 4 {
+                        let a: [u8; 4] = w.try_into().unwrap();
+                        u64::from(if big_endian { u32::from_be_bytes(a) } else { u32::from_le_bytes(a) })
+                    } else {
+                        let a: [u8; 8] = w.try_into().unwrap();
+                        if big_endian { u64::from_be_bytes(a) } else { u64::from_le_bytes(a) }
+                    };
+                    if val < MINIMUM_SAFE_ADDRESS {
+                        continue;
+                    }
+                    let target = Address::new(self.ram, val);
+                    if !exec.contains(target) {
+                        continue;
+                    }
+                    // AddressTableAnalyzer.checkTable (:423) rejects an instruction offcut.
+                    // A fresh decode there may terminate even though the listing owns those
+                    // bytes as an operand. Existing instruction STARTS remain eligible.
+                    if instructions.contains(target)
+                        && !matches!(program.listing.code_unit_at(target), Some(CodeUnit::Instruction { .. }))
+                    {
+                        continue;
+                    }
+                    if !seen.insert(val) {
+                        continue;
+                    }
+                    // Already a function — nothing to add (also the fast, common case).
+                    if program.function_manager.function_at(target).is_some() {
+                        continue;
+                    }
+                    // A number landing in the code range must also decode into a terminating
+                    // subroutine; retain the strict target validator.
+                    // `allow_existing_code` matches `relocation_seed` / OperandReferenceAnalyzer:434 —
+                    // the evidence comes from data.
+                    if !self.pdis.is_valid_subroutine(program, target, true) {
+                        continue;
+                    }
+                    funcs.add_range(target.space, target.offset, target.offset);
                 }
-                // AddressTableAnalyzer.checkTable (:423) rejects an instruction offcut.
-                // A fresh decode there may terminate even though the listing owns those
-                // bytes as an operand. Existing instruction STARTS remain eligible.
-                if instructions.contains(target)
-                    && !matches!(program.listing.code_unit_at(target), Some(CodeUnit::Instruction { .. }))
-                {
-                    continue;
-                }
-                if !seen.insert(val) {
-                    continue;
-                }
-                // Already a function — nothing to add (also the fast, common case).
-                if program.function_manager.function_at(target).is_some() {
-                    continue;
-                }
-                // The strict validator is the whole false-positive defence: a number that merely
-                // lands in the code range does not decode into a terminating subroutine.
-                // `allow_existing_code` matches `relocation_seed` / OperandReferenceAnalyzer:434 —
-                // the evidence comes from data.
-                if !self.pdis.is_valid_subroutine(program, target, true) {
-                    continue;
-                }
-                funcs.add_range(target.space, target.offset, target.offset);
             }
         }
         if !funcs.is_empty() {

@@ -23,10 +23,13 @@ Typed scalar/flag results and compiler-spec extensions are now implemented and g
 regression passes on both x86 variants, the reported selected argument and branches match the
 bytes, all eight corpus gates pass, and the repeat is stable with 751/751 cached units.
 The final workspace passed 1312/1312 executed tests (23 ignored).
-The active item is #87: the opt-in pointer scan misses records in mixed executable/data blocks.
-A source-built layout pair reproduces that omission while the separate-data control succeeds.
-A separate target-boundary correction now rejects record values that point inside defined
-instructions. Its source-built i386 and x86-64 controls pass; mixed-memory coverage is ongoing.
+#87 is also validated for the opt-in pointer scan: all four source-built layouts/architectures
+find exactly 5/5 functions, the reported callback's 38-byte body is recovered, default emission
+is identical for 751/751 TUs, and the final workspace passes 1313/1313 tests (23 ignored).
+The target-boundary correction is committed separately as `11490ba0`.
+The active item is #14: declare non-default function inputs consistently at definitions and calls.
+Current high-byte call-input checks also show that enclosing function input declarations remain
+necessary; preserving an argument alone does not define the function's incoming register state.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.
@@ -41,7 +44,7 @@ instructions. Its source-built i386 and x86-64 controls pass; mixed-memory cover
 - [x] **#11** Input contracts: preserve the explicit descriptor input at all four calls (validated scope).
 - [ ] **#12** Platform models: recover external file-read calls, arguments and results.
 - [ ] **#13** Results: support an explicit condition-flag result consistently at callee and callers.
-- [ ] **#14** Input contracts: recover missing non-default register parameter sets.
+- [>] **#14** Input contracts: recover missing non-default register parameter sets.
 - [ ] **#15** Results: propagate producer outputs to callers instead of uninitialized inputs.
 - [ ] **#16** Platform models: model directory-enumeration operations and termination conditions.
 - [ ] **#17** Input contracts: preserve non-default coordinate parameter storage and order.
@@ -114,7 +117,7 @@ instructions. Its source-built i386 and x86-64 controls pass; mixed-memory cover
 - [-] **#84** Consumer scope: audit validity/lifetime tracking for saved state. Withdrawn upstream.
 - [-] **#85** Consumer scope: audit repeated operations that overwrite saved state. Withdrawn upstream.
 - [ ] **#86** Input contracts: support complete declarations with many register inputs.
-- [>] **#87** Discovery: find referenced functions in mixed executable/data memory blocks.
+- [x] **#87** Discovery: recover pointer-held callbacks in mixed memory (opt-in scan scope).
 - [-] **#88** Comparison triage: confirmed signedness mismatch introduced by a consumer rewrite.
 - [-] **#89** Consumer scope: validate event accumulation independently of timing or resolution. Withdrawn upstream.
 - [ ] **#90** Results: consume device-read results instead of unrelated incoming parameters.

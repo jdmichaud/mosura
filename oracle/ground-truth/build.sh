@@ -201,7 +201,7 @@ if have gcc && have objcopy; then
 
   # Isolated pointer fields with identical code but separate versus mixed executable memory.
   for bits in 32 64; do
-    for layout in separate; do
+    for layout in separate mixed; do
       layout_flags=()
       if [[ "$layout" == mixed ]]; then layout_flags=(-DMIXED); fi
       prog="record_pointer_$layout"

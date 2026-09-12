@@ -1,0 +1,9 @@
+# mosura-ground-truth v1 program=record_pointer_mixed compiler=gcc arch=x86-32 lang=x86:LE:32:default options=data-pointer-functions
+# derived-from=record_pointer_mixed.gcc-x86-32.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 08049000
+func 08049000 00000015 _start code
+func 08049015 00000013 dispatch code
+func 08049028 0000000b handler_a code
+func 08049033 00000004 handler_b code
+func 08049037 00000004 deep code

@@ -19,13 +19,14 @@ use mosura_core::decompile::printc::print_c;
 use mosura_core::decompile::space::Address;
 use mosura_core::paths::ground_truth_dir;
 
-/// Stored addresses must respect instruction boundaries even when their target bytes decode.
+/// Execute permission does not make pointer records instructions. The opt-in scan must
+/// distinguish the two using the listing, with identical policy for both memory layouts.
 #[test]
 fn pointer_record_discovery_respects_instruction_boundaries() {
     use mosura_core::analysis::program::CodeUnit;
 
     for bits in [32, 64] {
-        for layout in ["separate"] {
+        for layout in ["separate", "mixed"] {
             let name = format!("record_pointer_{layout}.gcc-x86-{bits}");
             let bin = ground_truth_dir().join(&name);
             let truth = parse_truth(&std::fs::read_to_string(ground_truth_dir().join(format!("{name}.truth"))).unwrap());
