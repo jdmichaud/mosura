@@ -55,8 +55,10 @@ audits. Source fixture: `768900d3`; semantic gate: `627d12ea`. The full workspac
 No production change was needed. Callback effects, complete outer loops, automatic recovery
 and compiler lowering remain outside this validation.
 The active item is #18. Its paired result is preserved with complete nested declarations,
-but native/C comparison exposed a generic widened-multiplication rendering defect. A source
-MVE reproduces the missing casts on i386; the mapped C++ oracle retains them on both modes.
+but native/C comparison exposed a generic widened-multiplication rendering defect. The faithful
+cast correction passes the source regression and the sampled native/C producer chain. Its first
+full corpus round preserves all 19 EXACT functions but exposes 12 new compiler failures;
+compiler-side wide arithmetic lowering remains active. A source MVE reproduces the missing casts on i386; the mapped C++ oracle retains them on both modes.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.

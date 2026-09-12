@@ -212,6 +212,16 @@ if have gcc && have objcopy; then
     rm -f "widened_product.gcc-x86-$bits.unstripped"
   done
 
+  # Narrow quotient/remainder and slices must retain the full widened arithmetic.
+  for bits in 32 64; do
+    gcc -m"$bits" -nostdlib -static -no-pie -Wl,-e,_start src/widened_dividend.S \
+      -o "widened_dividend.gcc-x86-$bits.unstripped"
+    derive_truth_elf "widened_dividend.gcc-x86-$bits.unstripped" widened_dividend gcc "x86-$bits" \
+      "x86:LE:$bits:default" ""
+    strip -o "widened_dividend.gcc-x86-$bits" "widened_dividend.gcc-x86-$bits.unstripped"
+    rm -f "widened_dividend.gcc-x86-$bits.unstripped"
+  done
+
   # A callback input whose predecessor definitions require a phi despite its call-output guard.
   for bits in 32 64; do
     gcc -m"$bits" -nostdlib -static -no-pie -Wl,-e,_start src/branch_argument.S -o branch_argument.gcc-x86-"$bits".unstripped

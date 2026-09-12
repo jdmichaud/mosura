@@ -117,7 +117,11 @@ storage from automatic ABI recovery and shared-global type/aliasing work.
   Complete nested declarations retain both result fields and the initial paired store.
   A deeper helper also needs an explicit input/result declaration; the first declaration set
   had omitted it. The source of the reported second result is now bound throughout the chain.
-- [ ] Validate nested input/result contracts and both returned values across boundary inputs.
+- [x] Validate nested input/result contracts and both returned values across boundary inputs.
+  With faithful widening restored, Unicorn execution of the native bytes and host C agree on
+  278/278 producer cases (both registers and final scratch state), 263/263 nested fold cases,
+  49/49 nested root cases and 135/135 leaf cases. This does not validate the physical host ABI,
+  the complete outer caller or asynchronous observation of intermediate scratch writes.
 - [ ] Check the caller's paired stores and subsequent field uses.
 - [x] Reduce the widened-multiplication defect to a source-built MVE before changing production code.
   Native instruction execution disagrees with recovered host C on 131 of 135 sampled leaf
@@ -128,7 +132,17 @@ storage from automatic ABI recovery and shared-global type/aliasing work.
   `widened_product.S` supplies unsigned and signed products on both x86 modes. The new
   ground-truth gate fails on i386 after its IR value checks pass: the printed multiplication
   has four-byte operands and loses high bits. The mapped oracle keeps both eight-byte casts.
-- [>] Restore faithful extension printing, measure emission effects, and validate the full chain.
+- [x] Restore faithful extension printing and validate the source regression.
+  Both signed and unsigned products retain the mapped oracle's casts on both x86 modes;
+  the focused regression passes its 196 arithmetic cases and all three extension choices.
+- [>] Complete compiler-side lowering for narrow consumers of wide arithmetic.
+  The first full round (`widened-products-all`, all 751 functions) preserves all 19 EXACT
+  functions and passes gates 1-7. Gate 8 fails on 12 MISMATCH-to-COMPILE_FAIL transitions:
+  product slices, product quotient/remainder and paired-word dividends. Their wide values were
+  previously discarded by the printer. Retain the faithful correction and implement the
+  compiler consumer; do not suppress those values again. A separate source-built dividend
+  fixture records this representation requirement.
+- [ ] Check the final workspace, all eight corpus gates and a stable repeat before landing.
 
 ## Completed validation: value and condition-flag results
 

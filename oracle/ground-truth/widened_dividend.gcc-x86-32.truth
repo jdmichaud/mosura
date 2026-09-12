@@ -1,0 +1,11 @@
+# mosura-ground-truth v1 program=widened_dividend compiler=gcc arch=x86-32 lang=x86:LE:32:default
+# derived-from=widened_dividend.gcc-x86-32.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 08049000
+func 08049000 0000004c _start code
+func 0804904c 00000007 product_quotient code
+func 08049053 00000009 product_remainder code
+func 0804905c 00000007 pair_quotient code
+func 08049063 00000009 pair_remainder code
+func 0804906c 0000000a product_shift code
+func 08049076 00000005 product_low code
