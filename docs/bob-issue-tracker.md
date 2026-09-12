@@ -1,6 +1,6 @@
 # Bob's issue tracker
 
-Updated 2026-09-12. Owner: Alice. Working branch: `audit/recursive-input-contracts`.
+Updated 2026-09-12. Owner: Alice. Working branch: `audit/shared-helper-inputs`.
 
 Short checklist: [BOB_TASK.md](../BOB_TASK.md). Its markers are `[ ]` queued/triage,
 `[>]` active, `[x]` fixed and validated for the stated scope, and `[-]` outside scope/not planned.
@@ -87,10 +87,32 @@ and exposed by `f4a4e7cd`; it adds no production fix. Nested multi-register outp
 inside the shared callee remain open under the results reports. This does not claim complete
 semantic equivalence of that deeper call chain.
 
-## Active validation: shared helper input consistency
+## Completed validation: shared helper input consistency
 
-Related report: **#21**. Check the helper's definition and all reported callers with the
-same explicit input list; keep unproven nested contracts open.
+Related report: **#21**, validated for explicit input declarations. The current opt-in
+listing establishes 31 unique direct call PCs across 11 owning function bodies, independently
+of the report's inconsistent 29/28/20 counts. Decompilation follows additional shared tails:
+35 call-context observations cover exactly those 31/31 native PCs, each with widths 4/4/4/1
+in the declared order. The helper retains both incremented and restored four-input calls.
+
+A straight-block native-instruction audit independently checks 98 known constant operands
+across 30 call PCs, or 109 matching operands across the overlapping decompile contexts.
+It resets at entries, branch targets and control transfers; it does not infer constants
+across unknown paths. The remaining expressions were checked against the native loads,
+selectors, incoming register contracts and computed positions. In particular, the width
+queries retain their ESI input, and their results feed the successive additions rather
+than being replaced with fixed positions. Entry views into shared code retain their own
+explicit incoming inputs. A separate formatting helper receives its declared input tuple.
+
+This is validation of `e482d6a8`/`f4a4e7cd`, not a new production change. The input scope is
+closed; custom compiler lowering and unrelated output/platform contracts remain open.
+
+## Active package: multiple register results
+
+Related report: **#8**, with shared result-storage gaps in **#6, #18, #20, #22, #31** and
+other result reports. Inspect actual producer/caller IR and the C++ join-storage mechanism,
+then compile a minimal source-owned multi-result protocol and demonstrate its failing gate.
+Do not infer an output contract from every register a function happens to write.
 
 ## Completed package: pointer records in mixed memory
 
@@ -364,7 +386,7 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #5 | Consumer loop-value substitution. | Outside scope: archived raw output preserves the loop expression; the consumer rewrite introduced the constant |
 | #6 | Results: represent a value and condition flag returned together. | Queued |
 | #7 | Explicit byte inputs at indirect calls. | Validated input scope: both calls retain the original size-1 value; separate storage-order witness remains open |
-| #8 | Results: preserve multiple register outputs consumed after a call. | Queued |
+| #8 | Results: preserve multiple register outputs consumed after a call. | Active: source MVE and join-storage prototype port |
 | #9 | Data flow: preserve branches whose operands come from indirect-call contracts. | Fixed: full-write-set phi placement; source MVE, external input/branch witness, workspace and corpus gates validated |
 | #10 | Consumer packed-register width/order mismatch. | Outside scope: all four packed words already survive in archived raw output; the consumer requested the wider register and remapped arguments incorrectly |
 | #11 | Explicit descriptor inputs through mutable hooks. | Validated input scope: all four calls match native argument setup; consumer installation/coordinate changes excluded |
@@ -377,7 +399,7 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #18 | Results: preserve a secondary scalar result from a multi-result call. | Queued |
 | #19 | Consumer review: validate application viewport dimensions; no generic defect established. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #20 | Results: bind multiple device-read outputs to their actual consumers. | Queued |
-| #21 | Input contracts: keep shared callee declarations consistent across call sites. | Active: definition/caller consistency audit |
+| #21 | Input contracts: retain shared declarations and caller values. | Validated declaration scope: 31/31 native call PCs, 35 contexts, constant and computed input witnesses |
 | #22 | Results: represent multiple data results together with classification/clip results. | Queued |
 | #23 | Results: support explicit carry-flag return contracts. | Queued |
 | #24 | Input contracts: distinguish call-produced values from incoming function parameters. | Queued |

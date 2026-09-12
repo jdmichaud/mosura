@@ -13,7 +13,7 @@ Withdrawn consumer items were reconciled with the reporter's handoff and ledger.
 closure does not claim a mosura code fix.
 The [detailed tracker](docs/bob-issue-tracker.md) records evidence and commits; update both trackers.
 
-Validated declaration scopes: #1, #7, #9, #11, #14, #25 and #32, using explicit decompilation declarations. Outside scope: #88's verified
+Validated declaration scopes: #1, #7, #9, #11, #14, #21, #25 and #32, using explicit decompilation declarations. Outside scope: #88's verified
 consumer rewrite, 22 withdrawn consumer issues/proofs, two cleanup/shared-state reports whose requested behavior is absent from the original bytes,
 the local/global naming collisions, a loop-value constant substitution, and a packed-register
 width/order mismatch introduced in consumer rewrites.
@@ -37,7 +37,9 @@ Core implementation: `e482d6a8`; API: `f4a4e7cd` (`decompile.function-inputs`).
 loads, zero value and selector-dependent value with the enclosing inputs explicitly declared.
 #25 is validated for the two recursive helpers and the shared callee input order. The
 consumer dispatch change remains its own responsibility; nested output contracts remain open.
-The active item is #21: check another shared helper's definition and all reported caller inputs.
+#21 is validated for declared input consistency: all 31/31 native call PCs retain the
+four arguments, including computed positions and nested input sources.
+The active item is #8: represent multiple register results consistently at definitions and calls.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.
@@ -46,7 +48,7 @@ The active item is #21: check another shared helper's definition and all reporte
 - [-] **#5** Consumer rewrite: its linear register substitution replaced preserved loop values with constants.
 - [ ] **#6** Results: represent a value and condition flag returned together.
 - [x] **#7** Input contracts: preserve explicit byte inputs at both reported indirect calls (validated scope).
-- [ ] **#8** Results: preserve multiple register outputs consumed after a call.
+- [>] **#8** Results: preserve multiple register outputs consumed after a call.
 - [x] **#9** Data flow: preserve branches whose operands come from indirect-call contracts.
 - [-] **#10** Consumer contracts: packed byte values were preserved; the repair used the wrong width and order.
 - [x] **#11** Input contracts: preserve the explicit descriptor input at all four calls (validated scope).
@@ -59,7 +61,7 @@ The active item is #21: check another shared helper's definition and all reporte
 - [ ] **#18** Results: preserve a secondary scalar result from a multi-result call.
 - [-] **#19** Consumer scope: validate application viewport dimensions; no generic defect established. Withdrawn upstream.
 - [ ] **#20** Results: bind multiple device-read outputs to their actual consumers.
-- [>] **#21** Input contracts: keep shared callee declarations consistent across call sites.
+- [x] **#21** Input contracts: retain shared declarations and caller values at all native sites (validated scope).
 - [ ] **#22** Results: represent multiple data results together with classification/clip results.
 - [ ] **#23** Results: support explicit carry-flag return contracts.
 - [ ] **#24** Input contracts: distinguish call-produced values from incoming function parameters.
