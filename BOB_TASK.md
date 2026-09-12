@@ -24,7 +24,9 @@ branch-selected input: its self-compiled regression failed before the port and n
 both x86 variants. External input/branch validation matches the bytes. Default emission changes
 17/751 functions. The final workspace suite passed (1309/1309 executed tests, 23 ignored).
 The compiled comparison retains all 14 exact matches but exposes two new compilation failures;
-those downstream emission failures must be resolved before the package is committed.
+the target declaration fix passes its source-based regression and both compiled examples are
+EXACT. A stale-emission cache dependency was also reproduced and fixed; final corpus gates
+are being rerun with corrected fingerprinting before the package is committed.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.

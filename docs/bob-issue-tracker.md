@@ -43,6 +43,13 @@ in Watcom TUs whose parameter pragmas already encode their storage. A three-inst
 self-compiled register-convention MVE reproduces this; the C++ oracle retains the model name
 and the new ground-truth gate fails before target declaration lowering. The correction is
 confined to Watcom TU synthesis, with a representability check for the actual contract.
+Both source-built functions recompile EXACT under Watcom (3/3 and 2/2 instructions).
+A follow-up round exposed a separate cache dependency defect: TU/pragma changes were absent
+from the emit fingerprint, so all 751 stale TUs were reused. The build fingerprint now includes
+the recompile subtree consulted by emission. Its regression fails before the correction and
+passes afterward (2/2 focused tests). A fresh-emission identity comparison before/after
+only the fingerprint correction is byte-identical for 751/751 TUs, zero missing. Corpus results
+from the stale-TU attempt do not measure target lowering.
 The final workspace run completed with exit 0; an earlier doctest link failure from overlapping
 Cargo builds is superseded by this isolated run.
 
