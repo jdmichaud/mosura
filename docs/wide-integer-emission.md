@@ -1,5 +1,7 @@
 # Narrow consumers of wide integer arithmetic
 
+Implementation: `c628de71`.
+
 The reference printer retains Ghidra's integer extension rules. In particular, a four-byte
 pointer does not imply that eight-byte arithmetic can be replaced by four-byte arithmetic.
 The mapped C++ oracle keeps the casts on both x86 modes for `widened_product.S` and

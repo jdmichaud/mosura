@@ -65,6 +65,7 @@ and the repeat reuses 751/751 units with unchanged verdicts. The emitted-source 
 and paired-store audit pass. Final workspace: 1321/1321 tests pass, 24 ignored. Joined-result
 compiler ABI lowering, automatic recovery and the complete outer caller remain separate scopes.
 A source MVE reproduces the missing casts on i386; the mapped C++ oracle retains them on both modes.
+Implementation: `c628de71`; dividend source fixture: `43a4b084`.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.

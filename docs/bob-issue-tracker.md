@@ -109,7 +109,7 @@ closed; custom compiler lowering and unrelated output/platform contracts remain 
 
 ## Completed validation: secondary result contracts
 
-Related report: **#18**. Audit the source of both result fields through nested calls, then
+Related report: **#18**. Implementation: `c628de71`. Audit the source of both result fields through nested calls, then
 check the caller's adjacent stores and uses under the same declaration. Distinguish result
 storage from automatic ABI recovery and shared-global type/aliasing work.
 
@@ -459,7 +459,7 @@ alone does not close the entire indirect-call class.
 - [ ] **Shared global storage (#4; distinguish downstream #26 and naming #27).** Reproduce
   overlapping reads/writes in self-compiled source and check the existing address-based linker
   aliases and typed views before deciding whether the emitter/TU layer needs a fix.
-- [ ] **Multiple result registers (#18, #20, #22, #31 and related reports; #6/#8 declared scopes validated).**
+- [ ] **Multiple result registers (#20, #31 and related reports; #6/#8/#18 declared scopes validated).**
   Audit each remaining protocol and its input/flag consumers using the joined-result mechanism.
 - [ ] **Invented input parameters (#2 and related reports).** Separate missing return channels
   from unsupported external convention facts; validate against current code.
