@@ -3,6 +3,8 @@
 **The plan: [`docs/port-plan.md`](docs/port-plan.md).** How to work: [`AGENT.md`](AGENT.md).
 Per-feature notes/gotchas: `.claude/memory/mosura-project.md`.
 
+**Active liaison work:** [Bob’s issue tracker](docs/bob-issue-tracker.md), maintained by Alice.
+
 ## Direction (read this first)
 
 The objective is to **translate Ghidra's decompiler (C++ → Rust)**, validated against
