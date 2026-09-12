@@ -1,6 +1,6 @@
 # Bob's issue tracker
 
-Updated 2026-09-12. Owner: Alice. Working branch: `fix/mixed-pointer-discovery`.
+Updated 2026-09-12. Owner: Alice. Working branch: `docs/packed-register-triage`.
 
 Short checklist: [BOB_TASK.md](../BOB_TASK.md). Its markers are `[ ]` queued/triage,
 `[>]` active, `[x]` fixed and validated for the stated scope, and `[-]` outside scope/not planned.
@@ -55,6 +55,7 @@ extension, whose deliberate function-creation policy remains separate from faith
   The final default emission is byte-identical for 751/751 TUs, zero added or missing.
   The option-on population is 1744 entries versus 751 by default, with no lost default entry.
   These 993 additions are candidates, not a claim that every one is a source function.
+  Mixed-memory coverage is committed as `a7186842`.
   [Mechanism, source MVE and policy boundary](data-pointer-discovery.md).
 
 ## Completed package: call-input phi placement
@@ -225,9 +226,9 @@ alone does not close the entire indirect-call class.
   the prototype/return-storage gap and keep caller and callee contracts consistent.
 - [ ] **Invented input parameters (#2 and related reports).** Separate missing return channels
   from unsupported external convention facts; validate against current code.
-- [ ] **Partial registers and loops (#10, #32, #40, #66; #5 reviewed separately).** Distinguish mosura defects from
+- [ ] **Partial registers and loops (#32, #40, #66; #5 and #10 reviewed separately).** Distinguish mosura defects from
   downstream linear register-recovery mistakes; gate byte-lane and loop-carried behavior.
-- [ ] **Missing control flow and discovery (#3, #9, #42, #58–59, #67, #73, #87).** Recheck
+- [ ] **Missing control flow and discovery (#3, #42, #58–59, #67, #73; #9 and #87 validated).** Recheck
   current discovery and raw p-code before attributing missing branches or routines to DCE.
 - [ ] **Finish triaging the remaining reports, including #86–99 added since the handoff.**
 
@@ -242,6 +243,22 @@ alone does not close the entire indirect-call class.
   claim that every current argument is correct or that other loop data-flow reports are closed.
 - Reopen this item with an unmodified mosura output and matching original bytes that demonstrate
   the claimed loop-to-initial-constant substitution before consumer rewriting.
+
+## Packed-register scope review (#10)
+
+- [-] The submitted width/order failure belongs to the consumer's argument-recovery pass.
+  The archived raw decompilation preserves all four packed words as `CONCAT11` expressions,
+  matching the original low/high byte writes. The wider register's untouched upper half
+  is not established by those writes; the consumer source explicitly documents that it
+  requested that wider value and left these call sites in the wrong argument order.
+- Current raw decompilation with the explicit word-sized input contract also retains all
+  four packed values, in the declared order alongside their three full-register inputs.
+  The four sites were counted from the native listing and output, independently of the
+  historical repair script's reported totals.
+- This closes the claimed byte-combination failure. The original undeclared callback's
+  incomplete interface remains the separate input-contract work; no printer or data-flow
+  workaround is warranted by this witness. Reopen with raw output that loses either byte
+  under a matching declared input width.
 
 ## Naming scope review (#27)
 
@@ -279,7 +296,7 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #7 | Explicit byte inputs at indirect calls. | Validated input scope: both calls retain the original size-1 value; separate storage-order witness remains open |
 | #8 | Results: preserve multiple register outputs consumed after a call. | Queued |
 | #9 | Data flow: preserve branches whose operands come from indirect-call contracts. | Fixed: full-write-set phi placement; source MVE, external input/branch witness, workspace and corpus gates validated |
-| #10 | Data flow: combine two byte writes into the correct wider register value. | Queued |
+| #10 | Consumer packed-register width/order mismatch. | Outside scope: all four packed words already survive in archived raw output; the consumer requested the wider register and remapped arguments incorrectly |
 | #11 | Explicit descriptor inputs through mutable hooks. | Validated input scope: all four calls match native argument setup; consumer installation/coordinate changes excluded |
 | #12 | Platform models: recover external file-read calls, arguments and results. | Queued |
 | #13 | Results: support an explicit condition-flag result consistently at callee and callers. | Partial: scalar result declarations gated; nested input/multiple-result contracts and report validation remain open |

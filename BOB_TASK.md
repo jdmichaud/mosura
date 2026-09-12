@@ -15,7 +15,8 @@ The [detailed tracker](docs/bob-issue-tracker.md) records evidence and commits; 
 
 Validated scopes: #1, #7, #9 and #11, using explicit decompilation declarations. Outside scope: #88's verified
 consumer rewrite, 22 withdrawn consumer issues/proofs, two cleanup/shared-state reports whose requested behavior is absent from the original bytes,
-the local/global naming collisions, and a loop-value constant substitution introduced in consumer rewrites.
+the local/global naming collisions, a loop-value constant substitution, and a packed-register
+width/order mismatch introduced in consumer rewrites.
 Related generic defects remain open: #27 was reviewed independently, and #99 does not close missing call inputs.
 Compiler lowering, full typed-pointer contracts, outputs and clobbers remain open.
 Typed scalar/flag results and compiler-spec extensions are now implemented and gated.
@@ -26,7 +27,7 @@ The final workspace passed 1312/1312 executed tests (23 ignored).
 #87 is also validated for the opt-in pointer scan: all four source-built layouts/architectures
 find exactly 5/5 functions, the reported callback's 38-byte body is recovered, default emission
 is identical for 751/751 TUs, and the final workspace passes 1313/1313 tests (23 ignored).
-The target-boundary correction is committed separately as `11490ba0`.
+The target-boundary correction is `11490ba0`; mixed-memory coverage is `a7186842`.
 The active item is #14: declare non-default function inputs consistently at definitions and calls.
 Current high-byte call-input checks also show that enclosing function input declarations remain
 necessary; preserving an argument alone does not define the function's incoming register state.
@@ -40,7 +41,7 @@ necessary; preserving an argument alone does not define the function's incoming 
 - [x] **#7** Input contracts: preserve explicit byte inputs at both reported indirect calls (validated scope).
 - [ ] **#8** Results: preserve multiple register outputs consumed after a call.
 - [x] **#9** Data flow: preserve branches whose operands come from indirect-call contracts.
-- [ ] **#10** Data flow: combine two byte writes into the correct wider register value.
+- [-] **#10** Consumer contracts: packed byte values were preserved; the repair used the wrong width and order.
 - [x] **#11** Input contracts: preserve the explicit descriptor input at all four calls (validated scope).
 - [ ] **#12** Platform models: recover external file-read calls, arguments and results.
 - [ ] **#13** Results: support an explicit condition-flag result consistently at callee and callers.
