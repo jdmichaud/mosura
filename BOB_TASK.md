@@ -14,12 +14,14 @@ closure does not claim a mosura code fix.
 The [detailed tracker](docs/bob-issue-tracker.md) records evidence and commits; update both trackers.
 
 Validated implementation: #1's explicit decompilation inputs. Outside scope: #88's verified
-consumer rewrite and 22 further consumer issues/proofs withdrawn in the complete handoff.
+consumer rewrite, 22 withdrawn consumer issues/proofs, and two cleanup/shared-state reports
+whose requested behavior is absent from the original bytes.
 Related generic defects remain open: in particular #26 does not close #27, and #99 does not close missing call inputs.
 Compiler lowering, full typed-pointer contracts, outputs and clobbers remain open.
 Current work: explicit typed results and compiler-spec extensions are implemented locally.
-The flag-result regression checks the producer, caller type and both branch polarities.
-Package gates, commits and report validation remain pending, so #13 remains active.
+The initial package gates passed. A carry-result probe exposed a remaining constant-return type
+gap; the active work now covers that Ghidra prototype consumer before landing the package.
+Report validation remains pending, so #13 remains active.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.
@@ -90,14 +92,14 @@ Package gates, commits and report validation remain pending, so #13 remains acti
 - [ ] **#67** Control flow: represent tail transfers with the correct callee contract.
 - [ ] **#68** Input contracts: distinguish an object identifier from an iteration index.
 - [ ] **#69** Results: preserve a secondary register result used to update device state.
-- [ ] **#70** Triage: separate missing callback/state flow from consumer cleanup and repaint policy.
+- [-] **#70** Consumer scope: added exit cleanup changes original behavior; no missing cleanup call.
 - [ ] **#71** Results: retain a carry status that controls a downstream side effect.
 - [-] **#72** Consumer scope: verify reconstructed dispatch retains every original branch. Withdrawn upstream.
 - [ ] **#73** Discovery/contracts: recover an indirect producer, its inputs and its result.
 - [ ] **#74** Control flow: preserve reachable input-dependent branches.
 - [-] **#75** Consumer scope: validate application resource selection and scale factors. Withdrawn upstream.
 - [-] **#76** Consumer scope: validate application display-buffer selection. Withdrawn upstream.
-- [ ] **#77** Storage/data flow: distinguish independent state objects and their saved contents.
+- [-] **#77** Consumer scope: original code shares one saved-state buffer; separate ownership is an application change.
 - [-] **#78** Consumer scope: validate application repaint-state transitions. Withdrawn upstream.
 - [-] **#79** Consumer scope: validate application state updates after configuration changes. Withdrawn upstream.
 - [ ] **#80** Results: distinguish returned numeric values from unrelated pointer state.

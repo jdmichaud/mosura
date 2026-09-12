@@ -22,7 +22,8 @@ Related reports: **#13, #23, #53**; multi-result contracts need their own valida
 - [x] Add the failing declaration-to-caller/callee regression before implementing the port.
   The initial flag-result gate failed; an additional AArch64 MVE exposed missing result extension.
 - [x] Implement the locked-output branches and check both predicate polarities in the MVE.
-  Compiler-spec result extensions are included; package gates and review remain pending.
+  Compiler-spec result extensions are included. The initial workspace run passed; a subsequent
+  carry probe exposed a constant-return type gap in the prototype consumers, now under repair.
 - [ ] Run the package gates, commit each separable fix and request external validation.
 
 An arbitrary flag write does not establish a return contract. The generic problem is representing
@@ -60,6 +61,19 @@ conventions, full typed-pointer propagation, outputs and clobbers remain open. R
 alone does not close the entire indirect-call class.
 
 ## Completed triage
+
+- [x] **#70: cleanup absent from the original exit path.** The native disassembly confirms the
+  reported exit reads its result, adjusts a nesting counter and returns without any restore call.
+  Current decompilation preserves that behavior. The ledger explains that its consumer changed
+  the surrounding repaint sequence and added cleanup to compensate. Adding that call is an
+  application change. Reopen only with a missing original call or changed control/data-flow witness.
+- [x] **#77: shared save storage belongs to the original algorithm.** The native bytes store the
+  active image and destination in single fixed locations and initialize the save pointer to one
+  fixed buffer; the unmodified emission preserves those locations and the save loop. The report
+  itself confirms both callers use this same routine. Separate save objects or extra erases alter
+  the original ownership/sequencing policy. The former checklist description incorrectly assumed
+  independent source objects; no such source objects are established. Reopen if distinct original
+  addresses are conflated or an original call/store is lost.
 
 - [x] **22 consumer issues/proofs withdrawn in the complete handoff.** The reporter explicitly
   excluded #19, #26, #29, #35, #38, #44, #50, #72, #75, #76, #78, #79, #81, #82, #83, #84,
@@ -175,14 +189,14 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #67 | Control flow: represent tail transfers with the correct callee contract. | Queued |
 | #68 | Input contracts: distinguish an object identifier from an iteration index. | Queued |
 | #69 | Results: preserve a secondary register result used to update device state. | Queued |
-| #70 | Triage: separate missing callback/state flow from consumer cleanup and repaint policy. | Queued |
+| #70 | Consumer cleanup policy. | Outside scope: exit bytes contain no restore call; current output agrees |
 | #71 | Results: retain a carry status that controls a downstream side effect. | Queued |
 | #72 | Consumer review: verify reconstructed dispatch retains every original branch. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #73 | Discovery/contracts: recover an indirect producer, its inputs and its result. | Queued |
 | #74 | Control flow: preserve reachable input-dependent branches. | Queued |
 | #75 | Consumer review: validate application resource selection and scale factors. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #76 | Consumer review: validate application display-buffer selection. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
-| #77 | Storage/data flow: distinguish independent state objects and their saved contents. | Queued |
+| #77 | Consumer ownership of shared save storage. | Outside scope: original bytes and raw output use one buffer; independent source objects were not established |
 | #78 | Consumer review: validate application repaint-state transitions. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #79 | Consumer review: validate application state updates after configuration changes. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #80 | Results: distinguish returned numeric values from unrelated pointer state. | Queued |
