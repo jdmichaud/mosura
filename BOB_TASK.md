@@ -13,18 +13,18 @@ Withdrawn consumer items were reconciled with the reporter's handoff and ledger.
 closure does not claim a mosura code fix.
 The [detailed tracker](docs/bob-issue-tracker.md) records evidence and commits; update both trackers.
 
-Validated input scopes: #1, #7 and #11, using explicit decompilation declarations. Outside scope: #88's verified
+Validated scopes: #1, #7, #9 and #11, using explicit decompilation declarations. Outside scope: #88's verified
 consumer rewrite, 22 withdrawn consumer issues/proofs, two cleanup/shared-state reports whose requested behavior is absent from the original bytes,
 the local/global naming collisions, and a loop-value constant substitution introduced in consumer rewrites.
 Related generic defects remain open: #27 was reviewed independently, and #99 does not close missing call inputs.
 Compiler lowering, full typed-pointer contracts, outputs and clobbers remain open.
 Typed scalar/flag results and compiler-spec extensions are now implemented and gated.
-#13 remains open for its nested result/input contracts. The active fix is #9's lost
-branch-selected input: its self-compiled regression failed before the port and now passes on
-both x86 variants. External input/branch validation matches the bytes. The separate target
-syntax and cache fixes pass their regressions. The final corpus comparison changes 17/751 TUs
-for phi placement, with no verdict regressions; all eight gates pass. The repeat is stable with
-751/751 cached units. The final workspace run is in progress before the phi commit.
+#13 remains open for its nested result/input contracts. #9 is fixed and validated: the source
+regression passes on both x86 variants, the reported selected argument and branches match the
+bytes, all eight corpus gates pass, and the repeat is stable with 751/751 cached units.
+The final workspace passed 1312/1312 executed tests (23 ignored).
+The active item is #87: the opt-in pointer scan misses records in mixed executable/data blocks.
+A source-built layout pair reproduces that omission while the separate-data control succeeds.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.
@@ -34,7 +34,7 @@ for phi placement, with no verdict regressions; all eight gates pass. The repeat
 - [ ] **#6** Results: represent a value and condition flag returned together.
 - [x] **#7** Input contracts: preserve explicit byte inputs at both reported indirect calls (validated scope).
 - [ ] **#8** Results: preserve multiple register outputs consumed after a call.
-- [>] **#9** Data flow: preserve branches whose operands come from indirect-call contracts.
+- [x] **#9** Data flow: preserve branches whose operands come from indirect-call contracts.
 - [ ] **#10** Data flow: combine two byte writes into the correct wider register value.
 - [x] **#11** Input contracts: preserve the explicit descriptor input at all four calls (validated scope).
 - [ ] **#12** Platform models: recover external file-read calls, arguments and results.
@@ -112,7 +112,7 @@ for phi placement, with no verdict regressions; all eight gates pass. The repeat
 - [-] **#84** Consumer scope: audit validity/lifetime tracking for saved state. Withdrawn upstream.
 - [-] **#85** Consumer scope: audit repeated operations that overwrite saved state. Withdrawn upstream.
 - [ ] **#86** Input contracts: support complete declarations with many register inputs.
-- [ ] **#87** Discovery: find referenced functions in mixed executable/data memory blocks.
+- [>] **#87** Discovery: find referenced functions in mixed executable/data memory blocks.
 - [-] **#88** Comparison triage: confirmed signedness mismatch introduced by a consumer rewrite.
 - [-] **#89** Consumer scope: validate event accumulation independently of timing or resolution. Withdrawn upstream.
 - [ ] **#90** Results: consume device-read results instead of unrelated incoming parameters.

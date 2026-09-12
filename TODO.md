@@ -79,7 +79,7 @@ for the full rationale and architecture.
         divergences are NOT flow drift — they are a lifter jump-target discrepancy
         (condconst) and unresolved jump tables (ifswitch, P7), tracked separately.
   - [x] Dominator tree + dominance frontiers (`dominator.rs`, Cooper).
-  - [x] **Heritage SSA** (`heritage.rs`): semi-pruned Cytron — global-location detection,
+  - [x] **Heritage SSA** (`heritage.rs`): Cytron over every normalized write — iterated dominance frontiers,
         MULTIEQUAL placement at dominance frontiers, dominator-tree renaming. Produces
         valid SSA (reads linked, single-assignment, phi arity = #preds) for the aligned
         functions; matches Ghidra's def-use structure (verified on x86_64_sem).

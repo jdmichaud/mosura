@@ -56,6 +56,87 @@ fn named_model_declaration_uses_the_target_contract() {
     }
 }
 
+/// A call's output guard must not suppress the phi needed by its incoming argument.
+#[test]
+fn branch_selected_call_input_survives_output_guard() {
+    use mosura_core::decompile::{Funcdata, OpCode, VarnodeId};
+    use std::collections::HashMap;
+
+    fn value(f: &Funcdata, v: VarnodeId, values: &HashMap<VarnodeId, u64>) -> u64 {
+        if let Some(&n) = values.get(&v) { return n; }
+        let vn = f.vn(v);
+        if vn.is_constant() { return vn.constant_value(); }
+        let op = f.op(vn.def.expect("argument must be defined along the selected path"));
+        let args: Vec<_> = op.inrefs.iter().map(|&v| (value(f, v, values), f.vn(v).size)).collect();
+        mosura_core::decompile::rules::eval_const(op.code(), &args, vn.size)
+            .expect("fixture expressions are pure integer operations")
+    }
+
+    for arch in ["x86-64", "x86-32"] {
+        let name = format!("branch_argument.gcc-{arch}");
+        let path = ground_truth_dir().join(&name);
+        let truth = parse_truth(&std::fs::read_to_string(ground_truth_dir().join(format!("{name}.truth"))).unwrap());
+        let entry = truth.funcs.iter().find(|(_, n)| n == "choose").unwrap().0;
+        let mut p = analysis::analyze_file(&path).unwrap();
+        let addr = Address::new(p.default_space, entry);
+        let baseline = decompile_function(&p, addr).unwrap();
+        let call = baseline.op_ids().find(|&id| !baseline.op(id).is_dead()
+            && baseline.op(id).code() == OpCode::Callind).unwrap();
+        let slot = baseline.vn(baseline.op(call).input(0).unwrap()).loc;
+        assert_eq!(slot.space, p.default_space, "the fixture calls through a mutable memory slot");
+        p.knobs.indirect_inputs.insert(slot.offset, vec!["EAX".into()]);
+        let f = decompile_function(&p, addr).unwrap();
+        let calls: Vec<_> = f.op_ids().filter(|&id| !f.op(id).is_dead()
+            && matches!(f.op(id).code(), OpCode::Call | OpCode::Callind)).collect();
+        assert_eq!(calls.len(), 1, "{arch}: keep the shared call");
+        let call = calls[0];
+        assert_eq!(f.op(call).code(), OpCode::Callind, "the slot is replaceable");
+        assert_eq!(f.op(call).num_inputs(), 2, "one declared argument");
+        let argument = f.op(call).input(1).unwrap();
+        let phi = f.vn(argument).def.unwrap_or_else(|| panic!(
+            "{arch}: branch definitions must reach the call, not an incoming register:\n{}", f.print_raw()));
+        assert_eq!(f.op(phi).code(), OpCode::Multiequal, "{arch}: same join as the C++ oracle");
+        assert_eq!(f.op(phi).num_inputs(), 3);
+        let selection: Vec<_> = (0..f.num_varnodes()).map(|i| VarnodeId(i as u32)).filter(|&v| {
+            let vn = f.vn(v);
+            vn.is_input() && vn.size == 4 && vn.loc.space == p.default_space && vn.loc != slot
+        }).collect();
+        assert_eq!(selection.len(), 1, "the fixture has one mutable selection input");
+
+        // Execute the acyclic branch/phi graph. Edge position, not printed block order,
+        // selects a phi input; the source owns the expected values at all boundaries.
+        for (input, expected) in [(0, 17), (19, 17), (20, 29), (21, 43), (u32::MAX as u64, 43)] {
+            let mut values = HashMap::from([(selection[0], input)]);
+            let mut block = mosura_core::decompile::block::BlockId(0);
+            let mut previous = None;
+            let mut observed = None;
+            for _ in 0..=f.num_blocks() {
+                let b = f.block(block);
+                let mut next = b.out_edges.first().copied();
+                for &id in &b.ops {
+                    let op = f.op(id);
+                    if op.is_dead() { continue; }
+                    if op.code() == OpCode::Multiequal {
+                        let index = b.in_edges.iter().position(|p| Some(*p) == previous).unwrap();
+                        let n = value(&f, op.input(index).unwrap(), &values);
+                        values.insert(op.output.unwrap(), n);
+                    } else if id == call {
+                        observed = Some(value(&f, argument, &values));
+                        break;
+                    } else if op.code() == OpCode::Cbranch {
+                        let take = (value(&f, op.input(1).unwrap(), &values) != 0) ^ op.is_boolean_flip();
+                        next = Some(b.out_edges[usize::from(take)]);
+                    }
+                }
+                if observed.is_some() { break; }
+                previous = Some(block);
+                block = next.expect("every source path reaches the callback");
+            }
+            assert_eq!(observed, Some(expected), "{arch}: selection={input}");
+        }
+    }
+}
+
 #[test]
 fn declared_result_uses_compiler_spec_extension() {
     use mosura_core::decompile::{fspec::RegisterOutput, opcode::OpCode, types::Datatype};

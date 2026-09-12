@@ -7,6 +7,13 @@ metadata:
   originSessionId: c0fe6b35-0fb2-4ed2-90d8-ec93de63680c
 ---
 
+
+Historical plan: the implementation descriptions below describe the July snapshot, not current
+code. Collect/guard and INDIRECT effect timing have since been ported. The remaining semi-pruned
+location filter was incorrect for call inputs and has been removed in favor of the full normalized
+write set; see [the call-input phi witness](../../../docs/heritage-call-inputs.md).
+
+
 Task #4 (APPROVED by user 2026-07-02 under "decompiler restructures" + no-grandfathering): port Ghidra's faithful heritage guard/collect layer into mosura, REPLACING the non-faithful adaptations standing in for it. Base HEAD `786f91e`. Owner=ruleport. Large, high-churn, multi-commit; lead gates EACH commit + corpus delta (a faithful dip doesn't block — fix the remaining non-Ghidra cause). See [[direction-faithful-port]] [[port-all-faithful-rules]].
 
 GHIDRA STRUCTURE (grounded):
@@ -16,7 +23,9 @@ GHIDRA STRUCTURE (grounded):
 - `guardCalls` (1443): for each CALL/CALLIND/CALLOTHER between defs that may modify range, insert INDIRECT (+ guardCallOverlappingInput 1210 for over-large param). `guardStores` (1538): INDIRECT around STOREs. `guardReturns` (1652). `guardInput` (1952): fill input-range holes with setInputVarnode pieces + `concatPieces` into one input.
 
 MOSURA CURRENT (what replaces what):
-- `heritage.rs::heritage_spaces` (~832): semi-pruned Cytron (globals + defblocks -> phis at DF + rename). NO collect/guard/disjoint-driven placeMultiequals.
+- RETRACTED (2026-09-12): the July snapshot used semi-pruned Cytron. Current heritage has
+  collect/guard and places phis from the full normalized write set; the read-before-write
+  filter was not equivalent to Ghidra for call inputs.
 - `heritage.rs::refine_overlaps` (~457) + `normalize_read_size`/`normalize_write_size` (228/375): per-range read/write normalization, LANED-scoped (the adaptation to REPLACE with the faithful uniform guard()). normalize_read_size/write_size are FAITHFUL ports already — reuse them.
 - `recover.rs`: call INDIRECT insertion (killedbycall, passthrough) as a SEPARATE pre-heritage phase — REPLACE with guardCalls inside guard().
 - refineInput logic in refine_overlaps ~595 -> REPLACE with guardInput.
@@ -32,7 +41,7 @@ PROPOSED GATED COMMITS (each: green + corpus reported; refine decomposition duri
 
 RISK: HIGHEST blast radius in the codebase (every fixture re-flows). Prior laned-scoping was BECAUSE broad application regressed GP/scalar — expect corpus dips; per no-grandfathering they're symptoms of OTHER non-Ghidra code to fix (SubVariableFlow #9 dissolves byte-packing; may be entangled). Ground each commit's IR with the (working) dump. STOP+report if a commit needs a subsystem mosura lacks.
 
-KEY GROUNDING FINDING (2026-07-02, reshapes the plan): mosura's INDIRECT is a SIMPLIFIED 1-input model (before-value only). Ghidra's `Funcdata::newIndirectOp` (funcdata_op.cc:683) creates a 2-INPUT INDIRECT: in(0)=newVarnode(sz,addr) [before-value], in(1)=newVarnodeIop(indeffect) [an "iop" annotation referencing the causing CALL/STORE]. mosura has NO iop space / newVarnodeIop (grep clean); consume.rs:113 explicitly documents OMITTING "Ghidra's IOP branch (setIndirectSource) ... a dead-code-removal detail." recover.rs builds INDIRECTs as `new_op(Indirect, [pre])` (1 input). CONSEQUENCE: guardStores/guardCalls's `newIndirectOp` either (a) uses mosura's established 1-input INDIRECT form (CONSISTENT with recover.rs, introduces NO new divergence, but guards are behavior-CHANGING not neutral) or (b) requires porting the iop 2-input model first = a big REPLACE across printc/consume/merge/deadcode. There is NO meaningful behavior-NEUTRAL scaffolding commit (Ghidra guard structure alongside mosura's semi-pruned Cytron = dead code). So the lead's "additive behavior-neutral scaffolding first" doesn't map cleanly; the genuinely-absent guardStores is behavior-changing.
+KEY GROUNDING FINDING (2026-07-02, reshapes the plan): mosura's INDIRECT is a SIMPLIFIED 1-input model (before-value only). Ghidra's `Funcdata::newIndirectOp` (funcdata_op.cc:683) creates a 2-INPUT INDIRECT: in(0)=newVarnode(sz,addr) [before-value], in(1)=newVarnodeIop(indeffect) [an "iop" annotation referencing the causing CALL/STORE]. mosura has NO iop space / newVarnodeIop (grep clean); consume.rs:113 explicitly documents OMITTING "Ghidra's IOP branch (setIndirectSource) ... a dead-code-removal detail." recover.rs builds INDIRECTs as `new_op(Indirect, [pre])` (1 input). CONSEQUENCE: guardStores/guardCalls's `newIndirectOp` either (a) uses mosura's established 1-input INDIRECT form (CONSISTENT with recover.rs, introduces NO new divergence, but guards are behavior-CHANGING not neutral) or (b) requires porting the iop 2-input model first = a big REPLACE across printc/consume/merge/deadcode. There is NO meaningful behavior-NEUTRAL scaffolding commit (Ghidra guard structure alongside the July semi-pruned implementation = dead code; that implementation is now replaced). So the lead's "additive behavior-neutral scaffolding first" doesn't map cleanly; the genuinely-absent guardStores is behavior-changing.
 
 RECOMMENDED RESUME START: COMMIT 1 = guardStores using mosura's EXISTING 1-input INDIRECT form (like recover.rs) — additive (removes nothing), behavior-changing (gated: report corpus), consistent with mosura's INDIRECT model, avoids the huge iop-model change. Hook: heritage_pass per heritaged range, insert an Indirect for each STORE that may alias the range (same space / spacebase container, cf. guardStores heritage.cc:1538), add its output to the range's writes so phi placement accounts for it. Defer the iop 2-input model as a separate faithfulness question (mosura omits iop EVERYWHERE — it's a pre-existing simplification, not #4's job).
 

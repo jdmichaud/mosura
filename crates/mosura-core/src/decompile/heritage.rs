@@ -2,9 +2,9 @@
 //!
 //! Links every free read to its reaching definition and inserts MULTIEQUAL (phi) ops at
 //! control-flow joins, via Cytron's algorithm using the dominance frontiers. Phi placement
-//! is semi-pruned: only *global* locations (read in some block before being written there)
-//! get phis, which keeps block-local temporaries (the `unique` space) phi-free, as Ghidra's
-//! result is.
+//! uses every normalized write, as Ghidra's `placeMultiequals` does. Call output guards
+//! precede the call physically, but its inputs consume the value before that effect; a
+//! read-before-write filter would incorrectly suppress their incoming phis.
 //!
 //! SSA identity is the heritaged RANGE, not the individual access width. Each pass builds a
 //! disjoint [`TaskList`] of MERGED ranges ([`LocationMap::add`] unions overlapping footprints, so an
@@ -2749,50 +2749,31 @@ pub fn heritage(f: &mut Funcdata, dom: &Dominators) -> bool {
 fn place_phis_and_rename(f: &mut Funcdata, dom: &Dominators) {
     let nb = f.num_blocks();
 
-    // 1. Global locations + their defining blocks (semi-pruned SSA: a location is global
-    //    if some block reads it before defining it), restricted to this pass's cover.
-    //    Ghidra instead feeds `calcMultiequals` the `write` vector directly and prunes nothing; the
-    //    extra phis that produces are dead by construction and `ActionDeadCode` removes them, so the
-    //    surviving phi set is the same. Every Varnode consulted here is `activeHeritage`, so — by
-    //    the `guard()` invariant — its location IS its range.
-    let mut globals: HashSet<Loc> = HashSet::new();
+    // Ghidra placeMultiequals feeds every normalized write to calcMultiequals
+    // (heritage.cc:2630). A read-before-write scan is not equivalent: an INDIRECT
+    // physically before a CALL defines its output storage, but the call's input
+    // still consumes the value from before that effect. Pruning the location at
+    // that guard would suppress a required incoming phi.
     let mut defblocks: HashMap<Loc, HashSet<usize>> = HashMap::new();
     for b in 0..nb {
-        let mut killed: HashSet<Loc> = HashSet::new();
-        for i in 0..f.blocks()[b].ops.len() {
-            let op = f.blocks()[b].ops[i];
-            for slot in 0..f.op(op).num_inputs() {
-                let Some(vid) = f.op(op).input(slot) else { continue };
-                if !f.vn(vid).is_active_heritage() {
-                    continue;
-                }
-                let l = (f.vn(vid).loc.space, f.vn(vid).loc.offset, f.vn(vid).size);
-                if !killed.contains(&l) {
-                    globals.insert(l);
-                }
-            }
+        for &op in &f.blocks()[b].ops {
             if let Some(vid) = f.op(op).output {
                 if f.vn(vid).is_active_heritage() {
                     let l = (f.vn(vid).loc.space, f.vn(vid).loc.offset, f.vn(vid).size);
-                    killed.insert(l);
                     defblocks.entry(l).or_default().insert(b);
                 }
             }
         }
     }
 
-    // 2. Place MULTIEQUALs at iterated dominance frontiers of each global's def-blocks. Iterate the
-    //    global locations in address order to match Ghidra: `Heritage::placeMultiequals`
-    //    (heritage.cc:2599) walks the address-ordered `disjoint` cover, creating each MULTIEQUAL as
-    //    it goes, and the `VarnodeLocSet` comparator `VarnodeCompareLocDef` (varnode.cc:34) orders
-    //    by `getAddr()` (space, offset) then `getSize()`. Sorting `globals` by (space, offset, size)
-    //    reproduces that order, replacing the randomized-per-process HashSet iteration (a non-Ghidra
-    //    approximation). Output is invariant either way — this is an ordering-fidelity alignment.
-    let mut globals_sorted: Vec<Loc> = globals.iter().copied().collect();
-    globals_sorted.sort_by_key(|&(sp, off, sz)| (sp.0, off, sz));
+    // Place phis at the iterated dominance frontiers of the complete write set.
+    // The activeHeritage/guard invariant makes each location its normalized range.
+    // Address order matches Ghidra's disjoint cover and keeps allocation deterministic.
+    let mut locations: Vec<Loc> = defblocks.keys().copied().collect();
+    locations.sort_by_key(|&(sp, off, sz)| (sp.0, off, sz));
     let mut phis: HashMap<(usize, Loc), OpId> = HashMap::new();
-    for &l in &globals_sorted {
-        let Some(defs) = defblocks.get(&l) else { continue };
+    for &l in &locations {
+        let defs = &defblocks[&l];
         // Sorted def-block worklist so the per-location frontier walk is likewise deterministic; the
         // phi *set* is fixpoint-invariant, only the creation order (op numbering) is pinned here.
         let mut worklist: Vec<usize> = defs.iter().copied().collect();
@@ -2816,7 +2797,7 @@ fn place_phis_and_rename(f: &mut Funcdata, dom: &Dominators) {
         }
     }
 
-    // 3. Rename: dominator-tree walk maintaining a per-location stack of current defs.
+    // Rename: dominator-tree walk maintaining a per-location stack of current defs.
     // Index the phis by block up front (rename wired them by scanning the whole map per CFG
     // edge), ordered by location so the wiring order — and any SUBPIECE splice it creates —
     // is deterministic rather than HashMap-iteration order.

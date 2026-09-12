@@ -11,7 +11,20 @@ A downstream repair is not a mosura fix. Each numbered report stays open until i
 mosura behavior is checked, or triage establishes that it belongs solely to the downstream project.
 The checklist below records completed work; the register below preserves every report ID.
 
-## Active package: call-input phi placement
+## Active package: pointer records in mixed memory
+
+Related report: **#87**. This concerns the existing opt-in `analysis.data-pointer-functions`
+extension, whose deliberate function-creation policy remains separate from faithful Ghidra analysis.
+
+- [x] Reproduce the omission with the same small assembly source in two memory layouts.
+  Default analysis discovers 2/5 functions in either layout. The option discovers 5/5 with
+  separate data, but still only 2/5 when code and writable records share an executable block.
+- [>] Promote the source-built MVE and pin the failure before changing scan coverage.
+- [ ] Apply the appropriate initialized-memory and instruction-range rules; retain strict
+  subroutine validation and verify the option-off control and absence of spurious functions.
+- [ ] Complete package gates and validate the reported callback entry.
+
+## Completed package: call-input phi placement
 
 Related report: **#9**. Other loop/call data-flow reports require their own witnesses.
 
@@ -22,13 +35,13 @@ Related report: **#9**. Other loop/call data-flow reports require their own witn
   x86-32 fails because the callback receives an incoming register instead of the selected value.
 - [x] Port phi placement from the full write set, following Ghidra's `calcMultiequals` input.
   The focused source-based gate now passes on both x86 variants (five selection boundaries each).
-- [x] Validate the final workspace: 1309/1309 executed tests passed, 23 ignored; IR parity
-  9/9, ground truth 35/35 (one ignored), disassembly golden 1/1, all repository guards green.
+- [x] Validate the final workspace: 1312/1312 executed tests passed, 23 ignored; IR parity
+  9/9, ground truth 36/36 (one ignored), disassembly golden 1/1, all repository guards green.
 - [x] Resolve changed-emission compile failures and complete the eight corpus gates.
-- [>] Finish the final workspace run and commit the phi fix.
+- [x] Finish the final workspace run (exit 0) and commit the phi fix.
 - [x] Validate the external input/branch witness: all three selected addresses and both
   additional register inputs match the native instruction sequence.
-- [ ] Update the scope marker after the package gates and commit.
+- [x] Update the scope marker after the package gates and commit.
 
 Default emission comparison: 751 TUs on each side; 17 changed, zero added or missing. This is
 a behavior change and requires a compiled round, not the identity gate. The raw diff is retained
@@ -122,13 +135,10 @@ Additional scoped validation of the landed input implementation (`b0b1375a`):
 - [x] **#11:** the explicit descriptor register reaches all four reported calls. One call carries
   the first address and three carry the second, matching their native `MOV`/`CALL` sequences.
   Runtime hook installation and changed coordinate semantics belong to the consumer.
-- [ ] **#9:** an explicit three-register declaration restores the two loaded coordinates, but
-  the selected immediate still becomes an incoming register and its branches disappear.
-  A self-compiled three-way integer selection reproduces this on x86-32; the x86-64 control
-  retains it. With the same EAX call input, Ghidra's C++ IR preserves the three-input MULTIEQUAL.
-  The mosura action trace shows heritage replacing the call input with an incoming value before
-  DCE removes the definitions. Fixture commit `ed6e6f6f` records the reduction. The repository gate failed before the
-  full-write-set port and now passes; package and external-report validation remain in progress.
+- [x] **#9:** the explicit three-register declaration now preserves all three selected pointer
+  values and both additional loaded inputs, matching the native branch/call sequence. The
+  source-built regression failed before the full-write-set phi port and passes on both x86
+  variants afterward. C++ oracle IR, final workspace and all eight corpus gates are green.
 - [ ] **#86:** seven declared register inputs appear at the call. Value-by-value validation
   is still pending; arity alone is not completion evidence.
 - [ ] **Additional ordered-storage witness:** #7's first function already reorders two global
@@ -182,7 +192,7 @@ alone does not close the entire indirect-call class.
   the prototype/return-storage gap and keep caller and callee contracts consistent.
 - [ ] **Invented input parameters (#2 and related reports).** Separate missing return channels
   from unsupported external convention facts; validate against current code.
-- [ ] **Partial registers and loops (#5, #10, #32, #40, #66).** Distinguish mosura defects from
+- [ ] **Partial registers and loops (#10, #32, #40, #66; #5 reviewed separately).** Distinguish mosura defects from
   downstream linear register-recovery mistakes; gate byte-lane and loop-carried behavior.
 - [ ] **Missing control flow and discovery (#3, #9, #42, #58–59, #67, #73, #87).** Recheck
   current discovery and raw p-code before attributing missing branches or routines to DCE.
@@ -235,7 +245,7 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #6 | Results: represent a value and condition flag returned together. | Queued |
 | #7 | Explicit byte inputs at indirect calls. | Validated input scope: both calls retain the original size-1 value; separate storage-order witness remains open |
 | #8 | Results: preserve multiple register outputs consumed after a call. | Queued |
-| #9 | Data flow: preserve branches whose operands come from indirect-call contracts. | MVE failed before full-write-set phi port and now passes; package gates and report validation in progress |
+| #9 | Data flow: preserve branches whose operands come from indirect-call contracts. | Fixed: full-write-set phi placement; source MVE, external input/branch witness, workspace and corpus gates validated |
 | #10 | Data flow: combine two byte writes into the correct wider register value. | Queued |
 | #11 | Explicit descriptor inputs through mutable hooks. | Validated input scope: all four calls match native argument setup; consumer installation/coordinate changes excluded |
 | #12 | Platform models: recover external file-read calls, arguments and results. | Queued |
@@ -313,7 +323,7 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #84 | Consumer review: audit validity/lifetime tracking for saved state. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #85 | Consumer review: audit repeated operations that overwrite saved state. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #86 | Input contracts: support complete declarations with many register inputs. | Queued: seven-register indirect input contract |
-| #87 | Discovery: find referenced functions in mixed executable/data memory blocks. | Reproduced: opt-in scan skips the native image’s mixed code/data block; MVE pending |
+| #87 | Discovery: find referenced functions in mixed executable/data memory blocks. | Active: source-built memory-layout pair reproduces the opt-in omission; promoting the regression |
 | #88 | Comparison triage: confirmed signedness mismatch introduced by a consumer rewrite. | Closed triage, confirmed by Bob: raw and current CLI compare signed byte to -1; downstream rewrite |
 | #89 | Consumer review: validate event accumulation independently of timing or resolution. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #90 | Results: consume device-read results instead of unrelated incoming parameters. | Queued: multiple result registers |

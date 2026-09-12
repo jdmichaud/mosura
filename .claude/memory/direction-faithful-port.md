@@ -176,7 +176,7 @@ intact.
 **P1 — Heritage: CORE DONE, advanced features remain.** Commits through `671a7e7`.
 DONE + validated: `cfg.rs::build_cfg` (blocks + reachability prune; calls don't split
 blocks; ranges match Ghidra for flow-aligned funcs), `dominator.rs` (Cooper idom +
-frontiers), `heritage.rs` (semi-pruned Cytron SSA — reads linked, single-assignment, phi
+frontiers), `heritage.rs` (full-write-set Cytron SSA — reads linked, single-assignment, phi
 arity=#preds; def-use matches Ghidra on x86_64_sem), `build.rs::raw_funcdata_flow`
 (faithful followFlow). The condconst/boolless/ifswitch block-range divergences are a
 lifter jump-target bug + P7 jump tables, NOT flow drift.
