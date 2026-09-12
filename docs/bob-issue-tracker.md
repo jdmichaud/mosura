@@ -1,6 +1,6 @@
 # Bob's issue tracker
 
-Updated 2026-09-12. Owner: Alice. Working branch: `fix/secondary-result-contracts`.
+Updated 2026-09-12. Owner: Alice. Working branch: `fix/partial-result-consumers`.
 
 Short checklist: [BOB_TASK.md](../BOB_TASK.md). Its markers are `[ ]` queued/triage,
 `[>]` active, `[x]` fixed and validated for the stated scope, and `[-]` outside scope/not planned.
@@ -106,6 +106,32 @@ explicit incoming inputs. A separate formatting helper receives its declared inp
 
 This is validation of `e482d6a8`/`f4a4e7cd`, not a new production change. The input scope is
 closed; custom compiler lowering and unrelated output/platform contracts remain open.
+
+## Completed validation: partial-word result consumers
+
+Related report: **#20**, using the joined result capability already validated under **#8**.
+The native body has one producer call before the conditional tail. Its three stores consume
+four bytes, four bytes and two bytes respectively; the later status test reads one byte.
+
+- [x] Ground the call and every result width in the instruction listing.
+  Default C retains only the primary result and stores free temporaries for the other two.
+  With the producer chain explicitly declared, one 12-byte joined CALL supplies all fields.
+- [x] Check each consumer's storage and truncation in current IR and C.
+  The first two consumers select offsets zero and four; the word store and byte test both
+  select offset eight. The latter retain their two-byte and one-byte sizes. The following
+  scalar call also reads the first field of that same result.
+- [x] Execute the native stores and the actual recovered C stores at the declared return boundary.
+  All 599/599 boundary and deterministic random cases match across the two full words and
+  the half-word. The adjacent two bytes remain untouched in every case. The producer's
+  own value/source audit is the 1280-case declared chain recorded under #8.
+- [x] Confirm the committed implementation renders the same declared caller C.
+  This validation uses the existing joined-result implementation; no additional production
+  change is needed. The current workspace and corpus gates are those of `c628de71` above.
+
+This closes result binding, initial stores and partial-word uses. It does not close the earlier
+undeclared condition-flag results, later callback effects, asynchronous observation of store
+order, or physical compiler ABI lowering. Those contracts must be validated independently of
+whether the three result fields reach their immediate consumers.
 
 ## Completed validation: secondary result contracts
 
@@ -459,7 +485,7 @@ alone does not close the entire indirect-call class.
 - [ ] **Shared global storage (#4; distinguish downstream #26 and naming #27).** Reproduce
   overlapping reads/writes in self-compiled source and check the existing address-based linker
   aliases and typed views before deciding whether the emitter/TU layer needs a fix.
-- [ ] **Multiple result registers (#20, #31 and related reports; #6/#8/#18 declared scopes validated).**
+- [ ] **Multiple result registers (#31 and related reports; #6/#8/#18/#20 declared scopes validated).**
   Audit each remaining protocol and its input/flag consumers using the joined-result mechanism.
 - [ ] **Invented input parameters (#2 and related reports).** Separate missing return channels
   from unsupported external convention facts; validate against current code.
@@ -543,7 +569,7 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #17 | Input contracts: preserve non-default coordinate parameter storage and order. | Queued |
 | #18 | Results: preserve a secondary scalar result from a multi-result call. | Validated: complete nested declarations, both result values, paired stores and field bindings; faithful wide arithmetic retained |
 | #19 | Consumer review: validate application viewport dimensions; no generic defect established. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
-| #20 | Results: bind multiple device-read outputs to their actual consumers. | Queued |
+| #20 | Results: bind multiple device-read outputs to their actual consumers. | Validated: one joined result, 4/4/2-byte stores, byte/word uses and untouched neighboring bytes |
 | #21 | Input contracts: retain shared declarations and caller values. | Validated declaration scope: 31/31 native call PCs, 35 contexts, constant and computed input witnesses |
 | #22 | Results: represent multiple data results together with classification/clip results. | Queued |
 | #23 | Results: support explicit carry-flag return contracts. | Queued |

@@ -13,7 +13,7 @@ Withdrawn consumer items were reconciled with the reporter's handoff and ledger.
 closure does not claim a mosura code fix.
 The [detailed tracker](docs/bob-issue-tracker.md) records evidence and commits; update both trackers.
 
-Validated declaration scopes: #1, #6, #7, #8, #9, #11, #14, #18, #21, #25 and #32, using explicit decompilation declarations. Outside scope: #88's verified
+Validated declaration scopes: #1, #6, #7, #8, #9, #11, #14, #18, #20, #21, #25 and #32, using explicit decompilation declarations. Outside scope: #88's verified
 consumer rewrite, 22 withdrawn consumer issues/proofs, two cleanup/shared-state reports whose requested behavior is absent from the original bytes,
 the local/global naming collisions, a loop-value constant substitution, and a packed-register
 width/order mismatch introduced in consumer rewrites.
@@ -66,6 +66,10 @@ and paired-store audit pass. Final workspace: 1321/1321 tests pass, 24 ignored. 
 compiler ABI lowering, automatic recovery and the complete outer caller remain separate scopes.
 A source MVE reproduces the missing casts on i386; the mapped C++ oracle retains them on both modes.
 Implementation: `c628de71`; dividend source fixture: `43a4b084`.
+#20 is also validated for its declared result-consumer scope. All three stores use one
+joined call result; the last store retains its two-byte width and leaves neighboring bytes
+untouched. Native and recovered C stores agree in 599/599 boundary and random cases.
+Earlier flag contracts, subsequent callback effects and physical ABI lowering remain separate.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.
@@ -86,7 +90,7 @@ Implementation: `c628de71`; dividend source fixture: `43a4b084`.
 - [ ] **#17** Input contracts: preserve non-default coordinate parameter storage and order.
 - [x] **#18** Results: preserve a secondary scalar result (declared chain and paired-store scope).
 - [-] **#19** Consumer scope: validate application viewport dimensions; no generic defect established. Withdrawn upstream.
-- [ ] **#20** Results: bind multiple device-read outputs to their actual consumers.
+- [x] **#20** Results: bind multiple device-read outputs to full-word and partial-word consumers (declared scope).
 - [x] **#21** Input contracts: retain shared declarations and caller values at all native sites (validated scope).
 - [ ] **#22** Results: represent multiple data results together with classification/clip results.
 - [ ] **#23** Results: support explicit carry-flag return contracts.
