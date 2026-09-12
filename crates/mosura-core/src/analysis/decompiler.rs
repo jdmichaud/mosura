@@ -130,6 +130,7 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
             .map(|offset| Address::new(entry.space, offset)).collect();
         if let Some(previous) = prev {
             f.indirect_overrides = previous.indirect_overrides.clone();
+            f.call_input_overrides = previous.call_input_overrides.clone();
             crate::decompile::deindirect::apply_overrides(&mut f);
         }
         // CALLEE-EVIDENCE EFFECTS, before the pipeline: for each direct call, record which
@@ -142,6 +143,7 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
         // prototype from one function in isolation, and asked about the same the subject callee through
         // the whole-image wrapper it emits the same truncated function.
         record_callee_effects(program, spec, ctx, &mut f);
+        crate::decompile::deindirect::apply_input_overrides(&mut f);
         // SELF-EVIDENCE PROTOTYPE — the same scan, turned on THIS function. A callee that returns
         // in a register the default model calls `<unaffected>` is not merely mis-typed at its call
         // sites: decompiling it ON ITS OWN, nothing consumes the value, so the instruction that

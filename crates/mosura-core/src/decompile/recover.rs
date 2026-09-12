@@ -1124,6 +1124,24 @@ pub fn init_active_input(f: &mut Funcdata) {
         active.is_recover_subcall = true;
         // fspec.cc:5335 — `maxdelay = getMaxInputDelay(); if (maxdelay > 0) maxdelay = 3;`
         active.set_max_pass(if maxdelay > 0 { 3 } else { CALL_MAXPASS });
+        // Ghidra coreaction.cc:1482-1509: a declared, non-variadic register
+        // prototype builds the inputs at their declared widths and leaves trial
+        // recovery inactive. Keep its trial container for placeholder bookkeeping.
+        if let Some(params) = f.call_specs.get(&call).and_then(|cs| cs.locked_inputs.clone()) {
+            active.active = false;
+            for param in params {
+                let ti = active.register_trial(param.addr, param.size);
+                active.trial[ti].mark_active();
+                let vn = f.new_varnode(param.size, param.addr);
+                f.op_append_input(call, vn);
+                active.trial[ti].op_slot = (f.op(call).num_inputs() - 1) as u32;
+            }
+            f.active_inputs.insert(call, active);
+            if let Some(sb) = spacebase {
+                super::fspec::create_placeholder(f, call, sb);
+            }
+            continue;
+        }
         // The container goes in FIRST: `createPlaceholder` -> `setStackPlaceholderSlot` reserves
         // the slot on the trial container too (fspec.hh:1671), and mosura's `isInputActive` test
         // is the presence of this entry.

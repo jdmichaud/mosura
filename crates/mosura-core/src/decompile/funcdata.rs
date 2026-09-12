@@ -56,6 +56,8 @@ pub struct Funcdata {
     /// Ghidra `Override::indirectover`: proven indirect targets by call-site address.
     /// Survives rebuilding the graph so argument recovery sees the callee before DCE.
     pub indirect_overrides: std::collections::HashMap<Address, Address>,
+    /// Declared pointer prototypes discovered at call sites, carried across restart.
+    pub call_input_overrides: std::collections::HashMap<Address, Vec<super::fspec::ProtoSlot>>,
     /// Ghidra's per-space `HeritageInfo::deadremoved` (heritage.hh), latched by
     /// `Heritage::deadRemovalAllowedSeen`. mosura derives `HeritageInfo` fresh on every
     /// `build_info_list` call, so the latch needs a persistent home; this is it, indexed by
@@ -438,6 +440,7 @@ impl Funcdata {
             restart_pending: false,
             known_functions: std::collections::HashSet::new(),
             indirect_overrides: std::collections::HashMap::new(),
+            call_input_overrides: std::collections::HashMap::new(),
             deadremoved: Vec::new(),
             deadcode_delay_override: std::collections::HashMap::new(),
             unique_offset: 0x10000,

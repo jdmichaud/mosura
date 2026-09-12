@@ -167,6 +167,9 @@ impl Options {
     pub fn set(&mut self, key: &str, value: &str) -> Result<()> {
         let spec = Self::spec(key)?;
         validate(spec, value).map_err(|m| Error::InvalidArg(format!("{m} — {}: {}", spec.key, spec.doc)))?;
+        if key == keys::DECOMPILE_INDIRECT_INPUTS {
+            mosura_core::decompile::deindirect::parse_indirect_inputs(value).map_err(Error::InvalidArg)?;
+        }
         self.values.insert(spec.key, value.trim().to_string());
         Ok(())
     }
@@ -228,6 +231,8 @@ impl Options {
 
     pub fn knobs(&self) -> Result<Knobs> {
         let mut k = Knobs::default();
+        k.indirect_inputs = mosura_core::decompile::deindirect::parse_indirect_inputs(
+            self.get(keys::DECOMPILE_INDIRECT_INPUTS)?).map_err(Error::InvalidArg)?;
         let cspec = self.get(keys::LOAD_CSPEC_X86_32)?;
         if !cspec.is_empty() {
             k = k.with_x86_32_cspec(Some(cspec));

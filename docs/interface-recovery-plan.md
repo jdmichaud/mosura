@@ -87,7 +87,10 @@ Two properties make this practical here:
   make things worse in a way per-function recovery cannot. The census is the check, and the
   `missing`/`extra` split is the specific thing to watch: trading `missing` for `extra` is not
   progress.
-- **Recursion and indirect calls** have no callee to consult; they must fall back to today's
-  behaviour rather than to an empty prototype.
+- **Unresolved indirect calls and unavailable recursive prototypes** have no callee contract to
+  consult; they retain convention recovery. `ActionDeindirect` now resolves known constant
+  function targets and restarts with their direct-call contracts. A mutable slot needs an explicit
+  interface declaration; its initial pointer value does not establish its future target. See
+  [indirect-call contracts](indirect-call-contracts.md).
 - **Does a third pass move anything?** If not, one round is the answer and the fixpoint machinery
   is not needed.

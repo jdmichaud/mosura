@@ -156,6 +156,9 @@ pub struct Knobs {
     /// (DataOperandReferenceAnalyzer.java:39); off by default, for a table/record-driven program
     /// whose dispatch the analysis cannot otherwise resolve.
     pub data_pointer_functions: bool,
+    /// Declared input registers, in parameter order, for a function-pointer slot.
+    /// The slot stays mutable; this supplies its interface, never its target.
+    pub indirect_inputs: std::collections::BTreeMap<u64, Vec<String>>,
 }
 
 impl Knobs {
@@ -216,6 +219,9 @@ impl Knobs {
         }
         if self.data_pointer_functions {
             parts.push("data-pointer-functions".to_string());
+        }
+        for (slot, regs) in &self.indirect_inputs {
+            parts.push(format!("indirect-inputs@{slot:x}={}", regs.join(",")));
         }
         parts
     }

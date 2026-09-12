@@ -13,6 +13,7 @@ pub const ANALYSIS_DATA_POINTER_FUNCTIONS: &str = "analysis.data-pointer-functio
 pub const KNOBS_OFF: &str = "knobs.off";
 pub const DECOMPILE_GLOBAL_SCOPE: &str = "decompile.global-scope";
 pub const DECOMPILE_PROTO_SCOPE: &str = "decompile.proto-scope";
+pub const DECOMPILE_INDIRECT_INPUTS: &str = "decompile.indirect-inputs";
 pub const EMIT_ARMS_OFF: &str = "emit.arms-off";
 pub const DEBUG_TOPICS: &str = "debug.topics";
 pub const DEBUG_WATCH_CALL: &str = "debug.watch-call";
@@ -59,6 +60,7 @@ pub fn hand_written() -> Vec<OptionSpec> {
         spec!(ANALYSIS_DATA_POINTER_FUNCTIONS, OptType::Bool, "false", Affects::Result, "create a function at a code pointer stored in data (a menu/record handler reached only through a pointer in a data structure) — a deviation from Ghidra, which disassembles the target but makes no function from a data pointer; off by default"),
         spec!(DECOMPILE_GLOBAL_SCOPE, OptType::Enum(GLOBAL_SCOPES), "application", Affects::Result, "application: every loaded address is a global (the whole-program emit); standalone: only what the function's own image says"),
         spec!(DECOMPILE_PROTO_SCOPE, OptType::Scope, "all", Affects::Result, "which recovered prototypes a decompile consults: all, none, or a list of callee addresses"),
+        spec!(DECOMPILE_INDIRECT_INPUTS, OptType::Str, "", Affects::Result, "declare input registers for mutable function-pointer slots: hex=REG,REG;hex=REG (register widths come from the language; no target or return value is assumed)"),
         // input keys: WHAT an operation runs on; they enter a cache key as input digests
         spec!("input", OptType::Str, "", Affects::Input, "the session input a program operation runs on: a label or a digest (the only input when omitted)"),
         spec!("program", OptType::Str, "", Affects::Input, "the program key a function operation runs on (the last opened program when omitted)"),

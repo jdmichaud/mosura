@@ -1335,6 +1335,11 @@ impl ParamTrial {
 /// (fspec.cc:5940) reads it too. So it gets its own map, keyed the same way.
 #[derive(Clone, Debug, Default)]
 pub struct CallSpec {
+    /// Ghidra `FuncProto::isInputLocked` with a non-variadic register prototype:
+    /// explicit parameter storage, including an empty list for no parameters.
+    /// Unlike a recovered read-set, this declaration is exact and must not open
+    /// argument trials or acquire additional inputs from the convention.
+    pub locked_inputs: Option<Vec<ProtoSlot>>,
     /// The callee's hidden struct-return SHAPE, copied from `Program::recovered_sret` with the
     /// prototype (`analysis::sret`); the `struct-return` emit arm reads it. mosura-only.
     pub sret: Option<crate::analysis::sret::SretShape>,

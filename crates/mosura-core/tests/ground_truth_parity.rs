@@ -91,7 +91,31 @@ fn known_indirect_target_restores_both_call_contracts() {
         assert_eq!(vn.constant_value(), value);
     }
 
-
+    let probe = decompile_function(&program, Address::new(program.default_space, entry("custom_writable"))).unwrap();
+    let id = probe.op_ids().find(|&id| !probe.op(id).is_dead() && probe.op(id).code() == OpCode::Callind).unwrap();
+    let pointer = probe.vn(probe.op(id).input(0).unwrap()).loc;
+    assert_eq!(pointer.space, program.default_space, "fixture calls a memory slot");
+    assert_eq!(probe.op(id).num_inputs(), 1, "the undeclared BX/BP case pins the loss");
+    program.knobs.indirect_inputs.insert(pointer.offset, vec!["BX".into(), "BP".into()]);
+    for name in ["custom_writable", "custom_load"] {
+        let f = decompile_function(&program, Address::new(program.default_space, entry(name))).unwrap();
+        let calls: Vec<_> = f.op_ids().filter(|&id| !f.op(id).is_dead()
+            && matches!(f.op(id).code(), OpCode::Call | OpCode::Callind)).collect();
+        assert_eq!(calls.len(), 1);
+        let op = f.op(calls[0]);
+        assert_eq!(op.code(), OpCode::Callind, "{name}: the runtime pointer must stay mutable");
+        assert_eq!(f.vn(op.input(0).unwrap()).loc, pointer, "{name}: preserve the loaded pointer");
+        assert_eq!(op.num_inputs(), 3, "{name}: declared arguments must survive:\n{}", f.print_raw());
+        for (index, value) in [(1, 33), (2, 44)] {
+            let vn = f.vn(op.input(index).unwrap());
+            assert!(vn.is_constant());
+            assert_eq!((vn.size, vn.constant_value()), (2, value));
+        }
+    }
+    program.knobs.indirect_inputs.insert(pointer.offset, vec![]);
+    let f = decompile_function(&program, Address::new(program.default_space, entry("custom_load"))).unwrap();
+    let id = f.op_ids().find(|&id| !f.op(id).is_dead() && f.op(id).code() == OpCode::Callind).unwrap();
+    assert_eq!(f.op(id).num_inputs(), 1, "an explicit empty input declaration must stay empty");
 }
 
 struct Truth {

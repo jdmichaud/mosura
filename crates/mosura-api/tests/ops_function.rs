@@ -102,3 +102,52 @@ fn the_set_is_served_and_an_emit_key_is_another_key() {
     assert!(matches!(dispatch(&c, &mut s, "function.decompile", &opts(&[("entry", &e), ("format", "pdf")]), &mut NoProgress), Err(Error::InvalidArg(_))));
     assert!(matches!(dispatch(&c, &mut s, "function.decompile", &opts(&[("entry", &e), ("emit.arms-off", "cmp_sign")]), &mut NoProgress), Err(Error::InvalidArg(_))), "arms-off belongs to function.emit");
 }
+
+#[test]
+fn declared_indirect_inputs_survive_cached_program_configuration() {
+    use mosura_core::decompile::{opcode::OpCode, space::Address};
+    let dir = mosura_core::paths::ground_truth_dir();
+    let name = "indirect_contract.gcc-x86-64";
+    let truth = std::fs::read_to_string(dir.join(format!("{name}.truth"))).unwrap();
+    let entry = truth.lines().find_map(|line| {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        (fields.first() == Some(&"func") && fields.get(3) == Some(&"custom_writable"))
+            .then(|| u64::from_str_radix(fields[1], 16).unwrap())
+    }).unwrap();
+    let live = analysis::analyze_file(&dir.join(name)).unwrap();
+    let f = decompile_function(&live, Address::new(live.default_space, entry)).unwrap();
+    let call = f.op_ids().find(|&id| !f.op(id).is_dead() && f.op(id).code() == OpCode::Callind).unwrap();
+    let pointer = f.vn(f.op(call).input(0).unwrap()).loc;
+    assert_eq!(pointer.space, live.default_space);
+    let declaration = format!("{:#x}=BX,BP", pointer.offset);
+    let e = format!("{entry:#x}");
+    let c = ctx();
+    let mut s = Session::open(None).unwrap();
+    s.add_input(&std::fs::read(dir.join(name)).unwrap(), name, None).unwrap();
+    dispatch(&c, &mut s, "program.analyze", &Options::new(), &mut NoProgress).unwrap();
+    let plain = opts(&[("entry", &e)]);
+    let declared = opts(&[("entry", &e), ("decompile.indirect-inputs", &declaration)]);
+    assert_ne!(plain.tag(), declared.tag(), "declarations belong to the result cache key");
+    let before = text(&dispatch(&c, &mut s, "function.decompile", &plain, &mut NoProgress).unwrap());
+    let after = text(&dispatch(&c, &mut s, "function.decompile", &declared, &mut NoProgress).unwrap());
+    assert_ne!(before, after, "the cached program must receive the new declaration");
+    assert!(after.contains(")(0x21, 0x2c)"), "exact declared inputs: {after}");
+    assert_eq!(s.set_keys(SetKind::Function).unwrap().len(), 2);
+    assert!(matches!(dispatch(&c, &mut s, "function.emit", &declared, &mut NoProgress),
+        Err(Error::InvalidArg(_))), "compiler lowering of custom pointer conventions is a separate contract");
+    assert_eq!(before, text(&dispatch(&c, &mut s, "function.decompile", &plain, &mut NoProgress).unwrap()),
+        "a declaration must not leak into requests that omit it");
+    // Invalid declarations fail identically with a live or thawed program.
+    for thaw in [false, true] {
+        if thaw { s.last_program = None; }
+        for regs in ["NO_SUCH_REGISTER", "AX,EAX"] {
+            let value = format!("{:#x}={regs}", pointer.offset);
+            let o = opts(&[("entry", &e), ("decompile.indirect-inputs", &value)]);
+            assert!(matches!(dispatch(&c, &mut s, "function.decompile", &o, &mut NoProgress),
+                Err(Error::InvalidArg(_))), "invalid register storage must be rejected");
+        }
+    }
+    for value in ["no-address=BX", "123=BX,bx", "123=BX;123=BP", "123=BX,"] {
+        assert!(matches!(Options::new().set("decompile.indirect-inputs", value), Err(Error::InvalidArg(_))));
+    }
+}

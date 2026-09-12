@@ -1709,11 +1709,14 @@ pub fn decompile_with_restart(data: &mut Funcdata, mut rebuild: impl FnMut(&mut 
         restarts += 1;
         let carried = std::mem::take(&mut data.deadcode_delay_override);
         let indirect = std::mem::take(&mut data.indirect_overrides);
+        let inputs = std::mem::take(&mut data.call_input_overrides);
         let functions = std::mem::take(&mut data.known_functions);
         rebuild(data);
         data.indirect_overrides = indirect;
+        data.call_input_overrides = inputs;
         data.known_functions = functions;
         super::deindirect::apply_overrides(data);
+        super::deindirect::apply_input_overrides(data);
         data.deadcode_delay_override = carried;
         data.apply_deadcode_delay_override();
         decompile(data);

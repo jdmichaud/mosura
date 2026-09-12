@@ -11,7 +11,7 @@ The checklist below records completed work; the register below preserves every r
 ## Current package: indirect-call inputs
 
 Related reports: **#1, #3, #7, #9, #11**; partial-register variants **#10, #32, #40** need separate
-case validation. The implementation and its oracle evidence are being prepared in this package.
+case validation. [Implementation scope and oracle evidence](indirect-call-contracts.md).
 
 - [x] Read the repository rules and Bob's initial reports; inspect current CLI output.
 - [x] Confirm that the old convention report is downstream data, not an existing mosura input.
@@ -21,12 +21,18 @@ case validation. The implementation and its oracle evidence are being prepared i
 - [x] Implement constant-target resolution and restore contracts on restart.
 - [x] Implement explicit register input declarations using the locked-input branch.
 - [x] Verify the focused core and API regressions during development.
-- [ ] Finish the final regression run, including workspace, IR parity and disassembly gates.
-- [ ] Measure the default emitted output against the baseline; run a corpus round if it changes.
-- [ ] Commit the package with the measurements in the commit message.
+- [x] Finish the final regression run: workspace 1304/1304 executed tests passed (23 ignored);
+  `ir_parity` 9/9, `ground_truth_parity` 32/32 (1 ignored), golden harness 1/1 (1 ignored).
+- [x] Compare default emission with baseline: 751/751 translation units are byte-identical,
+  with no added or missing units (`program.emit`, native loader, unchanged options).
+- [x] Commit cached-program option handling independently: `0a5c36da`; isolated regression 1/1.
+- [x] Commit constant-target recovery independently: `9e115c77`; isolated MVE regression 1/1.
+- [x] Commit mutable-slot input declarations independently, with the package gate results.
+  The workspace run preceded the extracted cache regression; that additional regression also
+  passes 1/1 on the final package.
 - [ ] Ask Bob for validation of the completed package, then close only the reports it resolves.
 
-The draft declaration option is limited to decompilation. Compiler lowering of custom pointer
+The declaration option is limited to decompilation. Compiler lowering of custom pointer
 conventions, full typed-pointer propagation, outputs and clobbers remain open. Restoring inputs
 alone does not close the entire indirect-call class.
 
