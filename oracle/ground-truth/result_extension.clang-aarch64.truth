@@ -1,0 +1,7 @@
+# mosura-ground-truth v1 program=result_extension compiler=clang arch=aarch64 lang=AARCH64:LE:64:v8A
+# derived-from=result_extension.clang-aarch64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler clang
+entry 000000000021017c
+func 000000000021017c 0000000000000008 _start code
+func 0000000000210184 0000000000000008 narrow_result code
+func 000000000021018c 0000000000000018 upper_result code

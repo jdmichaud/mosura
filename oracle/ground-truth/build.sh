@@ -12,7 +12,8 @@
 #
 # The truth is the ORACLE: it comes from the source/build we own, NOT from Ghidra (often wrong).
 #
-# Matrix (installed toolchains). ABSENT (documented gaps, never faked): clang, MSVC.
+# Matrix (installed toolchains). ABSENT (documented gaps, never faked): MSVC.
+#   clang    aarch64  AARCH64:LE:64:v8A      (integrated assembler, Rust-bundled LLD)
 #   gcc      x86-64   x86:LE:64:default      (host)
 #   gcc      aarch64  AARCH64:LE:64:v8A      (aarch64-linux-gnu-)
 #   gcc      riscv64  RISCV:LE:64:default    (riscv64-linux-gnu-)
@@ -31,9 +32,10 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # ELF header. All from the build artifact, not Ghidra. Handles both `nm -S` column shapes
 # (gcc emits a size column; Watcom emits none) and every arch's indirect-jump mnemonic.
 #   $1 unstripped binary  $2 program  $3 compiler  $4 arch  $5 mosura-lang  $6 tool prefix
+#   $7 analysis options  $8 nm override  $9 disassembler override (ELF headers still use objdump)
 derive_truth_elf() {
   local bin="$1" prog="$2" cc="$3" arch="$4" lang="$5" pfx="${6:-}" opts="${7:-}"
-  local nm="${pfx}nm" objdump="${pfx}objdump"
+  local nm="${8:-${pfx}nm}" objdump="${pfx}objdump" disassembler="${9:-${pfx}objdump}"
   local truth="$prog.$cc-$arch.truth"
   {
     # `options=` names the NON-DEFAULT analysis options the fixture is verified under (the knob
@@ -76,7 +78,7 @@ derive_truth_elf() {
     local exec_ranges data_ranges code_refs
     exec_ranges=$("$objdump" -h "$bin" | awk '/^[ ]+[0-9]+ / { name=$2; sz=$3; vma=$4; getline fl; if (fl ~ /CODE/) print vma, sz }')
     data_ranges=$("$objdump" -h "$bin" | awk '/^[ ]+[0-9]+ / { sz=$3; vma=$4; off=$6; getline fl; if (fl ~ /ALLOC/ && fl ~ /CONTENTS/ && fl !~ /CODE/) print vma, sz, off }')
-    code_refs=$("$objdump" -d "$bin" | sed -n 's/^[ ]*[0-9a-f]*:\t[^\t]*\t//p')
+    code_refs=$("$disassembler" -d "$bin" | sed -n 's/^[ ]*[0-9a-f]*:[ \t]*[0-9a-f][^\t]*\t//p')
     "$nm" -S --defined-only "$bin" | GT_EXEC_RANGES="$exec_ranges" GT_DATA_RANGES="$data_ranges" \
         GT_CODE_REFS="$code_refs" GT_BIN="$bin" python3 -c '
 import os, re, sys
@@ -132,7 +134,7 @@ print("\n".join(sorted(out)))'
     # objdump mnemonic column, preceded by a tab): x86 `jmp *`, RISC-V `jr`, AArch64 `br`,
     # m68k register-indexed/indirect `jmp` (a plain `jmp 0x..` or pc-relative `jmp %pc@(lbl)`
     # has no address/data register operand, so it is excluded).
-    "$objdump" -d "$bin" | awk '
+    "$disassembler" -d "$bin" | awk '
       /\tjmp[ \t]+\*/ ||
       /\tjr[ \t]/ ||
       /\tbr[ \t]/ ||
@@ -155,6 +157,22 @@ build_elf() {
   "${pfx}strip" -o "$stripped" "$unstripped"
   rm -f "$unstripped"
 }
+
+# Narrow result extension: Clang's integrated AArch64 assembler plus Rust's bundled LLD.
+# GNU objdump reads generic ELF headers; LLVM supplies target disassembly and filters
+# AArch64 mapping symbols from nm's function population. The extra arguments are tools,
+# not changes to the source-derived reachability rules.
+if have clang-19 && have rustc && have llvm-nm-19 && have llvm-objdump-19 && have llvm-objcopy-19; then
+  clang_lld="$(rustc --print target-libdir)/../bin/gcc-ld/ld.lld"
+  if [[ -x "$clang_lld" ]]; then
+    clang-19 --target=aarch64-linux-gnu -nostdlib -static -fuse-ld="$clang_lld" -Wl,-e,_start \
+      src/result_extension.S -o result_extension.clang-aarch64.unstripped
+    derive_truth_elf result_extension.clang-aarch64.unstripped result_extension clang aarch64 \
+      "AARCH64:LE:64:v8A" "" "" llvm-nm-19 llvm-objdump-19
+    llvm-objcopy-19 --strip-all result_extension.clang-aarch64.unstripped result_extension.clang-aarch64
+    rm -f result_extension.clang-aarch64.unstripped
+  fi
+fi
 
 # ---------------------------------------------------------------------------------------------
 # --- gcc columns: x86-64 (host) + aarch64/riscv64/m68k (cross). One freestanding recipe, one
