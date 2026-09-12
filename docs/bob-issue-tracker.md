@@ -1,6 +1,6 @@
 # Bob's issue tracker
 
-Updated 2026-09-12. Owner: Alice. Working branch: `fix/declared-function-inputs`.
+Updated 2026-09-12. Owner: Alice. Working branch: `audit/recursive-input-contracts`.
 
 Short checklist: [BOB_TASK.md](../BOB_TASK.md). Its markers are `[ ]` queued/triage,
 `[>]` active, `[x]` fixed and validated for the stated scope, and `[-]` outside scope/not planned.
@@ -69,11 +69,28 @@ The report-specific byte/load witnesses agree. This closes the high-byte argumen
 unrelated nested flag/multiple-result contracts and full typed-pointer interfaces remain open.
 No whole-function semantic-equivalence claim is made for those remaining contracts.
 
-## Active validation: recursive helper inputs and shared callee order
+## Completed validation: recursive helper inputs and shared callee order
 
-Related report: **#25**. The consumer's dispatch change belongs to its own implementation.
-The generic mosura scopes are the EDI input at two recursive helpers and the register order
-at a shared callee. Validate both against the current declaration surface before closing it.
+Related report: **#25**, validated for explicit input declarations. The opt-in discovery
+session contains all three reported bodies; the default call-reachable population does not.
+The consumer's dispatch change belongs to its own implementation and is not a mosura fix.
+
+Each recursive helper now accepts its EDI input, recursively passes the children at offsets
+8 then 4, and forwards the unchanged value to the leaf callee through its declared EAX input.
+All 6/6 direct calls across the two helpers remain, and the complementary leaf predicates
+match the native instructions. The shared callee has the same ESI/EBX/ECX/AH four-input
+contract at its definition and the reported caller. That caller retains both pointer values,
+the count and high-byte value, plus its indexed pointer-slot input and counted loop.
+
+This is validation of the declaration mechanism already source/oracle-gated in `e482d6a8`
+and exposed by `f4a4e7cd`; it adds no production fix. Nested multi-register output contracts
+inside the shared callee remain open under the results reports. This does not claim complete
+semantic equivalence of that deeper call chain.
+
+## Active validation: shared helper input consistency
+
+Related report: **#21**. Check the helper's definition and all reported callers with the
+same explicit input list; keep unproven nested contracts open.
 
 ## Completed package: pointer records in mixed memory
 
@@ -189,8 +206,8 @@ where the target's compiler specification and observable data flow support it.
 
 ## Completed package: indirect-call inputs
 
-Related reports: **#1, #3, #7, #9, #11**; partial-register variants **#10, #32, #40** need separate
-case validation. [Implementation scope and oracle evidence](indirect-call-contracts.md).
+Related reports: **#1, #3, #7, #9, #11**. Partial-register scope #32 is validated below,
+#10 was attributed to the consumer width/order, and #40 remains open. [Implementation scope and oracle evidence](indirect-call-contracts.md).
 
 - [x] Read the repository rules and Bob's initial reports; inspect current CLI output.
 - [x] Confirm that the old convention report is downstream data, not an existing mosura input.
@@ -255,8 +272,9 @@ alone does not close the entire indirect-call class.
   excluded #19, #26, #29, #35, #38, #44, #50, #72, #75, #76, #78, #79, #81, #82, #83, #84,
   #85, #89, #91, #93, #97 and #99. Their ledger classifications and descriptions were checked
   against that withdrawal. These are scope closures, not mosura fixes. #26's naming concern was independently reviewed under #27; the original missing-input class mentioned in #99 remains open separately.
-- [x] **Compound report #25 clarified.** The consumer walker is outside scope; the two helpers'
-  missing register inputs remain open in #25. The checklist now tracks that generic contract gap.
+- [x] **Compound report #25 clarified and validated.** The consumer walker is outside scope.
+  Explicit declarations now preserve both helpers' recursive inputs and the shared callee's
+  argument order; the completed scope record above keeps nested outputs separate.
 
 
 - [x] **#88: transparent-byte comparison.** The unmodified raw emission supplied with the
@@ -278,7 +296,7 @@ alone does not close the entire indirect-call class.
   the prototype/return-storage gap and keep caller and callee contracts consistent.
 - [ ] **Invented input parameters (#2 and related reports).** Separate missing return channels
   from unsupported external convention facts; validate against current code.
-- [ ] **Partial registers and loops (#32, #40, #66; #5 and #10 reviewed separately).** Distinguish mosura defects from
+- [ ] **Partial registers and loops (#40, #66; #32 validated, #5 and #10 reviewed separately).** Distinguish mosura defects from
   downstream linear register-recovery mistakes; gate byte-lane and loop-carried behavior.
 - [ ] **Missing control flow and discovery (#3, #42, #58–59, #67, #73; #9 and #87 validated).** Recheck
   current discovery and raw p-code before attributing missing branches or routines to DCE.
@@ -359,11 +377,11 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #18 | Results: preserve a secondary scalar result from a multi-result call. | Queued |
 | #19 | Consumer review: validate application viewport dimensions; no generic defect established. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #20 | Results: bind multiple device-read outputs to their actual consumers. | Queued |
-| #21 | Input contracts: keep shared callee declarations consistent across call sites. | Queued |
+| #21 | Input contracts: keep shared callee declarations consistent across call sites. | Active: definition/caller consistency audit |
 | #22 | Results: represent multiple data results together with classification/clip results. | Queued |
 | #23 | Results: support explicit carry-flag return contracts. | Queued |
 | #24 | Input contracts: distinguish call-produced values from incoming function parameters. | Queued |
-| #25 | Input contracts: preserve non-default register arguments in callback helpers. | Queued: helper input contracts; consumer walker excluded |
+| #25 | Input contracts: preserve explicit recursive helper inputs and shared callee order. | Validated declaration scope: both recursive bodies and shared callee/caller; consumer dispatch is separate |
 | #26 | Consumer review: validate linker placement and shared address-backed storage. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger; naming concern independently reviewed under #27 |
 | #27 | Consumer local/global naming collisions. | Outside scope: all five collisions originate in downstream rewritten locals, absent from archived raw and current naming |
 | #28 | Platform models: recover device detection and initialization call contracts. | Queued |

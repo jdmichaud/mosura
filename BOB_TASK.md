@@ -13,7 +13,7 @@ Withdrawn consumer items were reconciled with the reporter's handoff and ledger.
 closure does not claim a mosura code fix.
 The [detailed tracker](docs/bob-issue-tracker.md) records evidence and commits; update both trackers.
 
-Validated declaration scopes: #1, #7, #9, #11, #14 and #32, using explicit decompilation declarations. Outside scope: #88's verified
+Validated declaration scopes: #1, #7, #9, #11, #14, #25 and #32, using explicit decompilation declarations. Outside scope: #88's verified
 consumer rewrite, 22 withdrawn consumer issues/proofs, two cleanup/shared-state reports whose requested behavior is absent from the original bytes,
 the local/global naming collisions, a loop-value constant substitution, and a packed-register
 width/order mismatch introduced in consumer rewrites.
@@ -35,7 +35,9 @@ passes 1316/1316 tests (23 ignored); default emission remains identical for 751/
 Core implementation: `e482d6a8`; API: `f4a4e7cd` (`decompile.function-inputs`).
 #32 is also validated for its high-byte input scope: all 5/5 reported AH operands retain their
 loads, zero value and selector-dependent value with the enclosing inputs explicitly declared.
-The active item is #25: audit recursive helper inputs and the shared callee argument order.
+#25 is validated for the two recursive helpers and the shared callee input order. The
+consumer dispatch change remains its own responsibility; nested output contracts remain open.
+The active item is #21: check another shared helper's definition and all reported caller inputs.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.
@@ -57,11 +59,11 @@ The active item is #25: audit recursive helper inputs and the shared callee argu
 - [ ] **#18** Results: preserve a secondary scalar result from a multi-result call.
 - [-] **#19** Consumer scope: validate application viewport dimensions; no generic defect established. Withdrawn upstream.
 - [ ] **#20** Results: bind multiple device-read outputs to their actual consumers.
-- [ ] **#21** Input contracts: keep shared callee declarations consistent across call sites.
+- [>] **#21** Input contracts: keep shared callee declarations consistent across call sites.
 - [ ] **#22** Results: represent multiple data results together with classification/clip results.
 - [ ] **#23** Results: support explicit carry-flag return contracts.
 - [ ] **#24** Input contracts: distinguish call-produced values from incoming function parameters.
-- [>] **#25** Input contracts: preserve non-default register arguments in callback helpers.
+- [x] **#25** Input contracts: preserve explicit recursive helper inputs and shared callee order (validated scope).
 - [-] **#26** Consumer scope: validate linker placement and shared address-backed storage. Withdrawn upstream.
 - [-] **#27** Consumer naming: the five local/global collisions were introduced by downstream rewrites.
 - [ ] **#28** Platform models: recover device detection and initialization call contracts.
