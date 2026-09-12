@@ -2,7 +2,8 @@
 
 Updated 2026-09-12. Owner: Alice. Working branch: `fix/flag-result-contracts`.
 
-Short checklist: [BOB_TASK.md](../BOB_TASK.md).
+Short checklist: [BOB_TASK.md](../BOB_TASK.md). Its markers are `[ ]` queued/triage,
+`[>]` active, `[x]` fixed and validated for the stated scope, and `[-]` outside scope/not planned.
 
 This tracks mosura work against Bob's numbered defect ledger. The latest local ledger has
 **99 numbered entries** (counted from its numbered headings); the earlier handoff covered 85.
@@ -18,8 +19,10 @@ Related reports: **#13, #23, #53**; multi-result contracts need their own valida
 - [x] Build a generic self-compiled flag-result fixture, independent of the survey application.
 - [x] Reproduce the dropped predicate and disconnected caller condition with the current CLI.
 - [x] Compare the pinned Ghidra C++ IR with and without an explicit ZF result declaration.
-- [ ] Add the failing declaration-to-caller/callee regression before implementing the port.
-- [ ] Port the missing prototype/result mechanism and validate both predicate polarities.
+- [x] Add the failing declaration-to-caller/callee regression before implementing the port.
+  The initial flag-result gate failed; an additional AArch64 MVE exposed missing result extension.
+- [x] Implement the locked-output branches and check both predicate polarities in the MVE.
+  Compiler-spec result extensions are included; package gates and review remain pending.
 - [ ] Run the package gates, commit each separable fix and request external validation.
 
 An arbitrary flag write does not establish a return contract. The generic problem is representing
@@ -75,9 +78,10 @@ alone does not close the entire indirect-call class.
 
 ## Next work packages
 
-- [ ] **Flag results (#13, #23, #53 and related reports).** The current CLI still drops the
-  flag-only predicate in #13. The self-compiled MVE and Ghidra IR comparison now reproduce
-  the gap; the declaration regression and implementation remain pending.
+- [ ] **Flag results (#13, #23, #53 and related reports).** The undeclared CLI drops the flag-only
+  predicate in #13. The local implementation now preserves the explicit typed result; the
+  self-compiled flag and result-extension regressions pass. Package gates and report validation
+  remain pending, including the nested callee's separate output channel.
   Bob is ready to validate this case once the work is complete.
 - [ ] **Shared global storage (#4; distinguish downstream #26 and naming #27).** Reproduce
   overlapping reads/writes in self-compiled source and check the existing address-based linker
@@ -114,7 +118,7 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #10 | Data flow: combine two byte writes into the correct wider register value. | Queued |
 | #11 | Indirect calls: distinguish runtime pointer storage, target identity and call contracts. | Investigating: input package; report validation pending |
 | #12 | Platform models: recover external file-read calls, arguments and results. | Queued |
-| #13 | Results: support an explicit condition-flag result consistently at callee and callers. | Reproduced in self-compiled MVE; explicit-result oracle IR recorded; implementation pending |
+| #13 | Results: support an explicit condition-flag result consistently at callee and callers. | Active: typed result and compiler-spec extension implemented locally; focused MVEs pass; package gates and report validation pending |
 | #14 | Input contracts: recover missing non-default register parameter sets. | Queued |
 | #15 | Results: propagate producer outputs to callers instead of uninitialized inputs. | Queued |
 | #16 | Platform models: model directory-enumeration operations and termination conditions. | Queued |
