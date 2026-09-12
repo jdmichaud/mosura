@@ -1,6 +1,6 @@
 # Bob's issue tracker
 
-Updated 2026-09-12. Owner: Alice. Working branch: `fix/partial-result-consumers`.
+Updated 2026-09-12. Owner: Alice. Working branch: `fix/loop-result-contracts`.
 
 Short checklist: [BOB_TASK.md](../BOB_TASK.md). Its markers are `[ ]` queued/triage,
 `[>]` active, `[x]` fixed and validated for the stated scope, and `[-]` outside scope/not planned.
@@ -107,9 +107,21 @@ explicit incoming inputs. A separate formatting helper receives its declared inp
 This is validation of `e482d6a8`/`f4a4e7cd`, not a new production change. The input scope is
 closed; custom compiler lowering and unrelated output/platform contracts remain open.
 
+## Active package: result contracts in repeated record stores
+
+Related report: **#31**. Follow each of three returned registers into consecutive record fields
+while preserving the caller's saved cursor and loop-carried values. Separate explicit result
+contracts from automatic recovery, arithmetic correctness and compiler ABI lowering.
+
+- [>] Ground the producer, its input/output storage and every reported caller in current IR and bytes.
+- [ ] Validate the producer's three values with complete declarations and source-owned reductions if needed.
+- [ ] Audit repeated stores, field order, saved cursors and loop-carried state at the callers.
+- [ ] Validate any implementation changes and record each separable fix in its own commit.
+
 ## Completed validation: partial-word result consumers
 
 Related report: **#20**, using the joined result capability already validated under **#8**.
+Validation commit: `ca3ee49f`.
 The native body has one producer call before the conditional tail. Its three stores consume
 four bytes, four bytes and two bytes respectively; the later status test reads one byte.
 
@@ -580,7 +592,7 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #28 | Platform models: recover device detection and initialization call contracts. | Queued |
 | #29 | Consumer review: validate application coordinate transforms and dimensions. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #30 | Input contracts: restore arguments across a series of vector-table calls. | Queued |
-| #31 | Results: preserve multiple non-default register outputs as one consistent contract. | Queued |
+| #31 | Results: preserve multiple non-default register outputs as one consistent contract. | Active: producer and repeated-store contract audit |
 | #32 | Input contracts: preserve explicit high-byte arguments and enclosing inputs. | Validated scope: 5/5 AH values, declared enclosing inputs and source-built storage/restart gate |
 | #33 | Results: preserve the correct returned register in a caller's predicate. | Queued |
 | #34 | Data flow: preserve cursor-like state across callbacks and nested calls. | Queued |
