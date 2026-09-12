@@ -87,6 +87,10 @@ including the regression demonstrated failing before the fix. Emission is identi
 751/751 TUs in each of the standalone and application contexts under the same supplied options.
 CLI correction: `55b9ec76`. Its workspace run passes 1323/1323 tests, with 25 ignored.
 This is the completed CLI package measurement, before adding the mixed-global regressions.
+For #4, `mixed_global_views.S` is committed as `1f1948b7`. Both source-built architectures
+fail the reference-symbol and actual generated-C execution regressions before a production fix.
+The source population gate finds both functions in each new artifact and passes all 126 binaries.
+The active step is connecting shared global symbols to their direct and pointer views.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.

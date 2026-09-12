@@ -117,8 +117,15 @@ consistent view conversions.
 - [x] Ground a direct-word plus byte-indexed source probe in current IR and the mapped C++ oracle.
   The oracle represents the wider access as an overlapping symbol. Resizing the base
   declaration alone would trade the wrong stride for a truncated direct access.
-- [>] Promote the mixed-access reduction to a reproducible source gate and retain both access widths.
-- [ ] Connect global symbol/type facts and emitted views without changing the faithful reference printer.
+- [x] Promote the mixed-access reduction to reproducible source gates and demonstrate their failures.
+  `1f1948b7` adds `mixed_global_views.S` and both stripped, build-derived artifacts. The
+  source population gate finds 2/2 functions in each and passes all 126 binaries. With
+  production code unchanged, both reference-symbol cases fail; actual generated C also
+  fails the first source-defined copy case on each architecture. The execution harness
+  changes only file-scope declarations to bind physical storage; the complete body is
+  appended unchanged. This detects incorrect access widths/strides, not shared allocation
+  across independently linked translation units.
+- [>] Connect global symbol/type facts and emitted views using Ghidra's symbol linking and overlap handling.
 - [ ] Validate shared memory effects and the relevant reported consumers, then run package gates.
 
 The separate tooling correction preserves explicitly supplied CLI options even when
