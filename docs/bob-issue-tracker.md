@@ -24,7 +24,8 @@ Related report: **#9**. Other loop/call data-flow reports require their own witn
   The focused source-based gate now passes on both x86 variants (five selection boundaries each).
 - [x] Validate the final workspace: 1309/1309 executed tests passed, 23 ignored; IR parity
   9/9, ground truth 35/35 (one ignored), disassembly golden 1/1, all repository guards green.
-- [>] Resolve changed-emission compile failures and complete the eight corpus gates; commit the fix.
+- [x] Resolve changed-emission compile failures and complete the eight corpus gates.
+- [>] Finish the final workspace run and commit the phi fix.
 - [x] Validate the external input/branch witness: all three selected addresses and both
   additional register inputs match the native instruction sequence.
 - [ ] Update the scope marker after the package gates and commit.
@@ -50,6 +51,13 @@ the recompile subtree consulted by emission. Its regression fails before the cor
 passes afterward (2/2 focused tests). A fresh-emission identity comparison before/after
 only the fingerprint correction is byte-identical for 751/751 TUs, zero missing. Corpus results
 from the stale-TU attempt do not measure target lowering.
+Final isolated comparisons: target lowering changes 222/751 TUs only in model notation,
+improves 190 compiled verdicts and loses no EXACT or compiled function. The phi change then
+alters 17/751 TUs with zero verdict flips and zero new failures. Both final populations have
+19 EXACT, 1 SAME_CODE, 16 SAME_SHAPE, 548 MISMATCH and 167 COMPILE_FAIL. All eight gates
+pass. The repeated candidate uses 751/751 cached units and has zero flips, movers or membership
+changes. The profile covers one native chain, two switch-label sets and 19 EXACT guards;
+its string-operation user-classification bar is zero (all-TU counts remain memcpy 40, memset 5).
 The final workspace run completed with exit 0; an earlier doctest link failure from overlapping
 Cargo builds is superseded by this isolated run.
 

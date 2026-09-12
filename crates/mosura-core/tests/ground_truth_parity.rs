@@ -19,6 +19,43 @@ use mosura_core::decompile::printc::print_c;
 use mosura_core::decompile::space::Address;
 use mosura_core::paths::ground_truth_dir;
 
+/// The Watcom TU lowers a named model to its concrete register contract; PrintC retains it.
+#[test]
+fn named_model_declaration_uses_the_target_contract() {
+    use mosura_core::recompile::{function, passes, pragma::WatcomRegs, recovery, round};
+    use std::collections::HashMap;
+
+    let name = "model_declaration.gcc-x86-32";
+    let truth = parse_truth(&std::fs::read_to_string(ground_truth_dir().join(format!("{name}.truth"))).unwrap());
+    let p = analysis::analyze_file(&ground_truth_dir().join(name)).unwrap();
+    let regs = WatcomRegs::for_lang(&p.language_id);
+    let entries = passes::Entries::of(&p);
+    let orders = passes::ParamOrders::default();
+    let gsizes = HashMap::new();
+    let (choices, recovered) = recovery::measured_arms();
+    for symbol in ["combine", "pair"] {
+        let va = truth.funcs.iter().find(|(_, n)| n == symbol).unwrap().0;
+        let f = decompile_function(&p, Address::new(p.default_space, va)).unwrap();
+        let raw = print_c(&f);
+        assert!(raw.contains(" __regparm3 "), "the source selects a named GCC model: {raw}");
+        let extent = function::extent(&p, &entries, &f, va);
+        let own = function::own_contract(&f, &extent.region, va, &p.language_id, &regs);
+        let tu = round::render_recovered(&f, &round::RenderInputs {
+            lang: &p.language_id, region: &extent.region, va, name: &f.name,
+            choices: &choices, rec_arm: &recovered, arms_off: &[], orders: &orders,
+            regs: &regs, knobs: &p.knobs, gsizes: &gsizes, contract: own.contract.as_deref(),
+        });
+        assert!(!tu.contains(" __regparm3 "), "Watcom cannot parse a Ghidra model name: {tu}");
+        if symbol == "combine" {
+            assert!(tu.contains("parm [eax] [edx] [ecx]"), "the third input is ECX, not Watcom's default EBX: {tu}");
+            let incomplete = mosura_core::recompile::tu::with_watcom_contract(
+                &f.name, &f, &regs, Some("modify [eax]"), raw.clone());
+            assert!(incomplete.contains(" __regparm3 "), "a missing parameter contract must stay visible");
+        }
+        assert_eq!(print_c(&f), raw, "target lowering must not mutate the faithful declaration");
+    }
+}
+
 #[test]
 fn declared_result_uses_compiler_spec_extension() {
     use mosura_core::decompile::{fspec::RegisterOutput, opcode::OpCode, types::Datatype};

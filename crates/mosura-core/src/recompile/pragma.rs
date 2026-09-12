@@ -157,6 +157,48 @@ fn parm_from_storages_always(
     Some(names)
 }
 
+/// Whether the own-function pragma (including Watcom's defaults) represents every rendered
+/// input and output storage. Only register-only scalar contracts are covered here. A named
+/// model with stack, floating-point, joined or unmappable storage must keep its declaration
+/// until the target lowering for that contract exists.
+pub fn model_represented_by_contract(
+    f: &crate::decompile::funcdata::Funcdata,
+    table: &[(u64, u32, &'static str)],
+    contract: Option<&str>,
+) -> bool {
+    let Some(reg) = f.spaces.by_name("register") else { return false };
+    let slots = crate::decompile::printc::rendered_param_slots(f);
+    if slots.is_empty() || slots.iter().any(|s| s.addr.space != reg)
+        || crate::decompile::varargs::recognize(f, &slots).is_some()
+        || f.ret_pop != Some(0)
+    {
+        return false;
+    }
+    let storages: Vec<_> = slots.iter().map(|s| (s.addr.offset, s.size)).collect();
+    if parm_from_storages_always(&storages, table).is_none() {
+        return false;
+    }
+    let decl = contract.unwrap_or("");
+    if let Some(parm) = nondefault_parm_from_storages(&storages, table) {
+        if !decl.contains(&format!("parm {parm}")) {
+            return false;
+        }
+    }
+    if let Some(output) = crate::analysis::interface::prototype_of(f).output {
+        if output.addr.space != reg || !table.iter().any(|&(off, size, name)| {
+            off == output.addr.offset && size == output.size && name != "ebp" && name != "esp"
+        }) {
+            return false;
+        }
+        if let Some(value) = value_clause(table, output.addr.offset, output.size) {
+            if !decl.contains(&value) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// The WITNESSED caller-side `parm [..]` clause (docs/tasklist-2026-09-08.md item 5).
 ///
 /// A caller's declarator is `extern int f();`, so this clause is the only thing in the TU that

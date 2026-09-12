@@ -1004,6 +1004,39 @@ pub fn with_contract(name: &str, contract: Option<&str>, tu: String) -> String {
     }
 }
 
+/// Lower the own-function declaration for the Watcom emitter. Ghidra model names are
+/// decompiler notation, not necessarily keywords in the target C dialect. Once the concrete
+/// register contract is represented by the aux pragma/defaults, it replaces that notation.
+/// This applies only at the function-definition declaration, never to uses in the body or to
+/// raw PrintC output. Unsupported contracts retain their notation and fail visibly.
+pub fn with_watcom_contract(
+    name: &str,
+    f: &crate::decompile::Funcdata,
+    regs: &crate::recompile::pragma::WatcomRegs,
+    contract: Option<&str>,
+    mut tu: String,
+) -> String {
+    let model = &f.proto_model;
+    if model.print_in_decl && !model.name.is_empty()
+        && crate::recompile::pragma::model_represented_by_contract(f, &regs.table, contract)
+    {
+        let marker = format!(" {} {}(", model.name, f.name);
+        // A function definition occupies one declaration line followed by an opening brace.
+        // Its exact model and function identifiers come from the IR, not a keyword list.
+        if let Some(start) = tu.lines().scan(0, |offset, line| {
+            let start = *offset;
+            *offset += line.len() + 1;
+            Some((start, line))
+        }).find_map(|(start, line)| {
+            let pos = line.find(&marker)?;
+            tu.get(start + line.len()..)?.starts_with("\n{\n").then_some(start + pos + 1)
+        }) {
+            tu.replace_range(start..start + model.name.len() + 1, "");
+        }
+    }
+    with_contract(name, contract, tu)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

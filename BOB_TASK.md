@@ -21,12 +21,10 @@ Compiler lowering, full typed-pointer contracts, outputs and clobbers remain ope
 Typed scalar/flag results and compiler-spec extensions are now implemented and gated.
 #13 remains open for its nested result/input contracts. The active fix is #9's lost
 branch-selected input: its self-compiled regression failed before the port and now passes on
-both x86 variants. External input/branch validation matches the bytes. Default emission changes
-17/751 functions. The final workspace suite passed (1309/1309 executed tests, 23 ignored).
-The compiled comparison retains all 14 exact matches but exposes two new compilation failures;
-the target declaration fix passes its source-based regression and both compiled examples are
-EXACT. A stale-emission cache dependency was also reproduced and fixed; final corpus gates
-are being rerun with corrected fingerprinting before the package is committed.
+both x86 variants. External input/branch validation matches the bytes. The separate target
+syntax and cache fixes pass their regressions. The final corpus comparison changes 17/751 TUs
+for phi placement, with no verdict regressions; all eight gates pass. The repeat is stable with
+751/751 cached units. The final workspace run is in progress before the phi commit.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.
