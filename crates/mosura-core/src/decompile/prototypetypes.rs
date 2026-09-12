@@ -10,8 +10,10 @@ use super::fspec::{ProtoParameter, RegisterOutput, RegisterParameter};
 use super::types::Datatype;
 use super::{Address, Funcdata, OpCode};
 
-/// Parse `hex=REGISTER:type;hex=void`. Type widths are in bytes, as in Ghidra's
-/// core types. The selected language validates register existence and width.
+/// Parse `hex=REGISTER:type`, `hex=join(REG,REG,...):type` or `hex=void`,
+/// separated by semicolons. Joins list pieces most significant first. Composite
+/// types use `structN(offset:scalar,...)`, with explicit byte size and field offsets.
+/// The selected language validates register existence, overlap and total width.
 pub fn parse_function_outputs(text: &str) -> Result<BTreeMap<u64, RegisterOutput>, String> {
     let mut result = BTreeMap::new();
     if text.trim().is_empty() {
@@ -37,8 +39,16 @@ pub fn parse_function_outputs(text: &str) -> Result<BTreeMap<u64, RegisterOutput
                 datatype: Datatype::Void,
             }
         } else {
-            let p = parse_register_parameter(value, "output")?;
-            RegisterOutput { registers: vec![p.register], datatype: p.datatype }
+            let (storage, ty) = value.split_once(':').ok_or("expected register storage:type")?;
+            let storage = storage.trim();
+            let registers = if let Some(pieces) = storage.strip_prefix("join(") {
+                let pieces = pieces.strip_suffix(')').ok_or("expected join(REG,REG,...)")?;
+                let names = pieces.split(',').map(|s| parse_register_name(s.trim(), "output"))
+                    .collect::<Result<Vec<_>, _>>()?;
+                if names.len() < 2 { return Err("join storage needs at least two registers".into()); }
+                names
+            } else { vec![parse_register_name(storage, "output")?] };
+            RegisterOutput { registers, datatype: parse_output_type(ty.trim())? }
         };
         if result.insert(address, output).is_some() {
             return Err(format!("duplicate output declaration at {address:#x}"));
@@ -72,11 +82,20 @@ pub fn parse_function_inputs(text: &str) -> Result<BTreeMap<u64, Vec<RegisterPar
 
 fn parse_register_parameter(text: &str, kind: &str) -> Result<RegisterParameter, String> {
     let (register, ty) = text.split_once(':').ok_or("expected REGISTER:type")?;
-    let register = register.trim();
+    Ok(RegisterParameter {
+        register: parse_register_name(register.trim(), kind)?,
+        datatype: parse_scalar_type(ty.trim(), kind)?,
+    })
+}
+
+fn parse_register_name(register: &str, kind: &str) -> Result<String, String> {
     if register.is_empty() || !register.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         return Err(format!("invalid {kind} register `{register}`"));
     }
-    let ty = ty.trim();
+    Ok(register.into())
+}
+
+fn parse_scalar_type(ty: &str, kind: &str) -> Result<Datatype, String> {
     let datatype = match ty {
         "bool" => Datatype::Bool,
         "char" => Datatype::Char,
@@ -95,7 +114,29 @@ fn parse_register_parameter(text: &str, kind: &str) -> Result<RegisterParameter,
             }
         }
     };
-    Ok(RegisterParameter { register: register.into(), datatype })
+    Ok(datatype)
+}
+
+fn parse_output_type(ty: &str) -> Result<Datatype, String> {
+    let Some(layout) = ty.strip_prefix("struct") else { return parse_scalar_type(ty, "output") };
+    let (size, fields) = layout.split_once('(').ok_or("expected structN(offset:scalar,...)")?;
+    let size = size.parse::<u32>().ok().filter(|s| *s != 0).ok_or("invalid structure byte size")?;
+    let fields = fields.strip_suffix(')').ok_or("expected closing structure parenthesis")?;
+    let mut result = Vec::new();
+    let mut end = 0;
+    for field in fields.split(',') {
+        let (offset, datatype) = field.trim().split_once(':').ok_or("expected field offset:scalar")?;
+        let offset = offset.trim();
+        let offset = if let Some(hex) = offset.strip_prefix("0x").or_else(|| offset.strip_prefix("0X")) {
+            u64::from_str_radix(hex, 16)
+        } else { offset.parse::<u64>() }.map_err(|_| "invalid field byte offset")?;
+        let datatype = parse_scalar_type(datatype.trim(), "field")?;
+        if offset < end { return Err("structure fields must be ordered and non-overlapping".into()); }
+        end = offset.checked_add(u64::from(datatype.size())).ok_or("field extent overflow")?;
+        if end > u64::from(size) { return Err("field extends beyond structure size".into()); }
+        result.push((offset, datatype));
+    }
+    Ok(Datatype::Struct(size, result))
 }
 
 pub fn validate_function_outputs(

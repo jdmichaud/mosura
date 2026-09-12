@@ -8,7 +8,7 @@ use crate::fingerprint::Stage;
 use crate::key::{key, no_annotations, Key};
 use crate::options::{keys, parse_hex, Options};
 use crate::ops::program::program_of;
-use crate::ops::schemas::{CALLS, JUMPTABLES, PROTOTYPE};
+use crate::ops::schemas::{CALLS, JOINS, JUMPTABLES, PROTOTYPE};
 use crate::ops::{Cache, Op, Progress, Tier};
 use crate::render::text_table;
 use crate::session::{Provenance, Session, SetKind};
@@ -27,7 +27,7 @@ pub const EMIT_KEYS: &str = "emit.*";
 
 pub static DECOMPILE: Op = Op {
     name: "function.decompile",
-    doc: "decompile one function (entry) of a program: format=c (default) | raw | table:<prototype|jumptables|calls>",
+    doc: "decompile one function (entry) of a program: format=c (default) | raw | table:<prototype|joins|jumptables|calls>",
     since: "0.1",
     tier: Tier::Product,
     params: &["program", "entry", "format", keys::KNOBS_OFF, keys::DECOMPILE_GLOBAL_SCOPE, keys::DECOMPILE_PROTO_SCOPE, keys::DECOMPILE_INDIRECT_INPUTS, keys::DECOMPILE_FUNCTION_OUTPUTS, keys::DECOMPILE_FUNCTION_INPUTS, EMIT_KEYS],
@@ -67,6 +67,16 @@ pub fn fact_tables(f: &Funcdata, set: &mut TableSet) {
         b.row().u32(0).str("output").u32(out.addr.space.0).u64(out.addr.offset).u32(out.size).str(model);
     }
     set.insert("prototype", b.finish(false));
+    // Join addresses belong to this decompilation's logical space. Persist their
+    // physical pieces alongside the prototype so every stored address is interpretable.
+    let mut b = TableBuilder::new(&JOINS);
+    for join in f.spaces.joins() {
+        for (i, (addr, size)) in join.pieces.iter().enumerate() {
+            b.row().u32(join.addr.space.0).u64(join.addr.offset).u32(join.size)
+                .u32(i as u32).u32(addr.space.0).u64(addr.offset).u32(*size);
+        }
+    }
+    set.insert("joins", b.finish(true));
     let mut b = TableBuilder::new(&JUMPTABLES);
     for jt in &f.jumptables {
         for (i, t) in jt.targets.iter().enumerate() {
@@ -138,4 +148,3 @@ fn decompile(s: &mut Session, o: &Options, prog: &mut dyn Progress) -> Result<Ta
     s.write_set(SetKind::Function, &k, &set, &Provenance { stage: Stage::Decompile, op: DECOMPILE.name, inputs: &inputs, tag: &o.tag(), label: &format!("{entry:#x}") })?;
     pick(&set, &format)
 }
-

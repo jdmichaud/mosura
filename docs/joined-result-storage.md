@@ -13,8 +13,35 @@ For example, a 12-byte structure with three four-byte fields can use the logical
 `ECX, EBX, EAX`. On little-endian x86, field offsets 0, 4 and 8 then occupy EAX, EBX and ECX.
 These are explicit interface facts, independent of the compiler specification's default ABI.
 
-The public text option currently exposes scalar/flag declarations. Text syntax for joined
-storage, compiler lowering, mutable pointer outputs and automatic recovery remain open.
+`decompile.function-outputs` accepts the same storage through the CLI, Rust binding and C API:
+
+```text
+0x401012=join(ECX,EBX,EAX):struct12(0:uint4,4:uint4,8:uint4)
+```
+
+`join` lists physical registers from most significant to least significant. `structN` gives
+the exact byte size; each field specifies its byte offset and scalar type. Offsets are decimal
+or `0x` hexadecimal, ordered and non-overlapping, and every field must fit inside the structure.
+Gaps and trailing padding are explicit in the layout. Scalar types are `bool`, `char`, `intN`,
+`uintN`, `floatN` and `unknownN`; nested composite types are not part of this text grammar.
+Storage and type are independent: a join can also hold a scalar, and one register can hold a
+structure. Existing `hex=REGISTER:type` and `hex=void` declarations keep their meaning.
+Separate function declarations with semicolons.
+
+The declaration applies to both a function definition and its direct calls. Supply matching
+[input declarations](function-input-contracts.md) when the function also has non-default inputs.
+Omitting the output option on a later request restores ordinary recovery; declarations change
+the decompilation result key, including piece order and field types, without changing stored
+analysis. Compiler emission, mutable pointer outputs and automatic recovery remain separate work.
+
+`decompile <entry> --as table:joins` exposes the logical-to-physical storage records alongside
+the other function tables. Its columns are `join_space`, `join_offset`, `join_size`, `piece`,
+`space`, `offset` and `size`. `piece` is zero-based in significance order. The first three
+columns identify logical storage; the last three identify that piece in the program's physical
+address spaces. A joined prototype output's `(space, offset, size)` matches the corresponding
+`(join_space, join_offset, join_size)`. These records belong to the decompilation result, so
+they remain available when that result is read from the session store.
+Use the same declaration options when requesting `table:joins` as when requesting C or raw IR.
 
 ## Ported path
 
@@ -33,6 +60,8 @@ For a composite result, the downstream port retains the structure:
 
 PrintC consumes these facts as field assignments and field reads. It does not infer a custom
 ABI or provide compiler-specific assembly lowering.
+When a physical write divides a scalar field, it can retain Ghidra's partial-field notation
+such as `.field_0x8._0_1_`; making that notation compilable belongs to emission/TU lowering.
 
 ## Source-built witness
 

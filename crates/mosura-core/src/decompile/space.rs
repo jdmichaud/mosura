@@ -426,6 +426,9 @@ impl SpaceManager {
         self.joins.iter().find(|r| r.addr == addr)
     }
 
+    /// Logical storage records, in address-allocation order.
+    pub fn joins(&self) -> &[JoinRecord] { &self.joins }
+
     pub fn set_deadcode_delay(&mut self, space: SpaceId, delay: i32) {
         self.spaces[space.0 as usize].deadcodedelay = delay;
     }

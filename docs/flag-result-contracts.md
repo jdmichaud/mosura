@@ -71,8 +71,9 @@ implementation.
 
 The option participates in cache identity and is applied to both cached and thawed programs without
 changing later requests that omit it. It is accepted by `function.decompile`; compiler emission and
-round operations do not accept it. Multiple noncontiguous result registers, stack results, mutable
-pointer output declarations and custom compiler lowering remain separate work. This interface does
+round operations do not accept it. [Joined result declarations](joined-result-storage.md) now
+represent multiple noncontiguous registers as one typed value. Stack results, mutable pointer
+output declarations and custom compiler lowering remain separate work. This interface does
 not itself supply callee inputs. [Function input declarations](function-input-contracts.md)
 provide the matching definition/caller input list; automatic input-contract recovery is separate.
 

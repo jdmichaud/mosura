@@ -26,6 +26,93 @@ fn opts(pairs: &[(&str, &str)]) -> Options {
 }
 
 #[test]
+fn joined_results_preserve_storage_and_types_across_requests() {
+    let c = ctx();
+    let dir = mosura_core::paths::ground_truth_dir();
+    for bits in [32, 64] {
+        let stem = format!("register_results.gcc-x86-{bits}");
+        let truth = std::fs::read_to_string(dir.join(format!("{stem}.truth"))).unwrap();
+        let entry = |name: &str| truth.lines().find_map(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            (fields.first() == Some(&"func") && fields.get(3) == Some(&name))
+                .then(|| fields[1].to_string())
+        }).unwrap();
+        let producer = entry("produce");
+        let consumer = entry("consume");
+        let inputs = format!("{producer}=EDI:uint4;{consumer}=EDI:uint4");
+        let layout = "struct12(0:uint4,4:uint4,8:uint4)";
+        let outputs = format!("{producer}=join(ECX,EBX,EAX):{layout};{consumer}=EAX:uint4");
+        let request = |target: &str, output: &str, format: &str| opts(&[
+            ("entry", target), ("decompile.function-inputs", &inputs),
+            ("decompile.function-outputs", output), ("format", format),
+        ]);
+        let mut s = Session::open(None).unwrap();
+        s.add_input(&std::fs::read(dir.join(&stem)).unwrap(), &stem, None).unwrap();
+        dispatch(&c, &mut s, "program.analyze", &Options::new(), &mut NoProgress).unwrap();
+        let default = opts(&[("entry", &producer)]);
+        let baseline = text(&dispatch(&c, &mut s, "function.decompile", &default, &mut NoProgress).unwrap());
+        for (target, thaw) in [(&producer, false), (&consumer, true)] {
+            // The consumer's first request must thaw, rather than read a cached result set.
+            if thaw { s.last_program = None; }
+            let declared = request(target, &outputs, "c");
+            let output = text(&dispatch(&c, &mut s, "function.decompile", &declared, &mut NoProgress).unwrap());
+            for offset in [0, 4, 8] {
+                assert!(output.contains(&format!(".field_0x{offset:x}")), "{bits}/{target}: {output}");
+            }
+            assert!(!output.contains("CONCAT") && !output.contains("SUB124"), "{output}");
+            let keys = s.set_keys(SetKind::Function).unwrap();
+            assert_eq!(text(&dispatch(&c, &mut s, "function.decompile", &declared, &mut NoProgress).unwrap()), output);
+            let joins = dispatch(&c, &mut s, "function.decompile", &request(target, &outputs, "table:joins"), &mut NoProgress).unwrap();
+            let n = |row, name| joins.u64(row, joins.col(name).unwrap()).unwrap();
+            let rows: Vec<_> = (0..joins.rows()).filter(|&r| n(r, "join_size") == 12).collect();
+            assert_eq!(rows.len(), 3);
+            let (spec, _) = mosura_core::lang::load_cached(&format!("x86:LE:{bits}:default")).unwrap();
+            for (&r, reg) in rows.iter().zip(["ECX", "EBX", "EAX"]) {
+                assert_eq!(n(r, "offset"), spec.register_offset(reg).unwrap());
+                assert_eq!(n(r, "size"), 4);
+                assert_eq!(n(r, "piece"), r - rows[0]);
+            }
+            let stored = dispatch(&c, &mut s, "function.decompile", &request(target, &outputs, "table:joins"), &mut NoProgress).unwrap();
+            assert_eq!(stored.digest(), joins.digest(), "join facts survive result-set storage");
+            if target == &producer {
+                let proto = dispatch(&c, &mut s, "function.decompile", &request(target, &outputs, "table:prototype"), &mut NoProgress).unwrap();
+                let row = (0..proto.rows()).find(|&r| proto.str(r, proto.col("kind").unwrap()).unwrap() == "output").unwrap();
+                for (name, join_name) in [("space", "join_space"), ("offset", "join_offset"), ("size", "join_size")] {
+                    assert_eq!(proto.u64(row, proto.col(name).unwrap()).unwrap(), n(rows[0], join_name));
+                }
+            }
+            assert_eq!(s.set_keys(SetKind::Function).unwrap(), keys, "formats share one result set");
+        }
+        assert_eq!(text(&dispatch(&c, &mut s, "function.decompile", &default, &mut NoProgress).unwrap()), baseline);
+        let keys = s.set_keys(SetKind::Function).unwrap().len();
+        let swapped = format!("{producer}=join(EAX,EBX,ECX):{layout};{consumer}=EAX:uint4");
+        let output = text(&dispatch(&c, &mut s, "function.decompile", &request(&consumer, &swapped, "c"), &mut NoProgress).unwrap());
+        assert!(output.contains(".field_0x8 + ") && output.contains(".field_0x0;"), "piece order changes field reads:\n{output}");
+        let signed = outputs.replace("8:uint4", "8:int4");
+        let output = text(&dispatch(&c, &mut s, "function.decompile", &request(&producer, &signed, "c"), &mut NoProgress).unwrap());
+        assert!(output.contains("s12_u4u4i4"), "field types participate in the result:\n{output}");
+        assert_eq!(s.set_keys(SetKind::Function).unwrap().len(), keys + 2);
+        assert_eq!(s.set_keys(SetKind::Program).unwrap().len(), 1, "declarations do not change stored analysis");
+        for storage in ["join(EAX,NO_SUCH_REGISTER):uint8", "join(EAX,AX):struct6(0:uint4,4:uint2)",
+            "join(EAX,EBX):uint4", "join(EAX,eax):uint8"] {
+            let output = format!("{producer}={storage}");
+            assert!(matches!(dispatch(&c, &mut s, "function.decompile", &request(&producer, &output, "c"), &mut NoProgress),
+                Err(Error::InvalidArg(_))), "reject {storage}");
+        }
+        let emit = opts(&[("entry", &producer), ("decompile.function-outputs", &outputs)]);
+        assert!(matches!(dispatch(&c, &mut s, "function.emit", &emit, &mut NoProgress),
+            Err(Error::InvalidArg(_))), "compiler lowering is not supplied by a storage declaration");
+    }
+    for value in ["join():uint4", "join(EAX):uint4", "join(EAX,):uint8", "join(EAX,EBX):void",
+        "join(EAX,EBX):struct8()", "join(EAX,EBX):struct8(0:uint4,2:uint4)",
+        "join(EAX,EBX):struct8(4:uint4,0:uint4)", "join(EAX,EBX):struct8(5:uint4)",
+        "join(EAX,EBX):struct8(0:struct4(0:uint4))", "join(EAX,EBX):struct0(0:uint4)"] {
+        assert!(matches!(Options::new().set("decompile.function-outputs", &format!("123={value}")),
+            Err(Error::InvalidArg(_))), "reject {value}");
+    }
+}
+
+#[test]
 fn declared_function_inputs_are_typed_and_request_local() {
     let c = ctx();
     let dir = mosura_core::paths::ground_truth_dir();

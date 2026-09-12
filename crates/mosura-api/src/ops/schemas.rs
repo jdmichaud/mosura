@@ -13,6 +13,7 @@ pub static INSTRUCTIONS: Schema = Schema { name: "instructions", version: 1, col
 pub static PCODE: Schema = Schema { name: "pcode", version: 1, columns: &[C::hex("addr", T::U64), C::new("seq", T::U32), C::new("opcode", T::U32), C::new("mnemonic", T::Str), C::new("has_out", T::Bool), C::new("out_space", T::Str), C::hex("out_offset", T::U64), C::new("out_size", T::U32), C::new("in_spaces", T::Str), C::hex("in_offsets", T::ListU64), C::new("in_sizes", T::ListU32), C::new("text", T::Str)] };
 
 pub static PROTOTYPE: Schema = Schema { name: "prototype", version: 1, columns: &[C::new("idx", T::U32), C::new("kind", T::Str), C::new("space", T::U32), C::hex("offset", T::U64), C::new("size", T::U32), C::new("model", T::Str)] };
+pub static JOINS: Schema = Schema { name: "joins", version: 1, columns: &[C::new("join_space", T::U32), C::hex("join_offset", T::U64), C::new("join_size", T::U32), C::new("piece", T::U32), C::new("space", T::U32), C::hex("offset", T::U64), C::new("size", T::U32)] };
 pub static JUMPTABLES: Schema = Schema { name: "jumptables", version: 1, columns: &[C::hex("op_addr", T::U64), C::new("idx", T::U32), C::hex("target", T::U64), C::new("label", T::I64), C::new("is_default", T::Bool)] };
 pub static CALLS: Schema = Schema { name: "calls", version: 1, columns: &[C::hex("op_pc", T::U64), C::hex("target", T::U64), C::new("has_static_target", T::Bool)] };
 
@@ -47,7 +48,7 @@ pub static ROUNDS: Schema = Schema { name: "rounds", version: 1, columns: &[C::n
 pub static TOOLCHAIN_EVIDENCE: Schema = Schema { name: "toolchain_evidence", version: 1, columns: &[C::new("kind", T::Str), C::new("key", T::Str), C::new("a", T::U64), C::new("b", T::U64), C::new("detail", T::Str)] };
 pub static FID_NAMES: Schema = Schema { name: "fid_names", version: 1, columns: &[C::hex("addr", T::U64), C::new("name", T::Str), C::new("score", T::F64), C::new("plate", T::Str)] };
 
-pub static ALL: &[&Schema] = &[&TOOLCHAIN_EVIDENCE, &FID_NAMES, &OPS, &SCHEMA, &IDENTIFY, &PROGRAM_SUMMARY, &TABLES, &BYTES, &INSTRUCTIONS, &PCODE, &PROTOTYPE, &JUMPTABLES, &CALLS, &GLOBAL_WIDTHS, &EMIT_REPORT, &OPTION_REGISTRY, &FILES, &DATA, &LANGUAGES, &REGISTERS, &EMIT_AXES, &EMIT_ARMS, &TOOLCHAIN_SPECS, &TOOLCHAINS, &CHECK, &EMISSION, &BUILDCONFIG, &VERDICTS, &EQUIV, &DIVERGENCES, &DIFF, &GATES, &COMPARE, &ROUNDS, &COMPILE_UNITS, &COMPILE_OUTPUTS];
+pub static ALL: &[&Schema] = &[&TOOLCHAIN_EVIDENCE, &FID_NAMES, &OPS, &SCHEMA, &IDENTIFY, &PROGRAM_SUMMARY, &TABLES, &BYTES, &INSTRUCTIONS, &PCODE, &PROTOTYPE, &JOINS, &JUMPTABLES, &CALLS, &GLOBAL_WIDTHS, &EMIT_REPORT, &OPTION_REGISTRY, &FILES, &DATA, &LANGUAGES, &REGISTERS, &EMIT_AXES, &EMIT_ARMS, &TOOLCHAIN_SPECS, &TOOLCHAINS, &CHECK, &EMISSION, &BUILDCONFIG, &VERDICTS, &EQUIV, &DIVERGENCES, &DIFF, &GATES, &COMPARE, &ROUNDS, &COMPILE_UNITS, &COMPILE_OUTPUTS];
 
 pub fn by_name(name: &str) -> Option<&'static Schema> {
     ALL.iter().copied().find(|s| s.name == name)

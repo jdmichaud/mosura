@@ -13,7 +13,7 @@ Withdrawn consumer items were reconciled with the reporter's handoff and ledger.
 closure does not claim a mosura code fix.
 The [detailed tracker](docs/bob-issue-tracker.md) records evidence and commits; update both trackers.
 
-Validated declaration scopes: #1, #7, #9, #11, #14, #21, #25 and #32, using explicit decompilation declarations. Outside scope: #88's verified
+Validated declaration scopes: #1, #7, #8, #9, #11, #14, #21, #25 and #32, using explicit decompilation declarations. Outside scope: #88's verified
 consumer rewrite, 22 withdrawn consumer issues/proofs, two cleanup/shared-state reports whose requested behavior is absent from the original bytes,
 the local/global naming collisions, a loop-value constant substitution, and a packed-register
 width/order mismatch introduced in consumer rewrites.
@@ -39,11 +39,14 @@ loads, zero value and selector-dependent value with the enclosing inputs explici
 consumer dispatch change remains its own responsibility; nested output contracts remain open.
 #21 is validated for declared input consistency: all 31/31 native call PCs retain the
 four arguments, including computed positions and nested input sources.
-The active item is #8: represent multiple register results consistently at definitions and calls.
-Its three-register MVE now preserves the aggregate and all fields in both x86 modes, matching
-the mapped C++ oracle. The core workspace passes 1317/1317 tests (23 ignored), and the
-751-function corpus has no verdict movement, all eight gates green and a stable repeat.
-The public joined declaration surface is active; report closure awaits that API commit.
+#8 is now validated for explicit multiple-register result declarations at definitions and calls.
+Its three-register MVE preserves the aggregate and fields in both x86 modes, matching the
+mapped C++ oracle. Core: `f40a563b`; workspace 1317/1317 tests (23 ignored), with all eight
+corpus gates green and a stable 751-unit repeat. The public joined declaration surface and
+stored storage-piece table pass their API gates; default emission is unchanged for 751/751 TUs.
+The reported producer chain and its immediate consumers pass 1280/1280 IR value cases.
+This closes the declared result scope; automatic recovery, compiler lowering and later callbacks
+remain separate work. The next result scope to examine is #6 (a value and condition flag).
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.
@@ -52,7 +55,7 @@ The public joined declaration surface is active; report closure awaits that API 
 - [-] **#5** Consumer rewrite: its linear register substitution replaced preserved loop values with constants.
 - [ ] **#6** Results: represent a value and condition flag returned together.
 - [x] **#7** Input contracts: preserve explicit byte inputs at both reported indirect calls (validated scope).
-- [>] **#8** Results: preserve multiple register outputs consumed after a call.
+- [x] **#8** Results: preserve explicit multiple-register outputs at definitions and callers (validated scope).
 - [x] **#9** Data flow: preserve branches whose operands come from indirect-call contracts.
 - [-] **#10** Consumer contracts: packed byte values were preserved; the repair used the wrong width and order.
 - [x] **#11** Input contracts: preserve the explicit descriptor input at all four calls (validated scope).

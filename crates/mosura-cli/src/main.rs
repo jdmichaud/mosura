@@ -152,7 +152,7 @@ enum Cmd {
         func: Option<String>,
         #[arg(long)]
         all: bool,
-        /// c (default), raw, or table:<prototype|jumptables|calls>
+        /// c (default), raw, or table:<prototype|joins|jumptables|calls>
         #[arg(long = "as", value_name = "c|raw|table:NAME", default_value = "c")]
         as_: String,
     },

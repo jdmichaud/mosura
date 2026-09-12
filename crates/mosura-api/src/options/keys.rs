@@ -64,7 +64,7 @@ pub fn hand_written() -> Vec<OptionSpec> {
         spec!(DECOMPILE_PROTO_SCOPE, OptType::Scope, "all", Affects::Result, "which recovered prototypes a decompile consults: all, none, or a list of callee addresses"),
         spec!(DECOMPILE_INDIRECT_INPUTS, OptType::Str, "", Affects::Result, "declare input registers for mutable function-pointer slots: hex=REG,REG;hex=REG (register widths come from the language; no target or return value is assumed)"),
         spec!(DECOMPILE_FUNCTION_INPUTS, OptType::Str, "", Affects::Result, "declare ordered typed function inputs by entry: hex=REGISTER:type,...;hex=void (type widths in bytes; decompilation only)"),
-        spec!(DECOMPILE_FUNCTION_OUTPUTS, OptType::Str, "", Affects::Result, "declare typed function results by entry: hex=REGISTER:type;hex=void (type widths in bytes; decompilation only)"),
+        spec!(DECOMPILE_FUNCTION_OUTPUTS, OptType::Str, "", Affects::Result, "declare typed results: hex=REGISTER:type, hex=join(REG,REG,...):type or hex=void; separate entries with semicolons; join pieces most significant first; type may be structN(offset:scalar,...) (byte sizes; decompilation only)"),
         // input keys: WHAT an operation runs on; they enter a cache key as input digests
         spec!("input", OptType::Str, "", Affects::Input, "the session input a program operation runs on: a label or a digest (the only input when omitted)"),
         spec!("program", OptType::Str, "", Affects::Input, "the program key a function operation runs on (the last opened program when omitted)"),

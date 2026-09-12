@@ -107,7 +107,7 @@ explicit incoming inputs. A separate formatting helper receives its declared inp
 This is validation of `e482d6a8`/`f4a4e7cd`, not a new production change. The input scope is
 closed; custom compiler lowering and unrelated output/platform contracts remain open.
 
-## Active package: multiple register results
+## Completed package: declared multiple register results
 
 Related report: **#8**, with shared result-storage gaps in **#6, #18, #20, #22, #31** and
 other result reports. Inspect actual producer/caller IR and the C++ join-storage mechanism,
@@ -136,8 +136,28 @@ Do not infer an output contract from every register a function happens to write.
   zero similarity movers, no membership drift, no EXACT lost and all eight gates green.
   The repeat caches 751/751 TUs with zero flips or movers. A signed-half execution check
   passes all 50 combinations; its former cast-spelling assertion now checks signed reads.
-- [>] Expose and validate joined declarations through the public text option.
-- [ ] Recheck the reported producer chain before closing the result scope.
+  Core port: `f40a563b`; source fixture: `2820467c`.
+- [x] Expose and validate joined declarations through the public text option.
+  `decompile.function-outputs` now accepts `join(REG,REG,...):structN(offset:scalar,...)`.
+  The source-built i386/x86-64 API gate checks live, stored and thawed results, field types,
+  register order, later undeclared requests, invalid storage/layouts and emission refusal.
+  The `joins` table persists physical pieces and links them to logical prototype storage.
+  API library 20/20, function operations 6/6, table round-trip 5/5 (one ignored), and the
+  final focused joined-result gate 1/1 pass. Default emission remains byte-identical for
+  751/751 TUs relative to the core port, with the same arms stamp.
+- [x] Recheck the reported producer chain before closing the result scope.
+  Explicit declarations bind the three-register producer and its two nested EBX-to-EAX
+  transformations. The caller receives one aggregate and retains all three field uses:
+  the stored byte result, both zero predicates, both additions, clamps and the early mask.
+  A raw-IR expression evaluator passes 1280/1280 cases (15360 producer/consumer checks and
+  20 early-return checks), covering both producer modes, optional transformations, all five
+  byte values and paired ordinary/sign-boundary/wraparound inputs. Phi predecessor choices
+  are supplied from the native branches and checked against the printed conditions; this
+  is a data-flow audit, not a native execution or interrupt/atomic-behavior test.
+  The producer's byte/upper-zero field writes match the pinned C++ oracle on a separately
+  compiled byte-extension variant. PrintC keeps that partial-field notation faithfully.
+  Later callbacks, compiler lowering and automatic non-default output recovery remain open.
+
 
 ## Completed package: pointer records in mixed memory
 
@@ -339,8 +359,8 @@ alone does not close the entire indirect-call class.
 - [ ] **Shared global storage (#4; distinguish downstream #26 and naming #27).** Reproduce
   overlapping reads/writes in self-compiled source and check the existing address-based linker
   aliases and typed views before deciding whether the emitter/TU layer needs a fix.
-- [ ] **Multiple result registers (#6, #8, #18, #20, #22, #31 and related reports).** Establish
-  the prototype/return-storage gap and keep caller and callee contracts consistent.
+- [ ] **Multiple result registers (#6, #18, #20, #22, #31 and related reports; #8 declared scope validated).**
+  Audit each remaining protocol and its input/flag consumers using the joined-result mechanism.
 - [ ] **Invented input parameters (#2 and related reports).** Separate missing return channels
   from unsupported external convention facts; validate against current code.
 - [ ] **Partial registers and loops (#40, #66; #32 validated, #5 and #10 reviewed separately).** Distinguish mosura defects from
@@ -411,7 +431,7 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #5 | Consumer loop-value substitution. | Outside scope: archived raw output preserves the loop expression; the consumer rewrite introduced the constant |
 | #6 | Results: represent a value and condition flag returned together. | Queued |
 | #7 | Explicit byte inputs at indirect calls. | Validated input scope: both calls retain the original size-1 value; separate storage-order witness remains open |
-| #8 | Results: preserve multiple register outputs consumed after a call. | Active: source MVE and join-storage prototype port |
+| #8 | Results: preserve multiple register outputs consumed after a call. | Validated declaration scope: join heritage/composite consumers, public API, source-built gate and reported result chain; automatic recovery and compiler lowering remain open |
 | #9 | Data flow: preserve branches whose operands come from indirect-call contracts. | Fixed: full-write-set phi placement; source MVE, external input/branch witness, workspace and corpus gates validated |
 | #10 | Consumer packed-register width/order mismatch. | Outside scope: all four packed words already survive in archived raw output; the consumer requested the wider register and remapped arguments incorrectly |
 | #11 | Explicit descriptor inputs through mutable hooks. | Validated input scope: all four calls match native argument setup; consumer installation/coordinate changes excluded |
