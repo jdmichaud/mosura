@@ -54,7 +54,9 @@ audits. Source fixture: `768900d3`; semantic gate: `627d12ea`. The full workspac
 1319/1319 tests pass, 23 ignored, including ground truth 41/41 and IR parity 9/9.
 No production change was needed. Callback effects, complete outer loops, automatic recovery
 and compiler lowering remain outside this validation.
-The active item is #18: audit the paired result, its nested producer inputs and caller stores.
+The active item is #18. Its paired result is preserved with complete nested declarations,
+but native/C comparison exposed a generic widened-multiplication rendering defect. A source
+MVE reproduces the missing casts on i386; the mapped C++ oracle retains them on both modes.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.

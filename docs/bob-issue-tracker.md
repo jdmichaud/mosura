@@ -113,10 +113,22 @@ Related report: **#18**. Audit the source of both result fields through nested c
 check the caller's adjacent stores and uses under the same declaration. Distinguish result
 storage from automatic ABI recovery and shared-global type/aliasing work.
 
-- [>] Compare the current producer/caller graph and declarations with native instructions.
+- [x] Compare the current producer/caller graph and declarations with native instructions.
+  Complete nested declarations retain both result fields and the initial paired store.
+  A deeper helper also needs an explicit input/result declaration; the first declaration set
+  had omitted it. The source of the reported second result is now bound throughout the chain.
 - [ ] Validate nested input/result contracts and both returned values across boundary inputs.
 - [ ] Check the caller's paired stores and subsequent field uses.
-- [ ] Reduce any new defect to a source-built MVE before changing production code.
+- [x] Reduce the widened-multiplication defect to a source-built MVE before changing production code.
+  Native instruction execution disagrees with recovered host C on 131 of 135 sampled leaf
+  inputs. A self-compiled i386 MVE has the required 64-bit IR but omits its widening casts
+  in C; the same x86-64 MVE retains them. The mapped C++ oracle retains the casts on both.
+  The instrument points to an unconditional printer rule that guesses integer capability
+  from stack-pointer width. It is unrelated to the declared result storage itself.
+  `widened_product.S` supplies unsigned and signed products on both x86 modes. The new
+  ground-truth gate fails on i386 after its IR value checks pass: the printed multiplication
+  has four-byte operands and loses high bits. The mapped oracle keeps both eight-byte casts.
+- [>] Restore faithful extension printing, measure emission effects, and validate the full chain.
 
 ## Completed validation: value and condition-flag results
 

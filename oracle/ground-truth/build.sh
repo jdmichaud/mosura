@@ -202,6 +202,16 @@ if have gcc && have objcopy; then
     rm -f "value_flag_result.gcc-x86-$bits.unstripped"
   done
 
+  # Widened multiplication must keep its high bits when rendered on either pointer width.
+  for bits in 32 64; do
+    gcc -m"$bits" -nostdlib -static -no-pie -Wl,-e,_start src/widened_product.S \
+      -o "widened_product.gcc-x86-$bits.unstripped"
+    derive_truth_elf "widened_product.gcc-x86-$bits.unstripped" widened_product gcc "x86-$bits" \
+      "x86:LE:$bits:default" ""
+    strip -o "widened_product.gcc-x86-$bits" "widened_product.gcc-x86-$bits.unstripped"
+    rm -f "widened_product.gcc-x86-$bits.unstripped"
+  done
+
   # A callback input whose predecessor definitions require a phi despite its call-output guard.
   for bits in 32 64; do
     gcc -m"$bits" -nostdlib -static -no-pie -Wl,-e,_start src/branch_argument.S -o branch_argument.gcc-x86-"$bits".unstripped
