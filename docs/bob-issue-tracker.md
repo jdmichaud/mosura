@@ -2,7 +2,8 @@
 
 Updated 2026-09-12. Owner: Alice. Working branch: `fix/global-symbol-views`.
 
-Short checklist: [BOB_TASK.md](../BOB_TASK.md). Its markers are `[ ]` queued/triage,
+The untracked `BOB_TASK.md` checklist lives in the repository's parent directory.
+Its markers are `[ ]` queued/triage,
 `[>]` active, `[x]` fixed and validated for the stated scope, and `[-]` outside scope/not planned.
 
 This tracks mosura work against Bob's numbered defect ledger. The latest local ledger has

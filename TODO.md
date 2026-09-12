@@ -3,8 +3,8 @@
 **The plan: [`docs/port-plan.md`](docs/port-plan.md).** How to work: [`AGENT.md`](AGENT.md).
 Per-feature notes/gotchas: `.claude/memory/mosura-project.md`.
 
-**Active liaison work:** [Bob's checklist](BOB_TASK.md) and
-[detailed issue tracker](docs/bob-issue-tracker.md), maintained by Alice.
+**Liaison work:** [detailed issue tracker](docs/bob-issue-tracker.md), maintained by Alice.
+The short checklist is kept in the repository's parent directory, outside Git.
 
 ## Direction (read this first)
 
