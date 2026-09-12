@@ -167,6 +167,11 @@ if have gcc && have objcopy; then
   derive_truth_elf indirect_contract.gcc-x86-64.unstripped indirect_contract gcc x86-64 "x86:LE:64:default" ""
   strip -o indirect_contract.gcc-x86-64 indirect_contract.gcc-x86-64.unstripped
   rm -f indirect_contract.gcc-x86-64.unstripped
+
+  gcc -nostdlib -static -no-pie -Wl,-e,_start src/flag_result.S -o flag_result.gcc-x86-64.unstripped
+  derive_truth_elf flag_result.gcc-x86-64.unstripped flag_result gcc x86-64 "x86:LE:64:default" ""
+  strip -o flag_result.gcc-x86-64 flag_result.gcc-x86-64.unstripped
+  rm -f flag_result.gcc-x86-64.unstripped
 fi
 # Core (A1) + construct-stressing (A7 bug-hunt): recursion, tail calls, sparse switch, computed
 # goto, struct-by-value/return, deep call chain, byte/string loops, float/double.
