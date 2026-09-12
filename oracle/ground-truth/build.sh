@@ -215,6 +215,16 @@ if have gcc && have objcopy; then
     rm -f "function_inputs.gcc-x86-$bits.unstripped"
   done
 
+  # Non-contiguous three-register result storage at a producer and its consumer.
+  for bits in 32 64; do
+    gcc -m"$bits" -nostdlib -static -no-pie -Wl,-e,_start src/register_results.S \
+      -o "register_results.gcc-x86-$bits.unstripped"
+    derive_truth_elf "register_results.gcc-x86-$bits.unstripped" register_results gcc "x86-$bits" \
+      "x86:LE:$bits:default" ""
+    strip -o "register_results.gcc-x86-$bits" "register_results.gcc-x86-$bits.unstripped"
+    rm -f "register_results.gcc-x86-$bits.unstripped"
+  done
+
   # Isolated pointer fields with identical code but separate versus mixed executable memory.
   for bits in 32 64; do
     for layout in separate mixed; do

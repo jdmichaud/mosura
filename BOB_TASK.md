@@ -40,6 +40,8 @@ consumer dispatch change remains its own responsibility; nested output contracts
 #21 is validated for declared input consistency: all 31/31 native call PCs retain the
 four arguments, including computed positions and nested input sources.
 The active item is #8: represent multiple register results consistently at definitions and calls.
+Its three-register MVE is compiled for both x86 modes; the C++ oracle confirms one aggregate
+result with three field extractions. The declaration and join-storage port remains in progress.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.

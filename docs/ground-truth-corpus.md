@@ -70,6 +70,7 @@ oracle/ground-truth/
 | `z80prog`  | z80 call graph + a `jp (hl)` jump-table switch | sdcc z80 |
 | `watprog`  | Watcom call graph + a jump-table switch | wcc386 x86-32 |
 | `function_inputs` | explicit register input order/types, high byte, unused input, deindirection restart | gcc x86-32/x86-64 |
+| `register_results` | three independent results in non-contiguous register storage, all consumed after the call | gcc x86-32/x86-64 |
 | `function_input_extension` | declared narrow input extended by the compiler specification | clang AArch64 |
 | `record_pointer_separate`, `record_pointer_mixed` | isolated pointer records, instruction boundaries, and mixed executable/data memory | gcc x86-32/x86-64 |
 

@@ -1,0 +1,7 @@
+# mosura-ground-truth v1 program=register_results compiler=gcc arch=x86-32 lang=x86:LE:32:default
+# derived-from=register_results.gcc-x86-32.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 08049000
+func 08049000 00000010 _start code
+func 08049010 0000000f produce code
+func 0804901f 0000000a consume code

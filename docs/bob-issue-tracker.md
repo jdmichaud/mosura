@@ -1,6 +1,6 @@
 # Bob's issue tracker
 
-Updated 2026-09-12. Owner: Alice. Working branch: `audit/shared-helper-inputs`.
+Updated 2026-09-12. Owner: Alice. Working branch: `fix/multiple-register-results`.
 
 Short checklist: [BOB_TASK.md](../BOB_TASK.md). Its markers are `[ ]` queued/triage,
 `[>]` active, `[x]` fixed and validated for the stated scope, and `[-]` outside scope/not planned.
@@ -113,6 +113,19 @@ Related report: **#8**, with shared result-storage gaps in **#6, #18, #20, #22, 
 other result reports. Inspect actual producer/caller IR and the C++ join-storage mechanism,
 then compile a minimal source-owned multi-result protocol and demonstrate its failing gate.
 Do not infer an output contract from every register a function happens to write.
+
+- [x] Inspect the current producer and caller IR against the native instructions.
+  The caller still uses incoming EBX/ECX values; its producer has no return operand.
+- [x] Compile a generic three-register producer/consumer MVE for i386 and x86-64.
+  Both build-derived truth files contain the same three named functions. The protocol
+  supplies one input and three independent outputs; the consumer uses every output.
+- [x] Capture the pinned C++ oracle with identical explicit storage and type facts.
+  Both architectures return a 12-byte aggregate in join storage (ECX, EBX, EAX in
+  significance order). Each caller extracts offsets 8, 4 and 0 from that one CALL
+  result. The producer and caller C agree on the aggregate and its three fields.
+- [>] Add the declaration-to-producer/caller regression and port the join-storage consumers.
+- [ ] Validate the public declaration surface, default emission and workspace gates.
+- [ ] Recheck the reported producer chain before closing the result scope.
 
 ## Completed package: pointer records in mixed memory
 
