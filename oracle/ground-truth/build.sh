@@ -199,6 +199,16 @@ if have gcc && have objcopy; then
   strip -o model_declaration.gcc-x86-32 model_declaration.gcc-x86-32.unstripped
   rm -f model_declaration.gcc-x86-32.unstripped
 
+  # Mapped function inputs: a full register, a high byte, a nested call and an unused input.
+  for bits in 32 64; do
+    gcc -m"$bits" -nostdlib -static -no-pie -Wl,-e,_start src/function_inputs.S \
+      -o "function_inputs.gcc-x86-$bits.unstripped"
+    derive_truth_elf "function_inputs.gcc-x86-$bits.unstripped" function_inputs gcc "x86-$bits" \
+      "x86:LE:$bits:default" ""
+    strip -o "function_inputs.gcc-x86-$bits" "function_inputs.gcc-x86-$bits.unstripped"
+    rm -f "function_inputs.gcc-x86-$bits.unstripped"
+  done
+
   # Isolated pointer fields with identical code but separate versus mixed executable memory.
   for bits in 32 64; do
     for layout in separate mixed; do

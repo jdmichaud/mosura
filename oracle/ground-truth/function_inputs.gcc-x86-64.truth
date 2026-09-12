@@ -1,0 +1,8 @@
+# mosura-ground-truth v1 program=function_inputs compiler=gcc arch=x86-64 lang=x86:LE:64:default
+# derived-from=function_inputs.gcc-x86-64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 0000000000401000
+func 0000000000401000 000000000000003a _start code
+func 000000000040103a 0000000000000008 combine code
+func 0000000000401042 000000000000000c relay code
+func 000000000040104e 0000000000000005 unused code

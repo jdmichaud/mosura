@@ -29,6 +29,7 @@ find exactly 5/5 functions, the reported callback's 38-byte body is recovered, d
 is identical for 751/751 TUs, and the final workspace passes 1313/1313 tests (23 ignored).
 The target-boundary correction is `11490ba0`; mixed-memory coverage is `a7186842`.
 The active item is #14: declare non-default function inputs consistently at definitions and calls.
+A source-built i386/x86-64 fixture and mapped C++ oracle now pin the next declaration contract.
 Current high-byte call-input checks also show that enclosing function input declarations remain
 necessary; preserving an argument alone does not define the function's incoming register state.
 

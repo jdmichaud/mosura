@@ -1,6 +1,6 @@
 # Bob's issue tracker
 
-Updated 2026-09-12. Owner: Alice. Working branch: `docs/packed-register-triage`.
+Updated 2026-09-12. Owner: Alice. Working branch: `fix/declared-function-inputs`.
 
 Short checklist: [BOB_TASK.md](../BOB_TASK.md). Its markers are `[ ]` queued/triage,
 `[>]` active, `[x]` fixed and validated for the stated scope, and `[-]` outside scope/not planned.
@@ -18,8 +18,18 @@ Related reports: **#14**, with shared declaration gaps in **#21, #25, #32**.
 - [x] Inspect current explicit high-byte call inputs against the reported instructions.
   All five AH call operands retain their loads/constants and the conditional selection.
   The enclosing function still has undeclared incoming state, so #32 remains open.
-- [>] Reduce the function-definition input contract to a source-built MVE and compare the
-  pinned C++ oracle's mapped parameters before porting its locked-input machinery.
+- [x] Reduce the function-definition input contract to source-built i386 and x86-64 MVEs.
+  The protocol has EDI:uint4 and AH:uint1 inputs, an EAX:uint4 result, a nested direct call
+  and an intentionally unused declared parameter. Both default analyses find all 4/4 functions.
+  The existing source/build ground-truth gate passes with both added fixtures (1/1 test).
+- [x] Dump the pinned C++ oracle with mapped parameters and results. Both architectures
+  retain the exact input storage/order at definitions and calls, including the unused input.
+  The i386 EDI offset is 0x1c; the x86-64 offset is 0x38, checked against the language tables.
+  Current mosura lacks the corresponding function declarations; its raw C exposes missing
+  incoming values. This is a feature gap, not a comparison under identical supplied facts.
+- [>] Add the declaration-to-definition/caller regression before porting the locked-input
+  branches of ActionPrototypeTypes and ActionInputPrototype. Retain declaration provenance
+  so explicit inputs are not confused with speculative recovered prototypes.
 - [ ] Bind one declared input contract consistently at the definition and its direct calls.
 - [ ] Validate storage, width, order, restarts and unchanged defaults; then validate report scopes.
 
