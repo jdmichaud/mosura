@@ -50,6 +50,12 @@ pub struct Funcdata {
     /// analysis discovered something that invalidates the whole decompile, so the root
     /// `ActionRestartGroup` should clear and re-run it. Set by [`super::heritage::bump_deadcode_delay`].
     pub restart_pending: bool,
+    /// The global function database visible to `ActionDeindirect::queryFunction`.
+    /// Empty for an isolated fixture with no function/prototype database.
+    pub known_functions: std::collections::HashSet<Address>,
+    /// Ghidra `Override::indirectover`: proven indirect targets by call-site address.
+    /// Survives rebuilding the graph so argument recovery sees the callee before DCE.
+    pub indirect_overrides: std::collections::HashMap<Address, Address>,
     /// Ghidra's per-space `HeritageInfo::deadremoved` (heritage.hh), latched by
     /// `Heritage::deadRemovalAllowedSeen`. mosura derives `HeritageInfo` fresh on every
     /// `build_info_list` call, so the latch needs a persistent home; this is it, indexed by
@@ -430,6 +436,8 @@ impl Funcdata {
             create_index: 0,
             clean_up_index: 0,
             restart_pending: false,
+            known_functions: std::collections::HashSet::new(),
+            indirect_overrides: std::collections::HashMap::new(),
             deadremoved: Vec::new(),
             deadcode_delay_override: std::collections::HashMap::new(),
             unique_offset: 0x10000,

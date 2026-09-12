@@ -123,6 +123,15 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
         // Which Ghidra global-scope context this decompile models is the PROGRAM's property —
         // application (default) or standalone — see `Program::global_scope_all_loaded`.
         f.global_scope_all_loaded = program.global_scope_all_loaded;
+        // Ghidra's global function lookup, including prototypes supplied by callers
+        // even when a function has not yet been added to the analysis manager.
+        f.known_functions = entries.iter().copied()
+            .chain(program.recovered_protos.keys().copied())
+            .map(|offset| Address::new(entry.space, offset)).collect();
+        if let Some(previous) = prev {
+            f.indirect_overrides = previous.indirect_overrides.clone();
+            crate::decompile::deindirect::apply_overrides(&mut f);
+        }
         // CALLEE-EVIDENCE EFFECTS, before the pipeline: for each direct call, record which
         // registers the CALLEE overwrites that the default convention calls `<unaffected>`.
         // `guard_calls` consults this per call site, so a callee that does not honour the

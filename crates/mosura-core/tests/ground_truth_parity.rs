@@ -19,6 +19,81 @@ use mosura_core::decompile::printc::print_c;
 use mosura_core::decompile::space::Address;
 use mosura_core::paths::ground_truth_dir;
 
+/// The callee's known prototype must reach both constant-target indirect calls,
+/// including the branch whose argument setup was eliminated before target recovery.
+/// A writable slot with the same initializer remains indirect: its initial bytes
+/// do not establish which target a later caller will observe.
+#[test]
+fn known_indirect_target_restores_both_call_contracts() {
+    use mosura_core::decompile::opcode::OpCode;
+    let bin = ground_truth_dir().join("indirect_contract.gcc-x86-64");
+    let truth = parse_truth(&std::fs::read_to_string(ground_truth_dir()
+        .join("indirect_contract.gcc-x86-64.truth")).unwrap());
+    let entry = |name: &str| truth.funcs.iter().find(|(_, n)| n == name).unwrap().0;
+    let mut program = analysis::analyze_file(&bin).expect("analyze indirect-contract MVE");
+    program.recovered_protos = analysis::interface::recover_prototypes_of(
+        &program, vec![entry("target"), entry("alternate")],
+    );
+    let target = entry("target");
+    assert_eq!(program.recovered_protos[&target].params.len(), 2, "callee has two source arguments");
+    let f = decompile_function(&program, Address::new(program.default_space, entry("literal")))
+        .expect("literal decompiles");
+    let calls: Vec<_> = f.op_ids().filter(|&id| !f.op(id).is_dead()
+        && matches!(f.op(id).code(), OpCode::Call | OpCode::Callind)).collect();
+    assert_eq!(calls.len(), 2, "both branches must retain their call");
+    for id in calls {
+        let op = f.op(id);
+        assert_eq!(op.code(), OpCode::Call, "known target must become direct:\n{}", f.print_raw());
+        assert_eq!(f.vn(op.input(0).unwrap()).loc.offset, target);
+        assert_eq!(op.num_inputs(), 3, "both original arguments must survive:\n{}", f.print_raw());
+        for (slot, value) in [(1, 11), (2, 22)] {
+            let vn = f.vn(op.input(slot).unwrap());
+            assert!(vn.is_constant(), "argument {slot} must retain the source constant");
+            assert_eq!(vn.constant_value(), value);
+        }
+    }
+    let f = decompile_function(&program, Address::new(program.default_space, entry("writable_call")))
+        .expect("writable call decompiles");
+    assert!(f.op_ids().any(|id| !f.op(id).is_dead() && f.op(id).code() == OpCode::Callind),
+        "a replaceable vector must remain indirect:\n{}", f.print_raw());
+
+    // The source declares BX/BP as arguments: default SysV cannot infer this
+    // protocol. A supplied prototype must preserve the exact custom storage.
+    use mosura_core::decompile::fspec::{FuncProto, ParamEntry, ParamList, ProtoSlot};
+    let (spec, _) = mosura_core::lang::load_cached(&program.language_id).unwrap();
+    let register = f.spaces.by_name("register").unwrap();
+    let slot = |name: &str| ProtoSlot {
+        addr: Address::new(register, spec.register_offset(name).unwrap()),
+        size: spec.register_size(name).unwrap(),
+    };
+    let params = vec![slot("BX"), slot("BP")];
+    let mut model = f.proto_model.clone();
+    model.name = "custom_bx_bp".into();
+    model.input = Some(ParamList {
+        entry: params.iter().enumerate().map(|(i, p)| ParamEntry {
+            group: i as u32, type_class: 0, space: p.addr.space,
+            addressbase: p.addr.offset, size: p.size, minsize: 1, alignment: 0,
+        }).collect(),
+        resource_start: vec![0, 2], is_output: false,
+    });
+    program.recovered_protos.insert(entry("custom_target"), FuncProto {
+        params, output: Some(slot("EAX")), model: Some(model),
+    });
+    let f = decompile_function(&program, Address::new(program.default_space, entry("custom_literal")))
+        .expect("custom call decompiles");
+    let call = f.op_ids().find(|&id| !f.op(id).is_dead() && f.op(id).code() == OpCode::Call)
+        .expect("custom target becomes direct");
+    assert_eq!(f.op(call).num_inputs(), 3, "custom BX/BP arguments must survive:\n{}", f.print_raw());
+    for (index, value) in [(1, 33), (2, 44)] {
+        let vn = f.vn(f.op(call).input(index).unwrap());
+        assert!(vn.is_constant(), "custom argument must retain its source constant");
+        assert_eq!(vn.size, 2, "custom argument width comes from the contract");
+        assert_eq!(vn.constant_value(), value);
+    }
+
+
+}
+
 struct Truth {
     program: String,
     compiler: String,

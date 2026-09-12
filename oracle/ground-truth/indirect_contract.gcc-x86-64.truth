@@ -1,0 +1,15 @@
+# mosura-ground-truth v1 program=indirect_contract compiler=gcc arch=x86-64 lang=x86:LE:64:default
+# derived-from=indirect_contract.gcc-x86-64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 0000000000401000
+func 0000000000401000 0000000000000033 _start code
+func 0000000000401033 0000000000000004 target code
+func 0000000000401037 0000000000000005 alternate code
+func 000000000040103c 0000000000000021 literal code
+func 000000000040105d 0000000000000011 readonly_call code
+func 000000000040106e 0000000000000011 writable_call code
+func 000000000040107f 000000000000000f replace_slot code
+func 000000000040108e 0000000000000009 custom_target code
+func 0000000000401097 0000000000000015 custom_literal code
+func 00000000004010ac 0000000000000012 custom_writable code
+func 00000000004010be 000000000000001b custom_load code

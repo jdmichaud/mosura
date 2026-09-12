@@ -161,6 +161,13 @@ build_elf() {
 #     arch-neutral source per program; the per-arch process-exit shim is src/shim.h. -O2 so the
 #     dense switches become jump tables. ------------------------------------------------------
 GCC_FLAGS="-nostdlib -static -no-pie -O2 -ffreestanding -fno-asynchronous-unwind-tables"
+# Assembly keeps the indirect calls and the shared pre-branch argument setup intact.
+if have gcc && have objcopy; then
+  gcc -nostdlib -static -no-pie -Wl,-e,_start src/indirect_contract.S -o indirect_contract.gcc-x86-64.unstripped
+  derive_truth_elf indirect_contract.gcc-x86-64.unstripped indirect_contract gcc x86-64 "x86:LE:64:default" ""
+  strip -o indirect_contract.gcc-x86-64 indirect_contract.gcc-x86-64.unstripped
+  rm -f indirect_contract.gcc-x86-64.unstripped
+fi
 # Core (A1) + construct-stressing (A7 bug-hunt): recursion, tail calls, sparse switch, computed
 # goto, struct-by-value/return, deep call chain, byte/string loops, float/double.
 ELF_PROGS_ALL="arith dispatch tables strdata fnptr recursion tailcall sparseswitch compgoto structval deepchain strloop floats"

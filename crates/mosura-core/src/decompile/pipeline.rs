@@ -1412,8 +1412,7 @@ pub fn universal_action() -> ActionGroup {
                         // while recover_stack resolved stack stores pre-pool — saw the raw 4-byte
                         // SUBPIECEs and over-split; task #8 Brick D retired that ordering.) Inert
                         // unless the Funcdata carries laned-register records (parsed from the
-                        // pspec by the build caller). Absent members join at their slots when
-                        // ported: ActionDeindirect (:5655).
+                        // pspec by the build caller).
                         // ActionMultiCse (:5653) and ActionShadowVar (:5654) are in place, in
                         // Ghidra's order directly after LaneDivide.
                         .then(
@@ -1425,6 +1424,9 @@ pub fn universal_action() -> ActionGroup {
                                 // merely shadows an earlier one in the same block — same inputs in
                                 // the same branch order — becomes a COPY of it.
                                 .then(super::multicse::ActionShadowVar)
+                                // ActionDeindirect (:5655): known constant targets, with an
+                                // override/restart when the callee contract arrives after DCE.
+                                .then(super::deindirect::ActionDeindirect)
                                 // ActionStackPtrFlow (:5656, group `stackptrflow`): repair stack-
                                 // pointer clogs, then run the linear analysis that resolves the
                                 // stack-pointer change across calls whose extrapop is unknown. It
@@ -1706,7 +1708,12 @@ pub fn decompile_with_restart(data: &mut Funcdata, mut rebuild: impl FnMut(&mut 
     while data.restart_pending && restarts < MAX_RESTARTS {
         restarts += 1;
         let carried = std::mem::take(&mut data.deadcode_delay_override);
+        let indirect = std::mem::take(&mut data.indirect_overrides);
+        let functions = std::mem::take(&mut data.known_functions);
         rebuild(data);
+        data.indirect_overrides = indirect;
+        data.known_functions = functions;
+        super::deindirect::apply_overrides(data);
         data.deadcode_delay_override = carried;
         data.apply_deadcode_delay_override();
         decompile(data);

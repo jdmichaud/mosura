@@ -44,6 +44,7 @@ pub mod recover;
 pub mod restrictlocal;
 pub mod subvarflow;
 pub mod divopt;
+pub mod deindirect;
 pub mod printc;
 pub mod ptrarith;
 pub mod rules;
