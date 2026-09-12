@@ -30,6 +30,13 @@ The draft declaration option is limited to decompilation. Compiler lowering of c
 conventions, full typed-pointer propagation, outputs and clobbers remain open. Restoring inputs
 alone does not close the entire indirect-call class.
 
+## Completed triage
+
+- [x] **#88: transparent-byte comparison.** The unmodified raw emission supplied with the
+  report uses `char *` and compares its byte to `-1`. The current CLI does the same. The
+  `(uint8_t)0xff` comparison quoted by the report is absent from both raw outputs, so the
+  signed/unsigned mismatch was introduced downstream. No mosura printer change is indicated.
+
 ## Next work packages
 
 - [ ] **Shared global storage (#4; distinguish downstream #26 and naming #27).** Reproduce
@@ -142,17 +149,17 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #83 | The status strip a game drew stayed on screen behind the front end | Downstream review |
 | #84 | The cursor cover did not say whether it still held anything (latent) | Downstream review |
 | #85 | Drawing the cursor twice with no erase between poisons its own cover | Downstream review |
-| #86 | A driver-table call went out with three of its seven arguments undefined | Triage |
-| #87 | The PREFERENCES page did nothing, because its action routine was never decompiled | Triage |
-| #88 | Every transparent pixel of every cached sprite was painted (the 320x240 ball rack) | Triage |
-| #89 | Mouse gain grew with the frame time, so the pointer's speed changed with the resolution | Triage |
-| #90 | The play tick stored its own parameters where the mouse's deltas belonged | Triage |
+| #86 | A driver-table call went out with three of its seven arguments undefined | Queued: seven-register indirect input contract |
+| #87 | The PREFERENCES page did nothing, because its action routine was never decompiled | Reproduced: opt-in scan skips the native image’s mixed code/data block; MVE pending |
+| #88 | Every transparent pixel of every cached sprite was painted (the 320x240 ball rack) | Closed triage: supplied raw and current CLI both compare signed byte to -1; downstream rewrite |
+| #89 | Mouse gain grew with the frame time, so the pointer's speed changed with the resolution | Downstream review: shim event accumulation |
+| #90 | The play tick stored its own parameters where the mouse's deltas belonged | Queued: multiple result registers |
 | #91 | The PREFERENCES audit (not a defect - a proof) | Downstream review |
-| #92 | Every click in PREFERENCES blanked the window it was drawn in | Triage |
-| #93 | The page clear wiped one page of four, so a shrunken view kept the old screen around it | Triage |
-| #94 | The line clipper read its segment in the wrong register order, then drew it unclipped | Triage |
-| #95 | The line editor drew neither its box nor anything typed into it | Triage |
-| #96 | Save Game never wrote its file, and Load Game never read one | Triage |
-| #97 | Load Game read the file and answered as if nothing had happened | Triage |
-| #98 | The line editor abandoned itself or not on whatever the stack held | Triage |
-| #99 | Load Game with nothing saved gave every game the trick-shot message | Triage |
+| #92 | Every click in PREFERENCES blanked the window it was drawn in | Queued: indirect input order and widths |
+| #93 | The page clear wiped one page of four, so a shrunken view kept the old screen around it | Downstream review: shim clears wrong memory span |
+| #94 | The line clipper read its segment in the wrong register order, then drew it unclipped | Queued: register order plus multiple outputs and carry |
+| #95 | The line editor drew neither its box nor anything typed into it | Queued: indirect inputs and missing-call census |
+| #96 | Save Game never wrote its file, and Load Game never read one | Queued: DOS interrupt modeling and emitter placeholders |
+| #97 | Load Game read the file and answered as if nothing had happened | Downstream review: repair pass pairs exits by position |
+| #98 | The line editor abandoned itself or not on whatever the stack held | Queued: carry-result channel |
+| #99 | Load Game with nothing saved gave every game the trick-shot message | Downstream review: linear repair of a branched argument; original missing input remains queued |
