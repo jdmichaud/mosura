@@ -123,7 +123,9 @@ impl App {
                 continue;
             }
             let v = self.opts.get(k)?;
-            if v != reg.str(r, 2)? {
+            // An explicit registry-default value still overrides an operation's
+            // own default or a value stored in the session configuration.
+            if self.explicit.contains(k) || v != reg.str(r, 2)? {
                 o.set(k, &v)?;
             }
         }

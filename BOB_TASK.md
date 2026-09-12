@@ -81,8 +81,11 @@ all four source bodies and 1028 generated-C executions. Native and declared C al
 in 272 full table-loop cases and 265 fixed-field suffix cases. Both corpus contexts pass
 their gates; the application repeat is stable. Final workspace: 1322/1322 tests pass,
 25 ignored. The validated scope excludes physical ABI lowering, preceding field construction
-and shared-global allocation. Implementation: `d7e386f0`. The active item is #4, mixed global views; the discovered CLI
-option-precedence defect is an immediate tooling follow-up with a separate commit.
+and shared-global allocation. Implementation: `d7e386f0`. The active item is #4, mixed global views.
+The separate CLI option-precedence correction now passes all seven CLI integration tests,
+including the regression demonstrated failing before the fix. Emission is identical for
+751/751 TUs in each of the standalone and application contexts under the same supplied options.
+The package workspace run is in progress.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.

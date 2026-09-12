@@ -41,6 +41,24 @@ fn ok(session: &Path, args: &[&str]) -> String {
 }
 
 #[test]
+fn explicit_defaults_override_operation_and_session_defaults() {
+    let s = scratch("explicit-defaults");
+    let fixture = workspace().join("oracle/ground-truth/indexed_globals.gcc-x86-32");
+    ok(&s, &["add", fixture.to_str().unwrap()]);
+    ok(&s, &["analyze"]);
+    let implicit = ok(&s, &["--format", "json", "call", "program.emit"]);
+    let explicit = ok(&s, &["--format", "json", "call", "program.emit", "decompile.global-scope=application"]);
+    assert!(!implicit.contains("&xRam"), "the operation defaults to standalone scope");
+    assert!(explicit.contains("&xRam"), "the supplied application scope names global bases");
+    assert_eq!(ok(&s, &["--format", "json", "-o", "decompile.global-scope=application", "call", "program.emit"]), explicit);
+    ok(&s, &["config", "set", "decompile.global-scope=standalone"]);
+    assert_eq!(ok(&s, &["--format", "json", "call", "program.emit"]), implicit);
+    assert_eq!(ok(&s, &["--format", "json", "-o", "decompile.global-scope=application", "call", "program.emit"]), explicit);
+    // A subsequent request without the override still uses the session setting.
+    assert_eq!(ok(&s, &["--format", "json", "call", "program.emit"]), implicit);
+}
+
+#[test]
 fn a_session_from_identify_to_decompile() {
     let s = scratch("basic");
     let id = ok(&s, &["identify", corpus("basic.elf").to_str().unwrap()]);

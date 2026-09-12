@@ -1,6 +1,6 @@
 # Bob's issue tracker
 
-Updated 2026-09-12. Owner: Alice. Working branch: `fix/loop-result-contracts`.
+Updated 2026-09-12. Owner: Alice. Working branch: `fix/explicit-option-overrides`.
 
 Short checklist: [BOB_TASK.md](../BOB_TASK.md). Its markers are `[ ]` queued/triage,
 `[>]` active, `[x]` fixed and validated for the stated scope, and `[-]` outside scope/not planned.
@@ -121,8 +121,12 @@ consistent view conversions.
 - [ ] Connect global symbol/type facts and emitted views without changing the faithful reference printer.
 - [ ] Validate shared memory effects and the relevant reported consumers, then run package gates.
 
-The immediate tooling follow-up is explicit CLI option precedence, discovered while
-selecting the application-scope round. It receives its own commit.
+The separate tooling correction preserves explicitly supplied CLI options even when
+their value equals the registry default. Its source-built integration regression failed
+before the fix and now passes with the other six CLI integration tests. It checks operation
+defaults, a conflicting session setting, and that an override does not change that setting.
+Under identical supplied options, 751/751 TUs are unchanged in each scope, standalone and
+application. The package workspace run is in progress.
 
 ## Completed validation: result contracts in repeated record stores
 
@@ -183,10 +187,11 @@ table-loop bodies and the fixed-field suffix. It does not establish automatic co
 recovery, physical ABI lowering, preceding field construction or shared-global allocation.
 
 The measurement also exposed a CLI option-projection defect: an explicit value equal
-to the registry default is dropped before an operation can apply its own default.
+to the registry default was dropped before an operation could apply its own default.
 The application round above used a temporary session setting and verified the manifest;
 the first two rounds bearing shorter application-like labels actually used standalone
-scope. They are not evidence of application behavior. Fix the CLI override separately.
+scope. They are not evidence of application behavior. The separate CLI correction is
+validated above; the session setting used for the measurement has been removed.
 
 ## Completed validation: partial-word result consumers
 
