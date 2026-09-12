@@ -13,7 +13,7 @@ Withdrawn consumer items were reconciled with the reporter's handoff and ledger.
 closure does not claim a mosura code fix.
 The [detailed tracker](docs/bob-issue-tracker.md) records evidence and commits; update both trackers.
 
-Validated declaration scopes: #1, #6, #7, #8, #9, #11, #14, #18, #20, #21, #25 and #32, using explicit decompilation declarations. Outside scope: #88's verified
+Validated declaration scopes: #1, #6, #7, #8, #9, #11, #14, #18, #20, #21, #25, #31 and #32, using explicit decompilation declarations. Outside scope: #88's verified
 consumer rewrite, 22 withdrawn consumer issues/proofs, two cleanup/shared-state reports whose requested behavior is absent from the original bytes,
 the local/global naming collisions, a loop-value constant substitution, and a packed-register
 width/order mismatch introduced in consumer rewrites.
@@ -81,7 +81,7 @@ all four source bodies and 1028 generated-C executions. Native and declared C al
 in 272 full table-loop cases and 265 fixed-field suffix cases. Both corpus contexts pass
 their gates; the application repeat is stable. Final workspace: 1322/1322 tests pass,
 25 ignored. The validated scope excludes physical ABI lowering, preceding field construction
-and shared-global allocation. The active item is #4, mixed global views; the discovered CLI
+and shared-global allocation. Implementation: `d7e386f0`. The active item is #4, mixed global views; the discovered CLI
 option-precedence defect is an immediate tooling follow-up with a separate commit.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).

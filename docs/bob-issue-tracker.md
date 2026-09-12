@@ -126,7 +126,7 @@ selecting the application-scope round. It receives its own commit.
 
 ## Completed validation: result contracts in repeated record stores
 
-Related report: **#31**. Follow each of three returned registers into consecutive record fields
+Implementation: `d7e386f0`. Related report: **#31**. Follow each of three returned registers into consecutive record fields
 while preserving the caller's saved cursor and loop-carried values. Separate explicit result
 contracts from automatic recovery, arithmetic correctness and compiler ABI lowering.
 
@@ -564,10 +564,10 @@ alone does not close the entire indirect-call class.
   predicate in #13. The gated scalar-result implementation preserves the explicit typed result. Report validation
   remains open, including the nested callee's separate result channel.
   Bob is ready to validate this case once the work is complete.
-- [ ] **Shared global storage (#4; distinguish downstream #26 and naming #27).** Reproduce
+- [>] **Shared global storage (#4; distinguish downstream #26 and naming #27).** Reproduce
   overlapping reads/writes in self-compiled source and check the existing address-based linker
   aliases and typed views before deciding whether the emitter/TU layer needs a fix.
-- [ ] **Multiple result registers (#31 and related reports; #6/#8/#18/#20 declared scopes validated).**
+- [ ] **Multiple result registers (remaining reports; #6/#8/#18/#20/#31 declared scopes validated).**
   Audit each remaining protocol and its input/flag consumers using the joined-result mechanism.
 - [ ] **Invented input parameters (#2 and related reports).** Separate missing return channels
   from unsupported external convention facts; validate against current code.
@@ -635,7 +635,7 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #1 | Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope). | Validated by Bob: explicit inputs restored at all four calls; compiler lowering remains open |
 | #2 | Input contracts: reject parameters unsupported by caller/callee data flow. | Queued |
 | #3 | Input contracts: propagate contracts through mutable function-pointer tables. | Investigating: input package; report validation pending |
-| #4 | Storage: preserve aliasing between differently typed views of one address. | Queued: raw cross-width alias evidence received; existing linker alias support needs validation |
+| #4 | Storage: preserve aliasing between differently typed views of one address. | Active: mixed global views and existing linker alias support |
 | #5 | Consumer loop-value substitution. | Outside scope: archived raw output preserves the loop expression; the consumer rewrite introduced the constant |
 | #6 | Results: preserve an explicit value and condition flag together. | Validated declared result scope; source/IR/C gates and all four reported caller sites |
 | #7 | Explicit byte inputs at indirect calls. | Validated input scope: both calls retain the original size-1 value; separate storage-order witness remains open |
