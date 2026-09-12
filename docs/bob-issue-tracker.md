@@ -2,6 +2,8 @@
 
 Updated 2026-09-12. Owner: Alice. Working branch: `fix/indirect-call-contracts`.
 
+Short checklist: [BOB_TASK.md](../BOB_TASK.md).
+
 This tracks mosura work against Bob's numbered defect ledger. The latest local ledger has
 **99 numbered entries** (counted from its numbered headings); the earlier handoff covered 85.
 A downstream repair is not a mosura fix. Each numbered report stays open until its current
@@ -31,7 +33,8 @@ case validation. [Implementation scope and oracle evidence](indirect-call-contra
   The workspace run preceded the extracted cache regression; that additional regression also
   passes 1/1 on the final package.
 - [x] Ask Bob to validate the completed #1 input restoration against his reference.
-- [ ] Record Bob’s validation and close only the reports it resolves.
+- [x] Record Bob's validation: all four #1 calls match the original register setup with
+  explicit `BP,AX,BX,CX,DX` inputs. Only this slot's decompilation input layer is closed.
 
 The declaration option is limited to decompilation. Compiler lowering of custom pointer
 conventions, full typed-pointer propagation, outputs and clobbers remain open. Restoring inputs
@@ -43,14 +46,16 @@ alone does not close the entire indirect-call class.
   report uses `char *` and compares its byte to `-1`. The current CLI does the same. The
   `(uint8_t)0xff` comparison quoted by the report is absent from both raw outputs, so the
   signed/unsigned mismatch was introduced downstream. No mosura printer change is indicated.
+  Bob confirmed this triage and withdrew the mosura defect in his validation reply.
 
 ## Next work packages
 
-- [ ] **Shared global storage (#4; distinguish downstream #26 and naming #27).** Reproduce
-  overlapping reads/writes in self-compiled source; implement compilable views in the emitter/TU
-  layer while preserving the faithful printer.
 - [ ] **Flag results (#13, #23, #53 and related reports).** The current CLI still drops the
   flag-only predicate in #13. Next: self-compiled caller/callee MVE and Ghidra IR comparison.
+  Bob is ready to validate this case once the work is complete.
+- [ ] **Shared global storage (#4; distinguish downstream #26 and naming #27).** Reproduce
+  overlapping reads/writes in self-compiled source and check the existing address-based linker
+  aliases and typed views before deciding whether the emitter/TU layer needs a fix.
 - [ ] **Multiple result registers (#6, #8, #18, #20, #22, #31 and related reports).** Establish
   the prototype/return-storage gap and keep caller and callee contracts consistent.
 - [ ] **Invented input parameters (#2 and related reports).** Separate missing return channels
@@ -71,10 +76,10 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 
 | Bob ID | Report | Current status |
 | --- | --- | --- |
-| #1 | `menuitem_draw_box` (0x12034) — four frame strokes emitted with no arguments | Investigating: input package; report validation pending |
+| #1 | `menuitem_draw_box` (0x12034) — four frame strokes emitted with no arguments | Validated by Bob: explicit inputs restored at all four calls; compiler lowering remains open |
 | #2 | Register-named parameters that no caller ever passes | Queued |
 | #3 | Indirect calls through the driver vector table lose their arguments wholesale | Investigating: input package; report validation pending |
-| #4 | One address arriving as several independent C globals | Queued next: raw cross-width alias evidence received |
+| #4 | One address arriving as several independent C globals | Queued: raw cross-width alias evidence received; existing linker alias support needs validation |
 | #5 | Loop-carried values folded to their first iteration | Queued |
 | #6 | `aa_disc_step_upper` / `aa_disc_step_lower` (0x21bd1, 0x21dad) — a value-and-flag answer emitted as an `int` | Queued |
 | #7 | `menuitem_draw_box`'s siblings — the same shape, still open | Investigating: input package; report validation pending |
@@ -158,7 +163,7 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #85 | Drawing the cursor twice with no erase between poisons its own cover | Downstream review |
 | #86 | A driver-table call went out with three of its seven arguments undefined | Queued: seven-register indirect input contract |
 | #87 | The PREFERENCES page did nothing, because its action routine was never decompiled | Reproduced: opt-in scan skips the native image’s mixed code/data block; MVE pending |
-| #88 | Every transparent pixel of every cached sprite was painted (the 320x240 ball rack) | Closed triage: supplied raw and current CLI both compare signed byte to -1; downstream rewrite |
+| #88 | Every transparent pixel of every cached sprite was painted (the 320x240 ball rack) | Closed triage, confirmed by Bob: raw and current CLI compare signed byte to -1; downstream rewrite |
 | #89 | Mouse gain grew with the frame time, so the pointer's speed changed with the resolution | Downstream review: shim event accumulation |
 | #90 | The play tick stored its own parameters where the mouse's deltas belonged | Queued: multiple result registers |
 | #91 | The PREFERENCES audit (not a defect - a proof) | Downstream review |
