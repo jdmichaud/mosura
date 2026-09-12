@@ -13,7 +13,7 @@ Withdrawn consumer items were reconciled with the reporter's handoff and ledger.
 closure does not claim a mosura code fix.
 The [detailed tracker](docs/bob-issue-tracker.md) records evidence and commits; update both trackers.
 
-Validated declaration scopes: #1, #7, #9, #11 and #14, using explicit decompilation declarations. Outside scope: #88's verified
+Validated declaration scopes: #1, #7, #9, #11, #14 and #32, using explicit decompilation declarations. Outside scope: #88's verified
 consumer rewrite, 22 withdrawn consumer issues/proofs, two cleanup/shared-state reports whose requested behavior is absent from the original bytes,
 the local/global naming collisions, a loop-value constant substitution, and a packed-register
 width/order mismatch introduced in consumer rewrites.
@@ -32,8 +32,10 @@ The target-boundary correction is `11490ba0`; mixed-memory coverage is `a7186842
 regressions cover high bytes, unused parameters, restarts and compiler-spec extensions.
 Both reported bodies retain their call inputs and loop-dependent values. The final workspace
 passes 1316/1316 tests (23 ignored); default emission remains identical for 751/751 TUs.
-Core implementation: `e482d6a8`. Public API: `decompile.function-inputs`.
-The active item is #32: validate the reported high-byte call inputs with declared enclosing inputs.
+Core implementation: `e482d6a8`; API: `f4a4e7cd` (`decompile.function-inputs`).
+#32 is also validated for its high-byte input scope: all 5/5 reported AH operands retain their
+loads, zero value and selector-dependent value with the enclosing inputs explicitly declared.
+The active item is #25: audit recursive helper inputs and the shared callee argument order.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.
@@ -59,14 +61,14 @@ The active item is #32: validate the reported high-byte call inputs with declare
 - [ ] **#22** Results: represent multiple data results together with classification/clip results.
 - [ ] **#23** Results: support explicit carry-flag return contracts.
 - [ ] **#24** Input contracts: distinguish call-produced values from incoming function parameters.
-- [ ] **#25** Input contracts: preserve non-default register arguments in callback helpers.
+- [>] **#25** Input contracts: preserve non-default register arguments in callback helpers.
 - [-] **#26** Consumer scope: validate linker placement and shared address-backed storage. Withdrawn upstream.
 - [-] **#27** Consumer naming: the five local/global collisions were introduced by downstream rewrites.
 - [ ] **#28** Platform models: recover device detection and initialization call contracts.
 - [-] **#29** Consumer scope: validate application coordinate transforms and dimensions. Withdrawn upstream.
 - [ ] **#30** Input contracts: restore arguments across a series of vector-table calls.
 - [ ] **#31** Results: preserve multiple non-default register outputs as one consistent contract.
-- [>] **#32** Input contracts: support parameter storage in high register bytes.
+- [x] **#32** Input contracts: preserve explicit high-byte arguments and enclosing inputs (validated scope).
 - [ ] **#33** Results: preserve the correct returned register in a caller's predicate.
 - [ ] **#34** Data flow: preserve cursor-like state across callbacks and nested calls.
 - [-] **#35** Consumer scope: verify that external thunks forward their declared parameters. Withdrawn upstream.
