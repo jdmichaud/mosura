@@ -194,6 +194,11 @@ if have gcc && have objcopy; then
     rm -f branch_argument.gcc-x86-"$bits".unstripped
   done
 
+  gcc -m32 -nostdlib -static -no-pie -Wl,-e,_start src/model_declaration.S -o model_declaration.gcc-x86-32.unstripped
+  derive_truth_elf model_declaration.gcc-x86-32.unstripped model_declaration gcc x86-32 "x86:LE:32:default" ""
+  strip -o model_declaration.gcc-x86-32 model_declaration.gcc-x86-32.unstripped
+  rm -f model_declaration.gcc-x86-32.unstripped
+
   gcc -nostdlib -static -no-pie -Wl,-e,_start src/flag_result.S -o flag_result.gcc-x86-64.unstripped
   derive_truth_elf flag_result.gcc-x86-64.unstripped flag_result gcc x86-64 "x86:LE:64:default" ""
   strip -o flag_result.gcc-x86-64 flag_result.gcc-x86-64.unstripped
