@@ -30,7 +30,8 @@ case validation. [Implementation scope and oracle evidence](indirect-call-contra
 - [x] Commit mutable-slot input declarations independently, with the package gate results.
   The workspace run preceded the extracted cache regression; that additional regression also
   passes 1/1 on the final package.
-- [ ] Ask Bob for validation of the completed package, then close only the reports it resolves.
+- [x] Ask Bob to validate the completed #1 input restoration against his reference.
+- [ ] Record Bob’s validation and close only the reports it resolves.
 
 The declaration option is limited to decompilation. Compiler lowering of custom pointer
 conventions, full typed-pointer propagation, outputs and clobbers remain open. Restoring inputs
