@@ -1,6 +1,6 @@
 # Bob's issue tracker
 
-Updated 2026-09-12. Owner: Alice. Working branch: `fix/call-input-phis`.
+Updated 2026-09-12. Owner: Alice. Working branch: `fix/mixed-pointer-discovery`.
 
 Short checklist: [BOB_TASK.md](../BOB_TASK.md). Its markers are `[ ]` queued/triage,
 `[>]` active, `[x]` fixed and validated for the stated scope, and `[-]` outside scope/not planned.
@@ -12,6 +12,13 @@ mosura behavior is checked, or triage establishes that it belongs solely to the 
 The checklist below records completed work; the register below preserves every report ID.
 
 ## Active package: pointer records in mixed memory
+
+The population audit exposed an independent target-boundary gap. A record pointing inside
+a MOV operand produces a sixth function although the source has five. The instruction bytes
+at that address decode as NOP; RET, so the existing subroutine validator accepts them.
+The address-table boundary rule rejects that offcut before decoding. The source gate passes
+for separate-data i386 and x86-64 fixtures (5/5 functions each; default controls 2/5).
+Mixed-memory coverage and final package gates remain in progress.
 
 Related report: **#87**. This concerns the existing opt-in `analysis.data-pointer-functions`
 extension, whose deliberate function-creation policy remains separate from faithful Ghidra analysis.

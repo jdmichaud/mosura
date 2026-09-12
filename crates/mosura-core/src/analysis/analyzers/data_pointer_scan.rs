@@ -38,7 +38,7 @@ use crate::analysis::analyzer::{Analyzer, AnalyzerType};
 use crate::analysis::analyzers::address_table::MINIMUM_SAFE_ADDRESS;
 use crate::analysis::manager::Scheduling;
 use crate::analysis::priority::AnalysisPriority;
-use crate::analysis::program::{AddressSet, Program};
+use crate::analysis::program::{AddressSet, CodeUnit, Program};
 use crate::analysis::pseudo_disassembler::PseudoDisassembler;
 use crate::decompile::space::{Address, SpaceId};
 
@@ -90,6 +90,15 @@ impl Analyzer for DataPointerScanAnalyzer {
         }
         let big_endian = program.big_endian;
 
+        // AddressTableAnalyzer.java:316 removeDefined excludes every byte of an instruction.
+        // Keep defined record data: unlike an address table, its isolated fields are our input.
+        let mut instructions = AddressSet::new();
+        for (a, unit) in program.listing.code_units() {
+            if let CodeUnit::Instruction { length, .. } = unit {
+                instructions.add_range(a.space, a.offset, a.offset + u64::from(*length) - 1);
+            }
+        }
+
         // Scan each initialized, non-executable block for a pointer-sized word — at ANY alignment,
         // because a record field need not fall on a pointer boundary (the subject's records stride
         // 0x1e) — whose value is a valid subroutine not already a function.
@@ -120,6 +129,14 @@ impl Analyzer for DataPointerScanAnalyzer {
                 }
                 let target = Address::new(self.ram, val);
                 if !exec.contains(target) {
+                    continue;
+                }
+                // AddressTableAnalyzer.checkTable (:423) rejects an instruction offcut.
+                // A fresh decode there may terminate even though the listing owns those
+                // bytes as an operand. Existing instruction STARTS remain eligible.
+                if instructions.contains(target)
+                    && !matches!(program.listing.code_unit_at(target), Some(CodeUnit::Instruction { .. }))
+                {
                     continue;
                 }
                 if !seen.insert(val) {

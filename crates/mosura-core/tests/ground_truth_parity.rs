@@ -19,6 +19,60 @@ use mosura_core::decompile::printc::print_c;
 use mosura_core::decompile::space::Address;
 use mosura_core::paths::ground_truth_dir;
 
+/// Stored addresses must respect instruction boundaries even when their target bytes decode.
+#[test]
+fn pointer_record_discovery_respects_instruction_boundaries() {
+    use mosura_core::analysis::program::CodeUnit;
+
+    for bits in [32, 64] {
+        for layout in ["separate"] {
+            let name = format!("record_pointer_{layout}.gcc-x86-{bits}");
+            let bin = ground_truth_dir().join(&name);
+            let truth = parse_truth(&std::fs::read_to_string(ground_truth_dir().join(format!("{name}.truth"))).unwrap());
+            let entry = |symbol: &str| truth.funcs.iter().find(|(_, n)| n == symbol).unwrap().0;
+            let expected: BTreeSet<_> = truth.funcs.iter().map(|(a, _)| *a).collect();
+            assert_eq!(expected.len(), 5, "source/build owns the function population");
+            let off = analysis::analyze_file(&bin).unwrap();
+            let observed: BTreeSet<_> = off.function_manager.functions().map(|f| f.entry_point().offset).collect();
+            assert_eq!(observed, BTreeSet::from([entry("_start"), entry("dispatch")]), "{name}: default policy");
+            assert!(off.relocation_table.relocations().next().is_none(), "isolate scanning from relocation seeds");
+
+            let ptr_size = (bits / 8) as usize;
+            let target_bytes = entry("handler_a").to_le_bytes();
+            let slots: Vec<_> = off.memory.blocks().filter(|b| b.is_initialized()).flat_map(|b| {
+                let bytes = off.memory.read_window(b.start(), b.size() as usize);
+                bytes.windows(ptr_size).enumerate().filter_map(|(i, w)| {
+                    (w == &target_bytes[..ptr_size]).then_some((b.start().offset + i as u64, b.is_execute(), b.is_write()))
+                }).collect::<Vec<_>>()
+            }).collect();
+            assert_eq!(slots.len(), 1, "{name}: the handler address is stored only in its record");
+            assert_eq!((slots[0].1, slots[0].2), (layout == "mixed", true), "{name}: source-owned memory layout");
+
+            // This pointer-sized word lies INSIDE an existing instruction, not in data.
+            // A scan that merely drops the execute-permission filter would invent an entry
+            // at the interior RET. Exact function-set equality below catches that mistake.
+            let deep = entry("deep");
+            let interior = deep + truth.sizes.iter().find(|(a, _)| *a == deep).unwrap().1 - 1;
+            let start = Address::new(off.default_space, entry("_start"));
+            let Some(CodeUnit::Instruction { length, .. }) = off.listing.code_unit_at(start) else { panic!("entry instruction") };
+            let bytes = off.memory.read_window(start, *length as usize);
+            assert!(bytes.windows(ptr_size).any(|w| w == &interior.to_le_bytes()[..ptr_size]));
+            assert!(!expected.contains(&interior));
+
+            // An unused record points into the following MOV's operand. The bytes there
+            // decode as NOP; RET, so termination alone cannot establish a function entry.
+            let operand = Address::new(off.default_space, start.offset + u64::from(*length) + 1);
+            assert_eq!(off.memory.read_window(operand, 2), [0x90, 0xc3]);
+            let pdis = mosura_core::analysis::pseudo_disassembler::PseudoDisassembler::for_program(&off).unwrap();
+            assert!(pdis.is_valid_subroutine(&off, operand, true), "the negative control passes the target decoder");
+
+            let on = analysis::analyze_file_with(&bin, &Knobs::default().with_data_pointer_functions(true)).unwrap();
+            let actual: BTreeSet<_> = on.function_manager.functions().map(|f| f.entry_point().offset).collect();
+            assert_eq!(actual, expected, "{name}: recover both handlers and their callee, with no invented entry");
+        }
+    }
+}
+
 /// The Watcom TU lowers a named model to its concrete register contract; PrintC retains it.
 #[test]
 fn named_model_declaration_uses_the_target_contract() {

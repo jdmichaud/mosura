@@ -199,6 +199,21 @@ if have gcc && have objcopy; then
   strip -o model_declaration.gcc-x86-32 model_declaration.gcc-x86-32.unstripped
   rm -f model_declaration.gcc-x86-32.unstripped
 
+  # Isolated pointer fields with identical code but separate versus mixed executable memory.
+  for bits in 32 64; do
+    for layout in separate; do
+      layout_flags=()
+      if [[ "$layout" == mixed ]]; then layout_flags=(-DMIXED); fi
+      prog="record_pointer_$layout"
+      gcc -m"$bits" -nostdlib -static -no-pie -Wl,-e,_start "${layout_flags[@]}" \
+        src/mixed_record_pointer.S -o "$prog.gcc-x86-$bits.unstripped"
+      derive_truth_elf "$prog.gcc-x86-$bits.unstripped" "$prog" gcc "x86-$bits" \
+        "x86:LE:$bits:default" "" "data-pointer-functions"
+      strip -o "$prog.gcc-x86-$bits" "$prog.gcc-x86-$bits.unstripped"
+      rm -f "$prog.gcc-x86-$bits.unstripped"
+    done
+  done
+
   gcc -nostdlib -static -no-pie -Wl,-e,_start src/flag_result.S -o flag_result.gcc-x86-64.unstripped
   derive_truth_elf flag_result.gcc-x86-64.unstripped flag_result gcc x86-64 "x86:LE:64:default" ""
   strip -o flag_result.gcc-x86-64 flag_result.gcc-x86-64.unstripped

@@ -25,6 +25,8 @@ bytes, all eight corpus gates pass, and the repeat is stable with 751/751 cached
 The final workspace passed 1312/1312 executed tests (23 ignored).
 The active item is #87: the opt-in pointer scan misses records in mixed executable/data blocks.
 A source-built layout pair reproduces that omission while the separate-data control succeeds.
+A separate target-boundary correction now rejects record values that point inside defined
+instructions. Its source-built i386 and x86-64 controls pass; mixed-memory coverage is ongoing.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.
