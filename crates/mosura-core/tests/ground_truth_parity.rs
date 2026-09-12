@@ -19,6 +19,115 @@ use mosura_core::decompile::printc::print_c;
 use mosura_core::decompile::space::Address;
 use mosura_core::paths::ground_truth_dir;
 
+/// The mapped C++ oracle declares the address-only globals as xunknown1.
+/// Its pointer arithmetic is byte-based even though each access reads a word.
+/// Return the actual synthesized units so both gates exercise that same boundary.
+fn indexed_global_units() -> Vec<(String, String, Vec<(String, u64)>)> {
+    use mosura_core::decompile::{OpCode, merge::high_type_read_facing};
+    use mosura_core::recompile::{function, passes::GlobalWidths, tu};
+    let mut units = Vec::new();
+    for bits in [32, 64] {
+        let stem = format!("indexed_globals.gcc-x86-{bits}");
+        let truth = parse_truth(&std::fs::read_to_string(ground_truth_dir().join(format!("{stem}.truth"))).unwrap());
+        let p = analysis::analyze_file(&ground_truth_dir().join(stem)).unwrap();
+        assert!(p.global_scope_all_loaded, "this gate covers application-scope global symbols");
+        for (entry, name) in &truth.funcs {
+            if name == "_start" { continue; }
+            let address = Address::new(p.default_space, *entry);
+            let f = decompile_function(&p, address).unwrap();
+            let mut globals = Vec::new();
+            for op in f.op_ids().filter(|&id| !f.op(id).is_dead()) {
+                let o = f.op(op);
+                if o.code() != OpCode::Ptrsub { continue; }
+                let base = f.vn(o.input(0).unwrap());
+                if !base.is_constant() || !base.is_spacebase() { continue; }
+                let pointee = high_type_read_facing(&f, o.output.unwrap()).ptr_to().cloned().unwrap();
+                assert_eq!(pointee.size(), 1, "the symbol addresses a byte, not the loaded word");
+                let addr = f.vn(o.input(1).unwrap()).constant_value();
+                let symbol = mosura_core::decompile::varmap::build_internal_variable_name(
+                    &f.spaces, f.spaces.by_name("ram").unwrap(), addr, &pointee,
+                );
+                globals.push((symbol, addr));
+            }
+            globals.sort();
+            globals.dedup();
+            assert_eq!(globals.len(), 2, "one source and one destination per copy");
+            let size = truth.sizes.iter().find(|(a, _)| a == entry).unwrap().1;
+            let bytes = p.memory.read_window(address, size as usize);
+            let widths = function::global_widths(&f, &p.language_id, &bytes, *entry,
+                &GlobalWidths { store_w: Default::default(), read_w: Default::default() }, false);
+            let label = format!("{name}_{bits}");
+            let c = print_c(&f).replace(&f.name, &label);
+            let (unit, _) = tu::build_tu(&c, *entry, false, &widths,
+                &Default::default(), &Default::default(), &[]);
+            units.push((label, unit, globals));
+        }
+    }
+    units
+}
+
+#[test]
+fn indexed_global_declarations_preserve_byte_offsets() {
+    let mut failures = Vec::new();
+    for (name, unit, globals) in indexed_global_units() {
+        for (symbol, _) in globals {
+            // The synthesized C declaration determines the scaling of &symbol + offset.
+            // A word declaration here changes five adjacent copies into strided copies.
+            if !unit.lines().any(|l| l == format!("unsigned char {symbol};")) {
+                failures.push(format!("{name}: byte address {symbol} has the wrong declaration\n{unit}"));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+#[ignore = "requires GCC; run when changing global declarations or address arithmetic"]
+fn indexed_global_emission_copies_adjacent_words() {
+    let dir = mosura_core::paths::workspace_root().join("build/indexed-global-recompile");
+    std::fs::create_dir_all(&dir).unwrap();
+    for (name, unit, globals) in indexed_global_units() {
+        let base = globals.iter().map(|(_, a)| *a).min().unwrap();
+        let destination = globals.iter().map(|(_, a)| *a).max().unwrap() - base;
+        let mut source = String::from("#include <stdint.h>\n#include <string.h>\n#include <stdio.h>\ntypedef int32_t int4; typedef int64_t int8; typedef uint32_t xunknown4;\nstatic uint32_t memory[64];\n");
+        for line in unit.lines() {
+            if let Some((symbol, addr)) = globals.iter().find(|(s, _)| line.ends_with(&format!(" {s};"))) {
+                let ty = line.strip_suffix(&format!(" {symbol};")).unwrap();
+                // Supply address-backed storage using the ACTUAL emitted declaration type.
+                // No expression, cast or stride in the emitted function is rewritten.
+                source.push_str(&format!("#define {symbol} (*({ty} *)((unsigned char *)memory + {}))\n", addr - base));
+            } else {
+                source.push_str(line);
+                source.push('\n');
+            }
+        }
+        source.push_str(&format!(r#"
+int main(void) {{
+    uint32_t expected[64], seed=31827; unsigned trial, i;
+    for (trial=0; trial<257; ++trial) {{
+        for (i=0;i<64;++i) {{ seed=seed*1664525U+1013904223U; memory[i]=seed; }}
+        if (trial==0) {{ memory[0]=3;memory[1]=7;memory[2]=11;memory[3]=19;memory[4]=31; }}
+        memcpy(expected,memory,sizeof memory);
+        memcpy((unsigned char *)expected+{destination},expected,20);
+        {name}();
+        if (memcmp(expected,memory,sizeof memory)) {{
+            printf("{name}: non-adjacent word copy in trial %u\n",trial); return 1;
+        }}
+    }}
+    return 0;
+}}
+"#));
+        let input = dir.join(format!("{name}.c"));
+        let binary = dir.join(&name);
+        std::fs::write(&input, source).unwrap();
+        let compile = std::process::Command::new("gcc").args(["-O2", "-fno-strict-aliasing"])
+            .arg(input).arg("-o").arg(&binary).output().expect("GCC is required by this opt-in gate");
+        assert!(compile.status.success(), "{}", String::from_utf8_lossy(&compile.stderr));
+        let run = std::process::Command::new(binary).output().unwrap();
+        assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stdout));
+    }
+}
+
 /// Compile the actual word-lowered expressions and compare their results with
 /// source arithmetic. Kept opt-in because the ordinary fixture gate is offline.
 #[test]

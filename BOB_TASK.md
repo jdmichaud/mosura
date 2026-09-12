@@ -70,19 +70,24 @@ Implementation: `c628de71`; dividend source fixture: `43a4b084`.
 joined call result; the last store retains its two-byte width and leaves neighboring bytes
 untouched. Native and recovered C stores agree in 599/599 boundary and random cases.
 Earlier flag contracts, subsequent callback effects and physical ABI lowering remain separate.
-Validation: `ca3ee49f`. The active item is #31: three-register results consumed by repeated
+Validation: `ca3ee49f`. #31 is now validated for its declared scope: three-register results consumed by repeated
 record stores, including preservation of the caller's loop cursor.
 Its producer agrees with native execution and independent modular arithmetic in 4213/4213
 three-field cases. Declared callers bind the fields correctly, but indexed global addressing
 exposed a separate declaration-width defect. A self-compiled word-copy MVE reproduces it on
 both pointer widths; the declaration gate and actual emitted-C execution fail before a fix.
-The mapped C++ oracle confirms the byte-sized base declaration. #31 remains active while
-this emission dependency and the complete repeated-store audit are handled.
+The mapped C++ oracle confirms the byte-sized base declaration. The correction now passes
+all four source bodies and 1028 generated-C executions. Native and declared C also agree
+in 272 full table-loop cases and 265 fixed-field suffix cases. Both corpus contexts pass
+their gates; the application repeat is stable. Final workspace: 1322/1322 tests pass,
+25 ignored. The validated scope excludes physical ABI lowering, preceding field construction
+and shared-global allocation. The active item is #4, mixed global views; the discovered CLI
+option-precedence defect is an immediate tooling follow-up with a separate commit.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.
 - [ ] **#3** Input contracts: propagate contracts through mutable function-pointer tables.
-- [ ] **#4** Storage: preserve aliasing between differently typed views of one address.
+- [>] **#4** Storage: preserve aliasing between differently typed views of one address.
 - [-] **#5** Consumer rewrite: its linear register substitution replaced preserved loop values with constants.
 - [x] **#6** Results: preserve an explicit value and condition flag together (validated scope).
 - [x] **#7** Input contracts: preserve explicit byte inputs at both reported indirect calls (validated scope).
@@ -109,7 +114,7 @@ this emission dependency and the complete repeated-store audit are handled.
 - [ ] **#28** Platform models: recover device detection and initialization call contracts.
 - [-] **#29** Consumer scope: validate application coordinate transforms and dimensions. Withdrawn upstream.
 - [ ] **#30** Input contracts: restore arguments across a series of vector-table calls.
-- [>] **#31** Results: preserve multiple non-default register outputs as one consistent contract.
+- [x] **#31** Results: preserve multiple non-default register outputs and their reported consumers (declared scope).
 - [x] **#32** Input contracts: preserve explicit high-byte arguments and enclosing inputs (validated scope).
 - [ ] **#33** Results: preserve the correct returned register in a caller's predicate.
 - [ ] **#34** Data flow: preserve cursor-like state across callbacks and nested calls.

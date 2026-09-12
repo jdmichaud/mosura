@@ -262,6 +262,27 @@ pub fn global_widths(f: &Funcdata, lang: &str, region: &[u8], va: u64, corpus: &
             }
         }
     }
+    // A global may occur only as an address, with no RAM varnode at its base.
+    // PTRSUB's output carries the pointee type used by PrintC::opPtrsub. Keep
+    // that declaration fact: defaulting an unknown byte to int changes the
+    // scaling of every subsequent C pointer addition. This is the same symbol
+    // type the mapped C++ oracle uses for its global declaration.
+    //
+    // An address view does not resize an independently accessed object. Existing
+    // storage widths remain its declaration; differing pointer views require a
+    // conversion at the use, independently of this missing-declaration case.
+    for op in f.op_ids() {
+        let o = f.op(op);
+        if o.is_dead() || o.code() != OpCode::Ptrsub { continue; }
+        let Some(base) = o.input(0) else { continue };
+        if !f.vn(base).is_constant() || !f.vn(base).is_spacebase() { continue; }
+        let (Some(offset), Some(output)) = (o.input(1), o.output) else { continue };
+        let ty = crate::decompile::merge::high_type_read_facing(f, output);
+        let Some(pointee) = ty.ptr_to() else { continue };
+        let Some(ram) = ram_dec else { continue };
+        let address = f.spaces.get(ram).wrap_offset(f.vn(offset).constant_value());
+        gsizes.entry(address).or_insert(pointee.size());
+    }
     gsizes
 }
 

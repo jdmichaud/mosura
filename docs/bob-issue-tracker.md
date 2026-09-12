@@ -107,7 +107,24 @@ explicit incoming inputs. A separate formatting helper receives its declared inp
 This is validation of `e482d6a8`/`f4a4e7cd`, not a new production change. The input scope is
 closed; custom compiler lowering and unrelated output/platform contracts remain open.
 
-## Active package: result contracts in repeated record stores
+## Active package: overlapping global views
+
+Related report: **#4**. Preserve one address-backed object across direct accesses and
+pointer views with different types or widths. The address-only declaration correction
+below fixes absent width facts; a mixed direct-word and byte-indexed probe still needs
+consistent view conversions.
+
+- [x] Ground a direct-word plus byte-indexed source probe in current IR and the mapped C++ oracle.
+  The oracle represents the wider access as an overlapping symbol. Resizing the base
+  declaration alone would trade the wrong stride for a truncated direct access.
+- [>] Promote the mixed-access reduction to a reproducible source gate and retain both access widths.
+- [ ] Connect global symbol/type facts and emitted views without changing the faithful reference printer.
+- [ ] Validate shared memory effects and the relevant reported consumers, then run package gates.
+
+The immediate tooling follow-up is explicit CLI option precedence, discovered while
+selecting the application-scope round. It receives its own commit.
+
+## Completed validation: result contracts in repeated record stores
 
 Related report: **#31**. Follow each of three returned registers into consecutive record fields
 while preserving the caller's saved cursor and loop-carried values. Separate explicit result
@@ -123,22 +140,53 @@ contracts from automatic recovery, arithmetic correctness and compiler ABI lower
   independent modular-arithmetic model agree in 4213/4213 cases. This checks all three
   fields, their reverse row order and the rounding carry, including arbitrary entry registers.
   It does not establish physical compiler ABI lowering or target support for wide locals.
-- [>] Audit repeated stores, field order, saved cursors and loop-carried state at the callers.
+- [x] Audit declared result stores, field order, saved cursors and loop-carried state at the callers.
   The declared joined calls supply the correct field offsets in the reported consumers.
   Indexed global accesses expose a separate TU declaration defect: the IR and mapped C++
   oracle use byte-based pointers, but the TU builder defaults their globals to four-byte
   integers, multiplying the stride again. The printer's pointer expression is faithful.
+  With the declaration correction, native execution and unchanged declared C bodies
+  agree in 272/272 full table-loop cases, covering 2788 producer calls. The entire data
+  window matches, including final input globals and surrounding memory. Three fixed
+  field groups also match in 265/265 suffix cases, covering another 795 producer calls.
+  That suffix starts at its first source-field loads; preceding field construction,
+  physical compiler ABI, shared-global allocation and asynchronous store observations
+  remain separate scopes. The harness supplies the physical alias binding explicitly.
 - [x] Reduce the declaration defect to self-compiled source before changing production code.
   `indexed_globals.S` supplies five adjacent word copies with byte-offset and scaled-index
   addressing on i386 and x86-64. Build-derived truth names three functions per artifact.
   The ordinary declaration gate fails on all four copy bodies; actual GCC execution of
   the synthesized C fails on the first source-defined case. The C++ oracle with matching
   byte-sized global symbols retains the same pointer expressions and byte declarations.
-- [ ] Preserve the declared base types through TU synthesis and validate the word-copy gate.
+- [x] Preserve address-only base types through TU synthesis and validate the word-copy gate.
   Completion requires adjacent copies with both addressing forms and both pointer widths,
   plus unchanged surrounding memory. Differently typed shared-global views remain tracked
   under #4; avoid replacing declaration facts with a text rewrite or a guessed stride.
-- [ ] Validate any implementation changes and record each separable fix in its own commit.
+  The four copy bodies and 1028/1028 generated-C executions now pass. Existing object
+  declarations are not resized by an address view. A mixed direct-word/byte-indexed
+  probe confirms the separate view-conversion dependency; see
+  [global declaration widths](global-declaration-widths.md).
+- [x] Check the corpus under both global-scope contexts.
+  Standalone emission is byte-identical for 751/751 TUs. Application scope changes
+  285/751 TUs, preserves all 19 EXACTs and has no new failure verdict. Six MISMATCHs
+  become SAME_SHAPE; all eight gates pass. Its repeat reuses 751/751 units and has
+  zero verdict flips, similarity movers or membership changes.
+  The emission-arm oracle also preserves all 14 plain PASS programs out of its 28
+  program population; other baseline NOLINK/FAIL cases are not counted as passes.
+- [x] Validate the declaration correction before committing the package.
+  Full workspace: 1322/1322 executed tests pass, 25 ignored. IR parity is 9/9,
+  disassembly golden is 1/1 and ground truth is 44/44 with three optional gates ignored.
+  The source fixtures were committed separately as `f07b3ed5`.
+
+This closes #31's explicit result contract and its reported consumers: the four complete
+table-loop bodies and the fixed-field suffix. It does not establish automatic contract
+recovery, physical ABI lowering, preceding field construction or shared-global allocation.
+
+The measurement also exposed a CLI option-projection defect: an explicit value equal
+to the registry default is dropped before an operation can apply its own default.
+The application round above used a temporary session setting and verified the manifest;
+the first two rounds bearing shorter application-like labels actually used standalone
+scope. They are not evidence of application behavior. Fix the CLI override separately.
 
 ## Completed validation: partial-word result consumers
 
@@ -614,7 +662,7 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #28 | Platform models: recover device detection and initialization call contracts. | Queued |
 | #29 | Consumer review: validate application coordinate transforms and dimensions. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #30 | Input contracts: restore arguments across a series of vector-table calls. | Queued |
-| #31 | Results: preserve multiple non-default register outputs as one consistent contract. | Active: producer and repeated-store contract audit |
+| #31 | Results: preserve multiple non-default register outputs as one consistent contract. | Validated declaration scope: producer, four complete table-loop bodies and fixed-field suffix |
 | #32 | Input contracts: preserve explicit high-byte arguments and enclosing inputs. | Validated scope: 5/5 AH values, declared enclosing inputs and source-built storage/restart gate |
 | #33 | Results: preserve the correct returned register in a caller's predicate. | Queued |
 | #34 | Data flow: preserve cursor-like state across callbacks and nested calls. | Queued |
