@@ -6,7 +6,10 @@
  * declaration scales the loop twice; a byte declaration truncates the first
  * load unless the wider access is represented as a view of the same storage.
  * Both buffers are mutable so constant folding cannot erase the loads.
- * No incoming register value or returned value is part of this protocol.
+ * store_mixed exercises the corresponding wider assignment target: after its
+ * byte-indexed copy, it writes the bitwise complement of control over the first
+ * destination word. All four bytes of that final store must be observable.
+ * No incoming register value or returned value is part of either protocol.
  */
 #if defined(__x86_64__)
 #define CURSOR %rdi
@@ -14,10 +17,11 @@
 #define CURSOR %edi
 #endif
 .text
-.globl _start, copy_mixed
+.globl _start, copy_mixed, store_mixed
 .type _start,@function
 _start:
     call copy_mixed
+    call store_mixed
     ret
 .size _start,.-_start
 
@@ -34,6 +38,21 @@ copy_mixed:
     loop 1b
     ret
 .size copy_mixed,.-copy_mixed
+
+.type store_mixed,@function
+store_mixed:
+    xorl %edi,%edi
+    movl $5,%ecx
+2:
+    movl source(CURSOR),%eax
+    movl %eax,destination(CURSOR)
+    add $4,CURSOR
+    loop 2b
+    movl control,%eax
+    notl %eax
+    movl %eax,destination
+    ret
+.size store_mixed,.-store_mixed
 
 .data
 .balign 4
