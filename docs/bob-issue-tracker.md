@@ -1,6 +1,6 @@
 # Bob's issue tracker
 
-Updated 2026-09-12. Owner: Alice. Working branch: `fix/global-symbol-views`.
+Updated 2026-09-12. Owner: Alice. Completed work is on `master`; activity stopped at the owner's request.
 
 The untracked `BOB_TASK.md` checklist lives in the repository's parent directory.
 Its markers are `[ ]` queued/triage,
@@ -11,6 +11,10 @@ This tracks mosura work against Bob's numbered defect ledger. The latest local l
 A downstream repair is not a mosura fix. Each numbered report stays open until its current
 mosura behavior is checked, or triage establishes that it belongs solely to the downstream project.
 The checklist below records completed work; the register below preserves every report ID.
+
+Closeout validation of the committed code: `cargo test --workspace` exits zero with
+1323/1323 tests passing, none failing and 25 ignored, across 113 test binaries. This includes
+the expanded mixed-global source artifacts, but excludes the saved unfinished implementation.
 
 ## Completed package: explicit function inputs
 
@@ -108,7 +112,7 @@ explicit incoming inputs. A separate formatting helper receives its declared inp
 This is validation of `e482d6a8`/`f4a4e7cd`, not a new production change. The input scope is
 closed; custom compiler lowering and unrelated output/platform contracts remain open.
 
-## Active package: overlapping global views
+## Paused package: overlapping global views
 
 Related report: **#4**. Preserve one address-backed object across direct accesses and
 pointer views with different types or widths. The address-only declaration correction
@@ -126,8 +130,33 @@ consistent view conversions.
   changes only file-scope declarations to bind physical storage; the complete body is
   appended unchanged. This detects incorrect access widths/strides, not shared allocation
   across independently linked translation units.
-- [>] Connect global symbol/type facts and emitted views using Ghidra's symbol linking and overlap handling.
+- [ ] Complete global symbol/type facts and emitted views using Ghidra's symbol linking and overlap handling.
 - [ ] Validate shared memory effects and the relevant reported consumers, then run package gates.
+
+The unfinished implementation and its regression gates are saved in stash commit
+`2245cbac1b1ea53d3f21947358cf71b58997ce6f`, also protected by `refs/wip/global-symbol-views`.
+Its base is `f4bcb2a2`, retained by `fix/global-symbol-views`. To resume on that branch,
+apply the saved stash there; the stash includes the new `global_views.rs` arm as an untracked file.
+The saved checklist snapshot is historical; keep the live checklist outside Git when resuming.
+The completed source fixtures are on `master`, but the unfinished production changes and gates are not.
+
+The saved port connects `Funcdata::mapGlobals`, global symbol lookup, overlap rendering and
+typed translation-unit declarations. The compiler-selected, switchable `global_views` arm
+preserves access types through the shared base, with native memory-width evidence.
+The expanded source fixtures contain three functions per architecture, including wider stores
+(`f4bcb2a2`). Before the last pointer-rendering edit, all four bodies passed 1028/1028 emitted-C
+execution cases; disabling the arm or removing native evidence retained reference C exactly.
+An earlier focused core run passed 963/963 tests with six ignored, including IR parity and
+disassembly. Neither measurement is a validation of the final saved tree or of `master`.
+
+Resume by validating the latest `opPtrsub` size-zero/array/code rendering against the pinned
+C++ oracle and completing its consumers. In particular, `coverVarnodes` creates interior names
+with a decimal offset suffix, but `emitted_symbol_address` currently ignores that suffix and
+`tu::ram_addr_of` rejects it. Establish a source-built failing relocation gate before correcting
+that binding. The current execution reduction binds physical aliases explicitly; cross-function
+storage and relocation effects still need validation. Full workspace, emit-arm oracle and corpus
+rounds with all eight gates and a stable repeat remain required before landing this package.
+The release build underway at the stop request was interrupted; no successful exit was recorded.
 
 The separate tooling correction preserves explicitly supplied CLI options even when
 their value equals the registry default. Its source-built integration regression failed
