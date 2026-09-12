@@ -5,6 +5,8 @@
  * polarities and return distinguishable constants through the ordinary ABI.
  * Keep the TEST immediately before RET and each conditional branch immediately
  * after CALL: materializing ZF in the assembly would hide the missing contract.
+ * flag_set/flag_clear return constant CF values, exercising prototype types even
+ * when optimization replaces the return operand with a constant.
  * All functions are directly reachable, so discovery is independent of recovery.
  * The oracle supplies the source-owned ZF storage declaration; this is an explicit
  * assembly protocol, not an inferred change to the platform's default ABI.
@@ -12,11 +14,13 @@
  * Build: gcc -nostdlib -static -no-pie -Wl,-e,_start flag_result.S -o flag_result
  */
 .text
-.globl _start, flag_test, if_zero, if_nonzero
+.globl _start, flag_test, if_zero, if_nonzero, flag_set, flag_clear
 .type _start,@function
 _start:
     call if_zero
     call if_nonzero
+    call flag_set
+    call flag_clear
     ret
 .size _start,.-_start
 
@@ -45,4 +49,15 @@ if_nonzero:
 1:  movl $17,%eax
     ret
 .size if_nonzero,.-if_nonzero
+.type flag_set,@function
+flag_set:
+    stc
+    ret
+.size flag_set,.-flag_set
+
+.type flag_clear,@function
+flag_clear:
+    clc
+    ret
+.size flag_clear,.-flag_clear
 .section .note.GNU-stack,"",@progbits
