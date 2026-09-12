@@ -1,6 +1,6 @@
 # Bob's issue tracker
 
-Updated 2026-09-12. Owner: Alice. Working branch: `fix/explicit-option-overrides`.
+Updated 2026-09-12. Owner: Alice. Working branch: `fix/global-symbol-views`.
 
 Short checklist: [BOB_TASK.md](../BOB_TASK.md). Its markers are `[ ]` queued/triage,
 `[>]` active, `[x]` fixed and validated for the stated scope, and `[-]` outside scope/not planned.
@@ -126,7 +126,8 @@ their value equals the registry default. Its source-built integration regression
 before the fix and now passes with the other six CLI integration tests. It checks operation
 defaults, a conflicting session setting, and that an override does not change that setting.
 Under identical supplied options, 751/751 TUs are unchanged in each scope, standalone and
-application. The package workspace run is in progress.
+application. Correction: `55b9ec76`. The complete workspace exits zero with 1323/1323 tests
+passing and 25 ignored. This measurement precedes the new mixed-global regression gates.
 
 ## Completed validation: result contracts in repeated record stores
 

@@ -85,7 +85,8 @@ and shared-global allocation. Implementation: `d7e386f0`. The active item is #4,
 The separate CLI option-precedence correction now passes all seven CLI integration tests,
 including the regression demonstrated failing before the fix. Emission is identical for
 751/751 TUs in each of the standalone and application contexts under the same supplied options.
-The package workspace run is in progress.
+CLI correction: `55b9ec76`. Its workspace run passes 1323/1323 tests, with 25 ignored.
+This is the completed CLI package measurement, before adding the mixed-global regressions.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.
