@@ -19,6 +19,272 @@ use mosura_core::decompile::printc::print_c;
 use mosura_core::decompile::space::Address;
 use mosura_core::paths::ground_truth_dir;
 
+/// Compile the actual word-lowered expressions and compare their results with
+/// source arithmetic. Kept opt-in because the ordinary fixture gate is offline.
+#[test]
+#[ignore = "requires GCC; run when changing wide integer emission or its primitive meanings"]
+fn widened_word_emission_executes_the_source_arithmetic() {
+    use mosura_core::decompile::fspec::{RegisterOutput, RegisterParameter};
+    use mosura_core::decompile::types::Datatype;
+    use mosura_core::recompile::{groundtruth, insn::{normalize, NoReloc}, recovery};
+    let mut source = groundtruth::prelude_for(groundtruth::Target::Gcc64);
+    let mut checks = String::new();
+    for program in ["widened_product", "widened_dividend"] {
+        let stem = format!("{program}.gcc-x86-32");
+        let truth = parse_truth(&std::fs::read_to_string(ground_truth_dir().join(format!("{stem}.truth"))).unwrap());
+        let mut p = analysis::analyze_file(&ground_truth_dir().join(stem)).unwrap();
+        for (entry, name) in &truth.funcs {
+            if name == "_start" { continue; }
+            let signed = name == "high_signed";
+            let division = name.ends_with("quotient") || name.ends_with("remainder");
+            let regs = if division { & ["EDI", "ESI", "ECX"][..] } else { & ["EDI", "ESI"][..] };
+            p.knobs.function_inputs.insert(*entry, regs.iter().map(|r| RegisterParameter {
+                register: (*r).into(), datatype: if signed { Datatype::Int(4) } else { Datatype::Uint(4) },
+            }).collect());
+            p.knobs.function_outputs.insert(*entry, RegisterOutput {
+                registers: vec!["EAX".into()], datatype: Datatype::Uint(4),
+            });
+            let addr = Address::new(p.default_space, *entry);
+            let f = decompile_function(&p, addr).unwrap();
+            let size = truth.sizes.iter().find(|(a, _)| a == entry).unwrap().1;
+            let bytes = p.memory.read_window(addr, size as usize);
+            let insns = normalize("x86:LE:32:default", &bytes, *entry, &NoReloc).unwrap();
+            let (choices, rec_choices) = recovery::measured_arms();
+            let recovered = recovery::recover(&f, &insns, &choices, &rec_choices, |_| Default::default());
+            let c = mosura_core::decompile::printc::print_c_recovered(&f, &rec_choices, &recovered);
+            // This is a logical C value oracle, so the harness calls definitions
+            // through its host ABI. Physical register bindings are tested elsewhere.
+            source.push_str(&c.replace(&f.name, name).replace("__cdecl/__regparm ", ""));
+            let numerator = if signed { "(uint8)((int8)(int4)a * (int8)(int4)b)" }
+                else if name.starts_with("pair_") { "((uint8)b << 32) | a" }
+                else { "(uint8)a * b" };
+            let expected = match name.as_str() {
+                "high_product" | "high_signed" => "product >> 30",
+                "product_quotient" | "pair_quotient" => "product / d",
+                "product_remainder" | "pair_remainder" => "product % d",
+                "product_shift" => "product >> 44",
+                "product_low" => "product",
+                _ => unreachable!(),
+            };
+            let call = if division { format!("{name}(a,b,d)") } else { format!("{name}(a,b)") };
+            checks.push_str(&format!(
+                "product = {numerator};\nif ({}) {{\nif ({call} != (uint4)({expected})) {{ printf(\"{name}: %x %x %x\\n\", a,b,d); return 1; }}\n++cases;\n}}\n",
+                if division { "d != 0 && product / d <= 0xffffffffULL" } else { "1" },
+            ));
+        }
+    }
+    source.push_str(&format!(r#"
+extern int printf(const char *, ...);
+int main(void) {{
+    static const uint4 words[] = {{0,1,0xffff,0x10000,0x7fffffff,0x80000000,0xffffffff}};
+    uint4 a,b,d,seed=83691; unsigned i,j,k,cases=0; uint8 product;
+    for (i=0;i<7;++i) for (j=0;j<7;++j) for (k=0;k<7;++k) {{
+        a=words[i]; b=words[j]; d=words[k]; {checks}
+    }}
+    for (i=0;i<2048;++i) {{
+        seed=seed*1664525U+1013904223U; a=seed;
+        seed=seed*1664525U+1013904223U; b=seed;
+        seed=seed*1664525U+1013904223U; d=seed|1U; {checks}
+    }}
+    printf("wide word C: %u source arithmetic cases passed\n", cases);
+    return 0;
+}}
+"#));
+    let dir = mosura_core::paths::workspace_root().join("build/wide-word-recompile");
+    std::fs::create_dir_all(&dir).unwrap();
+    let input = dir.join("wide.c");
+    let binary = dir.join("wide");
+    std::fs::write(&input, source).unwrap();
+    let compile = std::process::Command::new("gcc").args(["-O2", "-fwrapv", "-std=gnu99"])
+        .arg(&input).arg("-o").arg(&binary).output().expect("GCC is required by this opt-in gate");
+    assert!(compile.status.success(), "{}", String::from_utf8_lossy(&compile.stderr));
+    let run = std::process::Command::new(binary).output().unwrap();
+    eprintln!("{}", String::from_utf8_lossy(&run.stdout));
+    assert!(run.status.success(), "{}", String::from_utf8_lossy(&run.stderr));
+}
+
+/// A narrow quotient or slice still depends on the entire wide input. The
+/// compiler emitter must lower that arithmetic without erasing its high word.
+#[test]
+fn widened_dividends_have_representable_narrow_consumers() {
+    use mosura_core::decompile::{Funcdata, OpCode, VarnodeId};
+    use mosura_core::decompile::fspec::{RegisterOutput, RegisterParameter};
+    use mosura_core::decompile::types::Datatype;
+    use mosura_core::decompile::printc::print_c_recovered;
+    use mosura_core::recompile::{insn::{normalize, NoReloc}, recovery, tu};
+
+    fn value(f: &Funcdata, v: VarnodeId, args: &[(Address, u32)]) -> u64 {
+        let vn = f.vn(v);
+        if vn.is_constant() { return vn.constant_value(); }
+        if vn.is_input() {
+            assert_eq!(vn.size, 4);
+            return u64::from(args.iter().find(|(a, _)| *a == vn.loc).expect("declared input").1);
+        }
+        let op = f.op(vn.def.expect("defined arithmetic"));
+        let inputs: Vec<_> = op.inrefs.iter().map(|&v| (value(f, v, args), f.vn(v).size)).collect();
+        match op.code() {
+            OpCode::Cast | OpCode::Copy => inputs[0].0,
+            OpCode::IntDiv => inputs[0].0 / inputs[1].0,
+            OpCode::IntRem => inputs[0].0 % inputs[1].0,
+            OpCode::Piece => (inputs[0].0 << (inputs[1].1 * 8)) | inputs[1].0,
+            OpCode::Subpiece => (inputs[0].0 >> (inputs[1].0 * 8)) & u64::from(u32::MAX),
+            code => mosura_core::decompile::rules::eval_const(code, &inputs, vn.size)
+                .unwrap_or_else(|| panic!("unexpected arithmetic operation {code:?}")),
+        }
+    }
+
+    let mut failures = Vec::new();
+    let mut cases = 0;
+    for bits in [32, 64] {
+        let stem = format!("widened_dividend.gcc-x86-{bits}");
+        let truth = parse_truth(&std::fs::read_to_string(ground_truth_dir().join(format!("{stem}.truth"))).unwrap());
+        let mut p = analysis::analyze_file(&ground_truth_dir().join(stem)).unwrap();
+        for (entry, name) in &truth.funcs {
+            if name == "_start" { continue; }
+            let division = name.ends_with("quotient") || name.ends_with("remainder");
+            let regs = if division { & ["EDI", "ESI", "ECX"][..] } else { & ["EDI", "ESI"][..] };
+            p.knobs.function_inputs.insert(*entry, regs.iter().map(|r| RegisterParameter {
+                register: (*r).into(), datatype: Datatype::Uint(4),
+            }).collect());
+            p.knobs.function_outputs.insert(*entry, RegisterOutput {
+                registers: vec!["EAX".into()], datatype: Datatype::Uint(4),
+            });
+            let addr = Address::new(p.default_space, *entry);
+            let f = decompile_function(&p, addr).unwrap();
+            let params = &f.func_proto().params;
+            assert_eq!(params.len(), regs.len());
+            let ret = f.op_ids().map(|id| f.op(id))
+                .find(|op| !op.is_dead() && op.code() == OpCode::Return).unwrap().input(1).unwrap();
+            let words = [0u32, 1, 0xffff, 0x10000, 0x7fff_ffff, 0x8000_0000, u32::MAX];
+            for x in words { for y in words {
+                let numerator = if name.starts_with("pair_") { (u64::from(y) << 32) | u64::from(x) }
+                    else { u64::from(x) * u64::from(y) };
+                for divisor in if division { &words[1..] } else { &words[..1] } {
+                    // Native DIV faults when its quotient does not fit EAX. These
+                    // value checks cover the source's defined, non-faulting domain.
+                    if division && numerator / u64::from(*divisor) > u64::from(u32::MAX) { continue; }
+                    let expected = match name.as_str() {
+                        "product_quotient" | "pair_quotient" => numerator / u64::from(*divisor),
+                        "product_remainder" | "pair_remainder" => numerator % u64::from(*divisor),
+                        "product_shift" => numerator >> 44,
+                        "product_low" => numerator & u64::from(u32::MAX),
+                        _ => unreachable!(),
+                    };
+                    let args: Vec<_> = params.iter().zip([x, y, *divisor]).map(|(p, v)| (p.addr, v)).collect();
+                    assert_eq!(value(&f, ret, &args), expected, "{bits}/{name}/{x:#x}/{y:#x}/{divisor:#x}\n{}", f.print_raw());
+                    cases += 1;
+                }
+            }}
+            if bits == 32 {
+                let size = truth.sizes.iter().find(|(a, _)| a == entry).unwrap().1;
+                let bytes = p.memory.read_window(addr, size as usize);
+                let insns = normalize("x86:LE:32:default", &bytes, *entry, &NoReloc).unwrap();
+                let (choices, rec_choices) = recovery::measured_arms();
+                let recovered = recovery::recover(&f, &insns, &choices, &rec_choices, |_| Default::default());
+                let c = print_c_recovered(&f, &rec_choices, &recovered);
+                eprintln!("wide emit {name}:\n{c}");
+                if name != "product_low" {
+                    let unwitnessed = recovery::recover(&f, &[], &choices, &rec_choices, |_| Default::default());
+                    assert!(unwitnessed.wide_int.sites.is_empty(), "native arithmetic is required");
+                    let mut off = recovered.clone();
+                    off.switch_off("wide-int").unwrap();
+                    let off_c = print_c_recovered(&f, &rec_choices, &off);
+                    assert!(!off_c.contains("__mosura_"), "the arm must switch off atomically");
+                    assert!(!tu::contract_violations(&off_c).is_empty(), "off must retain the wide expression");
+                }
+                let violations = tu::contract_violations(&c);
+                if !violations.is_empty() {
+                    failures.push(format!("{name}: {violations:?}\n{c}\n{}", f.print_raw()));
+                }
+            }
+        }
+    }
+    eprintln!("widened dividend IR: {cases} source arithmetic cases passed");
+    assert!(failures.is_empty(), "wide arithmetic is not representable by the target emitter:\n{}", failures.join("\n"));
+}
+
+/// A small pointer does not make the high bits of integer arithmetic dispensable.
+/// The mapped C++ oracle keeps the input widening on both i386 and x86-64.
+#[test]
+fn widened_products_keep_their_width_in_the_reference_c() {
+    use mosura_core::decompile::{Funcdata, OpCode, VarnodeId};
+    use mosura_core::decompile::fspec::{RegisterOutput, RegisterParameter};
+    use mosura_core::decompile::types::Datatype;
+    use mosura_core::decompile::emit::{EmitChoices, ExtCast};
+    use mosura_core::decompile::printc::print_c_with;
+
+    fn value(f: &Funcdata, v: VarnodeId, args: &[(Address, u32)]) -> u64 {
+        let vn = f.vn(v);
+        if vn.is_constant() { return vn.constant_value(); }
+        if vn.is_input() {
+            assert_eq!(vn.size, 4);
+            return u64::from(args.iter().find(|(a, _)| *a == vn.loc)
+                .unwrap_or_else(|| panic!("undeclared input in product\n{}", f.print_raw())).1);
+        }
+        let op = f.op(vn.def.expect("product must be defined"));
+        let inputs: Vec<_> = op.inrefs.iter().map(|&v| (value(f, v, args), f.vn(v).size)).collect();
+        if op.code() == OpCode::Cast { return inputs[0].0; }
+        if op.code() == OpCode::Subpiece {
+            return (inputs[0].0 >> (inputs[1].0 * 8)) & u64::from(u32::MAX);
+        }
+        mosura_core::decompile::rules::eval_const(op.code(), &inputs, vn.size)
+            .unwrap_or_else(|| panic!("unexpected product operation {:?}", op.code()))
+    }
+
+    for bits in [32, 64] {
+        let stem = format!("widened_product.gcc-x86-{bits}");
+        let truth = parse_truth(&std::fs::read_to_string(ground_truth_dir().join(format!("{stem}.truth"))).unwrap());
+        let mut p = analysis::analyze_file(&ground_truth_dir().join(stem)).unwrap();
+        for (name, signed) in [("high_product", false), ("high_signed", true)] {
+            let entry = truth.funcs.iter().find(|(_, n)| n == name).unwrap().0;
+            let datatype = if signed { Datatype::Int(4) } else { Datatype::Uint(4) };
+            p.knobs.function_inputs.insert(entry, ["EDI", "ESI"].iter().map(|r| RegisterParameter {
+                register: (*r).into(), datatype: datatype.clone(),
+            }).collect());
+            p.knobs.function_outputs.insert(entry, RegisterOutput {
+                registers: vec!["EAX".into()], datatype: Datatype::Uint(4),
+            });
+            let f = decompile_function(&p, Address::new(p.default_space, entry)).unwrap();
+            let ret = f.op_ids().map(|id| f.op(id))
+                .find(|op| !op.is_dead() && op.code() == OpCode::Return).unwrap().input(1).unwrap();
+            let params = &f.func_proto().params;
+            assert_eq!(params.len(), 2);
+            let boundaries = [0u32, 1, 0x7fff, 0x10000, 0x7fff_ffff, 0x8000_0000, u32::MAX];
+            for x in boundaries {
+                for y in boundaries {
+                    let product = if signed { ((x as i32 as i64) * (y as i32 as i64)) as u64 }
+                        else { u64::from(x) * u64::from(y) };
+                    assert_eq!(value(&f, ret, &[(params[0].addr, x), (params[1].addr, y)]),
+                        (product >> 30) & u64::from(u32::MAX), "{bits}/{name}/{x:#x}/{y:#x}");
+                }
+            }
+            // The operands are four-byte C parameters. The high product bits require
+            // an explicit wider multiplication, as the oracle's C spells it. Ordinary
+            // C promotion cannot supply this width, including under the promotion arm.
+            let ty = if signed { "int8" } else { "uint8" };
+            for ext_cast in [ExtCast::Ghidra, ExtCast::Promotion, ExtCast::HideWide] {
+                let choices = EmitChoices { ext_cast, ..EmitChoices::default() };
+                let c = print_c_with(&f, &choices);
+                assert!(c.contains(&format!("({ty})param_1 * ({ty})param_2")),
+                    "{bits}/{name}/{ext_cast:?}: the C must retain the widened product\n{c}");
+            }
+            if bits == 32 {
+                use mosura_core::recompile::{insn::{normalize, NoReloc}, recovery, tu};
+                let size = truth.sizes.iter().find(|(a, _)| *a == entry).unwrap().1;
+                let bytes = p.memory.read_window(Address::new(p.default_space, entry), size as usize);
+                let insns = normalize("x86:LE:32:default", &bytes, entry, &NoReloc).unwrap();
+                let (choices, rec_choices) = recovery::measured_arms();
+                let recovered = recovery::recover(&f, &insns, &choices, &rec_choices, |_| Default::default());
+                let c = mosura_core::decompile::printc::print_c_recovered(&f, &rec_choices, &recovered);
+                eprintln!("wide emit {name}:\n{c}");
+                assert!(tu::contract_violations(&c).is_empty(), "product slices must retain their value in target C:\n{c}");
+                assert!(!recovered.wide_int.sites.is_empty());
+                assert!(!print_c_with(&f, &EmitChoices::default()).contains("__mosura_"));
+            }
+        }
+    }
+}
+
 /// A joined result may contain a narrow condition flag as well as a full register.
 /// Execute both result-dependent branches and the loop which passes the value back.
 #[test]

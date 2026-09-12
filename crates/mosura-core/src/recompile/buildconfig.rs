@@ -3175,3 +3175,20 @@ mod register_input_tests {
         assert!(register_inputs_from_evidence(&[], &REGS, &KILLS).iter().all(|&x| x == RegInput::Undecided));
     }
 }
+
+/// A wide-integer primitive requires the corresponding eight-byte arithmetic
+/// operation in the original instruction, at the IR operation's provenance PC.
+/// This is the output target's recovery boundary; the printer never decodes ISA
+/// names or infers compiler capabilities from register/pointer widths.
+pub fn wide_int_from_evidence(
+    candidates: &[crate::decompile::emit::arms::wide_int::Candidate],
+    insns: &[crate::recompile::insn::NormInsn],
+) -> std::collections::HashSet<crate::decompile::op::OpId> {
+    use crate::recompile::insn::SemArg;
+    candidates.iter().filter(|c| !c.arithmetic.is_empty() && c.arithmetic.iter().all(|(pc, code)| {
+        insns.iter().find(|i| i.addr == *pc).is_some_and(|i| i.sem.iter().any(|op| {
+            op.opcode == *code as u32 && matches!(op.out,
+                Some(SemArg::Reg(_, 8) | SemArg::Temp(_, 8) | SemArg::Mem(_, _, 8)))
+        }))
+    })).map(|c| c.op).collect()
+}

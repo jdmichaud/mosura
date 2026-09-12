@@ -212,6 +212,7 @@ pub struct EmitChoices {
     pub return_split: ReturnSplit,
     pub cond_form: CondForm,
     pub ext_cast: ExtCast,
+    pub wide_int: WideInt,
     pub swi: SwiForm,
     pub arm_order: ArmOrder,
     pub struct_locals: StructLocals,
@@ -228,6 +229,12 @@ pub struct EmitChoices {
     pub struct_copy: StructCopy,
     pub sum_order: SumOrder,
 }
+
+/// Representation of narrow consumers of genuine wider integer arithmetic.
+/// The default remains the reference C. `Split32` uses word-sized primitives;
+/// the output compiler selects and implements them, without changing analysis.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WideInt { Ghidra, Split32 }
 
 /// How an integer extension (INT_ZEXT/INT_SEXT) that C's promotion would perform anyway is
 /// rendered. `Ghidra` is `PrintC::opIntZext/opIntSext` with `isExtensionCastImplied` — the
@@ -458,6 +465,7 @@ impl Default for EmitChoices {
             return_split: ReturnSplit::Recovered,
             cond_form: CondForm::Collapsed,
             ext_cast: ExtCast::Ghidra,
+            wide_int: WideInt::Ghidra,
             swi: SwiForm::Ghidra,
             arm_order: ArmOrder::Ghidra,
             struct_locals: StructLocals::Ghidra,
@@ -522,6 +530,11 @@ impl EmitChoices {
             values: &["collapsed", "nested"],
             doc: "render statement-carrying short-circuit clauses collapsed (comma form) or \
                   as nested ifs",
+        },
+        Axis {
+            name: "wide-int",
+            values: &["ghidra", "split32"],
+            doc: "represent narrow consumers of wide arithmetic with word-sized primitives",
         },
         Axis {
             name: "ext-cast",
@@ -650,6 +663,10 @@ impl EmitChoices {
                 CondForm::Collapsed => "collapsed",
                 CondForm::Nested => "nested",
             }),
+            "wide-int" => Some(match self.wide_int {
+                WideInt::Ghidra => "ghidra",
+                WideInt::Split32 => "split32",
+            }),
             "ext-cast" => Some(match self.ext_cast {
                 ExtCast::Ghidra => "ghidra",
                 ExtCast::HideWide => "hide-wide",
@@ -760,6 +777,13 @@ impl EmitChoices {
                 self.cond_form = match value {
                     "collapsed" => CondForm::Collapsed,
                     "nested" => CondForm::Nested,
+                    _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
+                }
+            }
+            "wide-int" => {
+                self.wide_int = match value {
+                    "ghidra" => WideInt::Ghidra,
+                    "split32" => WideInt::Split32,
                     _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
                 }
             }

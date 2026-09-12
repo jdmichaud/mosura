@@ -414,6 +414,16 @@ pub fn prelude() -> String {
          #define __regparm3\n#define __regparm2\n#define __regparm1\n#define __stdcall\n#define __fastcall\n\
          #define __thiscall\n#define __vectorcall\n#define __pascal\n",
     );
+    // Host meanings of the word primitives, independent of the output compiler's
+    // implementation. Each argument is evaluated once, including a full dividend.
+    p.push_str(r#"
+#define __mosura_umul_shift(a,b,n) ((uint4)(((uint8)(uint4)(a) * (uint8)(uint4)(b)) >> (n)))
+#define __mosura_smul_shift(a,b,n) ((uint4)((uint8)((int8)(int4)(a) * (int8)(int4)(b)) >> (n)))
+#define __mosura_udiv64_32(l,h,d) ((uint4)((((uint8)(uint4)(h) << 32) | (uint4)(l)) / (uint4)(d)))
+#define __mosura_urem64_32(l,h,d) ((uint4)((((uint8)(uint4)(h) << 32) | (uint4)(l)) % (uint4)(d)))
+#define __mosura_umuldiv32(a,b,d) ((uint4)(((uint8)(uint4)(a) * (uint8)(uint4)(b)) / (uint4)(d)))
+#define __mosura_umulrem32(a,b,d) ((uint4)(((uint8)(uint4)(a) * (uint8)(uint4)(b)) % (uint4)(d)))
+"#);
     let u = |n: u32| match n {
         1 => "unsigned char",
         2 => "unsigned short",

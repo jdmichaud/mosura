@@ -103,10 +103,10 @@ fn languages_registers_and_raw_decoding() {
     // emit axes and arms
     let mut axes: *mut mosura_table = ptr::null_mut();
     assert_eq!(unsafe { mosura_emit_axes(c, &mut axes) }, MOSURA_OK);
-    assert_eq!(unsafe { mosura_table_rows(axes) }, 21);
+    assert_eq!(unsafe { mosura_table_rows(axes) }, 22);
     let mut arms: *mut mosura_table = ptr::null_mut();
     assert_eq!(unsafe { mosura_emit_arms(c, &mut arms) }, MOSURA_OK);
-    assert_eq!(unsafe { mosura_table_rows(arms) }, 29);
+    assert_eq!(unsafe { mosura_table_rows(arms) }, 30);
     for h in [langs, regs, d, p, d16, axes, arms] {
         unsafe { mosura_release(h as *mut c_void) };
     }

@@ -1,5 +1,10 @@
 # The EXACT push (2026-09-03) — witnessed emit choices from the near-miss census
 
+The later [`wide-int=split32` arm](wide-integer-emission.md) supplies the compiler representation
+for narrow consumers of genuine wide arithmetic. It uses the existing value seam, requires
+native p-code witnesses and remains off in the reference printer. Its source fixtures, primitive
+contracts and round evidence are recorded in that document.
+
 ## Where the functions were
 
 The divergence census (`divergence-classes.md`) counts rows, and rows are dominated by big

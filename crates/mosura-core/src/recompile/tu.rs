@@ -10,12 +10,11 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-// Sized-int / undefined typedefs a compilable-C emitter would prepend (Ghidra decompiler C).
-// Watcom 10.0a is C89: int/long/pointer are 32-bit and there is NO 64-bit integer type
-// (`long long` / `__int64` both rejected), so 8-byte and odd-size types map to `double`
-// (size-8) / nearest int — those are rare (7 files) and decompiler-imperfect for a 32-bit
-// target anyway. Written to <out>/prelude.h so the compile stage can prepend it without a
-// full re-emit. Kept out of the baked src files for fast prelude iteration.
+// Sized integer and undefined types for the Watcom 10.0a C89 output target.
+// Its widest C integer is four bytes. Wider integer names remain incomplete
+// types: supported arithmetic is lowered explicitly through word primitives,
+// and unsupported values must never compile with an invented representation.
+// The compile stage prepends this header rather than baking it into each TU.
 //
 // ⚠️ THIS CONSTANT IS THE SOURCE OF TRUTH — every EMIT overwrites <out>/prelude.h from it. Editing
 // the generated prelude.h by hand "works" until the next EMIT silently reverts it. That happened:
@@ -42,10 +41,6 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 // fixed. With `typedef int code();` the same C compiles to `ff 15 <abs32>` + `c3`, byte-identical
 // to the original modulo the relocation. Measured on oracle/ground-truth/src/globfnptr.c.
 //
-// Integer metatypes take the widest integer wcc386 has (`unsigned int`/`int`) rather than the
-// width-matching `double` the unknown metatypes take, because they are USED as integers: both
-// `uint6` sites shift (`uStack_1e >> 0x10`), and shifting a double is `E1079: Expression must be
-// integral`. Every mapping here lies about width; this one at least lies compilably.
 pub const PRELUDE: &str = "\
 /* INT3 inlined as its literal byte (the `swi=int3` emission arm): the retail assert-trap
    idiom and app_fatal's body. parm []/modify exact [] = touches nothing. */
@@ -93,6 +88,27 @@ typedef struct mosura_no_such_integer_width_on_this_target undefined6;
 typedef struct mosura_no_such_integer_width_on_this_target undefined7;
 typedef unsigned char uint1; typedef unsigned short uint2; typedef unsigned int uint4;
 typedef signed char int1; typedef short int2; typedef int int4;
+/* wide-int=split32: complete widened products and unsigned 64/32 division,
+   exposed only through four-byte inputs/results. Product shifts select the
+   low word of the logical right shift (counts 0..63). Signed multiplication
+   interprets its two input words as two's-complement signed integers.
+   Division first reduces the high word, then divides remainder:low. Thus
+   the low quotient and full remainder are correct for every nonzero divisor,
+   even when a single native DIV would overflow its four-byte quotient.
+   Arguments are evaluated once; the inline sequences balance their stack and
+   declare their register clobbers. Wider objects still hit the tripwire. */
+uint4 __mosura_umul_shift(uint4, uint4, uint4);
+#pragma aux __mosura_umul_shift = \"mul edx\" \"cmp ecx,32\" \"jae high_word\" \"shrd eax,edx,cl\" \"jmp done\" \"high_word:\" \"mov eax,edx\" \"shr eax,cl\" \"done:\" parm [eax] [edx] [ecx] value [eax] modify exact [eax edx];
+uint4 __mosura_smul_shift(uint4, uint4, uint4);
+#pragma aux __mosura_smul_shift = \"imul edx\" \"cmp ecx,32\" \"jae high_word\" \"shrd eax,edx,cl\" \"jmp done\" \"high_word:\" \"mov eax,edx\" \"shr eax,cl\" \"done:\" parm [eax] [edx] [ecx] value [eax] modify exact [eax edx];
+uint4 __mosura_udiv64_32(uint4, uint4, uint4);
+#pragma aux __mosura_udiv64_32 = \"push eax\" \"mov eax,edx\" \"xor edx,edx\" \"div ecx\" \"pop eax\" \"div ecx\" parm [eax] [edx] [ecx] value [eax] modify exact [eax edx];
+uint4 __mosura_urem64_32(uint4, uint4, uint4);
+#pragma aux __mosura_urem64_32 = \"push eax\" \"mov eax,edx\" \"xor edx,edx\" \"div ecx\" \"pop eax\" \"div ecx\" parm [eax] [edx] [ecx] value [edx] modify exact [eax edx];
+uint4 __mosura_umuldiv32(uint4, uint4, uint4);
+#pragma aux __mosura_umuldiv32 = \"mul edx\" \"push eax\" \"mov eax,edx\" \"xor edx,edx\" \"div ecx\" \"pop eax\" \"div ecx\" parm [eax] [edx] [ecx] value [eax] modify exact [eax edx];
+uint4 __mosura_umulrem32(uint4, uint4, uint4);
+#pragma aux __mosura_umulrem32 = \"mul edx\" \"push eax\" \"mov eax,edx\" \"xor edx,edx\" \"div ecx\" \"pop eax\" \"div ecx\" parm [eax] [edx] [ecx] value [edx] modify exact [eax edx];
 typedef unsigned char xunknown1; typedef unsigned short xunknown2; typedef unsigned int xunknown4;
 typedef unsigned int xunknown3;
 typedef struct mosura_no_such_integer_width_on_this_target xunknown5;

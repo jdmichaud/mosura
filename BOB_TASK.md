@@ -13,12 +13,13 @@ Withdrawn consumer items were reconciled with the reporter's handoff and ledger.
 closure does not claim a mosura code fix.
 The [detailed tracker](docs/bob-issue-tracker.md) records evidence and commits; update both trackers.
 
-Validated declaration scopes: #1, #6, #7, #8, #9, #11, #14, #21, #25 and #32, using explicit decompilation declarations. Outside scope: #88's verified
+Validated declaration scopes: #1, #6, #7, #8, #9, #11, #14, #18, #21, #25 and #32, using explicit decompilation declarations. Outside scope: #88's verified
 consumer rewrite, 22 withdrawn consumer issues/proofs, two cleanup/shared-state reports whose requested behavior is absent from the original bytes,
 the local/global naming collisions, a loop-value constant substitution, and a packed-register
 width/order mismatch introduced in consumer rewrites.
 Related generic defects remain open: #27 was reviewed independently, and #99 does not close missing call inputs.
-Compiler lowering, full typed-pointer contracts, automatic result recovery and clobber declarations remain open.
+Compiler lowering of declared joined results, full typed-pointer contracts, automatic result recovery
+and clobber declarations remain open.
 Typed scalar/flag results and compiler-spec extensions are now implemented and gated.
 #13 remains open for its nested result/input contracts. #9 is fixed and validated: the source
 regression passes on both x86 variants, the reported selected argument and branches match the
@@ -54,11 +55,16 @@ audits. Source fixture: `768900d3`; semantic gate: `627d12ea`. The full workspac
 1319/1319 tests pass, 23 ignored, including ground truth 41/41 and IR parity 9/9.
 No production change was needed. Callback effects, complete outer loops, automatic recovery
 and compiler lowering remain outside this validation.
-The active item is #18. Its paired result is preserved with complete nested declarations,
+#18 is validated for complete nested result declarations and paired stores/field bindings.
+Its paired result is preserved with complete nested declarations,
 but native/C comparison exposed a generic widened-multiplication rendering defect. The faithful
 cast correction passes the source regression and the sampled native/C producer chain. Its first
-full corpus round preserves all 19 EXACT functions but exposes 12 new compiler failures;
-compiler-side wide arithmetic lowering remains active. A source MVE reproduces the missing casts on i386; the mapped C++ oracle retains them on both modes.
+full corpus round exposed 12 new compiler failures. Word-based lowering now resolves those
+failures and eight older ones; all 19 EXACT functions remain intact, all eight gates pass,
+and the repeat reuses 751/751 units with unchanged verdicts. The emitted-source value gates
+and paired-store audit pass. Final workspace: 1321/1321 tests pass, 24 ignored. Joined-result
+compiler ABI lowering, automatic recovery and the complete outer caller remain separate scopes.
+A source MVE reproduces the missing casts on i386; the mapped C++ oracle retains them on both modes.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.
@@ -77,7 +83,7 @@ compiler-side wide arithmetic lowering remains active. A source MVE reproduces t
 - [ ] **#15** Results: propagate producer outputs to callers instead of uninitialized inputs.
 - [ ] **#16** Platform models: model directory-enumeration operations and termination conditions.
 - [ ] **#17** Input contracts: preserve non-default coordinate parameter storage and order.
-- [>] **#18** Results: preserve a secondary scalar result from a multi-result call.
+- [x] **#18** Results: preserve a secondary scalar result (declared chain and paired-store scope).
 - [-] **#19** Consumer scope: validate application viewport dimensions; no generic defect established. Withdrawn upstream.
 - [ ] **#20** Results: bind multiple device-read outputs to their actual consumers.
 - [x] **#21** Input contracts: retain shared declarations and caller values at all native sites (validated scope).

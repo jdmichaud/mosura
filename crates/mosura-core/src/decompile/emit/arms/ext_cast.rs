@@ -27,8 +27,9 @@
 //!   IR and the original's `MOVSX` sign-extend — wrong code in the split-point family.
 //!
 //! The arm answers ONE seam, `ValueSite::Extension`, only under `ext-cast=promotion`; `None` =
-//! the port's own rendering. An extension PAST int width is the port's target rule for
-//! undeclarable wide integers (it answers first) and never reaches here.
+//! the port's own rendering. C promotion cannot replace an extension past int width, so this
+//! arm leaves it to the faithful cast rule. Compiler support for wider arithmetic belongs to
+//! target emission and cannot be inferred from the pointer width.
 use crate::decompile::emit::{EmitChoices, ExtCast};
 use crate::decompile::op::OpId;
 use crate::decompile::opcode::OpCode;

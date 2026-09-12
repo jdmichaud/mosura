@@ -100,6 +100,7 @@ pub(crate) struct State {
     pub(crate) nested_conds: nested_conds::State,
     pub(crate) complement_cmp: complement_cmp::State,
     pub(crate) ext_cast: ext_cast::State,
+    pub(crate) wide_int: wide_int::State,
     pub(crate) sum_order: sum_order::State,
     pub(crate) join_narrow: join_narrow::State,
     pub(crate) array_index: array_index::State,
@@ -122,6 +123,7 @@ impl State {
             nested_conds: nested_conds::State::new(choices),
             complement_cmp: complement_cmp::State::new(choices),
             ext_cast: ext_cast::State::new(choices),
+            wide_int: wide_int::State::new(choices),
             sum_order: sum_order::State::new(choices),
             join_narrow: join_narrow::State::new(choices),
             array_index: array_index::State::new(choices),
@@ -139,6 +141,7 @@ pub mod cmp_order;
 pub mod cmp_sign;
 pub mod complement_cmp;
 pub mod ext_cast;
+pub mod wide_int;
 pub mod for_rotate;
 pub mod inline_call;
 pub mod load_hoist;
@@ -298,7 +301,7 @@ mod tests {
     /// The arm files, as text, for the surface scan — every `pub mod` of this module must be here
     /// (`arms_touch_only_the_documented_surface` checks that against this file's own source, so a
     /// new arm file cannot slip past the scan).
-    const ARM_SOURCES: [(&str, &str); 32] = [
+    const ARM_SOURCES: [(&str, &str); 33] = [
         ("zero_cmp.rs", include_str!("zero_cmp.rs")),
         ("table_base.rs", include_str!("table_base.rs")),
         ("narrow_cmp.rs", include_str!("narrow_cmp.rs")),
@@ -315,6 +318,7 @@ mod tests {
         ("cmp_sign.rs", include_str!("cmp_sign.rs")),
         ("return_widen.rs", include_str!("return_widen.rs")),
         ("ext_cast.rs", include_str!("ext_cast.rs")),
+        ("wide_int.rs", include_str!("wide_int.rs")),
         ("mask_cast.rs", include_str!("mask_cast.rs")),
         ("string_ops.rs", include_str!("string_ops.rs")),
         ("struct_copy.rs", include_str!("struct_copy.rs")),
@@ -508,7 +512,7 @@ pub enum ValueSite<'v> {
 pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, u8)> {
     // THE ORDERED ANSWERERS (explicit, documented here; a site with two answerers lists them in
     // the order they are asked, first answer wins):
-    //   OpRoot:      string-ops, sdiv-pow2, struct-return (a witnessed CALL)
+    //   OpRoot:      string-ops, sdiv-pow2, struct-return (a witnessed CALL), wide-int (a narrow arithmetic consumer)
     //   Compare:     complement-cmp (the immediate flavour), then cmp-order (the operand swap), then cmp-sign, then narrow-cmp
     //   Equality:    unsigned-cmp, then cmp-sign (a narrow signed operand the original zero-extends), then narrow-cmp, then zero-cmp
     //   NegatedEquality: cmp-sign, then zero-cmp (the flipped token names the order compare)
@@ -526,7 +530,8 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
     match site {
         ValueSite::OpRoot { op } => string_ops::strlen_fold(p, op)
             .or_else(|| sdiv_pow2::render(p, op))
-            .or_else(|| struct_return::render_value(p, &ValueSite::OpRoot { op })),
+            .or_else(|| struct_return::render_value(p, &ValueSite::OpRoot { op }))
+            .or_else(|| wide_int::render(p, op)),
         ValueSite::Var { v } => struct_return::render_value(p, &ValueSite::Var { v }).or_else(|| string_ops::render_var_value(p, v)),
         ValueSite::Equality { op, sym, prec } => unsigned_cmp::render(p, op, sym, prec)
             .or_else(|| cmp_sign::render(p, op, sym, prec))

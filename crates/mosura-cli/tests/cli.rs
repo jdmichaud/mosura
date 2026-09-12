@@ -134,8 +134,12 @@ fn raw_decoding_registries_and_exit_codes() {
     assert!(langs.contains("x86:LE:32:default\t"));
     let regs = ok(&s, &["--format", "tsv", "registers", "--language", "x86:LE:32:default"]);
     assert!(regs.contains("\nEAX\t"), "{}", &regs[..200.min(regs.len())]);
-    assert_eq!(ok(&s, &["--format", "tsv", "axes"]).lines().count(), 22);
-    assert_eq!(ok(&s, &["--format", "tsv", "arms"]).lines().count(), 30);
+    let axes = ok(&s, &["--format", "tsv", "axes"]);
+    let arms = ok(&s, &["--format", "tsv", "arms"]);
+    assert_eq!(axes.lines().count(), 23);
+    assert_eq!(arms.lines().count(), 31);
+    assert!(axes.contains("wide-int\tghidra|split32\tghidra"));
+    assert!(arms.lines().any(|line| line == "wide_int"));
     let data = ok(&s, &["--format", "tsv", "data", "list"]);
     assert!(data.lines().count() > 100);
     let version = ok(&s, &["version"]);

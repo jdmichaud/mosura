@@ -107,7 +107,7 @@ explicit incoming inputs. A separate formatting helper receives its declared inp
 This is validation of `e482d6a8`/`f4a4e7cd`, not a new production change. The input scope is
 closed; custom compiler lowering and unrelated output/platform contracts remain open.
 
-## Active package: secondary result contracts
+## Completed validation: secondary result contracts
 
 Related report: **#18**. Audit the source of both result fields through nested calls, then
 check the caller's adjacent stores and uses under the same declaration. Distinguish result
@@ -122,7 +122,12 @@ storage from automatic ABI recovery and shared-global type/aliasing work.
   278/278 producer cases (both registers and final scratch state), 263/263 nested fold cases,
   49/49 nested root cases and 135/135 leaf cases. This does not validate the physical host ABI,
   the complete outer caller or asynchronous observation of intermediate scratch writes.
-- [ ] Check the caller's paired stores and subsequent field uses.
+- [x] Check the caller's paired stores and subsequent field uses.
+  Native execution through the first following call and the actual recovered C prefix agree
+  on both initial stores for all 278 producer inputs. The joined value reaches one eight-byte
+  assignment; all ten low/high field views across five call barriers use that same storage,
+  and the four printed arithmetic reads select the correct fields. This does not validate
+  subsequent callback effects, shared aliases in other functions or the full outer arithmetic.
 - [x] Reduce the widened-multiplication defect to a source-built MVE before changing production code.
   Native instruction execution disagrees with recovered host C on 131 of 135 sampled leaf
   inputs. A self-compiled i386 MVE has the required 64-bit IR but omits its widening casts
@@ -135,14 +140,36 @@ storage from automatic ABI recovery and shared-global type/aliasing work.
 - [x] Restore faithful extension printing and validate the source regression.
   Both signed and unsigned products retain the mapped oracle's casts on both x86 modes;
   the focused regression passes its 196 arithmetic cases and all three extension choices.
-- [>] Complete compiler-side lowering for narrow consumers of wide arithmetic.
+- [x] Complete compiler-side lowering for narrow consumers of wide arithmetic.
   The first full round (`widened-products-all`, all 751 functions) preserves all 19 EXACT
   functions and passes gates 1-7. Gate 8 fails on 12 MISMATCH-to-COMPILE_FAIL transitions:
   product slices, product quotient/remainder and paired-word dividends. Their wide values were
   previously discarded by the printer. Retain the faithful correction and implement the
   compiler consumer; do not suppress those values again. A separate source-built dividend
   fixture records this representation requirement.
-- [ ] Check the final workspace, all eight corpus gates and a stable repeat before landing.
+  Fixture commit: `43a4b084`. Its new gate passes all 1,776 source arithmetic cases in IR
+  and first failed on five of six emitted shapes. The word-primitive arm now passes that
+  representability gate, including witness absence and disablement. The Watcom primitive
+  wrappers pass 19,736 native execution cases. The eight emitted source functions, compiled
+  with the actual Watcom prelude, pass 14,257 further native execution cases. The opt-in GCC
+  value gate passes 15,420 cases. See [the design](wide-integer-emission.md).
+- [x] Pass all eight corpus gates and a stable repeat.
+  `wide-words-all` and `wide-words-repeat` both cover all 751 functions: 19 EXACT,
+  one SAME_CODE, 16 SAME_SHAPE, 556 MISMATCH and 159 COMPILE_FAIL. Relative to
+  `joined-core-repeat`, all eight verdict changes are COMPILE_FAIL to MISMATCH;
+  no EXACT is lost, no failure is introduced and membership is unchanged. The repeat
+  reuses 751/751 compiled units with unchanged verdicts. This is an intended emission change,
+  not an identity claim. The arm oracle also retains all 14 plain-passing programs out of
+  its 28-program population; other baseline failures remain visible in its report.
+- [x] Finish the final workspace and commit the complete printer/compiler package.
+  Final `cargo test --workspace --no-fail-fast`: exit 0; 1321/1321 executed tests pass,
+  24 ignored, across 113 test binaries. Ground truth 43/43 (two ignored), IR parity 9/9,
+  disassembly golden 1/1, CLI goldens and all repository guards pass. Registry-size
+  assertions and the new arm's guard-scan registration were updated without expanding
+  the printer access surface. The final build emits identical C for 751/751 TUs and
+  `wide-words-final` again passes all eight gates with 751/751 cached units.
+  This closes the declared producer/consumer result scope; automatic result recovery,
+  joined-result compiler ABI lowering and the complete outer caller remain separate.
 
 ## Completed validation: value and condition-flag results
 
@@ -514,7 +541,7 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #15 | Results: propagate producer outputs to callers instead of uninitialized inputs. | Queued |
 | #16 | Platform models: model directory-enumeration operations and termination conditions. | Queued |
 | #17 | Input contracts: preserve non-default coordinate parameter storage and order. | Queued |
-| #18 | Results: preserve a secondary scalar result from a multi-result call. | Active: nested producer and paired-store audit |
+| #18 | Results: preserve a secondary scalar result from a multi-result call. | Validated: complete nested declarations, both result values, paired stores and field bindings; faithful wide arithmetic retained |
 | #19 | Consumer review: validate application viewport dimensions; no generic defect established. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #20 | Results: bind multiple device-read outputs to their actual consumers. | Queued |
 | #21 | Input contracts: retain shared declarations and caller values. | Validated declaration scope: 31/31 native call PCs, 35 contexts, constant and computed input witnesses |

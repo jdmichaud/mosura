@@ -1140,13 +1140,6 @@ impl<'a> PrintC<'a> {
         Some((format!("{l} {sym} {r}"), 13))
     }
 
-    /// Can this target declare an integer wider than `int`? x86-32 Watcom 10.0a cannot (the
-    /// prelude makes `int8`/`uint8` incomplete structs on purpose); an 8-byte pointer target can
-    /// (`long`). Read off the stack pointer's width — the size the C `long` of the target has.
-    fn wide_int_declarable(&self) -> bool {
-        self.stack_space.is_some_and(|s| self.f.spaces.get(s).addr_size >= 8)
-    }
-
     /// Ghidra `CastStrategyC::isExtensionCastImplied` (cast.cc:249): C's integer promotion
     /// performs the extension `op` describes when its (implied) output feeds an arithmetic or
     /// comparison op whose other operand is a constant no wider than `int` or an explicit
@@ -1971,15 +1964,6 @@ impl<'a> PrintC<'a> {
             OpCode::IntZext => {
                 let in0 = a(0);
                 let out = o.output.unwrap();
-                // EMISSION ARM: on a target with no integer wider than `int` (Watcom 10.0a
-                // x86-32: `uint8` is the prelude's incomplete struct), an extension PAST int
-                // width prints as its bare operand — the int-width C that Watcom compiles back
-                // to the original's `mul`/`div` through EDX:EAX (`(uint8)x * 1000 / y` is
-                // Ghidra's faithful reading of that idiom and undeclarable there; zc43's eight
-                // COMPILE_FAILs). At or below int width the faithful cast stands.
-                if self.f.vn(out).size > self.f.size_of_int() && !self.wide_int_declarable() {
-                    return self.render_var(in0);
-                }
                 // ext-cast=promotion (emit/arms/ext_cast.rs): the emitter's rendering of the
                 // extension — bare where C's promotion is the extension, a cast where not
                 if let Some(r) = arms::render_value(self, ValueSite::Extension { op, signed: false }) {
@@ -2072,11 +2056,6 @@ impl<'a> PrintC<'a> {
                 let out = o.output.unwrap();
                 let (outty, inty) = (self.type_of(out), self.type_of(in0));
                 let n = self.f.vn(out).size;
-                // (the same target arm as IntZext: the pre-port `(int8)x` form, which the
-                // Subpiece arm's narrowed divide consumes)
-                if n > self.f.size_of_int() && !self.wide_int_declarable() {
-                    return (format!("(int{n}){}", self.cast_operand(op, 0, 14, false)), 14);
-                }
                 // ext-cast=promotion (emit/arms/ext_cast.rs): `(intN)` over the operand re-signed
                 // at its own width where its C type is not that signed type
                 if let Some(r) = arms::render_value(self, ValueSite::Extension { op, signed: true }) {
