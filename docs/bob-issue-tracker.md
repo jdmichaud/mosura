@@ -107,10 +107,11 @@ explicit incoming inputs. A separate formatting helper receives its declared inp
 This is validation of `e482d6a8`/`f4a4e7cd`, not a new production change. The input scope is
 closed; custom compiler lowering and unrelated output/platform contracts remain open.
 
-## Active package: value and condition-flag results
+## Completed validation: value and condition-flag results
 
-Related report: **#6**. Distinguish the reported consumer union conversion from the original
-producer/caller storage protocol, then validate the value and flag through one joined result.
+Related report: **#6**, validated for explicit joined output declarations. The native
+producer/caller storage protocol returns a value and flag together; the quoted consumer union
+conversion was a separate downstream rewrite.
 
 - [x] Compare native returns/calls with archived raw output and current declarations.
   The quoted integer-to-double union conversion was introduced by a consumer rewrite.
@@ -121,11 +122,15 @@ producer/caller storage protocol, then validate the value and flag through one j
   and join(CF, EDI) output declarations, the oracle retains both return fields, both
   flag-dependent result branches and the loop-carried value passed to the next call.
   The logical structure has size five and alignment one; physical flag storage is one byte.
-- [>] Gate both channels at definitions and callers, port any missing consumers, and validate.
+- [x] Gate both channels at definitions and callers and complete workspace validation.
   The focused IR gate passes all 48 function/input cases and their call-input sequences.
   Recovered logical C also passes all 48 cases under host declarations. These checks validate
   the existing joined-result implementation; no new production change was needed.
-  The full workspace validation is running.
+  Source fixture: `768900d3`; semantic gate: `627d12ea`. Final `cargo test --workspace`
+  exits zero: 1319/1319 executed tests pass, 23 ignored. Ground truth is 41/41, IR parity
+  9/9 and disassembly golden 1/1; CLI goldens, repository guards and doc-tests pass.
+  This package changes only source-built fixtures, tests and documentation. Prior production
+  emission measurements remain carried evidence; no new emission identity claim is made.
 - [x] Recheck the reported call chain and keep consumer rewrites outside the port.
   Both producers retain all six native exits: four decrement/CLC and two increment/STC.
   A raw-IR value audit passes 5040/5040 producer cases, covering ordinary, sign-boundary
@@ -390,7 +395,7 @@ alone does not close the entire indirect-call class.
 - [ ] **Shared global storage (#4; distinguish downstream #26 and naming #27).** Reproduce
   overlapping reads/writes in self-compiled source and check the existing address-based linker
   aliases and typed views before deciding whether the emitter/TU layer needs a fix.
-- [ ] **Multiple result registers (#6, #18, #20, #22, #31 and related reports; #8 declared scope validated).**
+- [ ] **Multiple result registers (#18, #20, #22, #31 and related reports; #6/#8 declared scopes validated).**
   Audit each remaining protocol and its input/flag consumers using the joined-result mechanism.
 - [ ] **Invented input parameters (#2 and related reports).** Separate missing return channels
   from unsupported external convention facts; validate against current code.
@@ -460,7 +465,7 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #3 | Input contracts: propagate contracts through mutable function-pointer tables. | Investigating: input package; report validation pending |
 | #4 | Storage: preserve aliasing between differently typed views of one address. | Queued: raw cross-width alias evidence received; existing linker alias support needs validation |
 | #5 | Consumer loop-value substitution. | Outside scope: archived raw output preserves the loop expression; the consumer rewrite introduced the constant |
-| #6 | Results: represent a value and condition flag returned together. | Active: native/raw scope audit and joined value/flag witness |
+| #6 | Results: preserve an explicit value and condition flag together. | Validated declared result scope; source/IR/C gates and all four reported caller sites |
 | #7 | Explicit byte inputs at indirect calls. | Validated input scope: both calls retain the original size-1 value; separate storage-order witness remains open |
 | #8 | Results: preserve multiple register outputs consumed after a call. | Validated declaration scope: join heritage/composite consumers, public API, source-built gate and reported result chain; automatic recovery and compiler lowering remain open |
 | #9 | Data flow: preserve branches whose operands come from indirect-call contracts. | Fixed: full-write-set phi placement; source MVE, external input/branch witness, workspace and corpus gates validated |

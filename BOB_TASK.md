@@ -13,12 +13,12 @@ Withdrawn consumer items were reconciled with the reporter's handoff and ledger.
 closure does not claim a mosura code fix.
 The [detailed tracker](docs/bob-issue-tracker.md) records evidence and commits; update both trackers.
 
-Validated declaration scopes: #1, #7, #8, #9, #11, #14, #21, #25 and #32, using explicit decompilation declarations. Outside scope: #88's verified
+Validated declaration scopes: #1, #6, #7, #8, #9, #11, #14, #21, #25 and #32, using explicit decompilation declarations. Outside scope: #88's verified
 consumer rewrite, 22 withdrawn consumer issues/proofs, two cleanup/shared-state reports whose requested behavior is absent from the original bytes,
 the local/global naming collisions, a loop-value constant substitution, and a packed-register
 width/order mismatch introduced in consumer rewrites.
 Related generic defects remain open: #27 was reviewed independently, and #99 does not close missing call inputs.
-Compiler lowering, full typed-pointer contracts, outputs and clobbers remain open.
+Compiler lowering, full typed-pointer contracts, automatic result recovery and clobber declarations remain open.
 Typed scalar/flag results and compiler-spec extensions are now implemented and gated.
 #13 remains open for its nested result/input contracts. #9 is fixed and validated: the source
 regression passes on both x86 variants, the reported selected argument and branches match the
@@ -46,18 +46,21 @@ corpus gates green and a stable 751-unit repeat. The public joined declaration s
 stored storage-piece table pass their API gates; default emission is unchanged for 751/751 TUs.
 The reported producer chain and its immediate consumers pass 1280/1280 IR value cases.
 This closes the declared result scope; automatic recovery, compiler lowering and later callbacks
-remain separate work. The active result scope is #6 (a value and condition flag).
+remain separate work. #6 is now also validated for explicit value-and-flag declarations.
 Its source-built i386/x86-64 example matches the mapped C++ oracle for both fields
 and the retry-loop input. IR and host-C checks pass all 48 source function/input cases.
-The reported result scope passes 5040 producer value/state cases and all four caller-site
-audits. Final workspace validation is running; no new production change was needed.
+The reported result scope passes 5040/5040 producer value/state cases and all four caller-site
+audits. Source fixture: `768900d3`; semantic gate: `627d12ea`. The full workspace exits zero:
+1319/1319 tests pass, 23 ignored, including ground truth 41/41 and IR parity 9/9.
+No production change was needed. Callback effects, complete outer loops, automatic recovery
+and compiler lowering remain outside this validation.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.
 - [ ] **#3** Input contracts: propagate contracts through mutable function-pointer tables.
 - [ ] **#4** Storage: preserve aliasing between differently typed views of one address.
 - [-] **#5** Consumer rewrite: its linear register substitution replaced preserved loop values with constants.
-- [>] **#6** Results: represent a value and condition flag returned together.
+- [x] **#6** Results: preserve an explicit value and condition flag together (validated scope).
 - [x] **#7** Input contracts: preserve explicit byte inputs at both reported indirect calls (validated scope).
 - [x] **#8** Results: preserve explicit multiple-register outputs at definitions and callers (validated scope).
 - [x] **#9** Data flow: preserve branches whose operands come from indirect-call contracts.
