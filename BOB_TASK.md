@@ -13,14 +13,14 @@ Withdrawn consumer items were reconciled with the reporter's handoff and ledger.
 closure does not claim a mosura code fix.
 The [detailed tracker](docs/bob-issue-tracker.md) records evidence and commits; update both trackers.
 
-Validated implementation: #1's explicit decompilation inputs. Outside scope: #88's verified
+Validated input scopes: #1, #7 and #11, using explicit decompilation declarations. Outside scope: #88's verified
 consumer rewrite, 22 withdrawn consumer issues/proofs, and two cleanup/shared-state reports
 whose requested behavior is absent from the original bytes.
 Related generic defects remain open: in particular #26 does not close #27, and #99 does not close missing call inputs.
 Compiler lowering, full typed-pointer contracts, outputs and clobbers remain open.
 Current work: explicit typed results and compiler-spec extensions are implemented locally.
-The initial package gates passed. A carry-result probe exposed a remaining constant-return type
-gap; the active work now covers that Ghidra prototype consumer before landing the package.
+The constant-return type gap is fixed locally and its regression passes. The fixture changes
+are committed; final workspace checks are running and emission identity passed.
 Report validation remains pending, so #13 remains active.
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
@@ -29,11 +29,11 @@ Report validation remains pending, so #13 remains active.
 - [ ] **#4** Storage: preserve aliasing between differently typed views of one address.
 - [ ] **#5** Data flow: preserve loop-carried values instead of folding them to initialization.
 - [ ] **#6** Results: represent a value and condition flag returned together.
-- [ ] **#7** Input contracts: validate explicit indirect inputs across additional call sites.
+- [x] **#7** Input contracts: preserve explicit byte inputs at both reported indirect calls (validated scope).
 - [ ] **#8** Results: preserve multiple register outputs consumed after a call.
 - [ ] **#9** Data flow: preserve branches whose operands come from indirect-call contracts.
 - [ ] **#10** Data flow: combine two byte writes into the correct wider register value.
-- [ ] **#11** Indirect calls: distinguish runtime pointer storage, target identity and call contracts.
+- [x] **#11** Input contracts: preserve the explicit descriptor input at all four calls (validated scope).
 - [ ] **#12** Platform models: recover external file-read calls, arguments and results.
 - [>] **#13** Results: support an explicit condition-flag result consistently at callee and callers.
 - [ ] **#14** Input contracts: recover missing non-default register parameter sets.

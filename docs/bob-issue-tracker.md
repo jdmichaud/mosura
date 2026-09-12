@@ -22,9 +22,13 @@ Related reports: **#13, #23, #53**; multi-result contracts need their own valida
 - [x] Add the failing declaration-to-caller/callee regression before implementing the port.
   The initial flag-result gate failed; an additional AArch64 MVE exposed missing result extension.
 - [x] Implement the locked-output branches and check both predicate polarities in the MVE.
-  Compiler-spec result extensions are included. The initial workspace run passed; a subsequent
-  carry probe exposed a constant-return type gap in the prototype consumers, now under repair.
-- [ ] Run the package gates, commit each separable fix and request external validation.
+  Compiler-spec result extensions and constant-return prototype consumers are included.
+  The carry extension failed before the consumer port and now passes the focused gate.
+- [x] Commit the constant-carry fixture (`ec4732e3`) and the extension fixture (`ae494077`).
+- [x] Compare final default emission: 751/751 translation units identical; equal arms stamps.
+- [>] Run the final workspace suite after completing the constant-return type consumer.
+- [ ] Commit the result-contract implementation with its gate results.
+- [ ] Validate the remaining external report scopes.
 
 An arbitrary flag write does not establish a return contract. The generic problem is representing
 and honoring an explicit result declaration consistently, with automatic recovery considered only
@@ -55,6 +59,24 @@ case validation. [Implementation scope and oracle evidence](indirect-call-contra
 - [x] Ask Bob to validate the completed #1 input restoration against his reference.
 - [x] Record Bob's validation: all four #1 calls match the reference with
   explicitly declared ordered register inputs. Only this slot's decompilation input layer is closed.
+
+Additional scoped validation of the landed input implementation (`b0b1375a`):
+
+- [x] **#7:** native instruction bytes and current IR agree at both reported calls. Declaring
+  the byte register yields one size-1 argument from the value loaded immediately before each
+  call. Both targets remain mutable. This closes only the missing input channel.
+- [x] **#11:** the explicit descriptor register reaches all four reported calls. One call carries
+  the first address and three carry the second, matching their native `MOV`/`CALL` sequences.
+  Runtime hook installation and changed coordinate semantics belong to the consumer.
+- [ ] **#9:** an explicit three-register declaration restores the two loaded coordinates, but
+  the selected immediate still becomes an incoming register and its branches disappear.
+  The earlier input fixture does not cover this join; a separate MVE is required.
+- [ ] **#86:** seven declared register inputs appear at the call. Value-by-value validation
+  is still pending; arity alone is not completion evidence.
+- [ ] **Additional ordered-storage witness:** #7's first function already reorders two global
+  assignments in the undeclared baseline, so its old saved value is lost. The input declaration
+  preserves exactly that pre-existing behavior. Reduce the storage-order issue to its own MVE;
+  the scoped input closure does not certify the surrounding function or its runtime behavior.
 
 The declaration option is limited to decompilation. Compiler lowering of custom pointer
 conventions, full typed-pointer propagation, outputs and clobbers remain open. Restoring inputs
@@ -126,11 +148,11 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #4 | Storage: preserve aliasing between differently typed views of one address. | Queued: raw cross-width alias evidence received; existing linker alias support needs validation |
 | #5 | Data flow: preserve loop-carried values instead of folding them to initialization. | Queued |
 | #6 | Results: represent a value and condition flag returned together. | Queued |
-| #7 | Input contracts: validate explicit indirect inputs across additional call sites. | Investigating: input package; report validation pending |
+| #7 | Explicit byte inputs at indirect calls. | Validated input scope: both calls retain the original size-1 value; separate storage-order witness remains open |
 | #8 | Results: preserve multiple register outputs consumed after a call. | Queued |
-| #9 | Data flow: preserve branches whose operands come from indirect-call contracts. | Investigating: input package; report validation pending |
+| #9 | Data flow: preserve branches whose operands come from indirect-call contracts. | Reproduced after explicit input declaration: selected value and branches still missing; join MVE pending |
 | #10 | Data flow: combine two byte writes into the correct wider register value. | Queued |
-| #11 | Indirect calls: distinguish runtime pointer storage, target identity and call contracts. | Investigating: input package; report validation pending |
+| #11 | Explicit descriptor inputs through mutable hooks. | Validated input scope: all four calls match native argument setup; consumer installation/coordinate changes excluded |
 | #12 | Platform models: recover external file-read calls, arguments and results. | Queued |
 | #13 | Results: support an explicit condition-flag result consistently at callee and callers. | Active: typed result and compiler-spec extension implemented locally; focused MVEs pass; package gates and report validation pending |
 | #14 | Input contracts: recover missing non-default register parameter sets. | Queued |
