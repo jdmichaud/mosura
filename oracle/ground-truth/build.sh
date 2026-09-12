@@ -232,6 +232,16 @@ if have gcc && have objcopy; then
     rm -f "indexed_globals.gcc-x86-$bits.unstripped"
   done
 
+  # A word access and byte-indexed pointer view share the same global storage.
+  for bits in 32 64; do
+    gcc -m"$bits" -nostdlib -static -no-pie -Wl,-e,_start src/mixed_global_views.S \
+      -o "mixed_global_views.gcc-x86-$bits.unstripped"
+    derive_truth_elf "mixed_global_views.gcc-x86-$bits.unstripped" mixed_global_views gcc "x86-$bits" \
+      "x86:LE:$bits:default" ""
+    strip -o "mixed_global_views.gcc-x86-$bits" "mixed_global_views.gcc-x86-$bits.unstripped"
+    rm -f "mixed_global_views.gcc-x86-$bits.unstripped"
+  done
+
   # A callback input whose predecessor definitions require a phi despite its call-output guard.
   for bits in 32 64; do
     gcc -m"$bits" -nostdlib -static -no-pie -Wl,-e,_start src/branch_argument.S -o branch_argument.gcc-x86-"$bits".unstripped

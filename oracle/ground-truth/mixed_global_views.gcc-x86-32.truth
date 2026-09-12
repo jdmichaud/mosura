@@ -1,0 +1,6 @@
+# mosura-ground-truth v1 program=mixed_global_views compiler=gcc arch=x86-32 lang=x86:LE:32:default
+# derived-from=mixed_global_views.gcc-x86-32.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 08049000
+func 08049000 00000006 _start code
+func 08049006 00000023 copy_mixed code
