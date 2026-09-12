@@ -58,6 +58,15 @@ alone does not close the entire indirect-call class.
 
 ## Completed triage
 
+- [x] **22 consumer issues/proofs withdrawn in the complete handoff.** The reporter explicitly
+  excluded #19, #26, #29, #35, #38, #44, #50, #72, #75, #76, #78, #79, #81, #82, #83, #84,
+  #85, #89, #91, #93, #97 and #99. Their ledger classifications and descriptions were checked
+  against that withdrawal. These are scope closures, not mosura fixes. #26's underlying naming
+  issue remains #27; the original missing-input class mentioned in #99 remains open separately.
+- [x] **Compound report #25 clarified.** The consumer walker is outside scope; the two helpers'
+  missing register inputs remain open in #25. The checklist now tracks that generic contract gap.
+
+
 - [x] **#88: transparent-byte comparison.** The unmodified raw emission supplied with the
   report uses `char *` and compares its byte to `-1`. The current CLI does the same. The
   `(uint8_t)0xff` comparison quoted by the report is absent from both raw outputs, so the
@@ -111,42 +120,42 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #16 | Platform models: model directory-enumeration operations and termination conditions. | Queued |
 | #17 | Input contracts: preserve non-default coordinate parameter storage and order. | Queued |
 | #18 | Results: preserve a secondary scalar result from a multi-result call. | Queued |
-| #19 | Consumer review: validate application viewport dimensions; no generic defect established. | Downstream review |
+| #19 | Consumer review: validate application viewport dimensions; no generic defect established. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #20 | Results: bind multiple device-read outputs to their actual consumers. | Queued |
 | #21 | Input contracts: keep shared callee declarations consistent across call sites. | Queued |
 | #22 | Results: represent multiple data results together with classification/clip results. | Queued |
 | #23 | Results: support explicit carry-flag return contracts. | Queued |
 | #24 | Input contracts: distinguish call-produced values from incoming function parameters. | Queued |
-| #25 | Consumer review: validate application node classification outside the decompiler. | Downstream review |
-| #26 | Consumer review: validate linker placement and shared address-backed storage. | Downstream review |
+| #25 | Input contracts: preserve non-default register arguments in callback helpers. | Queued: helper input contracts; consumer walker excluded |
+| #26 | Consumer review: validate linker placement and shared address-backed storage. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger; underlying #27 remains open |
 | #27 | Naming: prevent local declarations from shadowing referenced globals. | Queued |
 | #28 | Platform models: recover device detection and initialization call contracts. | Queued |
-| #29 | Consumer review: validate application coordinate transforms and dimensions. | Downstream review |
+| #29 | Consumer review: validate application coordinate transforms and dimensions. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #30 | Input contracts: restore arguments across a series of vector-table calls. | Queued |
 | #31 | Results: preserve multiple non-default register outputs as one consistent contract. | Queued |
 | #32 | Input contracts: support parameter storage in high register bytes. | Queued |
 | #33 | Results: preserve the correct returned register in a caller's predicate. | Queued |
 | #34 | Data flow: preserve cursor-like state across callbacks and nested calls. | Queued |
-| #35 | Consumer review: verify that external thunks forward their declared parameters. | Downstream review |
+| #35 | Consumer review: verify that external thunks forward their declared parameters. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #36 | Data flow: preserve returned pointer state across a call. | Queued |
 | #37 | Data flow: preserve distinct definitions across repeated computation stages. | Queued |
-| #38 | Consumer review: validate remaining application dispatch classifications. | Downstream review |
+| #38 | Consumer review: validate remaining application dispatch classifications. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #39 | Discovery: recover callback entry points and verify their function boundaries. | Triage |
 | #40 | Data flow: retain loop-dependent narrow-register values. | Queued |
 | #41 | Results: preserve a carry-only return from a control routine. | Triage |
 | #42 | Discovery/contracts: recover a missing body and its actual register inputs. | Triage |
 | #43 | Indirect calls: model code addresses stored in action/dispatch records. | Triage |
-| #44 | Consumer review: validate application spacing and layout logic. | Downstream review |
+| #44 | Consumer review: validate application spacing and layout logic. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #45 | Platform models: propagate a system-service register result to its consumer. | Triage |
 | #46 | Platform models: recover external file-write calls, arguments and results. | Triage |
 | #47 | Platform models: audit reconstructed device-configuration operations. | Triage |
 | #48 | Input contracts: preserve per-call position arguments across repeated calls. | Queued |
 | #49 | Input contracts: retain drawing inputs and per-iteration narrow values. | Triage |
-| #50 | Consumer review: verify reported behavior is intentional rather than a tool defect. | Downstream review |
+| #50 | Consumer review: verify reported behavior is intentional rather than a tool defect. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #51 | Results: retain a narrow accumulator result used as a control signal. | Queued |
 | #52 | Results: propagate a multi-register result through chained calls. | Queued |
 | #53 | Results: retain a carry-only predicate used by subsequent control flow. | Queued |
-| #54 | Data flow: trace displayed counters back to their actual producer values. | Queued |
+| #54 | Input contracts: restore arguments to a shared annotation/output routine. | Queued |
 | #55 | Contracts: audit several call boundaries in a larger computation chain. | Queued |
 | #56 | Results: audit reconstructed predicate contracts against their producer bytes. | Triage |
 | #57 | Results: preserve rejection predicates across a call chain. | Queued |
@@ -156,39 +165,39 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #61 | Results: keep flag status separate from a simultaneous floating-point result. | Queued |
 | #62 | Input contracts: preserve a narrow event identifier passed to a service call. | Queued |
 | #63 | Results: propagate both a flag and a non-default register result through a chain. | Queued |
-| #64 | Data flow: preserve externally supplied polling conditions and loop exits. | Queued |
+| #64 | Results: preserve a call result consumed by a polling condition. | Queued |
 | #65 | Contracts: recover state-selection arguments and sequencing across service calls. | Queued |
 | #66 | Platform/data flow: preserve I/O port values and polling-loop state. | Queued |
-| #67 | Control flow: recover reachable work before and after indirect dispatch. | Queued |
+| #67 | Control flow: represent tail transfers with the correct callee contract. | Queued |
 | #68 | Input contracts: distinguish an object identifier from an iteration index. | Queued |
-| #69 | Data flow: preserve device-coordinate state across configuration callbacks. | Queued |
+| #69 | Results: preserve a secondary register result used to update device state. | Queued |
 | #70 | Triage: separate missing callback/state flow from consumer cleanup and repaint policy. | Queued |
 | #71 | Results: retain a carry status that controls a downstream side effect. | Queued |
-| #72 | Consumer review: verify reconstructed dispatch retains every original branch. | Downstream review |
+| #72 | Consumer review: verify reconstructed dispatch retains every original branch. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #73 | Discovery/contracts: recover an indirect producer, its inputs and its result. | Queued |
 | #74 | Control flow: preserve reachable input-dependent branches. | Queued |
-| #75 | Consumer review: validate application resource selection and scale factors. | Downstream review |
-| #76 | Consumer review: validate application display-buffer selection. | Downstream review |
+| #75 | Consumer review: validate application resource selection and scale factors. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
+| #76 | Consumer review: validate application display-buffer selection. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #77 | Storage/data flow: distinguish independent state objects and their saved contents. | Queued |
-| #78 | Consumer review: validate application repaint-state transitions. | Downstream review |
-| #79 | Consumer review: validate application state updates after configuration changes. | Downstream review |
-| #80 | Input contracts: distinguish numeric coordinates from pointer-valued arguments. | Queued |
-| #81 | Consumer review: keep paired indices and pointers consistent in an adapter. | Downstream review |
-| #82 | Consumer review: audit duplicate rendering callbacks and their ordering. | Downstream review |
-| #83 | Consumer review: validate application cleanup when switching contexts. | Downstream review |
-| #84 | Consumer review: audit validity/lifetime tracking for saved state. | Downstream review |
-| #85 | Consumer review: audit repeated operations that overwrite saved state. | Downstream review |
+| #78 | Consumer review: validate application repaint-state transitions. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
+| #79 | Consumer review: validate application state updates after configuration changes. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
+| #80 | Results: distinguish returned numeric values from unrelated pointer state. | Queued |
+| #81 | Consumer review: keep paired indices and pointers consistent in an adapter. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
+| #82 | Consumer review: audit duplicate rendering callbacks and their ordering. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
+| #83 | Consumer review: validate application cleanup when switching contexts. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
+| #84 | Consumer review: audit validity/lifetime tracking for saved state. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
+| #85 | Consumer review: audit repeated operations that overwrite saved state. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #86 | Input contracts: support complete declarations with many register inputs. | Queued: seven-register indirect input contract |
 | #87 | Discovery: find referenced functions in mixed executable/data memory blocks. | Reproduced: opt-in scan skips the native image’s mixed code/data block; MVE pending |
 | #88 | Comparison triage: confirmed signedness mismatch introduced by a consumer rewrite. | Closed triage, confirmed by Bob: raw and current CLI compare signed byte to -1; downstream rewrite |
-| #89 | Consumer review: validate event accumulation independently of timing or resolution. | Downstream review: shim event accumulation |
+| #89 | Consumer review: validate event accumulation independently of timing or resolution. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #90 | Results: consume device-read results instead of unrelated incoming parameters. | Queued: multiple result registers |
-| #91 | Consumer review: inspect verification evidence; no independent defect alleged. | Downstream review |
+| #91 | Consumer review: inspect verification evidence; no independent defect alleged. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #92 | Input contracts: preserve declared indirect parameter order and widths. | Queued: indirect input order and widths |
-| #93 | Consumer review: validate an adapter's memory-clear extent. | Downstream review: shim clears wrong memory span |
+| #93 | Consumer review: validate an adapter's memory-clear extent. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #94 | Contracts: preserve input order, multiple outputs and a flag result together. | Queued: register order plus multiple outputs and carry |
 | #95 | Input contracts/control flow: recover missing indirect inputs and missing calls. | Queued: indirect inputs and missing-call census |
 | #96 | Platform models/emission: represent external file I/O without semantic placeholders. | Queued: DOS interrupt modeling and emitter placeholders |
-| #97 | Consumer review: verify result handling matches each exit path. | Downstream review: repair pass pairs exits by position |
+| #97 | Consumer review: verify result handling matches each exit path. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger |
 | #98 | Results: retain a flag result used to continue or abandon an operation. | Queued: carry-result channel |
-| #99 | Triage: separate consumer branch-repair errors from the original missing call input. | Downstream review: linear repair of a branched argument; original missing input remains queued |
+| #99 | Triage: separate consumer branch-repair errors from the original missing call input. | Closed scope: reporter withdrew the consumer issue/proof; reconciled with ledger; original missing inputs remain open in the input-contract class |
