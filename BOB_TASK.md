@@ -46,14 +46,14 @@ corpus gates green and a stable 751-unit repeat. The public joined declaration s
 stored storage-piece table pass their API gates; default emission is unchanged for 751/751 TUs.
 The reported producer chain and its immediate consumers pass 1280/1280 IR value cases.
 This closes the declared result scope; automatic recovery, compiler lowering and later callbacks
-remain separate work. The next result scope to examine is #6 (a value and condition flag).
+remain separate work. The active result scope is #6 (a value and condition flag).
 
 - [x] **#1** Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope).
 - [ ] **#2** Input contracts: reject parameters unsupported by caller/callee data flow.
 - [ ] **#3** Input contracts: propagate contracts through mutable function-pointer tables.
 - [ ] **#4** Storage: preserve aliasing between differently typed views of one address.
 - [-] **#5** Consumer rewrite: its linear register substitution replaced preserved loop values with constants.
-- [ ] **#6** Results: represent a value and condition flag returned together.
+- [>] **#6** Results: represent a value and condition flag returned together.
 - [x] **#7** Input contracts: preserve explicit byte inputs at both reported indirect calls (validated scope).
 - [x] **#8** Results: preserve explicit multiple-register outputs at definitions and callers (validated scope).
 - [x] **#9** Data flow: preserve branches whose operands come from indirect-call contracts.

@@ -107,6 +107,16 @@ explicit incoming inputs. A separate formatting helper receives its declared inp
 This is validation of `e482d6a8`/`f4a4e7cd`, not a new production change. The input scope is
 closed; custom compiler lowering and unrelated output/platform contracts remain open.
 
+## Active package: value and condition-flag results
+
+Related report: **#6**. Distinguish the reported consumer union conversion from the original
+producer/caller storage protocol, then validate the value and flag through one joined result.
+
+- [>] Compare native returns/calls with archived raw output and current declarations.
+- [ ] Compile a generic value-and-flag MVE and capture the mapped C++ oracle.
+- [ ] Gate both channels at definitions and callers, port any missing consumers, and validate.
+- [ ] Recheck the reported call chain and keep consumer rewrites outside the port.
+
 ## Completed package: declared multiple register results
 
 Related report: **#8**, with shared result-storage gaps in **#6, #18, #20, #22, #31** and
@@ -150,7 +160,7 @@ Do not infer an output contract from every register a function happens to write.
   transformations. The caller receives one aggregate and retains all three field uses:
   the stored byte result, both zero predicates, both additions, clamps and the early mask.
   A raw-IR expression evaluator passes 1280/1280 cases (15360 producer/consumer checks and
-  20 early-return checks), covering both producer modes, optional transformations, all five
+  20 early-return checks), covering both producer modes, optional transformations, five selected
   byte values and paired ordinary/sign-boundary/wraparound inputs. Phi predecessor choices
   are supplied from the native branches and checked against the printed conditions; this
   is a data-flow audit, not a native execution or interrupt/atomic-behavior test.
@@ -429,7 +439,7 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #3 | Input contracts: propagate contracts through mutable function-pointer tables. | Investigating: input package; report validation pending |
 | #4 | Storage: preserve aliasing between differently typed views of one address. | Queued: raw cross-width alias evidence received; existing linker alias support needs validation |
 | #5 | Consumer loop-value substitution. | Outside scope: archived raw output preserves the loop expression; the consumer rewrite introduced the constant |
-| #6 | Results: represent a value and condition flag returned together. | Queued |
+| #6 | Results: represent a value and condition flag returned together. | Active: native/raw scope audit and joined value/flag witness |
 | #7 | Explicit byte inputs at indirect calls. | Validated input scope: both calls retain the original size-1 value; separate storage-order witness remains open |
 | #8 | Results: preserve multiple register outputs consumed after a call. | Validated declaration scope: join heritage/composite consumers, public API, source-built gate and reported result chain; automatic recovery and compiler lowering remain open |
 | #9 | Data flow: preserve branches whose operands come from indirect-call contracts. | Fixed: full-write-set phi placement; source MVE, external input/branch witness, workspace and corpus gates validated |
