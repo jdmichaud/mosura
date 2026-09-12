@@ -1,0 +1,7 @@
+# mosura-ground-truth v1 program=branch_argument compiler=gcc arch=x86-32 lang=x86:LE:32:default
+# derived-from=branch_argument.gcc-x86-32.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 08049000
+func 08049000 0000000b _start code
+func 0804900b 00000025 choose code
+func 08049030 00000006 target code

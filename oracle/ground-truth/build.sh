@@ -186,6 +186,14 @@ if have gcc && have objcopy; then
   strip -o indirect_contract.gcc-x86-64 indirect_contract.gcc-x86-64.unstripped
   rm -f indirect_contract.gcc-x86-64.unstripped
 
+  # A callback input whose predecessor definitions require a phi despite its call-output guard.
+  for bits in 32 64; do
+    gcc -m"$bits" -nostdlib -static -no-pie -Wl,-e,_start src/branch_argument.S -o branch_argument.gcc-x86-"$bits".unstripped
+    derive_truth_elf branch_argument.gcc-x86-"$bits".unstripped branch_argument gcc x86-"$bits" "x86:LE:$bits:default" ""
+    strip -o branch_argument.gcc-x86-"$bits" branch_argument.gcc-x86-"$bits".unstripped
+    rm -f branch_argument.gcc-x86-"$bits".unstripped
+  done
+
   gcc -nostdlib -static -no-pie -Wl,-e,_start src/flag_result.S -o flag_result.gcc-x86-64.unstripped
   derive_truth_elf flag_result.gcc-x86-64.unstripped flag_result gcc x86-64 "x86:LE:64:default" ""
   strip -o flag_result.gcc-x86-64 flag_result.gcc-x86-64.unstripped

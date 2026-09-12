@@ -1,6 +1,6 @@
 # Bob's issue tracker
 
-Updated 2026-09-12. Owner: Alice. Working branch: `fix/flag-result-contracts`.
+Updated 2026-09-12. Owner: Alice. Working branch: `fix/call-input-phis`.
 
 Short checklist: [BOB_TASK.md](../BOB_TASK.md). Its markers are `[ ]` queued/triage,
 `[>]` active, `[x]` fixed and validated for the stated scope, and `[-]` outside scope/not planned.
@@ -10,6 +10,19 @@ This tracks mosura work against Bob's numbered defect ledger. The latest local l
 A downstream repair is not a mosura fix. Each numbered report stays open until its current
 mosura behavior is checked, or triage establishes that it belongs solely to the downstream project.
 The checklist below records completed work; the register below preserves every report ID.
+
+## Active package: call-input phi placement
+
+Related report: **#9**. Other loop/call data-flow reports require their own witnesses.
+
+- [x] Reduce the loss to a self-compiled x86-32 example and preserve an x86-64 control.
+- [x] Dump C++ oracle IR with matching EAX call inputs; record the three-input MULTIEQUAL.
+- [x] Trace mosura: heritage substitutes an incoming register, then DCE removes the selection.
+- [x] Add the repository MVE gate and show its failure before porting: x86-64 control passes,
+  x86-32 fails because the callback receives an incoming register instead of the selected value.
+- [>] Port phi placement from the full write set, following Ghidra's `calcMultiequals` input.
+- [ ] Validate IR parity, package gates and changed emission; commit the fix.
+- [ ] Validate the external report and update its scope marker.
 
 ## Completed primitive: explicit scalar result contracts
 
@@ -31,7 +44,7 @@ Related reports: **#13, #23, #53**; multi-result contracts need their own valida
   harness 1/1 (1 ignored). All repository guards pass.
   The literal-spelling assertion exposed a separate existing printer gap; the result gate now
   compares Boolean IR types and exact 0/1 values. The generic constant printer remains open.
-- [x] Commit the result-contract implementation with its gate results (this package).
+- [x] Commit the result-contract implementation with its gate results (`ff627430`).
 - [ ] Validate the remaining external report scopes.
 
 An arbitrary flag write does not establish a return contract. The generic problem is representing
