@@ -159,6 +159,9 @@ pub struct Knobs {
     /// Declared input registers, in parameter order, for a function-pointer slot.
     /// The slot stays mutable; this supplies its interface, never its target.
     pub indirect_inputs: std::collections::BTreeMap<u64, Vec<String>>,
+    /// Explicit ordered function inputs, shared by definitions and direct calls.
+    /// An empty list declares no parameters; an absent entry leaves recovery active.
+    pub function_inputs: std::collections::BTreeMap<u64, Vec<crate::decompile::fspec::RegisterParameter>>,
     /// Explicit result declarations by function entry. These describe a protocol;
     /// they do not infer a return from every register or flag the function writes.
     pub function_outputs: std::collections::BTreeMap<u64, crate::decompile::fspec::RegisterOutput>,
@@ -228,6 +231,9 @@ impl Knobs {
         }
         for (entry, result) in &self.function_outputs {
             parts.push(format!("function-output@{entry:x}={}:{:?}", result.register, result.datatype));
+        }
+        for (entry, params) in &self.function_inputs {
+            parts.push(format!("function-inputs@{entry:x}={params:?}"));
         }
         parts
     }

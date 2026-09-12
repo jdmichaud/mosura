@@ -19,6 +19,129 @@ use mosura_core::decompile::printc::print_c;
 use mosura_core::decompile::space::Address;
 use mosura_core::paths::ground_truth_dir;
 
+/// Mapped inputs are one contract at the definition and every direct call. The pinned
+/// C++ oracle retains both EDI:uint4 and AH:uint1, including an unused trailing input.
+#[test]
+fn declared_function_inputs_preserve_storage_types_and_unused_parameters() {
+    use mosura_core::decompile::{Funcdata, OpCode, VarnodeId};
+    use mosura_core::decompile::fspec::{ProtoSlot, RegisterParameter};
+    use mosura_core::decompile::types::Datatype;
+
+    fn value(f: &Funcdata, v: VarnodeId, args: &[(ProtoSlot, u64)]) -> u64 {
+        let n = f.vn(v);
+        if n.is_constant() { return n.constant_value(); }
+        if n.is_input() {
+            return args.iter().find(|(p, _)| p.addr == n.loc && p.size == n.size)
+                .unwrap_or_else(|| panic!("undeclared input in result: {:?}/{}\n{}", n.loc, n.size, f.print_raw())).1;
+        }
+        let o = f.op(n.def.expect("result value must be defined"));
+        let a = |i| value(f, o.input(i).unwrap(), args);
+        let r = match o.code() {
+            OpCode::Copy | OpCode::IntZext | OpCode::Cast => a(0),
+            OpCode::IntAdd => a(0).wrapping_add(a(1)),
+            OpCode::IntMult => a(0).wrapping_mul(a(1)),
+            OpCode::IntAnd => a(0) & a(1),
+            OpCode::IntLeft => a(0) << a(1),
+            OpCode::IntRight => a(0) >> a(1),
+            OpCode::Subpiece => a(0) >> (a(1) * 8),
+            other => panic!("unexpected pure expression {other:?}"),
+        };
+        if n.size >= 8 { r } else { r & ((1u64 << (n.size * 8)) - 1) }
+    }
+
+    for bits in [32, 64] {
+        let stem = format!("function_inputs.gcc-x86-{bits}");
+        let truth = parse_truth(&std::fs::read_to_string(ground_truth_dir().join(format!("{stem}.truth"))).unwrap());
+        let entry = |name: &str| truth.funcs.iter().find(|(_, n)| n == name).unwrap().0;
+        let mut p = analysis::analyze_file(&ground_truth_dir().join(stem)).unwrap();
+        let params = vec![
+            RegisterParameter { register: "EDI".into(), datatype: Datatype::Uint(4) },
+            RegisterParameter { register: "AH".into(), datatype: Datatype::Uint(1) },
+        ];
+        for name in ["combine", "relay", "unused"] {
+            p.knobs.function_inputs.insert(entry(name), params.clone());
+            p.knobs.function_outputs.insert(entry(name), RegisterParameter {
+                register: "EAX".into(), datatype: Datatype::Uint(4),
+            });
+        }
+        p.knobs.function_inputs.insert(entry("_start"), vec![]);
+        p.knobs.function_outputs.insert(entry("_start"), RegisterParameter {
+            register: String::new(), datatype: Datatype::Void,
+        });
+        let (spec, _) = mosura_core::lang::load_cached(&p.language_id).unwrap();
+        for name in ["combine", "relay", "unused", "_start"] {
+            let f = decompile_function(&p, Address::new(p.default_space, entry(name))).unwrap();
+            if name == "relay" {
+                assert!(!f.indirect_overrides.is_empty(), "the constant indirect target requires an analysis restart");
+            }
+            let reg = f.spaces.by_name("register").unwrap();
+            let declared: Vec<_> = if name == "_start" { vec![] } else { ["EDI", "AH"].iter().map(|r| ProtoSlot {
+                addr: Address::new(reg, spec.register_offset(r).unwrap()),
+                size: spec.register_size(r).unwrap(),
+            }).collect() };
+            assert_eq!(f.func_proto().params, declared, "{bits}/{name}: the definition must retain declared input storage/order");
+            let rendered = mosura_core::decompile::printc::rendered_param_slots(&f);
+            assert_eq!(rendered.len(), declared.len(), "an unused declaration remains part of the signature");
+            let c = print_c(&f);
+            if name != "_start" {
+                assert!(c.lines().next().unwrap().contains("uint4 param_1, uint1 param_2"), "{bits}/{name}: typed signature\n{c}");
+            }
+            if name == "combine" || name == "unused" {
+                let ret = f.op_ids().find(|&id| !f.op(id).is_dead() && f.op(id).code() == OpCode::Return).unwrap();
+                for first in [0u64, 17, u32::MAX as u64] {
+                    for second in [0u64, 0x7f, 0x80, 0xff] {
+                        let expected = if name == "combine" { first * 4 + second } else { first + 7 } & 0xffff_ffff;
+                        assert_eq!(value(&f, f.op(ret).input(1).unwrap(), &[(declared[0], first), (declared[1], second)]), expected,
+                            "{bits}/{name}: full and partial register values must remain distinct");
+                    }
+                }
+            }
+            let calls: Vec<_> = f.op_ids().filter(|&id| !f.op(id).is_dead() && f.op(id).code() == OpCode::Call).collect();
+            assert_eq!(calls.len(), if name == "_start" { 3 } else if name == "relay" { 1 } else { 0 });
+            for call in calls {
+                let op = f.op(call);
+                assert_eq!(op.num_inputs(), 3, "{bits}/{name}: both declared parameters reach the callee");
+                assert_eq!((f.vn(op.input(1).unwrap()).size, f.vn(op.input(2).unwrap()).size), (4, 1));
+                if name == "relay" {
+                    assert_eq!(value(&f, op.input(1).unwrap(), &[(declared[0], 11), (declared[1], 7)]), 14);
+                    assert_eq!(value(&f, op.input(2).unwrap(), &[(declared[0], 11), (declared[1], 7)]), 7);
+                } else {
+                    let target = f.vn(op.input(0).unwrap()).loc.offset;
+                    let expected = if target == entry("combine") { (3, 5) } else if target == entry("relay") { (11, 7) } else {
+                        assert_eq!(target, entry("unused")); (19, 13)
+                    };
+                    assert_eq!((value(&f, op.input(1).unwrap(), &[]), value(&f, op.input(2).unwrap(), &[])), expected);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn declared_function_input_uses_the_compiler_specs_extension() {
+    use mosura_core::decompile::{OpCode, fspec::RegisterParameter, types::Datatype};
+    let stem = "function_input_extension.clang-aarch64";
+    let truth = parse_truth(&std::fs::read_to_string(ground_truth_dir().join(format!("{stem}.truth"))).unwrap());
+    let entry = truth.funcs.iter().find(|(_, name)| name == "upper_input").unwrap().0;
+    let mut p = analysis::analyze_file(&ground_truth_dir().join(stem)).unwrap();
+    p.knobs.function_inputs.insert(entry, vec![RegisterParameter {
+        register: "w0".into(), datatype: Datatype::Uint(4),
+    }]);
+    p.knobs.function_outputs.insert(entry, RegisterParameter {
+        register: "x0".into(), datatype: Datatype::Uint(8),
+    });
+    let f = decompile_function(&p, Address::new(p.default_space, entry)).unwrap();
+    let ret = f.op_ids().find(|&id| !f.op(id).is_dead() && f.op(id).code() == OpCode::Return).unwrap();
+    let mut result = f.op(ret).input(1).unwrap();
+    while let Some(def) = f.vn(result).def {
+        assert_eq!(f.op(def).code(), OpCode::Copy, "the upper word must fold to zero\n{}", f.print_raw());
+        result = f.op(def).input(0).unwrap();
+    }
+    assert!(f.vn(result).is_constant(), "the declared input has no unknown upper bits\n{}", f.print_raw());
+    assert_eq!(f.vn(result).constant_value(), 0);
+    assert!(print_c(&f).lines().next().unwrap().contains("uint4 param_1"), "unused input retains its type");
+}
+
 /// Execute permission does not make pointer records instructions. The opt-in scan must
 /// distinguish the two using the listing, with identical policy for both memory layouts.
 #[test]

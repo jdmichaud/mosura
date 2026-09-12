@@ -21,6 +21,7 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
     // real mode) — see `lang::load_cached`.
     let (spec, ctx) = crate::lang::load_cached(&program.language_id)?;
     crate::decompile::prototypetypes::validate_function_outputs(&program.knobs, spec).ok()?;
+    crate::decompile::prototypetypes::validate_function_inputs(&program.knobs, spec).ok()?;
     // The decompiler reads code + any jump/data tables out of the image, so pass every
     // initialized block (code reached via the entry, tables via constant addresses).
     let chunks: Vec<(u64, &[u8])> = program
@@ -129,6 +130,7 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
         f.known_functions = entries.iter().copied()
             .chain(program.recovered_protos.keys().copied())
             .chain(program.knobs.function_outputs.keys().copied())
+            .chain(program.knobs.function_inputs.keys().copied())
             .map(|offset| Address::new(entry.space, offset)).collect();
         if let Some(previous) = prev {
             f.indirect_overrides = previous.indirect_overrides.clone();
@@ -145,6 +147,7 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
         // prototype from one function in isolation, and asked about the same the subject callee through
         // the whole-image wrapper it emits the same truncated function.
         record_callee_effects(program, spec, ctx, &mut f);
+        crate::decompile::prototypetypes::bind_input_declarations(&mut f);
         crate::decompile::deindirect::apply_input_overrides(&mut f);
         crate::decompile::prototypetypes::bind_output_declarations(&mut f);
         // SELF-EVIDENCE PROTOTYPE — the same scan, turned on THIS function. A callee that returns

@@ -122,7 +122,9 @@ pub fn apply_input_overrides(data: &mut Funcdata) {
         data.call_input_overrides.insert(pc, inputs.clone());
         let cs = data.call_specs.entry(call).or_default();
         cs.param_widths = Some(inputs.iter().map(|p| p.size).collect());
-        cs.locked_inputs = Some(inputs);
+        cs.locked_inputs = Some(inputs.into_iter().map(|p| super::fspec::ProtoParameter {
+            addr: p.addr, datatype: super::types::Datatype::Unknown(p.size),
+        }).collect());
     }
 }
 

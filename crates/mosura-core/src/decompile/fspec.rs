@@ -1374,7 +1374,7 @@ pub struct CallSpec {
     /// explicit parameter storage, including an empty list for no parameters.
     /// Unlike a recovered read-set, this declaration is exact and must not open
     /// argument trials or acquire additional inputs from the convention.
-    pub locked_inputs: Option<Vec<ProtoSlot>>,
+    pub locked_inputs: Option<Vec<ProtoParameter>>,
     /// The callee's hidden struct-return SHAPE, copied from `Program::recovered_sret` with the
     /// prototype (`analysis::sret`); the `struct-return` emit arm reads it. mosura-only.
     pub sret: Option<crate::analysis::sret::SretShape>,
@@ -1746,14 +1746,16 @@ pub struct ProtoSlot {
     pub size: u32,
 }
 
-/// An explicit register result supplied independently of default ABI recovery.
-/// The register name is resolved against the selected SLEIGH language. A void
-/// declaration has an empty register name and `Datatype::Void`.
+/// Declared register storage and type, independent of default ABI recovery.
+/// The register name is resolved against the selected SLEIGH language.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RegisterOutput {
+pub struct RegisterParameter {
     pub register: String,
     pub datatype: super::types::Datatype,
 }
+
+/// A void result has an empty register name and `Datatype::Void`.
+pub type RegisterOutput = RegisterParameter;
 
 /// Ghidra `ProtoParameter`: declared storage and type. Its type determines size;
 /// a void parameter has no meaningful storage address.
@@ -1813,6 +1815,8 @@ fn input_trials(f: &Funcdata, pl: &ParamList, reg: SpaceId) -> ParamActive {
 /// Ghidra's `ParamListMerged::fillinMap` would refuse ("Cannot determine prototype before model has
 /// been resolved") — the loud case is left visible rather than guessed.
 pub fn resolve_model(f: &mut Funcdata) -> bool {
+    // ActionInputPrototype does not recover or resolve an explicitly locked input list.
+    if f.locked_inputs.is_some() { return false; }
     if !f.proto_model.is_merged() {
         return false;
     }
@@ -1842,7 +1846,26 @@ pub fn resolve_model(f: &mut Funcdata) -> bool {
     true
 }
 
+/// `FuncProto::unjustifiedInputParam` (fspec.cc:4426): a fixed declared prototype
+/// checks its typed parameters before the model. An empty locked list has no inputs.
+pub fn unjustified_input_container(f: &Funcdata, addr: Address, size: u32) -> Option<(Address, u32)> {
+    if let Some(params) = &f.locked_inputs {
+        for param in params {
+            match f.spaces.justified_contain(param.addr, param.datatype.size(), addr, size, false) {
+                Some(0) => return None,
+                Some(_) => return Some((param.addr, param.datatype.size())),
+                None => {},
+            }
+        }
+        return None;
+    }
+    f.proto_model.input.as_ref()?.unjustified_container(addr, size)
+}
+
 pub fn recover_input_params(f: &Funcdata) -> Vec<ProtoSlot> {
+    if let Some(params) = &f.locked_inputs {
+        return params.iter().map(|p| ProtoSlot { addr: p.addr, size: p.datatype.size() }).collect();
+    }
     let Some(reg) = f.spaces.by_name("register") else { return Vec::new() };
     let Some(pl) = f.proto_model.input.as_ref() else { return Vec::new() };
     let mut active = input_trials(f, pl, reg);

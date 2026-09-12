@@ -1131,9 +1131,10 @@ pub fn init_active_input(f: &mut Funcdata) {
         if let Some(params) = f.call_specs.get(&call).and_then(|cs| cs.locked_inputs.clone()) {
             active.active = false;
             for param in params {
-                let ti = active.register_trial(param.addr, param.size);
+                let size = param.datatype.size();
+                let ti = active.register_trial(param.addr, size);
                 active.trial[ti].mark_active();
-                let vn = f.new_varnode(param.size, param.addr);
+                let vn = f.new_varnode(size, param.addr);
                 f.op_append_input(call, vn);
                 active.trial[ti].op_slot = (f.op(call).num_inputs() - 1) as u32;
             }

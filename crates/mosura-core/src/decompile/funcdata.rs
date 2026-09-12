@@ -39,6 +39,8 @@ pub struct Funcdata {
     /// Ghidra `FuncProto::isOutputLocked` and its typed output parameter.
     /// Explicit prototype facts survive rebuilding the analysis graph.
     pub locked_output: Option<super::fspec::ProtoParameter>,
+    /// Ghidra's input-locked prototype. `Some([])` explicitly declares no inputs.
+    pub locked_inputs: Option<Vec<super::fspec::ProtoParameter>>,
     varnodes: Vec<Varnode>,
     ops: Vec<PcodeOp>,
     blocks: Vec<BlockBasic>,
@@ -458,6 +460,7 @@ impl Funcdata {
             globaldisjoint: super::heritage::LocationMap::default(),
             active_output: None,
             locked_output: None,
+            locked_inputs: None,
             return_bytes_consumed: 0,
             structure: None,
             structure_complex: None,
@@ -1788,7 +1791,7 @@ impl Funcdata {
     pub fn delete_varnode(&mut self, vid: VarnodeId) {
         let v = &mut self.varnodes[vid.0 as usize];
         v.def = None;
-        v.flags &= !(flags::INPUT | flags::INSERT | flags::WRITTEN);
+        v.flags &= !(flags::INPUT | flags::INSERT | flags::WRITTEN | flags::UNAFFECTED);
     }
 
     /// Create a new op with a fresh `unique`-space output, inserted just before `follow`
@@ -2388,8 +2391,7 @@ impl Funcdata {
             // + def) as delete_varnode does — otherwise it lingers as a non-free orphan (def=None,
             // INSERT set) that address-tied merge/cover passes wrongly treat as a live same-address
             // value.
-            self.varnodes[out.0 as usize].def = None;
-            self.varnodes[out.0 as usize].flags &= !(flags::INPUT | flags::INSERT | flags::WRITTEN);
+            self.delete_varnode(out);
         }
         self.mark_dead(op);
     }

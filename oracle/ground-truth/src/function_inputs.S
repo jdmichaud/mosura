@@ -2,7 +2,8 @@
  *
  * The assembly protocol orders inputs as EDI:uint4, AH:uint1 and returns EAX:uint4.
  * Keep the byte input distinct from its enclosing output register. relay passes the
- * same declared inputs to a direct callee, with a modification to the first input.
+ * same declared inputs through a constant register-held target, after modifying the
+ * first input. Deindirection must preserve the declaration across its graph rebuild.
  * unused deliberately does not consume its second declared parameter. The interface
  * is a supplied fact, not recoverable from the unused parameter's machine-code uses.
  * Strip all symbols before mosura analysis; derive the function population from nm.
@@ -36,7 +37,13 @@ combine:
 .type relay,@function
 relay:
     addl $3,%edi
-    call combine
+#if defined(__x86_64__)
+    leaq combine(%rip),%rcx
+    call *%rcx
+#else
+    movl $combine,%ecx
+    call *%ecx
+#endif
     addl $1,%eax
     ret
 .size relay,.-relay

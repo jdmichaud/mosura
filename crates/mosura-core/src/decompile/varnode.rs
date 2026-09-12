@@ -78,6 +78,8 @@ pub mod addlflags {
     /// `Heritage::guardCalls` needs before it can express a stack range in the CALLEE's frame and
     /// register it as a parameter trial. Bit value matches Ghidra's.
     pub const SPACEBASE_PLACEHOLDER: u32 = 0x400;
+    /// Ghidra `locked_input`: an explicitly declared input exists even if unused.
+    pub const LOCKED_INPUT: u32 = 0x200;
     /// Ghidra `Varnode::stack_store` (varnode.hh): this Varnode was originally written by a
     /// `CPUI_STORE` that `RuleStoreVarnode` resolved to a stack COPY (ruleaction.cc:4333) —
     /// `ActionDirectWrite` treats such a COPY as a direct write when its source is a marker.
@@ -167,6 +169,12 @@ impl Varnode {
     }
     pub fn is_input(&self) -> bool {
         self.flags & flags::INPUT != 0
+    }
+    pub fn is_locked_input(&self) -> bool {
+        self.addlflags & addlflags::LOCKED_INPUT != 0
+    }
+    pub fn set_locked_input(&mut self) {
+        self.addlflags |= addlflags::LOCKED_INPUT;
     }
     /// Ghidra `Varnode::isUnaffected` (varnode.hh): the value is a callee-saved register that flows
     /// through the function untouched. Read by the heritage cover walk (`heritage.cc:2704`), which

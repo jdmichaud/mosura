@@ -82,6 +82,17 @@ pub(crate) fn output_type_local(f: &Funcdata, op: OpId) -> Datatype {
 pub(crate) fn input_type_local(f: &Funcdata, op: OpId, slot: usize) -> Datatype {
     let o = f.op(op);
     let size = o.input(slot).map(|v| f.vn(v).size).unwrap_or(1);
+    // TypeOpCall/Callind::getInputLocal: declared parameter types belong to the use,
+    // without type-locking a caller's value that may also feed differently typed uses.
+    if slot > 0 && matches!(o.code(), OpCode::Call | OpCode::Callind) {
+        if let Some(param) = f.call_specs.get(&op).and_then(|cs| cs.locked_inputs.as_ref())
+            .and_then(|params| params.get(slot - 1))
+        {
+            if param.datatype != Datatype::Void
+                && (o.code() == OpCode::Callind || param.datatype.size() <= size)
+            { return param.datatype.clone(); }
+        }
+    }
     // TypeOpReturn::getInputLocal (typeop.cc:901): a matching, non-void
     // prototype output supplies the type of each returned value, including constants.
     if slot != 0 && o.code() == OpCode::Return && o.parent.is_some() {

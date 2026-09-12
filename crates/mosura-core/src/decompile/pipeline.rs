@@ -82,6 +82,7 @@ impl Action for ActionHeritage {
             // heritaged range during heritage, by `guard_returns`' `characterizeAsOutput` and
             // `guard_calls`' `characterizeAsInputParam` queries over the compiler spec.
             super::recover::init_active_output(data);
+            super::prototypetypes::lock_function_inputs(data);
             super::recover::init_active_input(data);
             super::prototypetypes::link_call_outputs(data);
             // Probe pass: fully simplify a copy (heritage + rules + dead-code, no call-guards),
@@ -1018,11 +1019,8 @@ impl Action for ActionUnjustifiedParams {
         "unjustifiedparams"
     }
     fn apply(&mut self, data: &mut Funcdata) -> u32 {
-        // Ghidra reads `data.getFuncProto().unjustifiedInputParam`, which consults locked
-        // parameters first and otherwise delegates to the model's input ParamList
-        // (fspec.cc:4426-4452). mosura has no locked prototype parameters in a batch decompile, so
-        // only the model delegation exists; the locked pre-check joins when user prototypes do.
-        let Some(input) = data.proto_model.input.clone() else { return 0 };
+        // FuncProto consults declared parameters before the model (fspec.cc:4426).
+        // Both the original input and each grown container use that same contract.
         let mut count = 0;
         let mut done: Vec<(super::space::Address, u32)> = Vec::new();
         loop {
@@ -1035,7 +1033,7 @@ impl Action for ActionUnjustifiedParams {
             let mut adjusted = false;
             for v in inputs {
                 let (loc, size) = (data.vn(v).loc, data.vn(v).size);
-                let Some((mut caddr, mut csize)) = input.unjustified_container(loc, size) else {
+                let Some((mut caddr, mut csize)) = super::fspec::unjustified_input_container(data, loc, size) else {
                     continue;
                 };
                 if done.contains(&(caddr, csize)) {
@@ -1061,7 +1059,7 @@ impl Action for ActionUnjustifiedParams {
                         break; // no additional overlaps, go with the current container
                     }
                     // Having grown, the container may no longer be justified itself.
-                    match input.unjustified_container(caddr, csize) {
+                    match super::fspec::unjustified_input_container(data, caddr, csize) {
                         Some((a, s)) => {
                             caddr = a;
                             csize = s;

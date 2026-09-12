@@ -1852,10 +1852,9 @@ struct LocSet {
 }
 
 impl LocSet {
-    /// Materialize the set from the op graph: every varnode that is an op output or an op input.
-    /// (Ghidra's set additionally holds free varnodes attached to no op — inputs and `unaffected`
-    /// registers with no descendants. Those are the `heritage.cc:2704` cover members mosura does not
-    /// yet see; collecting them is Stage B of task #6.)
+    /// Materialize Ghidra's location set from the graph and the retained input/unaffected
+    /// varnodes. An explicit input can have no descendants before heritage links its reads
+    /// (heritage.cc:2704). Deleted arena slots have these flags cleared and stay excluded.
     fn build(f: &Funcdata) -> LocSet {
         let mut seen: HashSet<VarnodeId> = HashSet::new();
         let mut set = LocSet::default();
@@ -1896,6 +1895,12 @@ impl LocSet {
                         push(&mut set, f, f.op(op).input(slot).unwrap());
                     }
                 }
+            }
+        }
+        for i in 0..f.num_varnodes() {
+            let vid = VarnodeId(i as u32);
+            if f.vn(vid).is_input() || f.vn(vid).is_unaffected() {
+                push(&mut set, f, vid);
             }
         }
         for v in set.per_space.values_mut() {
@@ -2599,8 +2604,7 @@ pub fn heritage_pass(f: &mut Funcdata, dom: &Dominators) -> u32 {
         for &(off, size, _, _, vid) in entries {
             let vn = f.vn(vid);
             // heritage.cc:2704 — the cover keeps a Varnode that is written, or read, or unaffected,
-            // or an input. (mosura's op-derived LocSet cannot yet see a free input / unaffected
-            // register with NO descendants; that is Stage B of task #6.)
+            // or an input, including retained inputs with no descendants yet.
             if !vn.is_written() && vn.descend.is_empty() && !vn.is_unaffected() && !vn.is_input() {
                 continue;
             }

@@ -4075,6 +4075,17 @@ pub struct RenderedParam {
 /// a backend that must reproduce the original register assignment reads it here and declares it —
 /// Watcom spells that `#pragma aux <name> parm [<regs>]`.
 pub fn rendered_param_slots(f: &Funcdata) -> Vec<RenderedParam> {
+    // Ghidra emitPrototypeInputs visits the declared prototype, including unused
+    // locked parameters. Trial recovery and inferred-slot pruning do not apply here.
+    if let Some(params) = &f.locked_inputs {
+        return params.iter().map(|p| RenderedParam {
+            addr: p.addr, size: p.datatype.size(),
+            vn: (0..f.num_varnodes() as u32).map(VarnodeId).find(|&v| {
+                let n = f.vn(v);
+                n.is_input() && n.loc == p.addr && n.size == p.datatype.size()
+            }),
+        }).collect();
+    }
     let proto = super::fspec::recover_func_proto(f);
     let find_used_input = |addr: Address, size: u32| -> Option<VarnodeId> {
         let mut fallback = None;
@@ -4991,9 +5002,11 @@ fn print_c_inner(
     // Signature parameters in convention order, each typed from its backing input Varnode.
     let plist: Vec<String> = sig_params
         .iter()
-        .map(|&(n, v, sz)| match v {
-            Some(v) => format!("{} param_{}", p.type_of(v).name(), n),
-            None => format!("{} param_{}", super::types::Datatype::Unknown(sz).name(), n),
+        .map(|&(n, v, sz)| {
+            let ty = f.locked_inputs.as_ref().and_then(|params| params.get((n - 1) as usize))
+                .map(|param| param.datatype.clone())
+                .unwrap_or_else(|| v.map(|v| p.type_of(v)).unwrap_or(super::types::Datatype::Unknown(sz)));
+            format!("{} param_{}", ty.name(), n)
         })
         .collect();
 

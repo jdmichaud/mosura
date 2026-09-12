@@ -4,5 +4,5 @@ compiler gcc
 entry 08049000
 func 08049000 00000034 _start code
 func 08049034 00000007 combine code
-func 0804903b 0000000c relay code
-func 08049047 00000004 unused code
+func 0804903b 0000000e relay code
+func 08049049 00000004 unused code

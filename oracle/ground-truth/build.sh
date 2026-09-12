@@ -171,6 +171,12 @@ if have clang-19 && have rustc && have llvm-nm-19 && have llvm-objdump-19 && hav
       "AARCH64:LE:64:v8A" "" "" llvm-nm-19 llvm-objdump-19
     llvm-objcopy-19 --strip-all result_extension.clang-aarch64.unstripped result_extension.clang-aarch64
     rm -f result_extension.clang-aarch64.unstripped
+    clang-19 --target=aarch64-linux-gnu -nostdlib -static -fuse-ld="$clang_lld" -Wl,-e,_start \
+      src/function_input_extension.S -o function_input_extension.clang-aarch64.unstripped
+    derive_truth_elf function_input_extension.clang-aarch64.unstripped function_input_extension clang aarch64 \
+      "AARCH64:LE:64:v8A" "" "" llvm-nm-19 llvm-objdump-19
+    llvm-objcopy-19 --strip-all function_input_extension.clang-aarch64.unstripped function_input_extension.clang-aarch64
+    rm -f function_input_extension.clang-aarch64.unstripped
   fi
 fi
 
