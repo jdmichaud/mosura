@@ -175,3 +175,28 @@ fn loaders_are_selected_by_option() {
     assert!(t.u64(0, 8).unwrap() >= 1);
     assert!(t.u64(0, 11).unwrap() >= 7, "the fixture's instructions were decoded: {}", t.u64(0, 11).unwrap());
 }
+
+#[test]
+fn cached_program_configuration_is_request_local() {
+    use mosura_api::ops::program::program_of;
+    let c = ctx();
+    let (mut s, _) = session_with("basic.elf");
+    dispatch(&c, &mut s, "program.analyze", &Options::new(), &mut NoProgress).unwrap();
+    let (_, original) = program_of(&mut s, &Options::new()).unwrap();
+    let requested = opts(&[("knobs.off", "global-width"),
+        ("decompile.global-scope", "standalone"), ("decompile.proto-scope", "none")]);
+    let settings = requested.decompile_settings().unwrap();
+    for thaw in [false, true] {
+        if thaw { s.last_program = None; }
+        let (_, configured) = program_of(&mut s, &requested).unwrap();
+        assert_eq!(configured.knobs, requested.knobs().unwrap(), "request knobs must reach the program");
+        assert_eq!(configured.global_scope_all_loaded, settings.global_scope_all_loaded);
+        assert_eq!(configured.proto_scope, settings.proto_scope);
+        let (_, reset) = program_of(&mut s, &Options::new()).unwrap();
+        assert_eq!(reset.knobs, original.knobs, "request settings must not leak into later requests");
+        assert_eq!(reset.global_scope_all_loaded, original.global_scope_all_loaded);
+        assert_eq!(reset.proto_scope, original.proto_scope);
+    }
+    assert_eq!(s.set_keys(SetKind::Program).unwrap().len(), 1,
+        "decompile settings do not require another analysis set");
+}

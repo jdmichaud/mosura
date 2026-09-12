@@ -82,13 +82,23 @@ pub fn program_key(s: &Session, o: &Options) -> Result<Key> {
 /// settings come from the options (they are part of every function key, not of the tables).
 pub fn program_of(s: &mut Session, o: &Options) -> Result<(Key, Arc<Program>)> {
     let k = program_key(s, o)?;
+    let knobs = o.knobs()?;
+    let settings = o.decompile_settings()?;
     if let Some((lk, p)) = &s.last_program {
         if *lk == k {
-            return Ok((k, Arc::clone(p)));
+            if p.knobs == knobs && p.global_scope_all_loaded == settings.global_scope_all_loaded
+                && p.proto_scope == settings.proto_scope {
+                return Ok((k, Arc::clone(p)));
+            }
+            let mut configured = (**p).clone();
+            configured.knobs = knobs;
+            configured.global_scope_all_loaded = settings.global_scope_all_loaded;
+            configured.proto_scope = settings.proto_scope;
+            return Ok((k, Arc::new(configured)));
         }
     }
     let set = s.read_set(SetKind::Program, &k)?;
-    let p = Arc::new(thaw(&set, o.knobs()?, &o.decompile_settings()?)?);
+    let p = Arc::new(thaw(&set, knobs, &settings)?);
     s.last_program = Some((k, Arc::clone(&p)));
     Ok((k, p))
 }
