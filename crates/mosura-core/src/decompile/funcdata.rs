@@ -748,6 +748,12 @@ impl Funcdata {
     pub fn vn_mut(&mut self, id: VarnodeId) -> &mut Varnode {
         &mut self.varnodes[id.0 as usize]
     }
+    /// Varnodes still owned by the bank, including detached free values awaiting
+    /// `clear_dead_varnodes`. Destroyed arena slots are not bank entries.
+    pub fn varnode_ids(&self) -> impl Iterator<Item = VarnodeId> + '_ {
+        self.varnodes.iter().enumerate().filter(|(_, vn)| !vn.deleted)
+            .map(|(i, _)| VarnodeId(i as u32))
+    }
     pub fn op(&self, id: OpId) -> &PcodeOp {
         &self.ops[id.0 as usize]
     }
@@ -929,6 +935,7 @@ impl Funcdata {
             _ => 0,
         };
         self.varnodes.push(Varnode {
+            deleted: false,
             loc,
             size,
             flags: vflags | scope_flags,
@@ -1794,8 +1801,19 @@ impl Funcdata {
     /// (via [`total_replace`](Self::total_replace)).
     pub fn delete_varnode(&mut self, vid: VarnodeId) {
         let v = &mut self.varnodes[vid.0 as usize];
+        v.deleted = true;
         v.def = None;
         v.flags &= !(flags::INPUT | flags::INSERT | flags::WRITTEN | flags::UNAFFECTED);
+    }
+
+    /// Ghidra `Funcdata::clearDeadVarnodes` (funcdata_varnode.cc:832). Run only at
+    /// its pipeline boundaries: edits may detach a value and later reattach it.
+    pub fn clear_dead_varnodes(&mut self) {
+        let dead: Vec<_> = self.varnode_ids().filter(|&id| {
+            let vn = self.vn(id);
+            vn.descend.is_empty() && (vn.is_free() || (vn.is_input() && !vn.is_locked_input()))
+        }).collect();
+        for id in dead { self.delete_varnode(id); }
     }
 
     /// Create a new op with a fresh `unique`-space output, inserted just before `follow`

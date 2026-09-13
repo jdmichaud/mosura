@@ -90,6 +90,9 @@ pub mod addlflags {
 /// directly elsewhere.
 #[derive(Clone, Debug)]
 pub struct Varnode {
+    /// Arena tombstone: Ghidra removes a destroyed Varnode from its bank entirely.
+    /// Keep the slot for stable IDs, but exclude it from bank iteration.
+    pub(crate) deleted: bool,
     /// Storage location, or (in the constant space) the literal value.
     pub loc: Address,
     /// Size in bytes.

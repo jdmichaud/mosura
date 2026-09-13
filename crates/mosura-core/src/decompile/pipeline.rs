@@ -1094,6 +1094,7 @@ impl Action for ActionInputPrototype {
     fn apply(&mut self, data: &mut Funcdata) -> u32 {
         // Ghidra's returns 0 (coreaction.cc:4707-4760): no graph change, nothing to count.
         super::fspec::resolve_model(data);
+        data.clear_dead_varnodes();
         0
     }
 }

@@ -198,6 +198,7 @@ impl super::action::Action for ActionDeadCode {
         // that did to rule outcomes.)
         super::consume::calc_consume(data);
         dead_code(data);
+        data.clear_dead_varnodes();
         let after = (0..data.num_ops() as u32).filter(|&i| !data.op(OpId(i)).is_dead()).count();
         (before - after) as u32
     }
