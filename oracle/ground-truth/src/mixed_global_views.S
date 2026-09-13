@@ -9,7 +9,10 @@
  * store_mixed exercises the corresponding wider assignment target: after its
  * byte-indexed copy, it writes the bitwise complement of control over the first
  * destination word. All four bytes of that final store must be observable.
- * No incoming register value or returned value is part of either protocol.
+ * copy_interior also reads an overlapping word two bytes into source. Keep its
+ * base-word read and byte-indexed view: together they require a distinct symbol
+ * for the interior access, whose relocation must retain the two-byte offset.
+ * No incoming register value or returned value is part of these protocols.
  */
 #if defined(__x86_64__)
 #define CURSOR %rdi
@@ -17,11 +20,12 @@
 #define CURSOR %edi
 #endif
 .text
-.globl _start, copy_mixed, store_mixed
+.globl _start, copy_mixed, store_mixed, copy_interior
 .type _start,@function
 _start:
     call copy_mixed
     call store_mixed
+    call copy_interior
     ret
 .size _start,.-_start
 
@@ -54,9 +58,25 @@ store_mixed:
     ret
 .size store_mixed,.-store_mixed
 
+.type copy_interior,@function
+copy_interior:
+    movl source,%eax
+    movl %eax,control
+    movl source+2,%eax
+    movl %eax,control+4
+    xorl %edi,%edi
+    movl $5,%ecx
+3:
+    movl source(CURSOR),%eax
+    movl %eax,destination(CURSOR)
+    add $4,CURSOR
+    loop 3b
+    ret
+.size copy_interior,.-copy_interior
+
 .data
 .balign 4
 source: .long 3,7,11,19,31
 destination: .fill 5,4,0
-control: .long 0
+control: .long 0,0
 .section .note.GNU-stack,"",@progbits
