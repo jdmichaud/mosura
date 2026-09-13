@@ -1,6 +1,6 @@
 # Bob's issue tracker
 
-Updated 2026-09-13. Owner: Alice. Working branch: `fix/global-symbol-views-resumed`.
+Updated 2026-09-13. Owner: Alice. Working branch: `master`.
 
 The untracked `BOB_TASK.md` checklist lives in the repository's parent directory.
 Its markers are `[ ]` queued/triage,
@@ -12,9 +12,8 @@ A downstream repair is not a mosura fix. Each numbered report stays open until i
 mosura behavior is checked, or triage establishes that it belongs solely to the downstream project.
 The checklist below records completed work; the register below preserves every report ID.
 
-Closeout validation of the committed code: `cargo test --workspace` exits zero with
-1323/1323 tests passing, none failing and 25 ignored, across 113 test binaries. This includes
-the expanded mixed-global source artifacts, but excludes the saved unfinished implementation.
+Closeout validation of the committed code (the tree of `8bb0661c`): `cargo test --workspace` exits
+zero with 1326/1326 tests passing, none failing and 28 ignored, across 113 test binaries.
 
 ## Completed package: explicit function inputs
 
@@ -112,12 +111,12 @@ explicit incoming inputs. A separate formatting helper receives its declared inp
 This is validation of `e482d6a8`/`f4a4e7cd`, not a new production change. The input scope is
 closed; custom compiler lowering and unrelated output/platform contracts remain open.
 
-## Active package: overlapping global views
+## Completed package: overlapping global views
 
 Related report: **#4**. Preserve one address-backed object across direct accesses and
 pointer views with different types or widths. The address-only declaration correction
-below fixes absent width facts; a mixed direct-word and byte-indexed probe still needs
-consistent view conversions.
+(`d7e386f0`) fixed absent width facts; this package adds the global Symbol facts behind
+them and a typed-view emission that keeps every access on the same storage.
 
 - [x] Ground a direct-word plus byte-indexed source probe in current IR and the mapped C++ oracle.
   The oracle represents the wider access as an overlapping symbol. Resizing the base
@@ -126,58 +125,62 @@ consistent view conversions.
   `1f1948b7` adds `mixed_global_views.S` and both stripped, build-derived artifacts. The
   source population gate finds 2/2 functions in each and passes all 126 binaries. With
   production code unchanged, both reference-symbol cases fail; actual generated C also
-  fails the first source-defined copy case on each architecture. The execution harness
-  changes only file-scope declarations to bind physical storage; the complete body is
-  appended unchanged. This detects incorrect access widths/strides, not shared allocation
-  across independently linked translation units.
-- [>] Complete global symbol/type facts and emitted views using Ghidra's symbol linking and overlap handling.
-- [ ] Validate shared memory effects and the relevant reported consumers, then run package gates.
+  fails the first source-defined copy case on each architecture. `f4bcb2a2` adds wider
+  stores, `967c8200` two partially overlapping word reads, `3145f089` direct word accesses
+  held in a register beside the byte-indexed view, and `dd1428a5` a partial result read
+  from an updated global word. Every fixture was shown failing before its fix.
+- [x] Complete global symbol/type facts and emitted views using Ghidra's symbol linking and overlap handling.
+  The partially overlapping reads exposed obsolete full-word arena slots entering global
+  mapping and naming a spurious interior symbol at the wrong address; the ported
+  `clearDeadVarnodes` at the dead-code and input-prototype boundaries removes them from
+  bank iteration while preserving locked inputs (`da686962`). `Funcdata::mapGlobals` and
+  `coverVarnodes` then run at the `fixateglobals` slot, preserving the entries pointer
+  recovery created; `linkSymbol`/`pushSymbolDetail` render whole, partial and mismatch
+  accesses and `opPtrsub` references use the symbol's type. The compiler-selected,
+  switchable `global-views=typed` arm renders each witnessed partial or overlapping access
+  as a typed lvalue of the linked storage, and translation units declare used globals from
+  the symbol types instead of identifier prefixes (`8bb0661c`).
+- [x] Validate shared memory effects and the relevant reported consumers, then run package gates.
+  Ten source-built copy/store bodies and two partial-result bodies execute 257 trials each
+  against their source-defined memory effects with physical aliases bound explicitly; the
+  arm-off, absent-evidence and displaced-site controls retain the reference C exactly, and
+  the actual objects' relocations resolve through the storage map for all ten bodies.
+  The reported measure is one address emitted under several C global spellings inside one
+  unit: over the 751 application-scope units it goes from 34 unit/address pairs in 30 units,
+  13 of them written under one spelling and read under another, to 0; standalone scope stays
+  at 7 pairs, none write/read-split. Addresses spelled differently across units drop from
+  466 to 435. Allocating one application address space across independently linked units
+  remains the consumer's link step (#26, withdrawn).
 
-The unfinished implementation and its regression gates are saved in stash commit
-`2245cbac1b1ea53d3f21947358cf71b58997ce6f`, also protected by `refs/wip/global-symbol-views`.
-Its base is `f4bcb2a2`, retained by `fix/global-symbol-views`. To resume on that branch,
-apply the saved stash there; the stash includes the new `global_views.rs` arm as an untracked file.
-The saved checklist snapshot is historical; keep the live checklist outside Git when resuming.
-The completed source fixtures are on `master`, but the unfinished production changes and gates are not.
+Package validation, measured on the tree content of `8bb0661c` immediately before it was
+committed (no source file changed between the runs and the commit):
 
-The saved port connects `Funcdata::mapGlobals`, global symbol lookup, overlap rendering and
-typed translation-unit declarations. The compiler-selected, switchable `global_views` arm
-preserves access types through the shared base, with native memory-width evidence.
-The expanded source fixtures contain three functions per architecture, including wider stores
-(`f4bcb2a2`). Before the last pointer-rendering edit, all four bodies passed 1028/1028 emitted-C
-execution cases; disabling the arm or removing native evidence retained reference C exactly.
-An earlier focused core run passed 963/963 tests with six ignored, including IR parity and
-disassembly. Neither measurement is a validation of the final saved tree or of `master`.
+- Focused core: 964/964 tests pass, 7 ignored, including IR parity 9/9 and disassembly 1/1.
+  The nine global gates pass together, including the opt-in GCC execution and relocation gates.
+- Workspace: `cargo test --workspace` exits zero, 1326/1326 tests pass, 0 fail, 28 ignored,
+  across 113 test binaries. Emit-arm oracle (`ground_truth_recompile_arms`): pass, 28 programs,
+  plain-32 PASS 14, arm TUs 53/112.
+- Application-scope round, 751 units, all eight gates OK: COMPILE_FAIL 158, EXACT 19, MISMATCH 557,
+  SAME_SHAPE 16, SAME_CODE 1, WGSS 0.1090, the same census as the `561c9af1` baseline; against that
+  baseline 0 flips, 27 movers (17 up, 10 down, net +0.045 sim), WGSS +0.00018, no membership
+  drift. The repeat caches 751/751 units with 0 flips and 0 movers.
+- Standalone-scope round, 751 units, all eight gates OK: COMPILE_FAIL 159, EXACT 19, MISMATCH 556,
+  SAME_SHAPE 16, SAME_CODE 1, WGSS 0.1094 against the baseline's 0.1093; 0 flips, 17 movers
+  (10 up, 7 down), no membership drift. The repeat caches 751/751 units with 0 flips and 0 movers.
+- The emitted text is intentionally not identity-neutral: 580/751 application and 561/751
+  standalone units differ from the baseline, almost entirely in file-scope global declarations
+  now spelled from the symbol types (`int4`, `uint4`, `xunknown4`); function bodies change in
+  102 and 19 units (typed views and symbol names). No EXACT is lost and no failure verdict is new.
 
-Complete the symbol consumers and validate shared storage. The execution reduction binds physical
-aliases explicitly; cross-function storage still needs validation. Full workspace, emit-arm oracle
-and corpus rounds with all eight gates and a stable repeat remain required before landing this package.
-The release build underway at the stop request was interrupted; no successful exit was recorded.
-Work resumed from the saved implementation on 2026-09-13, keeping the checklist outside Git.
-The former temporary validation files and sessions are absent; recreate the required measurements.
+The CLI option-precedence correction landed with this package's measurements: explicitly
+supplied options equal to the registry default are preserved (`55b9ec76`), demonstrated by
+a source-built integration regression that failed before the fix.
 
-The resumed four-body regression passes both tests, including 1028 emitted-C executions.
-An expanded source probe then reads two partially overlapping words. Its build yields four
-reachable functions per architecture. The mapped C++ oracle splits the reads into halfwords,
-each named at its own storage address. The saved port instead included detached obsolete
-full-word arena slots, creating a spurious interior symbol and resolving it to the wrong address.
-The source/storage regression fails on both architectures before correction.
+Out of this scope: arbitrary external global declarations, complete application storage
+allocation and observation order between callbacks, and the downstream naming items (#27).
 
-This retracts the assumption that changing the name parser was the next fix for that example.
-`clearDeadVarnodes` was missing at the dead-code and input-prototype boundaries. Its port records
-destroyed arena slots and excludes them from bank iteration, while preserving locked inputs.
-All four expanded regression tests now pass: six bodies, 1542 executions, arm-off/evidence controls
-and actual object relocations checked against the storage map. The focused core run exits zero:
-964 tests pass, seven ignored, including IR parity 9/9 and disassembly 1/1. These measurements
-cover the current uncommitted package; complete package and corpus validation is still pending.
-
-The separate tooling correction preserves explicitly supplied CLI options even when
-their value equals the registry default. Its source-built integration regression failed
-before the fix and now passes with the other six CLI integration tests. It checks operation
-defaults, a conflicting session setting, and that an override does not change that setting.
-Under identical supplied options, 751/751 TUs are unchanged in each scope, standalone and
-application. Correction: `55b9ec76`. The complete workspace exits zero with 1323/1323 tests
-passing and 25 ignored. This measurement precedes the new mixed-global regression gates.
+The stash `2245cbac` and `refs/wip/global-symbol-views`, which held the unfinished work while it
+was paused, are superseded by these commits and can be dropped.
 
 ## Completed validation: result contracts in repeated record stores
 
@@ -620,9 +623,8 @@ alone does not close the entire indirect-call class.
   predicate in #13. The gated scalar-result implementation preserves the explicit typed result. Report validation
   remains open, including the nested callee's separate result channel.
   Bob is ready to validate this case once the work is complete.
-- [>] **Shared global storage (#4; distinguish downstream #26 and naming #27).** Reproduce
-  overlapping reads/writes in self-compiled source and check the existing address-based linker
-  aliases and typed views before deciding whether the emitter/TU layer needs a fix.
+- [x] **Shared global storage (#4; distinguish downstream #26 and naming #27).** Landed as the
+  overlapping global views package above; the application-wide allocation stays with the consumer.
 - [ ] **Multiple result registers (remaining reports; #6/#8/#18/#20/#31 declared scopes validated).**
   Audit each remaining protocol and its input/flag consumers using the joined-result mechanism.
 - [ ] **Invented input parameters (#2 and related reports).** Separate missing return channels
@@ -691,7 +693,7 @@ All fixes require a failing MVE, matching implementation evidence, required gate
 | #1 | Input contracts: preserve explicit ordered inputs at mutable pointer calls (validated scope). | Validated by Bob: explicit inputs restored at all four calls; compiler lowering remains open |
 | #2 | Input contracts: reject parameters unsupported by caller/callee data flow. | Queued |
 | #3 | Input contracts: propagate contracts through mutable function-pointer tables. | Investigating: input package; report validation pending |
-| #4 | Storage: preserve aliasing between differently typed views of one address. | Active: mixed global views and existing linker alias support |
+| #4 | Storage: preserve aliasing between differently typed views of one address. | Validated scope: global Symbol mapping with typed views of one storage; within-unit multiple spellings 34 → 0 over 751 units; application-wide allocation stays downstream |
 | #5 | Consumer loop-value substitution. | Outside scope: archived raw output preserves the loop expression; the consumer rewrite introduced the constant |
 | #6 | Results: preserve an explicit value and condition flag together. | Validated declared result scope; source/IR/C gates and all four reported caller sites |
 | #7 | Explicit byte inputs at indirect calls. | Validated input scope: both calls retain the original size-1 value; separate storage-order witness remains open |

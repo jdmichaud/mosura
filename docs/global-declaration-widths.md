@@ -26,5 +26,6 @@ address is used through a different pointer type. Those require consistent globa
 symbol/type information and explicit view conversions. A mixed direct-word and
 byte-indexed access is a separate known case; shrinking its word declaration would
 truncate the direct access. The [global symbol and view port](global-symbol-views.md) addresses
-that distinction and is undergoing package validation. The complete storage scope remains open under issue #4 in
-[the issue tracker](bob-issue-tracker.md).
+that distinction; its package validation is recorded under issue #4 in
+[the issue tracker](bob-issue-tracker.md). Allocating one application address space across
+independently linked units remains the consumer's link step.

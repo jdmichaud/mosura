@@ -11,6 +11,39 @@ metadata:
 Moved out of MEMORY.md 2026-08-06 (the index is a hook list; this is its detail). Every number
 here is STALE unless @sha==HEAD — see [[numbers-stale-unless-sha-stamped]].
 
+## Live status — `master` (2026-09-13): issue #4 global symbol views LANDED on top of `8bb0661c`
+
+The liaison track (Bob's ledger, `docs/bob-issue-tracker.md` + the `BOB_TASK.md` checklist kept in
+the repository's PARENT directory, outside git) is the active lane; the sections below it are
+older lanes and their numbers are historical.
+
+- `da686962` ports `clearDeadVarnodes` (bank tombstones at the dead-code and input-prototype
+  boundaries); `8bb0661c` ports `mapGlobals`/`coverVarnodes` at `fixateglobals`, `linkSymbol` +
+  `pushSymbolDetail` + `opPtrsub` symbol rendering, the switchable `global-views=typed` emit arm
+  (Watcom profile selects it), and TU declarations spelled from the symbol types. The docs commit
+  after `8bb0661c` closes #4 in the tracker; master was fast-forwarded to it.
+- Workspace **1326/1326, 0 failed, 28 ignored, 113 binaries** and focused core **964/7** measured on
+  `8bb0661c`'s tree content; emit-arm oracle pass (28 programs, plain-32 PASS 14, arm TUs 53/112).
+- Corpus (751 units): application scope 8/8 gates, census 158/19/557/16/1 = baseline `561c9af1`,
+  WGSS 0.1090, 0 flips / 27 movers, repeat stable; standalone scope 8/8, census 159/19/556/16/1
+  = baseline, WGSS 0.1094 (+0.0001), 0 flips / 17 movers, repeat stable.
+- ⚠️ The package is NOT identity-neutral: 580/751 (application) and 561/751 (standalone) TUs differ
+  from baseline, nearly all in global declarations now spelled `int4`/`uint4`/`xunknown4` from the
+  symbol types; bodies change in 102 / 19 TUs. It went through full rounds, not the identity gate.
+- Bob's #4 metric (one address under several C spellings inside one unit): 34 pairs in 30 units
+  (13 write/read-split) → **0** over 751 application units; cross-unit spellings 466 → 435 (the
+  consumer's link step, #26 withdrawn).
+- Artifacts: `<repo parent>/validation/global-symbol-views/` (logs, emissions, rounds; NOT in git);
+  corpus session `/tmp/mosura-alice-global-corpus`, release binaries `/tmp/mosura-alice-*-target`
+  (tmpfs, gone on reboot); `validation/master-baseline` is a worktree at `561c9af1`.
+- Standing gotcha: `round run` defaults to `--scope user` (588 rows); pass `--scope all` to compare
+  against an all-units baseline, or gate 6 fails on a switch TU outside the user set.
+- Next queued (tracker "Next work packages"): flag results (#13/#23/#53), remaining multi-register
+  results, invented input parameters (#2), partial registers/loops (#40/#66), control flow +
+  discovery (#3/#42/#58-59/#67/#73), triage of #86-99.
+- Housekeeping: master is far ahead of `origin/master` (unpushed since 2026-09-09); `equiv-run`,
+  `equiv-run2`, `faithful-c-equivalence` (Sep 7-8) are unmerged older lanes.
+
 ## Live status — `master` @ `8b528d6` (2026-08-10), the subject perf wave landed, suite FULLY green
 
 Perf round 2 on the subject LANDED, 4 commits `c47130c`..`8b528d6`: dense `cover::OpPositions` +
