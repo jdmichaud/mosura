@@ -242,6 +242,16 @@ if have gcc && have objcopy; then
     rm -f "mixed_global_views.gcc-x86-$bits.unstripped"
   done
 
+  # A partial read follows a full-word update to the same global object.
+  for bits in 32 64; do
+    gcc -m"$bits" -nostdlib -static -no-pie -Wl,-e,_start src/global_partial_result.S \
+      -o "global_partial_result.gcc-x86-$bits.unstripped"
+    derive_truth_elf "global_partial_result.gcc-x86-$bits.unstripped" global_partial_result gcc "x86-$bits" \
+      "x86:LE:$bits:default" ""
+    strip -o "global_partial_result.gcc-x86-$bits" "global_partial_result.gcc-x86-$bits.unstripped"
+    rm -f "global_partial_result.gcc-x86-$bits.unstripped"
+  done
+
   # A callback input whose predecessor definitions require a phi despite its call-output guard.
   for bits in 32 64; do
     gcc -m"$bits" -nostdlib -static -no-pie -Wl,-e,_start src/branch_argument.S -o branch_argument.gcc-x86-"$bits".unstripped

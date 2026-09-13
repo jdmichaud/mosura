@@ -1,0 +1,6 @@
+# mosura-ground-truth v1 program=global_partial_result compiler=gcc arch=x86-32 lang=x86:LE:32:default
+# derived-from=global_partial_result.gcc-x86-32.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 08049000
+func 08049000 0000000c _start code
+func 0804900c 0000001b update_slice code
