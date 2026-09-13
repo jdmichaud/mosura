@@ -3192,3 +3192,39 @@ pub fn wide_int_from_evidence(
         }))
     })).map(|c| c.op).collect()
 }
+
+/// A global view must cover bytes accessed by an original memory operand.
+/// An absolute operand provides the range directly. For a register-held address,
+/// the spacebase rules supply its proven storage and original instruction. That
+/// instruction must still contain the matching LOAD/STORE, space and width.
+pub fn global_views_from_evidence(
+    candidates: &[crate::decompile::emit::arms::global_views::Candidate],
+    insns: &[crate::recompile::insn::NormInsn],
+) -> std::collections::HashSet<crate::decompile::varnode::VarnodeId> {
+    use crate::recompile::insn::SemArg;
+    use crate::decompile::OpCode;
+    let size_of = |arg: &SemArg| match arg {
+        SemArg::Reg(_, s) | SemArg::Temp(_, s) | SemArg::Mem(_, _, s) | SemArg::Const(_, s) => Some(*s),
+        _ => None,
+    };
+    candidates.iter().filter(|c| insns.iter().flat_map(|i| &i.sem).any(|op| {
+        op.ins.iter().chain(op.out.iter()).any(|arg| match arg {
+            SemArg::Mem(space, addr, size) if *space == c.space && c.size <= *size =>
+                c.address.checked_sub(*addr).is_some_and(|off| off <= u64::from(size - c.size)),
+            _ => false,
+        })
+    }) || c.resolved.iter().any(|m| insns.iter().filter(|i| i.addr == m.instruction.offset).any(|i| {
+        i.sem.iter().any(|op| {
+            if op.opcode != m.opcode as u32
+                || !matches!(op.ins.first(), Some(SemArg::Space(space)) if space == &c.space) {
+                return false;
+            }
+            let value = match m.opcode {
+                OpCode::Load => op.out.as_ref(),
+                OpCode::Store => op.ins.get(2),
+                _ => None,
+            };
+            value.and_then(size_of) == Some(m.size)
+        })
+    }))).map(|c| c.v).collect()
+}

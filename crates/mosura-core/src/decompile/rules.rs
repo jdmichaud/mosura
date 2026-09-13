@@ -315,6 +315,10 @@ impl Rule for RuleLoadVarnode {
             return 0;
         };
         let size = data.vn(out).size;
+        data.resolved_memory_accesses.push(super::funcdata::ResolvedMemoryAccess {
+            instruction: data.op(op).seqnum.pc, storage: Address::new(space, off),
+            size, opcode: OpCode::Load,
+        });
         let newvn = data.new_varnode(size, Address::new(space, off));
         data.op_set_input(op, 0, newvn);
         data.op_remove_input(op, 1);
@@ -364,6 +368,10 @@ impl Rule for RuleStoreVarnode {
             return 0;
         };
         let size = data.vn(valvn).size;
+        data.resolved_memory_accesses.push(super::funcdata::ResolvedMemoryAccess {
+            instruction: data.op(op).seqnum.pc, storage: Address::new(space, off),
+            size, opcode: OpCode::Store,
+        });
         let out = data.new_output(op, size, Address::new(space, off));
         // COPY takes the stored value (STORE input 2) as its sole input.
         data.op_remove_input(op, 1);

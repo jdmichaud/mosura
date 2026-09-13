@@ -101,6 +101,7 @@ pub(crate) struct State {
     pub(crate) complement_cmp: complement_cmp::State,
     pub(crate) ext_cast: ext_cast::State,
     pub(crate) wide_int: wide_int::State,
+    pub(crate) global_views: global_views::State,
     pub(crate) sum_order: sum_order::State,
     pub(crate) join_narrow: join_narrow::State,
     pub(crate) array_index: array_index::State,
@@ -124,6 +125,7 @@ impl State {
             complement_cmp: complement_cmp::State::new(choices),
             ext_cast: ext_cast::State::new(choices),
             wide_int: wide_int::State::new(choices),
+            global_views: global_views::State::new(choices),
             sum_order: sum_order::State::new(choices),
             join_narrow: join_narrow::State::new(choices),
             array_index: array_index::State::new(choices),
@@ -142,6 +144,7 @@ pub mod cmp_sign;
 pub mod complement_cmp;
 pub mod ext_cast;
 pub mod wide_int;
+pub mod global_views;
 pub mod for_rotate;
 pub mod inline_call;
 pub mod load_hoist;
@@ -301,7 +304,7 @@ mod tests {
     /// The arm files, as text, for the surface scan — every `pub mod` of this module must be here
     /// (`arms_touch_only_the_documented_surface` checks that against this file's own source, so a
     /// new arm file cannot slip past the scan).
-    const ARM_SOURCES: [(&str, &str); 33] = [
+    const ARM_SOURCES: [(&str, &str); 34] = [
         ("zero_cmp.rs", include_str!("zero_cmp.rs")),
         ("table_base.rs", include_str!("table_base.rs")),
         ("narrow_cmp.rs", include_str!("narrow_cmp.rs")),
@@ -319,6 +322,7 @@ mod tests {
         ("return_widen.rs", include_str!("return_widen.rs")),
         ("ext_cast.rs", include_str!("ext_cast.rs")),
         ("wide_int.rs", include_str!("wide_int.rs")),
+        ("global_views.rs", include_str!("global_views.rs")),
         ("mask_cast.rs", include_str!("mask_cast.rs")),
         ("string_ops.rs", include_str!("string_ops.rs")),
         ("struct_copy.rs", include_str!("struct_copy.rs")),
@@ -432,6 +436,10 @@ mod tests {
 
 /// One call of the value-render chokepoint: the situation the port is about to render.
 pub enum ValueSite<'v> {
+    /// A direct global Symbol occurrence, including partial and overlapping
+    /// accesses. The same hook handles reads and assignment targets.
+    GlobalSymbol { v: VarnodeId, address: super::super::space::Address,
+        symbol: &'v super::super::scope::Symbol, offset: u64 },
     /// The root of an expression (`render_op_inner`): a `len + 1` alias folds to `strlen`'s
     /// value, a witnessed SBB/SAR chain prints as `x / 2^n`.
     OpRoot { op: OpId },
@@ -528,6 +536,7 @@ pub fn render_value(p: &mut PrintC<'_>, site: ValueSite<'_>) -> Option<(String, 
     // struct-return's slot answers decline by frame-fill's SETUP state (`declined_by_frame_fill`,
     // decided at recognize), never by this order.
     match site {
+        ValueSite::GlobalSymbol { v, address, symbol, offset } => global_views::render(p, v, address, symbol, offset),
         ValueSite::OpRoot { op } => string_ops::strlen_fold(p, op)
             .or_else(|| sdiv_pow2::render(p, op))
             .or_else(|| struct_return::render_value(p, &ValueSite::OpRoot { op }))

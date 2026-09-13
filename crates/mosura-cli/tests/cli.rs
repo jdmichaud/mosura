@@ -154,10 +154,12 @@ fn raw_decoding_registries_and_exit_codes() {
     assert!(regs.contains("\nEAX\t"), "{}", &regs[..200.min(regs.len())]);
     let axes = ok(&s, &["--format", "tsv", "axes"]);
     let arms = ok(&s, &["--format", "tsv", "arms"]);
-    assert_eq!(axes.lines().count(), 23);
-    assert_eq!(arms.lines().count(), 31);
+    assert_eq!(axes.lines().count(), 24);
+    assert_eq!(arms.lines().count(), 32);
     assert!(axes.contains("wide-int\tghidra|split32\tghidra"));
     assert!(arms.lines().any(|line| line == "wide_int"));
+    assert!(axes.contains("global-views\tghidra|typed\tghidra"));
+    assert!(arms.lines().any(|line| line == "global_views"));
     let data = ok(&s, &["--format", "tsv", "data", "list"]);
     assert!(data.lines().count() > 100);
     let version = ok(&s, &["version"]);

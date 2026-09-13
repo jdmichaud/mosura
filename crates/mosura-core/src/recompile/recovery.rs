@@ -149,6 +149,10 @@ fn derive(
         wide_int: crate::decompile::emit::arms::wide_int::Sites {
             sites: crate::recompile::buildconfig::wide_int_from_evidence(&report.wide_int.candidates, insns),
         },
+        global_views: crate::decompile::emit::arms::global_views::Sites {
+            sites: crate::recompile::buildconfig::global_views_from_evidence(&report.global_views.candidates, insns),
+            volatile: Default::default(),
+        },
         ext_cast: crate::decompile::emit::arms::ext_cast::Sites {
             sites: crate::recompile::buildconfig::narrow_zexts_from_evidence(
                 &report.ext_cast.candidates,
@@ -347,6 +351,7 @@ pub fn canonical_arm() -> EmitChoices {
         // This output compiler has word-sized integers; retain wide arithmetic through
         // the target prelude primitives instead of narrowing the faithful expressions.
         c.set("wide-int", "split32").expect("known axis");
+        c.set("global-views", "typed").expect("known axis");
         // INT3 as the prelude's `__int3()` (`#pragma aux = 0xcc`) — the D5 audit rows'
         // assert traps and `app_fatal`'s body are compiled C only under this form.
         c.set("swi", "int3").expect("known axis");

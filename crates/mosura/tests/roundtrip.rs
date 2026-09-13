@@ -99,10 +99,12 @@ fn errors_carry_the_registry_doc_and_the_registries_are_tables() {
     assert_eq!(ctx.schema("nope").unwrap_err().status, Status::MOSURA_ERR_NOT_FOUND);
     let axes = ctx.emit_axes().unwrap();
     let arms = ctx.emit_arms().unwrap();
-    assert_eq!(axes.rows(), 22);
-    assert_eq!(arms.rows(), 30);
+    assert_eq!(axes.rows(), 23);
+    assert_eq!(arms.rows(), 31);
     assert!(axes.render(Format::MOSURA_FMT_JSON).unwrap().contains("wide-int"));
+    assert!(axes.render(Format::MOSURA_FMT_JSON).unwrap().contains("global-views"));
     assert!(arms.render(Format::MOSURA_FMT_JSON).unwrap().contains("wide_int"));
+    assert!(arms.render(Format::MOSURA_FMT_JSON).unwrap().contains("global_views"));
     assert!(ctx.data_list().unwrap().rows() > 100);
     let l = ctx.language("x86:LE:32:default").unwrap();
     assert!(l.registers().unwrap().rows() > 20);

@@ -8,8 +8,9 @@
 //! resolves a symbol for ANY address inside a loaded memory block — that is why `&DAT_...`
 //! references exist for addresses no one ever named. mosura's analog is
 //! [`Funcdata::is_loaded`]: an in-image `rampoint` yields a synthesized entry at exactly that
-//! address with unknown type (so `needexacthit` is trivially satisfied and the `extra` arm of
-//! `spacebaseConstant` is structurally dead — see its notes).
+//! address with unknown type (so `needexacthit` is satisfied and the `extra` arm of
+//! `spacebaseConstant` is unreachable for these entries). The entry is retained in
+//! Funcdata's global Scope so direct accesses link to the same Symbol.
 //!
 //! Configuration reductions, each cited: `inferPtrSpaces` is the single `ram` space (Ghidra
 //! populates the list from the cspec; every mosura target infers into ram only);

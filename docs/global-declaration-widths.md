@@ -25,5 +25,6 @@ shared allocation for differently typed views, or resolve an existing object who
 address is used through a different pointer type. Those require consistent global
 symbol/type information and explicit view conversions. A mixed direct-word and
 byte-indexed access is a separate known case; shrinking its word declaration would
-truncate the direct access. The global storage work remains open under issue #4 in
+truncate the direct access. The [global symbol and view port](global-symbol-views.md) addresses
+that distinction and is undergoing package validation. The complete storage scope remains open under issue #4 in
 [the issue tracker](bob-issue-tracker.md).

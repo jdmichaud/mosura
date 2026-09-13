@@ -345,6 +345,12 @@ impl Datatype {
             Datatype::Pointer(_, to) => format!("p{}", to.print_name_base()),
             Datatype::Array(elem, _) => format!("a{}", elem.print_name_base()),
             Datatype::Spacebase(_) => String::new(),
+            // SleighArchitecture::buildCoreTypes names only these scalar widths.
+            // TypeFactory::getBase creates other primitive widths without a name;
+            // the C spelling supplied by name() is not a factory name prefix.
+            Datatype::Unknown(n) | Datatype::Int(n) | Datatype::Uint(n)
+                if !matches!(n, 1 | 2 | 4 | 8) => String::new(),
+            Datatype::Float(n) if !matches!(n, 4 | 8 | 10 | 16) => String::new(),
             _ => self.name().chars().next().map(String::from).unwrap_or_default(),
         }
     }

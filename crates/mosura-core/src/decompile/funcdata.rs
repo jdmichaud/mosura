@@ -13,6 +13,17 @@ use super::opcode::OpCode;
 use super::space::{Address, SpaceId, SpaceKind, SpaceManager};
 use super::varnode::{flags, Varnode, VarnodeId};
 
+/// Provenance of a LOAD/STORE whose address the spacebase rules resolved.
+/// The graph may subsequently remove the operation; emission can still check
+/// the original instruction's memory operation and width at this address.
+#[derive(Clone, Debug)]
+pub struct ResolvedMemoryAccess {
+    pub instruction: Address,
+    pub storage: Address,
+    pub size: u32,
+    pub opcode: OpCode,
+}
+
 /// One function being decompiled.
 #[derive(Clone)]
 pub struct Funcdata {
@@ -41,6 +52,9 @@ pub struct Funcdata {
     pub locked_output: Option<super::fspec::ProtoParameter>,
     /// Ghidra Merge::protoPartial: roots registered by RulePieceStructure.
     pub proto_partial_roots: Vec<OpId>,
+    /// Facts recorded when the faithful load/store rules prove fixed storage.
+    /// These annotations do not affect the decompilation graph or printer policy.
+    pub resolved_memory_accesses: Vec<ResolvedMemoryAccess>,
     /// Ghidra's input-locked prototype. `Some([])` explicitly declares no inputs.
     pub locked_inputs: Option<Vec<super::fspec::ProtoParameter>>,
     varnodes: Vec<Varnode>,
@@ -131,8 +145,8 @@ pub struct Funcdata {
     /// space), from the loader's per-section write flag.
     ///
     /// Ghidra reaches this through `Scope::isReadOnly` → `queryProperties` → the `Varnode::readonly`
-    /// property a `MemoryBlock` contributes. mosura has no Scope object for globals, so the ranges
-    /// travel directly; the analysis layer fills them in (`analysis::decompiler`), and a hand-built
+    /// property a `MemoryBlock` contributes. Loaded-memory properties are supplied separately
+    /// from the global Symbol mappings; the analysis layer fills these ranges (`analysis::decompiler`), and a hand-built
     /// `Funcdata` has none, which answers "not read-only" — the conservative direction.
     /// Cache for [`super::varmap::recover_scope`] — the recovered stack symbols.
     ///
@@ -160,6 +174,11 @@ pub struct Funcdata {
     /// query on the image alone made the fixture corpus emit `&xRam` forms its (silent-action)
     /// oracle lacks — 0.9569 -> 0.9382.
     pub global_scope_all_loaded: bool,
+    /// Global Symbols retained for direct accesses and spacebase references.
+    /// Pointer recovery supplies existing mappings; ActionMapGlobals covers the
+    /// remaining persistent Varnodes before naming and cast insertion.
+    pub global_scope: super::scope::Scope,
+    pub global_symbol_overlap: bool,
     /// Calls whose committed argument list contained a linked-but-UNWRITTEN varnode, awaiting the
     /// output commit that should give it a definition (see [`Self::reopen_input`]).
     pub calls_awaiting_output: std::collections::BTreeSet<OpId>,
@@ -464,6 +483,7 @@ impl Funcdata {
             locked_output: None,
             proto_partial_roots: Vec::new(),
             locked_inputs: None,
+            resolved_memory_accesses: Vec::new(),
             return_bytes_consumed: 0,
             structure: None,
             structure_complex: None,
@@ -473,6 +493,8 @@ impl Funcdata {
             readonly_ranges: Vec::new(),
             uninitialized_ranges: Vec::new(),
             global_scope_all_loaded: false,
+            global_scope: super::scope::Scope::new(),
+            global_symbol_overlap: false,
             stack_syms_cache: None,
             output_storage_size: None,
             active_inputs: std::collections::HashMap::new(),
@@ -1007,7 +1029,8 @@ impl Funcdata {
     /// Translation notes, each a deliberate reduction of Ghidra's general form:
     /// * `extra` (offset from the symbol entry's start) is always 0 here because the synthesized
     ///   query entry sits exactly at `rampoint` — the INT_ADD arm (funcdata.cc:420) is therefore
-    ///   unreachable and not ported until a real global symbol table exists.
+    ///   unreachable for these entries. Interior references require global input declarations
+    ///   to be bound before pointer recovery and queried here.
     /// * Ghidra's COPY special case REUSES the copy op as the final op of the calculation
     ///   (funcdata.cc:375-388, via `insertInput`); mosura takes the general insert-before path
     ///   for COPY too — the leftover `COPY(ptrsub_out)` collapses to the identical graph via
@@ -1023,6 +1046,16 @@ impl Funcdata {
         ram: SpaceId,
     ) {
         let sz = self.spaces.get(ram).addr_size;
+        // Keep the synthesized query entry that is already the premise of this
+        // transform. Direct accesses must link to this very same global Symbol,
+        // including accesses wider than its unknown-byte type.
+        let addr = Address::new(ram, self.spaces.get(ram).wrap_offset(rampoint));
+        if self.global_scope.find_container(addr, 1).is_none() {
+            let ty = super::types::Datatype::Unknown(1);
+            let name = super::varmap::build_internal_variable_name(&self.spaces, ram, addr.offset, &ty);
+            self.global_scope.add_symbol_cat(name, ty, addr, 1, super::scope::category::NO_CATEGORY,
+                flags::MAPPED | flags::ADDRTIED | flags::PERSIST);
+        }
         let sb_type = super::types::Datatype::Pointer(
             sz,
             Box::new(super::types::Datatype::Spacebase(ram)),

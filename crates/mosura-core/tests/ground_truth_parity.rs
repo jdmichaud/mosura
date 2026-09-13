@@ -19,6 +19,340 @@ use mosura_core::decompile::printc::print_c;
 use mosura_core::decompile::space::Address;
 use mosura_core::paths::ground_truth_dir;
 
+#[test]
+fn anonymous_global_types_use_the_cpp_symbol_name_base() {
+    let mut failures = Vec::new();
+    for bits in [32, 64] {
+        let stem = format!("global_partial_result.gcc-x86-{bits}");
+        let truth = parse_truth(&std::fs::read_to_string(ground_truth_dir().join(format!("{stem}.truth"))).unwrap());
+        let mut p = analysis::analyze_file(&ground_truth_dir().join(stem)).unwrap();
+        let entry = truth.funcs.iter().find(|(_, n)| n == "update_slice").unwrap().0;
+        p.knobs.function_outputs.insert(entry, mosura_core::decompile::fspec::RegisterOutput {
+            registers: vec!["AX".into()], datatype: mosura_core::decompile::types::Datatype::Uint(2),
+        });
+        let f = decompile_function(&p, Address::new(p.default_space, entry)).unwrap();
+        let mapping = f.global_scope.entries().min_by_key(|e| e.addr.offset).unwrap();
+        let symbol = f.global_scope.symbol(mapping.symbol);
+        assert_eq!(symbol.datatype, mosura_core::decompile::types::Datatype::Unknown(3));
+        // TypeFactory::getBase has no named three-byte core type. Its symbol
+        // name starts with the space, exactly as the mapped C++ oracle prints it.
+        let expected = format!("Ram{:0width$x}", mapping.addr.offset, width = bits / 4);
+        if symbol.name != expected {
+            failures.push(format!("x86-{bits}: {} != {expected}", symbol.name));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+#[ignore = "requires GCC; run when changing global symbols or partial-value emission"]
+fn partial_global_result_preserves_the_updated_word_and_selected_bytes() {
+    use mosura_core::decompile::{emit::EmitChoices, printc::print_c_recovered};
+    use mosura_core::recompile::{function, groundtruth, insn, passes::GlobalWidths, recovery, tu};
+    let dir = mosura_core::paths::workspace_root().join("build/global-partial-recompile");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut failures = Vec::new();
+    for bits in [32, 64] {
+        let stem = format!("global_partial_result.gcc-x86-{bits}");
+        let truth = parse_truth(&std::fs::read_to_string(ground_truth_dir().join(format!("{stem}.truth"))).unwrap());
+        let mut p = analysis::analyze_file(&ground_truth_dir().join(stem)).unwrap();
+        let entry = truth.funcs.iter().find(|(_, n)| n == "update_slice").unwrap().0;
+        p.knobs.function_outputs.insert(entry, mosura_core::decompile::fspec::RegisterOutput {
+            registers: vec!["AX".into()], datatype: mosura_core::decompile::types::Datatype::Uint(2),
+        });
+        let address = Address::new(p.default_space, entry);
+        let f = decompile_function(&p, address).unwrap();
+        let size = truth.sizes.iter().find(|(a, _)| *a == entry).unwrap().1;
+        let bytes = p.memory.read_window(address, size as usize);
+        let widths = function::global_widths(&f, &p.language_id, &bytes, entry,
+            &GlobalWidths { store_w: Default::default(), read_w: Default::default() }, false);
+        let mut choices = EmitChoices::default();
+        choices.set("global-views", "typed").unwrap();
+        let native = insn::normalize(&p.language_id, &bytes, entry, &insn::NoReloc).unwrap();
+        let recovered = recovery::recover(&f, &native, &choices, &choices, |_| Default::default());
+        let name = format!("update_slice_{bits}");
+        let body = print_c_recovered(&f, &choices, &recovered).replace(&f.name, &name);
+        let (unit, _) = tu::build_tu_with_scope(&body, entry, false, &widths,
+            &Default::default(), &Default::default(), &[], &f.global_scope);
+        let globals: Vec<_> = f.global_scope.entries()
+            .map(|e| (f.global_scope.symbol(e.symbol).name.clone(), e.addr.offset)).collect();
+        let base = globals.iter().map(|(_, a)| *a).min().unwrap();
+        let signature = unit.find(&format!("{name}(")).unwrap();
+        let body_start = unit[..signature].rfind('\n').map_or(0, |i| i + 1);
+        let mut source = groundtruth::prelude_for(groundtruth::Target::Gcc64);
+        source.push_str("\n#include <string.h>\n#include <stdio.h>\nstatic unsigned int memory[4];\n");
+        for line in unit[..body_start].lines() {
+            if let Some((symbol, addr)) = globals.iter().find(|(s, _)| line.ends_with(&format!(" {s};"))) {
+                let ty = line.strip_suffix(&format!(" {symbol};")).unwrap();
+                source.push_str(&format!("#define {symbol} (*({ty} *)((unsigned char *)memory + {}))\n", addr - base));
+            } else { source.push_str(line); source.push('\n'); }
+        }
+        source.push_str(&unit[body_start..]);
+        source.push_str(&format!(r#"
+int main(void) {{
+    unsigned int expected[4], seed=31827, result, trial, i;
+    for (trial=0; trial<257; ++trial) {{
+        for (i=0;i<4;++i) {{ seed=seed*1664525U+1013904223U; memory[i]=seed; }}
+        if (trial==0) memory[0]=0xfffffff0U;
+        memcpy(expected,memory,sizeof memory);
+        expected[0]+=39U;
+        result={name}();
+        if (result!=((expected[0]>>8)&65535U) || memcmp(expected,memory,sizeof memory)) {{
+            printf("{name}: partial result mismatch in trial %u\n",trial); return 1;
+        }}
+    }}
+    return 0;
+}}
+"#));
+        let input = dir.join(format!("{name}.c"));
+        let binary = dir.join(&name);
+        std::fs::write(&input, source).unwrap();
+        let compile = std::process::Command::new("gcc").args(["-O2", "-fno-strict-aliasing", "-fwrapv"])
+            .arg(&input).arg("-o").arg(&binary).output().expect("GCC is required by this opt-in gate");
+        if !compile.status.success() {
+            failures.push(format!("{name}: {}", String::from_utf8_lossy(&compile.stderr)));
+            continue;
+        }
+        let run = std::process::Command::new(binary).output().unwrap();
+        if !run.status.success() { failures.push(String::from_utf8_lossy(&run.stdout).into_owned()); }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+struct MixedGlobalUnit {
+    name: String,
+    bits: u32,
+    entry: u64,
+    reference: String,
+    unit: String,
+    globals: Vec<(String, u64)>,
+    overlap: String,
+    store: bool,
+    interior: bool,
+    base: u64,
+    destination: u64,
+    control: u64,
+}
+
+fn mixed_global_units() -> Vec<MixedGlobalUnit> {
+    use mosura_core::decompile::{OpCode, merge::high_type_read_facing, types::Datatype};
+    use mosura_core::recompile::{function, passes::GlobalWidths, tu};
+    let mut cases = Vec::new();
+    for bits in [32, 64] {
+        let stem = format!("mixed_global_views.gcc-x86-{bits}");
+        let truth = parse_truth(&std::fs::read_to_string(ground_truth_dir().join(format!("{stem}.truth"))).unwrap());
+        let p = analysis::analyze_file(&ground_truth_dir().join(stem)).unwrap();
+        for &(entry, ref function) in &truth.funcs {
+            if function == "_start" { continue; }
+            let store = matches!(function.as_str(), "store_mixed" | "store_register");
+            let interior = function == "copy_interior";
+            let address = Address::new(p.default_space, entry);
+            let f = decompile_function(&p, address).unwrap();
+            let ram = f.spaces.by_name("ram").unwrap();
+            let symbol = |addr, ty: &Datatype| {
+                mosura_core::decompile::varmap::build_internal_variable_name(&f.spaces, ram, addr, ty)
+            };
+            let mut bases = BTreeSet::new();
+            for op in f.op_ids().filter(|&id| !f.op(id).is_dead()) {
+                let o = f.op(op);
+                if o.code() != OpCode::Ptrsub { continue; }
+                let base = f.vn(o.input(0).unwrap());
+                if !base.is_constant() || !base.is_spacebase() { continue; }
+                let ty = high_type_read_facing(&f, o.output.unwrap());
+                assert_eq!(ty.ptr_to().unwrap().size(), 1, "the indexed view uses byte offsets");
+                bases.insert(f.vn(o.input(1).unwrap()).constant_value());
+            }
+            let bases: Vec<_> = bases.into_iter().collect();
+            assert_eq!(bases.len(), 2, "the source-built loop has two indexed bases");
+            let globals: BTreeSet<_> = f.global_scope.entries().map(|e|
+                (f.global_scope.symbol(e.symbol).name.clone(), e.addr.offset)).collect();
+            let mut direct = BTreeSet::new();
+            for v in (0..f.num_varnodes()).map(|i| mosura_core::decompile::varnode::VarnodeId(i as u32)) {
+                let vn = f.vn(v);
+                if vn.loc.space != ram || vn.is_free() { continue; }
+                assert!(vn.size == 4 || (interior && vn.size == 2),
+                    "overlapping word inputs may be split into halfwords: {}", vn.size);
+                direct.insert(vn.loc.offset);
+            }
+            let overlap = bases[usize::from(store)];
+            assert!(direct.contains(&overlap), "the indexed base also has a direct word access");
+            let controls: Vec<_> = direct.into_iter().filter(|&a| a >= bases[1] + 20).collect();
+            assert_eq!(controls.len(), if interior { 2 } else { 1 });
+            let size = truth.sizes.iter().find(|(a, _)| *a == entry).unwrap().1;
+            let bytes = p.memory.read_window(address, size as usize);
+            let widths = function::global_widths(&f, &p.language_id, &bytes, entry,
+                &GlobalWidths { store_w: Default::default(), read_w: Default::default() }, false);
+            let name = format!("{function}_{bits}");
+            let reference = print_c(&f).replace(&f.name, &name);
+            let mut choices = mosura_core::decompile::emit::EmitChoices::default();
+            choices.set("global-views", "typed").unwrap();
+            let insns = mosura_core::recompile::insn::normalize(&p.language_id, &bytes, entry,
+                &mosura_core::recompile::insn::NoReloc).unwrap();
+            let recovered = mosura_core::recompile::recovery::recover(&f, &insns, &choices, &choices,
+                |_| Default::default());
+            let emitted = mosura_core::decompile::printc::print_c_recovered(&f, &choices, &recovered)
+                .replace(&f.name, &name);
+            let mut disabled = recovered.clone();
+            disabled.switch_off("global_views").unwrap();
+            assert_eq!(mosura_core::decompile::printc::print_c_recovered(&f, &choices, &disabled)
+                .replace(&f.name, &name), reference, "disabling the arm retains the reference symbols");
+            let unwitnessed = mosura_core::recompile::recovery::recover(&f, &[], &choices, &choices,
+                |_| Default::default());
+            assert!(unwitnessed.global_views.sites.is_empty());
+            assert_eq!(mosura_core::decompile::printc::print_c_recovered(&f, &choices, &unwitnessed)
+                .replace(&f.name, &name), reference, "missing native evidence retains the reference");
+            if matches!(function.as_str(), "store_register" | "read_register") {
+                let mut displaced = insns.clone();
+                for insn in &mut displaced { insn.addr += 0x1000_0000; }
+                let wrong_site = mosura_core::recompile::recovery::recover(&f, &displaced, &choices,
+                    &choices, |_| Default::default());
+                assert_eq!(mosura_core::decompile::printc::print_c_recovered(&f, &choices, &wrong_site)
+                    .replace(&f.name, &name), reference, "resolved storage requires the original instruction site");
+            }
+            let (unit, _) = tu::build_tu_with_scope(&emitted, entry, false, &widths,
+                &Default::default(), &Default::default(), &[], &f.global_scope);
+            cases.push(MixedGlobalUnit {
+                name, bits, entry, reference, unit, globals: globals.into_iter().collect(),
+                overlap: symbol(overlap, &Datatype::Unknown(1)), store, interior, base: bases[0],
+                destination: bases[1], control: controls[0],
+            });
+        }
+    }
+    cases
+}
+
+#[test]
+fn mixed_global_views_keep_the_base_and_overlapping_word() {
+    let mut failures = Vec::new();
+    for case in mixed_global_units() {
+        // The mapped C++ oracle prints the direct word as an overlapping symbol,
+        // while the byte pointer still refers to the ordinary base symbol.
+        let occurrence = if case.interior { format!(",_{});", case.overlap) }
+            else if case.store { format!("_{} =", case.overlap) }
+            else { format!(" = _{};", case.overlap) };
+        if !case.reference.contains(&occurrence)
+            || !case.reference.contains(&format!("&{} +", case.overlap)) {
+            failures.push(format!("{}: missing shared symbol views\n{}", case.name, case.reference));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+fn mixed_global_symbols_resolve_to_their_storage() {
+    let mut failures = Vec::new();
+    for case in mixed_global_units() {
+        if case.interior {
+            // The C++ oracle names the split halfword at its actual location;
+            // an obsolete full-word arena slot must not create an overlapping symbol.
+            let expected = format!("xRam{:0width$x}", case.base + 2, width = case.bits as usize / 4);
+            assert!(case.reference.contains(&expected), "{}\n{}", case.name, case.reference);
+        }
+        for (name, address) in &case.globals {
+            let resolved = mosura_core::recompile::verify::emitted_symbol_address(name);
+            if resolved != Some(*address) {
+                failures.push(format!("{}: {name} at {address:#x} resolved to {resolved:x?}\n{}",
+                    case.name, case.reference));
+            }
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+#[ignore = "requires GCC; run when changing global symbols or emitted memory views"]
+fn mixed_global_emission_preserves_word_and_byte_accesses() {
+    let dir = mosura_core::paths::workspace_root().join("build/mixed-global-recompile");
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut failures = Vec::new();
+    for case in mixed_global_units() {
+        let mut source = String::from("#include <stdint.h>\n#include <string.h>\n#include <stdio.h>\ntypedef int32_t int4; typedef int64_t int8; typedef uint32_t xunknown4; typedef uint16_t xunknown2; typedef uint32_t uint4;\nstatic uint32_t memory[64];\n");
+        source.push_str(mosura_core::recompile::tu::PRELUDE.lines()
+            .find(|line| line.starts_with("#define CONCAT22(")).unwrap());
+        source.push('\n');
+        let body_start = case.unit.find(&format!("void {}(", case.name)).unwrap();
+        for line in case.unit[..body_start].lines() {
+            if let Some((symbol, addr)) = case.globals.iter().find(|(s, _)| line.ends_with(&format!(" {s};"))) {
+                let ty = line.strip_suffix(&format!(" {symbol};")).unwrap();
+                // Bind physical storage using the actual emitted declaration type.
+                // Keep the function body, including every access and cast, unchanged.
+                source.push_str(&format!("#define {symbol} (*({ty} *)((unsigned char *)memory + {}))\n", addr - case.base));
+            } else {
+                source.push_str(line);
+                source.push('\n');
+            }
+        }
+        source.push_str(&case.unit[body_start..]);
+        let direct_effect = if case.interior {
+            format!("memcpy((unsigned char *)expected+{},expected,4); memcpy((unsigned char *)expected+{},(unsigned char *)expected+2,4);",
+                case.control-case.base, case.control-case.base+4)
+        } else if case.store {
+            format!("expected[{}] = ~expected[{}];", (case.destination-case.base)/4, (case.control-case.base)/4)
+        } else {
+            format!("memcpy((unsigned char *)expected+{},expected,4);", case.control-case.base)
+        };
+        source.push_str(&format!(r#"
+int main(void) {{
+    uint32_t expected[64], seed=31827; unsigned trial, i;
+    for (trial=0; trial<257; ++trial) {{
+        for (i=0;i<64;++i) {{ seed=seed*1664525U+1013904223U; memory[i]=seed; }}
+        if (trial==0) {{ memory[0]=3;memory[1]=7;memory[2]=11;memory[3]=19;memory[4]=31; }}
+        memcpy(expected,memory,sizeof memory);
+        memcpy((unsigned char *)expected+{destination},expected,20);
+        {direct_effect}
+        {name}();
+        if (memcmp(expected,memory,sizeof memory)) {{
+            printf("{name}: mixed access mismatch in trial %u\n",trial); return 1;
+        }}
+    }}
+    return 0;
+}}
+"#, destination=case.destination-case.base, name=case.name));
+        let input = dir.join(format!("{}.c", case.name));
+        let binary = dir.join(&case.name);
+        std::fs::write(&input, source).unwrap();
+        let compile = std::process::Command::new("gcc").args(["-O2", "-fno-strict-aliasing"])
+            .arg(input).arg("-o").arg(&binary).output().expect("GCC is required by this opt-in gate");
+        assert!(compile.status.success(), "{}", String::from_utf8_lossy(&compile.stderr));
+        let run = std::process::Command::new(binary).output().unwrap();
+        if !run.status.success() {
+            failures.push(String::from_utf8_lossy(&run.stdout).into_owned());
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
+#[ignore = "requires GCC; run when changing global symbols or relocation binding"]
+fn mixed_global_objects_relocate_to_the_declared_storage() {
+    use mosura_core::recompile::{candidate::load_object_function, tu, verify::emitted_symbol_address};
+    let dir = mosura_core::paths::workspace_root().join("build/mixed-global-relocations");
+    std::fs::create_dir_all(&dir).unwrap();
+    for case in mixed_global_units() {
+        // The pointer width is the original program's. Compile the actual TU, then
+        // resolve its object through the production relocation path and a storage-map
+        // oracle independently of the generated symbol spelling.
+        let source = dir.join(format!("{}.c", case.name));
+        let object = dir.join(format!("{}.o", case.name));
+        let prelude = format!("typedef int int4; typedef long long int8; typedef unsigned int xunknown4; typedef unsigned short xunknown2; typedef unsigned int uint4;\n{}\n",
+            tu::PRELUDE.lines().find(|line| line.starts_with("#define CONCAT22(")).unwrap());
+        std::fs::write(&source, prelude + &case.unit).unwrap();
+        let compile = std::process::Command::new("gcc")
+            .args([format!("-m{}", case.bits), "-O2".into(), "-fno-strict-aliasing".into(),
+                "-ffreestanding".into(), "-fno-pie".into(), "-fno-pic".into(), "-c".into()])
+            .arg(&source).arg("-o").arg(&object).output().expect("GCC is required by this opt-in gate");
+        assert!(compile.status.success(), "{}", String::from_utf8_lossy(&compile.stderr));
+        let bytes = std::fs::read(object).unwrap();
+        let actual = load_object_function(&bytes, &case.name, case.entry, &emitted_symbol_address).unwrap();
+        let storage = |name: &str| case.globals.iter().find(|(s, _)| s == name).map(|(_, a)| *a);
+        let expected = load_object_function(&bytes, &case.name, case.entry, &storage).unwrap();
+        assert!(expected.unresolved.is_empty(), "{}: {:?}", case.name, expected.unresolved);
+        assert!(!expected.fixups.is_empty(), "the object must exercise global relocations");
+        assert!(actual.unresolved.is_empty(), "{}: {:?}", case.name, actual.unresolved);
+        assert_eq!(actual.relinked_bytes(), expected.relinked_bytes(), "{}: wrong global relocation", case.name);
+    }
+}
+
 /// The mapped C++ oracle declares the address-only globals as xunknown1.
 /// Its pointer arithmetic is byte-based even though each access reads a word.
 /// Return the actual synthesized units so both gates exercise that same boundary.

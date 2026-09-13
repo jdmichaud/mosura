@@ -16,7 +16,7 @@ use crate::recompile::function::{self, Extent, Metrics, OwnContract};
 use crate::recompile::manifest::{self, ManifestRow, Status};
 use crate::recompile::passes::{Entries, GlobalWidths, ParamOrders, Worlds};
 use crate::recompile::pragma::{self, ContractTable, WatcomRegs};
-use crate::recompile::tu::{aggregate_ram_globals, build_tu, contract_violations_of, with_watcom_contract};
+use crate::recompile::tu::{aggregate_ram_globals, contract_violations_of, with_watcom_contract};
 use crate::recompile::upgrade::{upgrade, UpgradeCaches, UpgradeCtx};
 use crate::switches::{Knobs, Switch};
 
@@ -68,6 +68,7 @@ pub fn render_recovered(f: &Funcdata, inp: &RenderInputs<'_>) -> String {
     });
     let recovered = {
         let mut r = recovered;
+        r.global_views.volatile = crate::recompile::buildconfig::volatile_globals_from_evidence(&insns);
         for a in inp.arms_off {
             r.switch_off(a).expect("--arms-off names were checked at startup");
         }
@@ -99,7 +100,7 @@ pub fn render_recovered(f: &Funcdata, inp: &RenderInputs<'_>) -> String {
             crate::debug!(crate::debug::Topic::Survey, "agg {name}: {d}");
         }
     }
-    let (rtu, _) = build_tu(&rc, inp.va, false, inp.gsizes, &volatiles, &vararg_callees, &aggregates);
+    let (rtu, _) = crate::recompile::tu::build_tu_with_scope(&rc, inp.va, false, inp.gsizes, &volatiles, &vararg_callees, &aggregates, &f.global_scope);
     let rtu = with_watcom_contract(name, f, inp.regs, inp.contract, rtu);
     // The permuted argument order is value-identical only under its pragma — the two
     // are one decision, emitted together (see call_arg_orders above).
@@ -261,7 +262,7 @@ impl EmitState {
         let mut arm_tus: Vec<String> = Vec::new();
         for theta in self.opts.arms.iter().skip(1) {
             let ac = print_c_with(&f, theta);
-            let (atu, _) = build_tu(&ac, va, false, &gsizes, &Default::default(), &Default::default(), &[]);
+            let (atu, _) = crate::recompile::tu::build_tu_with_scope(&ac, va, false, &gsizes, &Default::default(), &Default::default(), &[], &f.global_scope);
             arm_tus.push(with_watcom_contract(name, &f, &self.facts.regs, contract.as_deref(), atu));
         }
         // RECOVERED emission: the field path — per-site choices decided from evidence in the
@@ -315,7 +316,7 @@ impl EmitState {
             None
         };
         // The reference unit and the decompiler-artifact smells.
-        let (tu, mut smells) = build_tu(&reference_c, va, false, &gsizes, &Default::default(), &Default::default(), &[]);
+        let (tu, mut smells) = crate::recompile::tu::build_tu_with_scope(&reference_c, va, false, &gsizes, &Default::default(), &Default::default(), &[], &f.global_scope);
         let reference_tu = with_watcom_contract(name, &f, &self.facts.regs, contract.as_deref(), tu);
         if metrics.thunk {
             smells.push("thunk".into());

@@ -428,6 +428,24 @@ pub fn compilable_partial_symbols(c: &str) -> String {
 /// standalone translation unit, synthesize those declarations + the typedef prelude, and return
 /// the full TU text plus a list of decompiler-artifact "smell" tags.
 pub fn build_tu(
+    c: &str, self_va: u64, non_contig: bool, gsizes: &HashMap<u64, u32>,
+    volatiles: &HashSet<u64>, vararg_callees: &HashMap<u64, String>,
+    aggregates: &[(String, String)],
+) -> (String, Vec<String>) {
+    build_tu_inner(c, self_va, non_contig, gsizes, volatiles, vararg_callees, aggregates, None)
+}
+
+/// Synthesize declarations from the same global Symbols used by the printer.
+/// The text-only entry point remains available for callers without symbol facts.
+pub fn build_tu_with_scope(
+    c: &str, self_va: u64, non_contig: bool, gsizes: &HashMap<u64, u32>,
+    volatiles: &HashSet<u64>, vararg_callees: &HashMap<u64, String>,
+    aggregates: &[(String, String)], scope: &crate::decompile::scope::Scope,
+) -> (String, Vec<String>) {
+    build_tu_inner(c, self_va, non_contig, gsizes, volatiles, vararg_callees, aggregates, Some(scope))
+}
+
+fn build_tu_inner(
     c: &str,
     self_va: u64,
     non_contig: bool,
@@ -449,6 +467,7 @@ pub fn build_tu(
     // kept out of the pointer/scalar classification; empty for every rendering but the
     // recovered one.
     aggregates: &[(String, String)],
+    scope: Option<&crate::decompile::scope::Scope>,
 ) -> (String, Vec<String>) {
     // Make the faithful partial-symbol accessors compilable BEFORE the identifier scan, so the
     // base of each accessor is still seen and declared (it appears as `&base`, which is not a
@@ -653,6 +672,24 @@ pub fn build_tu(
         };
         names.insert(format!("{ty}{n};"));
     }
+    if let Some(scope) = scope {
+        let used: HashSet<&str> = c.split(|ch: char| !is_ident(ch as u8)).collect();
+        for entry in scope.entries() {
+            let sym = scope.symbol(entry.symbol);
+            if agg_names.contains(sym.name.as_str()) || declared_locals.contains(sym.name.as_str()) { continue; }
+            if used.contains(sym.name.as_str()) {
+                names.retain(|d| !d.split(|ch: char| !is_ident(ch as u8)).any(|n| n == sym.name));
+                names.insert(global_declaration(&sym.datatype, &sym.name, volatiles.contains(&entry.addr.offset)));
+            }
+            let mismatch = format!("_{}", sym.name);
+            if used.contains(mismatch.as_str()) {
+                // A mismatch name carries no width in C. Declaring it as an
+                // independent object would silently break the storage binding.
+                names.retain(|d| !d.split(|ch: char| !is_ident(ch as u8)).any(|n| n == mismatch));
+                names.insert("#error overlapping global access requires global-views=typed".into());
+            }
+        }
+    }
     for d in names {
         decls.push_str(&d);
         decls.push('\n');
@@ -670,6 +707,24 @@ pub fn build_tu(
     // carry only the synthesized declarations + the decompiled body.
     let tu = format!("{decls}\n{c}");
     (tu, smells.into_iter().collect())
+}
+
+fn global_declaration(ty: &crate::decompile::types::Datatype, name: &str, volatile: bool) -> String {
+    use crate::decompile::types::Datatype;
+    match ty {
+        Datatype::Array(element, count) => global_declaration(element, &format!("{name}[{count}]"), volatile),
+        Datatype::Pointer(_, pointee) => {
+            let qualifier = if volatile { "volatile " } else { "" };
+            let name = if matches!(**pointee, Datatype::Array(..)) { format!("(*{qualifier}{name})") }
+                else { format!("*{qualifier}{name}") };
+            global_declaration(pointee, &name, false)
+        }
+        _ => {
+            let qualifier = if volatile { "volatile " } else { "" };
+            let ty = if matches!(ty, Datatype::Unknown(1)) { "unsigned char".into() } else { ty.name() };
+            format!("{qualifier}{ty} {name};")
+        }
+    }
 }
 
 /// Whether the body does pointer arithmetic on `n` — printc spaces every binary operator, so the
@@ -969,9 +1024,10 @@ pub fn ctype_for(prefix: char) -> &'static str {
 }
 
 /// The RAM address a `<prefix>Ram<hex>` identifier names, if it is one.
+/// An unnamed primitive has an empty prefix (`Datatype::printNameBase`).
 pub fn ram_addr_of(name: &str) -> Option<u64> {
     let pos = name.find("Ram")?;
-    if !(1..=2).contains(&pos) {
+    if pos > 2 {
         return None;
     }
     let tail = &name[pos + 3..];
@@ -1210,7 +1266,7 @@ int *puRam000a82a0;
         assert_eq!(sized_ctype('d', 8), Some("double".into()));
         assert_eq!(ctype_for('p'), "void *");
         assert_eq!(ram_addr_of("iRam000a8288"), Some(0xa8288));
-        assert_eq!(ram_addr_of("Ram000a8288"), None, "the prefix is one or two letters");
+        assert_eq!(ram_addr_of("Ram000a8288"), Some(0xa8288), "unnamed primitive types have no prefix");
         assert_eq!(ram_addr_of("iRam00a8"), None, "at least eight hex digits");
         assert!(is_ident_start("_x1") && !is_ident_start("1x") && !is_ident_start("a-b"));
     }

@@ -792,7 +792,7 @@ impl<'a> PrintC<'a> {
         size: u32, out_type: &Datatype, allow_cast: bool) -> String
     {
         loop {
-            if off == 0 && size == ty.size() { return text; }
+            if off == 0 && (size == 0 || size == ty.size()) { return text; }
             if let Some((base, field, residual)) = ty.find_truncation(off, size) {
                 text.push_str(&format!(".field_0x{base:x}"));
                 ty = field;
@@ -812,13 +812,43 @@ impl<'a> PrintC<'a> {
             if allow_cast && is_subpiece_cast(out_type, &ty, off) {
                 return format!("({}){text}", out_type.name());
             }
+            let size = if size == 0 { ty.size() - off as u32 } else { size };
             return format!("{text}._{off}_{size}_");
         }
+    }
+
+    /// Funcdata::linkSymbol queries the first byte of a persistent HighVariable's
+    /// name representative. PrintLanguage::pushSymbolDetail then distinguishes a
+    /// whole symbol, a partial symbol, and an access wider than the mapped symbol.
+    fn global_symbol(&mut self, v: VarnodeId, allow_cast: bool) -> Option<String> {
+        let vn = self.f.vn(v);
+        let size = vn.size;
+        let ram = self.ram_space?;
+        let addr = if vn.loc.space == ram { vn.loc }
+            else { Address::new(ram, *self.high_ram_off.get(&self.h.high(v))?) };
+        let entry = self.f.global_scope.find_container(addr, 1)?;
+        let sym = self.f.global_scope.symbol(entry.symbol).clone();
+        let off = addr.offset - entry.addr.offset + u64::from(entry.offset);
+        if let Some((text, _)) = arms::render_value(self,
+            ValueSite::GlobalSymbol { v, address: addr, symbol: &sym, offset: off }) {
+            return Some(text);
+        }
+        if off + u64::from(size) <= u64::from(sym.datatype.size()) {
+            return Some(self.partial_composite(sym.name.clone(), sym.datatype.clone(), off,
+                size, &self.type_of(v), allow_cast));
+        }
+        // PrintC::pushMismatchSymbol (printc.cc:2067). An underscore marks an
+        // exact-address overlap; an interior mismatch uses the unnamed location.
+        Some(if off == 0 { format!("_{}", sym.name) } else {
+            let space = self.f.spaces.get(addr.space);
+            format!("{}0x{:0width$x}", space.name, addr.offset, width = 2 * space.addr_size as usize)
+        })
     }
 
     /// [`Self::name_of`] for an assignment target: a partial symbol renders without the cast form,
     /// as Ghidra's plain variable-occurrence path does (`allowCast=false`, printc.cc:1886).
     pub(crate) fn lvalue_of(&mut self, v: VarnodeId) -> String {
+        if let Some(s) = self.global_symbol(v, false) { return s; }
         self.partial_symbol(v, false).unwrap_or_else(|| self.name_of(v))
     }
 
@@ -867,6 +897,7 @@ impl<'a> PrintC<'a> {
         // starts at the group's own offset (`CastStrategyC::isSubpieceCast`, cast.cc:411, which
         // accepts offset 0 only), and as the artificial field `._<off>_<size>_` otherwise. Returning
         // here also keeps the piece out of `decls`: the group is one declared variable, not three.
+        if let Some(s) = self.global_symbol(v, true) { return s; }
         if let Some(s) = self.partial_symbol(v, true) {
             return s;
         }
@@ -1758,6 +1789,20 @@ impl<'a> PrintC<'a> {
                 .and_then(|t| t.ptr_to().cloned())
                 .unwrap_or(Datatype::Unknown(1));
             let addr = self.f.spaces.get(ram).wrap_offset(off);
+            if let Some(entry) = self.f.global_scope.find_container(Address::new(ram, addr), 1) {
+                let sym = self.f.global_scope.symbol(entry.symbol);
+                let offset = addr - entry.addr.offset + u64::from(entry.offset);
+                // PrintC::opPtrsub's TYPE_SPACEBASE arm: a reference at the
+                // symbol's start uses its name; an interior reference has sz=0.
+                // Arrays decay to their first element and code decays to a pointer.
+                let name = self.partial_composite(sym.name.clone(), sym.datatype.clone(), offset,
+                    0, &pointee, false);
+                return match sym.datatype {
+                    Datatype::Array(..) => if deref { format!("{name}[0]") } else { name },
+                    Datatype::Code => name,
+                    _ => if deref { name } else { format!("&{name}") },
+                };
+            }
             let name = super::varmap::build_internal_variable_name(&self.f.spaces, ram, addr, &pointee);
             return if deref { name } else { format!("&{name}") };
         }
@@ -5442,6 +5487,9 @@ fn print_c_inner(
         super::action::perf::record("print", "emit", t0.elapsed());
     }
     let mut out = String::new();
+    if f.global_symbol_overlap {
+        out.push_str("/* WARNING: Globals starting with '_' overlap smaller symbols at the same address */\n\n");
+    }
     // The declarations family's fourth seam (emit/arms/mod.rs `signature`), consulted exactly
     // once: struct-return answers a preamble (struct declarations printed before the definition),
     // the struct return type and the hidden parameter dropped from the list.

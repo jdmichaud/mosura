@@ -5,6 +5,10 @@ for narrow consumers of genuine wide arithmetic. It uses the existing value seam
 native p-code witnesses and remains off in the reference printer. Its source fixtures, primitive
 contracts and round evidence are recorded in that document.
 
+The [`global-views=typed` arm](global-symbol-views.md) preserves the width and type of partial or
+overlapping accesses through their linked global storage. Native memory operands witness each
+access range; the reference printer retains Ghidra's symbol and mismatch notation.
+
 ## Where the functions were
 
 The divergence census (`divergence-classes.md`) counts rows, and rows are dominated by big

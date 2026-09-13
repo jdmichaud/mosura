@@ -213,6 +213,7 @@ pub struct EmitChoices {
     pub cond_form: CondForm,
     pub ext_cast: ExtCast,
     pub wide_int: WideInt,
+    pub global_views: GlobalViews,
     pub swi: SwiForm,
     pub arm_order: ArmOrder,
     pub struct_locals: StructLocals,
@@ -235,6 +236,11 @@ pub struct EmitChoices {
 /// the output compiler selects and implements them, without changing analysis.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WideInt { Ghidra, Split32 }
+
+/// Render partial/overlapping global accesses as reference symbols or typed
+/// lvalues sharing the original symbol's address-backed storage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GlobalViews { Ghidra, Typed }
 
 /// How an integer extension (INT_ZEXT/INT_SEXT) that C's promotion would perform anyway is
 /// rendered. `Ghidra` is `PrintC::opIntZext/opIntSext` with `isExtensionCastImplied` — the
@@ -466,6 +472,7 @@ impl Default for EmitChoices {
             cond_form: CondForm::Collapsed,
             ext_cast: ExtCast::Ghidra,
             wide_int: WideInt::Ghidra,
+            global_views: GlobalViews::Ghidra,
             swi: SwiForm::Ghidra,
             arm_order: ArmOrder::Ghidra,
             struct_locals: StructLocals::Ghidra,
@@ -535,6 +542,11 @@ impl EmitChoices {
             name: "wide-int",
             values: &["ghidra", "split32"],
             doc: "represent narrow consumers of wide arithmetic with word-sized primitives",
+        },
+        Axis {
+            name: "global-views",
+            values: &["ghidra", "typed"],
+            doc: "represent overlapping global accesses as typed views of the same storage",
         },
         Axis {
             name: "ext-cast",
@@ -667,6 +679,10 @@ impl EmitChoices {
                 WideInt::Ghidra => "ghidra",
                 WideInt::Split32 => "split32",
             }),
+            "global-views" => Some(match self.global_views {
+                GlobalViews::Ghidra => "ghidra",
+                GlobalViews::Typed => "typed",
+            }),
             "ext-cast" => Some(match self.ext_cast {
                 ExtCast::Ghidra => "ghidra",
                 ExtCast::HideWide => "hide-wide",
@@ -784,6 +800,13 @@ impl EmitChoices {
                 self.wide_int = match value {
                     "ghidra" => WideInt::Ghidra,
                     "split32" => WideInt::Split32,
+                    _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
+                }
+            }
+            "global-views" => {
+                self.global_views = match value {
+                    "ghidra" => GlobalViews::Ghidra,
+                    "typed" => GlobalViews::Typed,
                     _ => return Err(ChoiceError::Value { axis: axis.to_string(), value: value.to_string() }),
                 }
             }
