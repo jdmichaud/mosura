@@ -1,6 +1,6 @@
 # Bob's issue tracker
 
-Updated 2026-09-12. Owner: Alice. Completed work is on `master`; activity stopped at the owner's request.
+Updated 2026-09-13. Owner: Alice. Working branch: `fix/global-symbol-views-resumed`.
 
 The untracked `BOB_TASK.md` checklist lives in the repository's parent directory.
 Its markers are `[ ]` queued/triage,
@@ -112,7 +112,7 @@ explicit incoming inputs. A separate formatting helper receives its declared inp
 This is validation of `e482d6a8`/`f4a4e7cd`, not a new production change. The input scope is
 closed; custom compiler lowering and unrelated output/platform contracts remain open.
 
-## Paused package: overlapping global views
+## Active package: overlapping global views
 
 Related report: **#4**. Preserve one address-backed object across direct accesses and
 pointer views with different types or widths. The address-only declaration correction
@@ -130,7 +130,7 @@ consistent view conversions.
   changes only file-scope declarations to bind physical storage; the complete body is
   appended unchanged. This detects incorrect access widths/strides, not shared allocation
   across independently linked translation units.
-- [ ] Complete global symbol/type facts and emitted views using Ghidra's symbol linking and overlap handling.
+- [>] Complete global symbol/type facts and emitted views using Ghidra's symbol linking and overlap handling.
 - [ ] Validate shared memory effects and the relevant reported consumers, then run package gates.
 
 The unfinished implementation and its regression gates are saved in stash commit
@@ -149,14 +149,27 @@ execution cases; disabling the arm or removing native evidence retained referenc
 An earlier focused core run passed 963/963 tests with six ignored, including IR parity and
 disassembly. Neither measurement is a validation of the final saved tree or of `master`.
 
-Resume by validating the latest `opPtrsub` size-zero/array/code rendering against the pinned
-C++ oracle and completing its consumers. In particular, `coverVarnodes` creates interior names
-with a decimal offset suffix, but `emitted_symbol_address` currently ignores that suffix and
-`tu::ram_addr_of` rejects it. Establish a source-built failing relocation gate before correcting
-that binding. The current execution reduction binds physical aliases explicitly; cross-function
-storage and relocation effects still need validation. Full workspace, emit-arm oracle and corpus
-rounds with all eight gates and a stable repeat remain required before landing this package.
+Complete the symbol consumers and validate shared storage. The execution reduction binds physical
+aliases explicitly; cross-function storage still needs validation. Full workspace, emit-arm oracle
+and corpus rounds with all eight gates and a stable repeat remain required before landing this package.
 The release build underway at the stop request was interrupted; no successful exit was recorded.
+Work resumed from the saved implementation on 2026-09-13, keeping the checklist outside Git.
+The former temporary validation files and sessions are absent; recreate the required measurements.
+
+The resumed four-body regression passes both tests, including 1028 emitted-C executions.
+An expanded source probe then reads two partially overlapping words. Its build yields four
+reachable functions per architecture. The mapped C++ oracle splits the reads into halfwords,
+each named at its own storage address. The saved port instead included detached obsolete
+full-word arena slots, creating a spurious interior symbol and resolving it to the wrong address.
+The source/storage regression fails on both architectures before correction.
+
+This retracts the assumption that changing the name parser was the next fix for that example.
+`clearDeadVarnodes` was missing at the dead-code and input-prototype boundaries. Its port records
+destroyed arena slots and excludes them from bank iteration, while preserving locked inputs.
+All four expanded regression tests now pass: six bodies, 1542 executions, arm-off/evidence controls
+and actual object relocations checked against the storage map. The focused core run exits zero:
+964 tests pass, seven ignored, including IR parity 9/9 and disassembly 1/1. These measurements
+cover the current uncommitted package; complete package and corpus validation is still pending.
 
 The separate tooling correction preserves explicitly supplied CLI options even when
 their value equals the registry default. Its source-built integration regression failed
