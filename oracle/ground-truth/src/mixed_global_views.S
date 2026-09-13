@@ -12,6 +12,9 @@
  * copy_interior also reads an overlapping word two bytes into source. Keep its
  * base-word read and byte-indexed view: together they require a distinct symbol
  * for the interior access, whose relocation must retain the two-byte offset.
+ * store_register holds the final destination address in a register. The native
+ * store still writes four bytes, even though it has no absolute memory operand.
+ * read_register supplies the corresponding register-held source read.
  * No incoming register value or returned value is part of these protocols.
  */
 #if defined(__x86_64__)
@@ -20,12 +23,14 @@
 #define CURSOR %edi
 #endif
 .text
-.globl _start, copy_mixed, store_mixed, copy_interior
+.globl _start, copy_mixed, store_mixed, copy_interior, store_register, read_register
 .type _start,@function
 _start:
     call copy_mixed
     call store_mixed
     call copy_interior
+    call store_register
+    call read_register
     ret
 .size _start,.-_start
 
@@ -73,6 +78,45 @@ copy_interior:
     loop 3b
     ret
 .size copy_interior,.-copy_interior
+
+.type store_register,@function
+store_register:
+    xorl %edi,%edi
+    movl $5,%ecx
+4:
+    movl source(CURSOR),%eax
+    movl %eax,destination(CURSOR)
+    add $4,CURSOR
+    loop 4b
+    movl $destination,%ebx
+    movl control,%eax
+    notl %eax
+#if defined(__x86_64__)
+    movl %eax,(%rbx)
+#else
+    movl %eax,(%ebx)
+#endif
+    ret
+.size store_register,.-store_register
+
+.type read_register,@function
+read_register:
+    movl $source,%ebx
+#if defined(__x86_64__)
+    movl (%rbx),%eax
+#else
+    movl (%ebx),%eax
+#endif
+    movl %eax,control
+    xorl %edi,%edi
+    movl $5,%ecx
+5:
+    movl source(CURSOR),%eax
+    movl %eax,destination(CURSOR)
+    add $4,CURSOR
+    loop 5b
+    ret
+.size read_register,.-read_register
 
 .data
 .balign 4

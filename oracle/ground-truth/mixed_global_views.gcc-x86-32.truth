@@ -2,7 +2,9 @@
 # derived-from=mixed_global_views.gcc-x86-32.unstripped via=nm+objdump (build artifact, NOT Ghidra)
 compiler gcc
 entry 08049000
-func 08049000 00000010 _start code
-func 08049010 00000023 copy_mixed code
-func 08049033 00000025 store_mixed code
-func 08049058 0000002d copy_interior code
+func 08049000 0000001a _start code
+func 0804901a 00000023 copy_mixed code
+func 0804903d 00000025 store_mixed code
+func 08049062 0000002d copy_interior code
+func 0804908f 00000027 store_register code
+func 080490b6 00000025 read_register code
