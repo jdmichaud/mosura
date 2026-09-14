@@ -11,6 +11,36 @@ metadata:
 Moved out of MEMORY.md 2026-08-06 (the index is a hook list; this is its detail). Every number
 here is STALE unless @sha==HEAD — see [[numbers-stale-unless-sha-stamped]].
 
+## Live status — `master` (2026-09-14): reference execution LANDED (the vpoolz issues doc, entries 1-5)
+
+The consumer's `vpoolz/docs/mosura-issues.md` (in the vpool-re project, outside this repo) listed five
+gaps hit while building a reference executor on the interpreter. All five are closed:
+
+- `d7055b38` fixtures `divide_fault.S`, `spin_until_zero.S`, `call_chain.S` (i386 + x86-64, build.sh).
+- `6e262edb` `emu::run` → `Run { machine, steps, stop }`, `Stop::{Returned, Fault, NoInstruction(a),
+  StepCap}`, `run_with(RunOptions { entry, max_steps, .. })`, decode-on-demand; a zero divisor is a
+  Fault in plain runs; **the #DE-on-lost-quotient rule**: a division's full quotient is kept and the
+  SUBPIECE that narrows it faults if bits are lost (unsigned) or the low part does not sign-extend
+  back (signed). Evidence: `validation/reference-execution/quotient-check-disabled.log`.
+- `a0b4f5da` `RunOptions::follow_calls`: depth-tracked CALL/CALLIND + RETURN; a target outside the bytes
+  → `NoInstruction(target)`; `INT n` stays an event (its CALLIND targets `SWI_VECTOR`).
+- `0c3ca44f` `sleigh.emulate` op (keys `emulate.entry/registers/memory/follow-calls/max-steps`, schema
+  `emulation` = kind/name/value) and the C API `mosura_emulate` wrapper; `docs/emulation.md`.
+- Entry 3 (orphan `target/release/examples/emuprobe`, `equiv_check*`): stale build artifacts,
+  deleted; `equiv_check.rs` lives in history (2778b34f, removed eea6ef1a), `emuprobe` never committed.
+
+⚠️ Gotchas met: (1) a hand-assembled `call` displacement is relative to the END of the 5-byte
+instruction — `e8 02 00 00 00` at 0x1000 targets 0x1007, not 0x1008; a wrong target lands INSIDE the
+next instruction and the on-demand decoder happily decodes garbage. (2) `cargo test -p a -p b` stops
+at the first failing binary; add `--no-fail-fast` to see every crate. (3) The option registry
+validates `Hex`/`U64`/`Bool` keys at `Options::set`, so a malformed `emulate.entry` is refused before
+the op runs. (4) `include/mosura.h` is cbindgen-generated (`cargo xtask header`); cbindgen is not in
+the offline registry cache, so the comment was hand-edited (the symbol test checks declarations only).
+
+Still open for the consumer: their `refexec` links `mosura-core` by path; the op route is the stable
+one. Not done here: an x87 80-bit float model (reported `unmodeled`), a CLI verb (`mosura call
+sleigh.emulate` is the surface).
+
 ## Live status — `master` (2026-09-13): issue #4 global symbol views LANDED on top of `8bb0661c`
 
 The liaison track (Bob's ledger, `docs/bob-issue-tracker.md` + the `BOB_TASK.md` checklist kept in
