@@ -1247,12 +1247,13 @@ pub fn run_traced(
 /// Why a run ended. A capture is evidence of the original's behaviour only when it `Returned`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Stop {
-    /// The routine executed its `RETURN`.
+    /// The routine executed its `RETURN` (the outermost one, when calls are followed).
     Returned,
     /// The program trapped: a division by zero, or a quotient its destination cannot hold
     /// ([`Machine::narrows_quotient_lossily`]). The registers after it are not a result.
     Fault,
-    /// Control reached an address with no instruction: past the end of the bytes.
+    /// Control reached an address with no instruction: past the end of the bytes, or a call
+    /// whose target lies outside them.
     NoInstruction(u64),
     /// The step budget ([`RunOptions::max_steps`]) ran out; the routine may never return.
     StepCap,
@@ -1273,18 +1274,24 @@ pub struct Run {
 pub struct RunOptions {
     /// Where execution starts; `None` is the first byte.
     pub entry: Option<u64>,
+    /// Enter `CALL`/`CALLIND` targets that lie inside the bytes and come back to the caller at
+    /// their `RETURN` (the instruction's own p-code pushes and pops the return address, so the
+    /// stack pointer must be seeded). Off, a call is an event: skipped, its callee never run — the
+    /// single-function mode the differential harness uses. A software interrupt is an event
+    /// either way: its handler is not in the bytes.
+    pub follow_calls: bool,
     /// The p-code operation budget.
     pub max_steps: usize,
 }
 
 impl Default for RunOptions {
     fn default() -> Self {
-        Self { entry: None, max_steps: 5_000_000 }
+        Self { entry: None, follow_calls: false, max_steps: 5_000_000 }
     }
 }
 
 /// Disassemble `bytes` and execute the lifted p-code from `base`, following branches/loops until
-/// `RETURN`, a fault or the step cap; calls are events, not entered. `inputs`
+/// `RETURN`, a fault or the step cap, with calls as events ([`RunOptions::default`]). `inputs`
 /// seed registers and memory `(space, offset, value, size)` — e.g. the calling-convention
 /// argument registers (and a stack pointer for `-O0` code).
 pub fn run(spec: &Spec, bytes: &[u8], base: u64, context: &[u32], inputs: &[(&str, u64, u64, u32)]) -> Run {
@@ -1294,8 +1301,9 @@ pub fn run(spec: &Spec, bytes: &[u8], base: u64, context: &[u32], inputs: &[(&st
 /// [`run`] under explicit [`RunOptions`].
 ///
 /// Instructions are decoded from `base` up front, and again on demand from any address the run
-/// reaches that the first sweep did not decode (a target inside what the sweep read as one long
-/// instruction); an address outside `bytes` ends the run as [`Stop::NoInstruction`].
+/// reaches that the first sweep did not decode (a callee behind data, a target inside what the
+/// sweep read as one long instruction); an address outside `bytes` ends the run as
+/// [`Stop::NoInstruction`].
 pub fn run_with(spec: &Spec, bytes: &[u8], base: u64, context: &[u32], inputs: &[(&str, u64, u64, u32)], opts: &RunOptions) -> Run {
     // address → (structured ops, fall-through addr)
     let mut prog: HashMap<u64, (Vec<PcodeOp>, u64)> = spec
@@ -1314,6 +1322,7 @@ pub fn run_with(spec: &Spec, bytes: &[u8], base: u64, context: &[u32], inputs: &
 
     let mut pc = opts.entry.unwrap_or(base);
     let mut steps = 0usize;
+    let mut depth = 0usize;
     let stop = 'run: loop {
         if !prog.contains_key(&pc) && pc >= base && pc < base + bytes.len() as u64 {
             for insn in spec.disassemble_ctx(&bytes[(pc - base) as usize..], pc, context) {
@@ -1330,6 +1339,36 @@ pub fn run_with(spec: &Spec, bytes: &[u8], base: u64, context: &[u32], inputs: &
             }
             steps += 1;
             let op = &ops[i];
+            if opts.follow_calls {
+                match opcode_name(op.opcode) {
+                    "CALL" | "CALLIND" => {
+                        // A direct target is the address varnode itself; an indirect one is the
+                        // value it holds (see `run_traced` for why the two must not be confused).
+                        let target = match op.ins.first() {
+                            Some(PArg::Var(v)) if opcode_name(op.opcode) == "CALL" && !v.is_const() => v.offset,
+                            Some(arg) => m.read_arg(arg),
+                            None => 0,
+                        };
+                        if target & !0xff == SWI_VECTOR {
+                            // An `INT n`'s call through its vector: the handler is not here.
+                            i += 1;
+                            continue;
+                        }
+                        depth += 1;
+                        jump = Some(target);
+                        break;
+                    }
+                    "RETURN" => {
+                        if depth == 0 {
+                            break 'run Stop::Returned;
+                        }
+                        depth -= 1;
+                        jump = Some(op.ins.first().map_or(0, |a| m.read_arg(a)));
+                        break;
+                    }
+                    _ => {}
+                }
+            }
             match m.step(op) {
                 Flow::Next => i += 1,
                 Flow::Rel(d) => i = (i as i64 + d).max(0) as usize,

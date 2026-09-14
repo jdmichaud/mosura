@@ -4,7 +4,7 @@
 //!
 //! Each property was a gap a downstream reference executor hit: a routine that ran into the step
 //! cap reported its registers as if they were a result; a division the hardware traps on handed
-//! back a truncated quotient.
+//! back a truncated quotient; a callee was never entered, so only leaf routines could be captured.
 
 use mosura_core::analysis;
 use mosura_core::decompile::space::Address;
@@ -151,6 +151,51 @@ fn a_returned_run_counts_its_steps() {
         let expected: usize = f.spec.disassemble_ctx(body, e, f.ctx).iter().map(|i| i.ops.len()).sum();
         let r = f.run(body, e, &[("EDX", 0), ("EAX", 100), ("ECX", 7)], &RunOptions::default());
         assert_eq!((r.stop, r.steps), (Stop::Returned, expected), "x86-{bits}");
+    }
+}
+
+#[test]
+fn following_calls_runs_the_callee_and_returns_to_the_caller() {
+    for bits in [32, 64] {
+        let f = fixture("call_chain", bits);
+        let e = f.entry("outer");
+        let follow = RunOptions { follow_calls: true, ..RunOptions::default() };
+        let r = f.run(f.from("outer"), e, &[(f.sp(), STACK), ("EAX", 0)], &follow);
+        assert_eq!(r.stop, Stop::Returned, "x86-{bits}");
+        assert_eq!(f.read(&r, "EAX"), 42, "x86-{bits}: inner's 41 plus outer's 1");
+        // inner's RET popped inner's return address; outer's own RET then popped the caller's
+        // slot, which the seeded frame never held, so the pointer ends one word above its entry.
+        let word = u64::from(f.reg(f.sp()).1);
+        assert_eq!(f.read(&r, f.sp()), STACK + word, "x86-{bits}: two CALL pushes, two RET pops, one caller slot");
+        // The single-function mode is unchanged: the call is an event and the callee never runs,
+        // so outer's RET pops the word its own CALL pushed and the pointer lands where it began.
+        let r = f.run(f.from("outer"), e, &[(f.sp(), STACK), ("EAX", 0)], &RunOptions::default());
+        assert_eq!(r.stop, Stop::Returned, "x86-{bits}");
+        assert_eq!(f.read(&r, "EAX"), 1, "x86-{bits}: outer's 1 over the seeded 0");
+        assert_eq!(f.read(&r, f.sp()), STACK, "x86-{bits}: the skipped call's push is what the RET popped");
+    }
+}
+
+#[test]
+fn a_call_whose_target_lies_outside_the_bytes_stops_at_that_target() {
+    for bits in [32, 64] {
+        let f = fixture("call_chain", bits);
+        let e = f.entry("outer");
+        let follow = RunOptions { follow_calls: true, ..RunOptions::default() };
+        let r = f.run(f.body("outer"), e, &[(f.sp(), STACK), ("EAX", 0)], &follow);
+        assert_eq!(r.stop, Stop::NoInstruction(f.entry("inner")), "x86-{bits}");
+    }
+}
+
+#[test]
+fn an_interrupt_stays_an_event_when_calls_are_followed() {
+    for bits in [32, 64] {
+        let f = fixture("call_chain", bits);
+        let e = f.entry("interrupt_event");
+        let follow = RunOptions { follow_calls: true, ..RunOptions::default() };
+        let r = f.run(f.body("interrupt_event"), e, &[(f.sp(), STACK)], &follow);
+        assert_eq!(r.stop, Stop::Returned, "x86-{bits}");
+        assert_eq!(r.machine.unmodeled, 0, "x86-{bits}");
     }
 }
 
