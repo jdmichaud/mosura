@@ -96,9 +96,21 @@ fn languages_registers_and_raw_decoding() {
     let word = [0xb8u8, 0x34, 0x12, 0x00, 0x00];
     assert_eq!(unsafe { mosura_disassemble(l, mosura_view { ptr: word.as_ptr(), len: word.len() }, 0, regs16, &mut d16) }, MOSURA_OK, "{}", last());
     assert_eq!(cell_str(d16, 0, 4), "AX,0x1234");
-    // the stubs
+    // emulate: `div ecx; ret` over EDX:EAX = 100, ECX = 7 returns 14 remainder 2; ECX = 0 faults
+    let div = [0xf7u8, 0xf1, 0xc3];
+    let div_bytes = mosura_view { ptr: div.as_ptr(), len: div.len() };
+    let state = opts(c, &[("emulate.registers", "EDX=0,EAX=0x64,ECX=7")]);
     let mut t: *mut mosura_table = ptr::null_mut();
-    assert_eq!(unsafe { mosura_emulate(l, bytes, 0, ptr::null(), &mut t) }, MOSURA_ERR_UNSUPPORTED);
+    assert_eq!(unsafe { mosura_emulate(l, div_bytes, 0x1000, state, &mut t) }, MOSURA_OK, "{}", last());
+    let rows: Vec<(String, String, String)> = (0..unsafe { mosura_table_rows(t) }).map(|r| (cell_str(t, r, 0), cell_str(t, r, 1), cell_str(t, r, 2))).collect();
+    assert!(rows.contains(&("outcome".into(), "stop".into(), "returned".into())), "{rows:?}");
+    assert!(rows.contains(&("register".into(), "EAX".into(), "0x0000000e".into())), "{rows:?}");
+    assert!(rows.contains(&("register".into(), "EDX".into(), "0x00000002".into())), "{rows:?}");
+    let zero = opts(c, &[("emulate.registers", "EDX=0,EAX=0x64,ECX=0")]);
+    let mut f: *mut mosura_table = ptr::null_mut();
+    assert_eq!(unsafe { mosura_emulate(l, div_bytes, 0x1000, zero, &mut f) }, MOSURA_OK, "{}", last());
+    assert_eq!((cell_str(f, 0, 1), cell_str(f, 0, 2)), ("stop".to_string(), "fault".to_string()));
+    // the remaining stub
     assert_eq!(unsafe { mosura_fingerprint(l, bytes, 0, &mut t) }, MOSURA_ERR_UNSUPPORTED);
     // emit axes and arms
     let mut axes: *mut mosura_table = ptr::null_mut();
@@ -107,11 +119,13 @@ fn languages_registers_and_raw_decoding() {
     let mut arms: *mut mosura_table = ptr::null_mut();
     assert_eq!(unsafe { mosura_emit_arms(c, &mut arms) }, MOSURA_OK);
     assert_eq!(unsafe { mosura_table_rows(arms) }, 31);
-    for h in [langs, regs, d, p, d16, axes, arms] {
+    for h in [langs, regs, d, p, d16, axes, arms, t, f] {
         unsafe { mosura_release(h as *mut c_void) };
     }
     unsafe {
         mosura_release(regs16 as *mut c_void);
+        mosura_release(state as *mut c_void);
+        mosura_release(zero as *mut c_void);
         mosura_release(l as *mut c_void);
         mosura_release(c as *mut c_void);
     }

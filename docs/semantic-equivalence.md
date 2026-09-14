@@ -83,6 +83,12 @@ difference. The interpreter itself already carries the full contract machinery (
 `crates/mosura-core/tests/emu_call_model.rs`; wiring it through the op — parsing the annotations,
 holding each named register to the callee's clobber set — is the named follow-up.
 
+## Reference execution
+
+The same interpreter, run once over one program and read out, is the product's reference
+executor: `sleigh.emulate`, whose outcome (returned, fault, step-cap, no-instruction), call
+following and division-fault rule are described in [emulation.md](emulation.md).
+
 ## Calibration
 
 The interpreter the verdict rests on was validated where a silent zero would have read as agreement:

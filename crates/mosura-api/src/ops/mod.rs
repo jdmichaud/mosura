@@ -111,6 +111,7 @@ pub static REGISTRY: &[&Op] = &[
     &session::CONFIG,
     &session::CONFIG_SET,
     &sleigh::DISASSEMBLE,
+    &sleigh::EMULATE,
     &sleigh::LIFT,
     &toolchain::CHECK_OP,
     &toolchain::LIST,

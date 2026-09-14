@@ -31,6 +31,11 @@ pub const TOOLCHAIN_INSTALL: &str = "toolchain.install";
 pub const COMPILE_CACHE: &str = "compile.cache";
 pub const VERIFY_TABLE_WINDOW: &str = "verify.table-window";
 pub const EQUIV_SEEDS: &str = "equiv.seeds";
+pub const EMULATE_ENTRY: &str = "emulate.entry";
+pub const EMULATE_REGISTERS: &str = "emulate.registers";
+pub const EMULATE_MEMORY: &str = "emulate.memory";
+pub const EMULATE_FOLLOW_CALLS: &str = "emulate.follow-calls";
+pub const EMULATE_MAX_STEPS: &str = "emulate.max-steps";
 pub const ROUND_SCOPE: &str = "round.scope";
 pub const ROUND_SCOPE_FILE: &str = "round.scope-file";
 pub const ROUND_BASELINE: &str = "round.baseline";
@@ -76,6 +81,11 @@ pub fn hand_written() -> Vec<OptionSpec> {
         spec!("bytes", OptType::Str, "", Affects::Input, "raw bytes as hex (the sleigh.* operations)"),
         spec!("base", OptType::Hex, "", Affects::Input, "the address of the first byte (the sleigh.* operations)"),
         spec!("ctx", OptType::Str, "", Affects::Input, "context register settings, `name=value;…` (the sleigh.* operations)"),
+        spec!(EMULATE_ENTRY, OptType::Hex, "", Affects::Input, "where sleigh.emulate starts executing (default: base)"),
+        spec!(EMULATE_REGISTERS, OptType::Str, "", Affects::Input, "the initial registers of sleigh.emulate, NAME=hex,… (the language's register names)"),
+        spec!(EMULATE_MEMORY, OptType::Str, "", Affects::Input, "the initial memory of sleigh.emulate, hexaddr=hexbytes;…"),
+        spec!(EMULATE_FOLLOW_CALLS, OptType::Bool, "false", Affects::Input, "sleigh.emulate enters a call whose target lies in the bytes and returns to the caller; off, a call is an event and its callee never runs"),
+        spec!(EMULATE_MAX_STEPS, OptType::U64, "5000000", Affects::Input, "the p-code operation budget of sleigh.emulate; a run that spends it stops as step-cap"),
         spec!("format", OptType::Str, "", Affects::Input, "what to return: c, raw, or table:<name> (function.decompile)"),
         spec!("toolchain", OptType::Str, "", Affects::Input, "the session toolchain an operation compiles with (toolchain.open's name)"),
         spec!("object", OptType::Str, "", Affects::Input, "a session input holding a compiled object (function.verify)"),

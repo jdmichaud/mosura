@@ -368,14 +368,19 @@ mosura_status mosura_lift(mosura_language *l,
                           mosura_table **out);
 
 /**
- * Execute the p-code of a byte range with an initial state. Not in this version
- * (MOSURA_ERR_UNSUPPORTED).
+ * Execute the p-code of a byte range with an initial state (`sleigh.emulate`). `initial_state`
+ * (NULL = none) is an option set: `ctx` as for `mosura_lift`, `emulate.registers` (`NAME=hex,…`),
+ * `emulate.memory` (`hexaddr=hexbytes;…`), `emulate.entry` (default: base),
+ * `emulate.follow-calls` (default: a call is an event) and `emulate.max-steps`.
+ * emulation: kind, name, value — `outcome` rows (stop = returned | fault | no-instruction |
+ * step-cap; address; steps; unmodeled; unmodeled-op), `register` rows (every register the final
+ * state holds, widest first) and `memory` rows (every run of bytes it holds, as hex).
  */
 mosura_status mosura_emulate(mosura_language *l,
-                             mosura_view _bytes,
-                             uint64_t _base,
-                             const mosura_options *_initial_state,
-                             mosura_table **_out);
+                             mosura_view bytes,
+                             uint64_t base,
+                             const mosura_options *initial_state,
+                             mosura_table **out);
 
 /**
  * FID fingerprints for a byte range. Not in this version (MOSURA_ERR_UNSUPPORTED).

@@ -11,6 +11,7 @@ use crate::options::{mosura_options, options_of};
 use crate::session::SessionCell;
 use crate::status::mosura_status;
 use crate::table::{mosura_table, new_table};
+use mosura_api::options::keys;
 use mosura_api::{Error, Options, Result, Session};
 
 /// A SLEIGH language: tables + default context (opaque).
@@ -117,13 +118,29 @@ pub unsafe extern "C" fn mosura_lift(l: *mut mosura_language, bytes: mosura_view
     })
 }
 
-/// Execute the p-code of a byte range with an initial state. Not in this version
-/// (MOSURA_ERR_UNSUPPORTED).
+/// Execute the p-code of a byte range with an initial state (`sleigh.emulate`). `initial_state`
+/// (NULL = none) is an option set: `ctx` as for `mosura_lift`, `emulate.registers` (`NAME=hex,…`),
+/// `emulate.memory` (`hexaddr=hexbytes;…`), `emulate.entry` (default: base),
+/// `emulate.follow-calls` (default: a call is an event) and `emulate.max-steps`.
+/// emulation: kind, name, value — `outcome` rows (stop = returned | fault | no-instruction |
+/// step-cap; address; steps; unmodeled; unmodeled-op), `register` rows (every register the final
+/// state holds, widest first) and `memory` rows (every run of bytes it holds, as hex).
 #[no_mangle]
-pub unsafe extern "C" fn mosura_emulate(l: *mut mosura_language, _bytes: mosura_view, _base: u64, _initial_state: *const mosura_options, _out: *mut *mut mosura_table) -> mosura_status {
+pub unsafe extern "C" fn mosura_emulate(l: *mut mosura_language, bytes: mosura_view, base: u64, initial_state: *const mosura_options, out: *mut *mut mosura_table) -> mosura_status {
     guard(|| {
-        let _ = language_of(l)?;
-        Err(Error::Unsupported("mosura_emulate is not in this version".into()))
+        let l = language_of(l)?;
+        let out = out_ptr(out, "out")?;
+        let mut params = sleigh_params(l, bytes, base, initial_state)?;
+        if !initial_state.is_null() {
+            let state = options_of(initial_state)?;
+            for key in [keys::EMULATE_ENTRY, keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS] {
+                if state.is_set(key) {
+                    params.set(key, state.get(key)?)?;
+                }
+            }
+        }
+        *out = new_table(call_on(&l.shared, "sleigh.emulate", Some(&params), None, std::ptr::null_mut())?);
+        Ok(())
     })
 }
 

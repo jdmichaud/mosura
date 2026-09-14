@@ -78,7 +78,7 @@ pub struct OptionSpec {
     pub affects: Affects,
 }
 
-fn parse_bool(v: &str) -> Option<bool> {
+pub(crate) fn parse_bool(v: &str) -> Option<bool> {
     match v.trim() {
         "1" | "true" | "on" | "yes" => Some(true),
         "0" | "false" | "off" | "no" => Some(false),
