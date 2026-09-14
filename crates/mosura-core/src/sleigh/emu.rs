@@ -16,6 +16,8 @@ enum Flow {
     Rel(i64),
     Jump(u64),
     Stop,
+    /// The program trapped. The run ends here and the state after it is not a result.
+    Fault,
 }
 
 fn mask(v: u64, size: u32) -> u64 {
@@ -131,6 +133,10 @@ pub struct Machine {
     /// ([`RunConfig::site_reg_returns`]). The twin of `flag_return_ordinals`, and it crosses
     /// between the two runs the same way and for the same reason.
     pub reg_return_ordinals: Vec<(u64, RegReturn)>,
+    /// The output varnode of the last `INT_DIV`/`INT_SDIV`, its full-width quotient and whether
+    /// it was signed — kept until something else writes that varnode, so the `SUBPIECE` that
+    /// narrows it can tell a quotient the destination holds from one the hardware would trap on.
+    last_quotient: Option<(super::pcode::Varnode, u64, bool)>,
 }
 
 /// One observable effect of running a function: what a caller could tell apart.
@@ -319,7 +325,14 @@ impl Machine {
             "INT_2COMP" => a(0).wrapping_neg(),
             "INT_ZEXT" => a(0),
             "INT_SEXT" => sa(0) as u64,
-            "SUBPIECE" => a(0) >> (a(1) * 8),
+            // Integer narrowing — and the one place a division fault the p-code cannot express
+            // becomes visible: see [`Machine::narrows_quotient_lossily`].
+            "SUBPIECE" => {
+                if self.narrows_quotient_lossily(op) {
+                    return self.fault();
+                }
+                a(0) >> (a(1) * 8)
+            }
             "INT_EQUAL" => (a(0) == a(1)) as u64,
             "INT_NOTEQUAL" => (a(0) != a(1)) as u64,
             "INT_LESS" => (a(0) < a(1)) as u64,
@@ -374,37 +387,29 @@ impl Machine {
             // stops there rather than inventing a value; two equivalent programs fault together.
             "INT_DIV" => {
                 if a(1) == 0 {
-                    if self.trace {
-                        self.effects.push(Effect::Fault);
-                    }
-                    return Flow::Stop;
+                    return self.fault();
                 }
-                mask(a(0), osize) / mask(a(1), osize)
+                let q = mask(a(0), osize) / mask(a(1), osize);
+                self.remember_quotient(op, q, false);
+                q
             }
             "INT_REM" => {
                 if a(1) == 0 {
-                    if self.trace {
-                        self.effects.push(Effect::Fault);
-                    }
-                    return Flow::Stop;
+                    return self.fault();
                 }
                 mask(a(0), osize) % mask(a(1), osize)
             }
             "INT_SDIV" => {
                 if a(1) == 0 {
-                    if self.trace {
-                        self.effects.push(Effect::Fault);
-                    }
-                    return Flow::Stop;
+                    return self.fault();
                 }
-                sa(0).wrapping_div(sa(1)) as u64
+                let q = sa(0).wrapping_div(sa(1)) as u64;
+                self.remember_quotient(op, q, true);
+                q
             }
             "INT_SREM" => {
                 if a(1) == 0 {
-                    if self.trace {
-                        self.effects.push(Effect::Fault);
-                    }
-                    return Flow::Stop;
+                    return self.fault();
                 }
                 sa(0).wrapping_rem(sa(1)) as u64
             }
@@ -464,8 +469,69 @@ impl Machine {
         };
         if let Some(v) = &op.out {
             self.write(&v.space, v.offset, v.size, mask(res, v.size));
+            if !matches!(opname, "INT_DIV" | "INT_SDIV") && self.last_quotient.as_ref().is_some_and(|(q, _, _)| q == v) {
+                self.last_quotient = None;
+            }
         }
         Flow::Next
+    }
+
+    /// The program trapped: record the event when tracing and end the run.
+    fn fault(&mut self) -> Flow {
+        if self.trace {
+            self.effects.push(Effect::Fault);
+        }
+        Flow::Fault
+    }
+
+    /// Keep a division's full-width quotient so the `SUBPIECE` that narrows it can be checked.
+    fn remember_quotient(&mut self, op: &PcodeOp, quotient: u64, signed: bool) {
+        self.last_quotient = op.out.clone().map(|v| (v, quotient, signed));
+    }
+
+    /// Is this `SUBPIECE` the narrowing of the last quotient to a width that cannot hold it?
+    ///
+    /// The hardware's own rule, not an invention: x86's `DIV`/`IDIV` divide a double-width
+    /// dividend and raise `#DE` when the quotient does not fit the destination (SDM vol. 2, DIV:
+    /// "#DE if the quotient is too large for the designated register"). SLEIGH lifts that
+    /// instruction as a double-width `INT_DIV` followed by `SUBPIECE(quotient, 0)` into the
+    /// destination — `ia.sinc` marks the site "DE exception if quotient doesn't fit" and then
+    /// truncates, because p-code has no trap. So the fault is exactly "the narrowing of a
+    /// quotient loses bits": unsigned, any high bit dropped; signed, the kept low part does not
+    /// sign-extend back to the whole. A language whose division never narrows its quotient can
+    /// never trip this, which is what makes the rule the instruction's and not the target's.
+    fn narrows_quotient_lossily(&self, op: &PcodeOp) -> bool {
+        let Some((q, value, signed)) = &self.last_quotient else { return false };
+        let Some(PArg::Var(input)) = op.ins.first() else { return false };
+        let Some(out) = &op.out else { return false };
+        if input != q || out.size >= q.size {
+            return false;
+        }
+        if op.ins.get(1).is_some_and(|a| self.read_arg(a) != 0) {
+            return false;
+        }
+        let kept = mask(*value, out.size);
+        if *signed {
+            sext(kept, out.size) != sext(*value, q.size)
+        } else {
+            kept != mask(*value, q.size)
+        }
+    }
+
+    /// The bytes this state holds in `space` — every byte written, whether seeded as an input or
+    /// stored by the program — as sorted, coalesced `(address, bytes)` runs.
+    pub fn written(&self, space: &str) -> Vec<(u64, Vec<u8>)> {
+        let Some(bank) = self.mem.get(space) else { return Vec::new() };
+        let mut addrs: Vec<u64> = bank.keys().copied().collect();
+        addrs.sort_unstable();
+        let mut runs: Vec<(u64, Vec<u8>)> = Vec::new();
+        for a in addrs {
+            match runs.last_mut() {
+                Some((start, bytes)) if *start + bytes.len() as u64 == a => bytes.push(bank[&a]),
+                _ => runs.push((a, vec![bank[&a]])),
+            }
+        }
+        runs
     }
 
     /// One `CALLOTHER` — a `define pcodeop`, the language's escape hatch for an instruction its
@@ -1166,7 +1232,7 @@ pub fn run_traced(
                         jump = Some(t);
                         break;
                     }
-                    Flow::Stop => {
+                    Flow::Stop | Flow::Fault => {
                         finished = true;
                         break 'run;
                     }
@@ -1178,13 +1244,61 @@ pub fn run_traced(
     (m, finished)
 }
 
-/// Disassemble `bytes` and execute the lifted p-code from `base`, following
-/// branches/loops until `RETURN` (or a step cap), returning the final machine
-/// state. `inputs` seed registers (space, offset, value, size) — e.g. the
-/// calling-convention argument registers (and a stack pointer for `-O0` code).
-pub fn run(spec: &Spec, bytes: &[u8], base: u64, context: &[u32], inputs: &[(&str, u64, u64, u32)]) -> Machine {
+/// Why a run ended. A capture is evidence of the original's behaviour only when it `Returned`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stop {
+    /// The routine executed its `RETURN`.
+    Returned,
+    /// The program trapped: a division by zero, or a quotient its destination cannot hold
+    /// ([`Machine::narrows_quotient_lossily`]). The registers after it are not a result.
+    Fault,
+    /// Control reached an address with no instruction: past the end of the bytes.
+    NoInstruction(u64),
+    /// The step budget ([`RunOptions::max_steps`]) ran out; the routine may never return.
+    StepCap,
+}
+
+/// What a run of [`run_with`] leaves behind.
+pub struct Run {
+    /// The final machine state.
+    pub machine: Machine,
+    /// How many p-code operations executed.
+    pub steps: usize,
+    /// Why the run ended.
+    pub stop: Stop,
+}
+
+/// How [`run_with`] executes.
+#[derive(Debug, Clone)]
+pub struct RunOptions {
+    /// Where execution starts; `None` is the first byte.
+    pub entry: Option<u64>,
+    /// The p-code operation budget.
+    pub max_steps: usize,
+}
+
+impl Default for RunOptions {
+    fn default() -> Self {
+        Self { entry: None, max_steps: 5_000_000 }
+    }
+}
+
+/// Disassemble `bytes` and execute the lifted p-code from `base`, following branches/loops until
+/// `RETURN`, a fault or the step cap; calls are events, not entered. `inputs`
+/// seed registers and memory `(space, offset, value, size)` — e.g. the calling-convention
+/// argument registers (and a stack pointer for `-O0` code).
+pub fn run(spec: &Spec, bytes: &[u8], base: u64, context: &[u32], inputs: &[(&str, u64, u64, u32)]) -> Run {
+    run_with(spec, bytes, base, context, inputs, &RunOptions::default())
+}
+
+/// [`run`] under explicit [`RunOptions`].
+///
+/// Instructions are decoded from `base` up front, and again on demand from any address the run
+/// reaches that the first sweep did not decode (a target inside what the sweep read as one long
+/// instruction); an address outside `bytes` ends the run as [`Stop::NoInstruction`].
+pub fn run_with(spec: &Spec, bytes: &[u8], base: u64, context: &[u32], inputs: &[(&str, u64, u64, u32)], opts: &RunOptions) -> Run {
     // address → (structured ops, fall-through addr)
-    let prog: HashMap<u64, (Vec<PcodeOp>, u64)> = spec
+    let mut prog: HashMap<u64, (Vec<PcodeOp>, u64)> = spec
         .disassemble_ctx(bytes, base, context)
         .into_iter()
         .map(|insn| {
@@ -1198,30 +1312,38 @@ pub fn run(spec: &Spec, bytes: &[u8], base: u64, context: &[u32], inputs: &[(&st
         m.write(space, offset, size, value);
     }
 
-    const MAX_STEPS: usize = 5_000_000;
-    let mut pc = base;
+    let mut pc = opts.entry.unwrap_or(base);
     let mut steps = 0usize;
-    'run: while let Some((ops, next)) = prog.get(&pc) {
+    let stop = 'run: loop {
+        if !prog.contains_key(&pc) && pc >= base && pc < base + bytes.len() as u64 {
+            for insn in spec.disassemble_ctx(&bytes[(pc - base) as usize..], pc, context) {
+                let next = insn.address + insn.bytes.len() as u64;
+                prog.entry(insn.address).or_insert((insn.ops, next));
+            }
+        }
+        let Some((ops, next)) = prog.get(&pc) else { break Stop::NoInstruction(pc) };
         let mut i = 0usize;
         let mut jump = None;
         while i < ops.len() {
-            steps += 1;
-            if steps > MAX_STEPS {
-                break 'run;
+            if steps >= opts.max_steps {
+                break 'run Stop::StepCap;
             }
-            match m.step(&ops[i]) {
+            steps += 1;
+            let op = &ops[i];
+            match m.step(op) {
                 Flow::Next => i += 1,
                 Flow::Rel(d) => i = (i as i64 + d).max(0) as usize,
                 Flow::Jump(t) => {
                     jump = Some(t);
                     break;
                 }
-                Flow::Stop => break 'run,
+                Flow::Stop => break 'run Stop::Returned,
+                Flow::Fault => break 'run Stop::Fault,
             }
         }
         pc = jump.unwrap_or(*next);
-    }
-    m
+    };
+    Run { machine: m, steps, stop }
 }
 
 #[cfg(test)]

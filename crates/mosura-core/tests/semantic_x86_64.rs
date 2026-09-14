@@ -37,7 +37,8 @@ fn x86_64_pcode_computes_correct_result() {
             base,
             &context,
             &[("register", EDI, a as u32 as u64, 4), ("register", ESI, b as u32 as u64, 4)],
-        );
+        )
+        .machine;
         let got = m.read("register", EAX, 4) as u32 as i32;
         assert_eq!(got, reference(a, b), "f({a}, {b})");
     }
@@ -63,7 +64,7 @@ fn x86_64_pcode_executes_a_loop() {
     let reference = |n: i32| if n <= 0 { 0 } else { n * (n + 1) / 2 };
 
     for n in [0, 1, 2, 5, 10, 100, 1000, -7] {
-        let m = emu::run(spec, code, base, &context, &[("register", EDI, n as u32 as u64, 4)]);
+        let m = emu::run(spec, code, base, &context, &[("register", EDI, n as u32 as u64, 4)]).machine;
         let got = m.read("register", EAX, 4) as u32 as i32;
         assert_eq!(got, reference(n), "sumto({n})");
     }
