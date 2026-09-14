@@ -76,7 +76,15 @@ executes: no BIOS, no DOS, no extender. A register wider than eight bytes is not
 
 `sleigh::emu::run_with(spec, bytes, base, ctx, inputs, &RunOptions { entry, follow_calls, max_steps })`
 returns a `Run { machine, steps, stop }`; `run` is the same under `RunOptions::default()`.
-`Machine::read(space, offset, size)` and `Machine::written(space)` read the final state. The
+`Machine::read(space, offset, size)` and `Machine::written(space)` read the final state.
+
+Instructions are decoded on demand, in 64-byte windows from each address a run reaches, and an
+instruction a window cuts is decoded whole from its own address later (the decoder zero-pads a
+cut instruction, which can spell a different one). A caller capturing many vectors over one
+image keeps the decoded instructions across runs: `let mut image = Image::new(spec, bytes, base,
+ctx); image.run(inputs, &opts)` — `run_with` is one such image used once. A whole text section
+with the routine inside it therefore costs what the routine executes, and `Image::decoded()`
+says how many instructions that took. The
 source-built gates are `crates/mosura-core/tests/emu_reference.rs` over
 `oracle/ground-truth/src/{divide_fault,spin_until_zero,call_chain}.S`; the operation's are in
 `crates/mosura-api/tests/ops_sleigh.rs` and the C API's in `crates/mosura-capi/tests/program.rs`.

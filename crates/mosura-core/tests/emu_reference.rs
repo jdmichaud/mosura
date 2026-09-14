@@ -208,3 +208,50 @@ fn execution_can_start_inside_the_bytes() {
         assert_eq!((r.stop, f.read(&r, "EAX")), (Stop::Returned, 41), "x86-{bits}");
     }
 }
+
+/// A routine planted in a large image decodes about what it executes, once, and nothing more on
+/// the next run — the cost a reference executor pays per vector when it hands over a whole
+/// image so a followed call can land anywhere. Before this, every run swept the image from its
+/// base and then decoded from the reached address to the END of the bytes, on every vector.
+#[test]
+fn decoding_follows_the_run_and_is_kept_across_runs() {
+    use mosura_core::sleigh::emu::Image;
+    for bits in [32, 64] {
+        let f = fixture("call_chain", bits);
+        let routine = f.from("outer");
+        // A 256 KiB image of deterministic noise with the routine planted well inside it.
+        let mut image = vec![0u8; 256 * 1024];
+        let mut x = 0x2545_f491_4f6c_dd1du64;
+        for b in image.iter_mut() {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            *b = x as u8;
+        }
+        let at = 0x2_0000usize;
+        image[at..at + routine.len()].copy_from_slice(routine);
+        let mut img = Image::new(f.spec, &image, 0, f.ctx);
+        let opts = RunOptions { entry: Some(at as u64), follow_calls: true, ..RunOptions::default() };
+        let inputs = [("register", f.reg(f.sp()).0, STACK, f.reg(f.sp()).1), ("register", f.reg("EAX").0, 0, f.reg("EAX").1)];
+        let r = img.run(&inputs, &opts);
+        assert_eq!((r.stop, f.read(&r, "EAX")), (Stop::Returned, 42), "x86-{bits}");
+        // outer is three instructions and inner two: two 64-byte windows decode those and the
+        // noise after them, at most an instruction per byte — never the hundred thousand the
+        // image holds.
+        let decoded = img.decoded();
+        assert!((5..=128).contains(&decoded), "x86-{bits}: {decoded} instructions decoded for 5 executed");
+        let again = img.run(&inputs, &opts);
+        assert_eq!((again.stop, again.steps), (r.stop, r.steps), "x86-{bits}");
+        assert_eq!(img.decoded(), decoded, "x86-{bits}: the second run decoded nothing new");
+        // The same routine over its own bytes runs the same way.
+        let small = f.run(routine, f.entry("outer"), &[(f.sp(), STACK), ("EAX", 0)], &RunOptions { follow_calls: true, ..RunOptions::default() });
+        assert_eq!((small.stop, small.steps, f.read(&small, "EAX")), (r.stop, r.steps, 42), "x86-{bits}");
+        // And a thousand vectors cost interpretation, not decoding.
+        let t0 = std::time::Instant::now();
+        for _ in 0..1000 {
+            img.run(&inputs, &opts);
+        }
+        let elapsed = t0.elapsed();
+        assert!(elapsed.as_secs_f64() < 5.0, "x86-{bits}: 1000 runs took {elapsed:?}");
+    }
+}

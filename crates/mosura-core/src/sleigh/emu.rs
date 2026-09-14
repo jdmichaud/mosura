@@ -1298,91 +1298,132 @@ pub fn run(spec: &Spec, bytes: &[u8], base: u64, context: &[u32], inputs: &[(&st
     run_with(spec, bytes, base, context, inputs, &RunOptions::default())
 }
 
-/// [`run`] under explicit [`RunOptions`].
-///
-/// Instructions are decoded from `base` up front, and again on demand from any address the run
-/// reaches that the first sweep did not decode (a callee behind data, a target inside what the
-/// sweep read as one long instruction); an address outside `bytes` ends the run as
-/// [`Stop::NoInstruction`].
+/// [`run`] under explicit [`RunOptions`], over a fresh [`Image`]. A caller running many vectors
+/// over one image keeps the `Image` and calls [`Image::run`] instead, so nothing is decoded twice.
 pub fn run_with(spec: &Spec, bytes: &[u8], base: u64, context: &[u32], inputs: &[(&str, u64, u64, u32)], opts: &RunOptions) -> Run {
-    // address → (structured ops, fall-through addr)
-    let mut prog: HashMap<u64, (Vec<PcodeOp>, u64)> = spec
-        .disassemble_ctx(bytes, base, context)
-        .into_iter()
-        .map(|insn| {
-            let next = insn.address + insn.bytes.len() as u64;
-            (insn.address, (insn.ops, next))
-        })
-        .collect();
+    Image::new(spec, bytes, base, context).run(inputs, opts)
+}
 
-    let mut m = Machine { userops: spec.userops.clone(), ..Machine::default() };
-    for &(space, offset, value, size) in inputs {
-        m.write(space, offset, size, value);
+/// The bytes a window decode reads at once. Wider than the longest instruction of any vendored
+/// language (x86's 15), so the instruction at the window's start always decodes whole, and
+/// small enough that a run decodes about what it executes and not the image behind it.
+const DECODE_WINDOW: usize = 64;
+
+/// One byte image and the instructions decoded from it so far.
+///
+/// Instructions are decoded ON DEMAND, in [`DECODE_WINDOW`]-byte windows from each address a run
+/// reaches that is not yet decoded, and KEPT: a second run over the same image decodes nothing it
+/// already has. A whole text section with the routine somewhere inside it therefore costs what
+/// the routine executes, not what the section holds — the shape a reference executor needs when
+/// it captures thousands of vectors per routine and a followed call may land anywhere.
+pub struct Image<'a> {
+    spec: &'a Spec,
+    bytes: &'a [u8],
+    base: u64,
+    context: &'a [u32],
+    /// address → (structured ops, fall-through address)
+    decoded: HashMap<u64, (Vec<PcodeOp>, u64)>,
+}
+
+impl<'a> Image<'a> {
+    pub fn new(spec: &'a Spec, bytes: &'a [u8], base: u64, context: &'a [u32]) -> Self {
+        Self { spec, bytes, base, context, decoded: HashMap::new() }
     }
 
-    let mut pc = opts.entry.unwrap_or(base);
-    let mut steps = 0usize;
-    let mut depth = 0usize;
-    let stop = 'run: loop {
-        if !prog.contains_key(&pc) && pc >= base && pc < base + bytes.len() as u64 {
-            for insn in spec.disassemble_ctx(&bytes[(pc - base) as usize..], pc, context) {
+    /// How many instructions have been decoded so far — about what the runs executed.
+    pub fn decoded(&self) -> usize {
+        self.decoded.len()
+    }
+
+    /// The instruction at `pc`, decoding a window on a miss; `None` outside the bytes.
+    ///
+    /// An instruction the window cuts is NOT kept: the decoder zero-pads a cut instruction
+    /// (`Spec::disassemble_ctx`), which can spell a different instruction than the bytes do.
+    /// It is decoded whole from its own address when the run reaches it. At the true end of
+    /// the bytes the padding is the loader's own behaviour and the instruction stands.
+    fn at(&mut self, pc: u64) -> Option<&(Vec<PcodeOp>, u64)> {
+        if !self.decoded.contains_key(&pc) {
+            let off = pc.checked_sub(self.base).filter(|o| (*o as usize) < self.bytes.len())? as usize;
+            let end = (off + DECODE_WINDOW).min(self.bytes.len());
+            let cut = end < self.bytes.len();
+            let window_end = self.base + end as u64;
+            for insn in self.spec.disassemble_ctx(&self.bytes[off..end], pc, self.context) {
                 let next = insn.address + insn.bytes.len() as u64;
-                prog.entry(insn.address).or_insert((insn.ops, next));
-            }
-        }
-        let Some((ops, next)) = prog.get(&pc) else { break Stop::NoInstruction(pc) };
-        let mut i = 0usize;
-        let mut jump = None;
-        while i < ops.len() {
-            if steps >= opts.max_steps {
-                break 'run Stop::StepCap;
-            }
-            steps += 1;
-            let op = &ops[i];
-            if opts.follow_calls {
-                match opcode_name(op.opcode) {
-                    "CALL" | "CALLIND" => {
-                        // A direct target is the address varnode itself; an indirect one is the
-                        // value it holds (see `run_traced` for why the two must not be confused).
-                        let target = match op.ins.first() {
-                            Some(PArg::Var(v)) if opcode_name(op.opcode) == "CALL" && !v.is_const() => v.offset,
-                            Some(arg) => m.read_arg(arg),
-                            None => 0,
-                        };
-                        if target & !0xff == SWI_VECTOR {
-                            // An `INT n`'s call through its vector: the handler is not here.
-                            i += 1;
-                            continue;
-                        }
-                        depth += 1;
-                        jump = Some(target);
-                        break;
-                    }
-                    "RETURN" => {
-                        if depth == 0 {
-                            break 'run Stop::Returned;
-                        }
-                        depth -= 1;
-                        jump = Some(op.ins.first().map_or(0, |a| m.read_arg(a)));
-                        break;
-                    }
-                    _ => {}
-                }
-            }
-            match m.step(op) {
-                Flow::Next => i += 1,
-                Flow::Rel(d) => i = (i as i64 + d).max(0) as usize,
-                Flow::Jump(t) => {
-                    jump = Some(t);
+                if cut && next > window_end {
                     break;
                 }
-                Flow::Stop => break 'run Stop::Returned,
-                Flow::Fault => break 'run Stop::Fault,
+                self.decoded.entry(insn.address).or_insert((insn.ops, next));
             }
         }
-        pc = jump.unwrap_or(*next);
-    };
-    Run { machine: m, steps, stop }
+        self.decoded.get(&pc)
+    }
+
+    /// Execute from `opts.entry` (or the first byte) over `inputs`; see [`run_with`].
+    pub fn run(&mut self, inputs: &[(&str, u64, u64, u32)], opts: &RunOptions) -> Run {
+        let mut m = Machine { userops: self.spec.userops.clone(), ..Machine::default() };
+        for &(space, offset, value, size) in inputs {
+            m.write(space, offset, size, value);
+        }
+
+        let mut pc = opts.entry.unwrap_or(self.base);
+        let mut steps = 0usize;
+        let mut depth = 0usize;
+        let stop = 'run: loop {
+            let Some((ops, next)) = self.at(pc) else { break Stop::NoInstruction(pc) };
+            let mut i = 0usize;
+            let mut jump = None;
+            while i < ops.len() {
+                if steps >= opts.max_steps {
+                    break 'run Stop::StepCap;
+                }
+                steps += 1;
+                let op = &ops[i];
+                if opts.follow_calls {
+                    match opcode_name(op.opcode) {
+                        "CALL" | "CALLIND" => {
+                            // A direct target is the address varnode itself; an indirect one is
+                            // the value it holds (see `run_traced` for why the two must not be
+                            // confused).
+                            let target = match op.ins.first() {
+                                Some(PArg::Var(v)) if opcode_name(op.opcode) == "CALL" && !v.is_const() => v.offset,
+                                Some(arg) => m.read_arg(arg),
+                                None => 0,
+                            };
+                            if target & !0xff == SWI_VECTOR {
+                                // An `INT n`'s call through its vector: the handler is not here.
+                                i += 1;
+                                continue;
+                            }
+                            depth += 1;
+                            jump = Some(target);
+                            break;
+                        }
+                        "RETURN" => {
+                            if depth == 0 {
+                                break 'run Stop::Returned;
+                            }
+                            depth -= 1;
+                            jump = Some(op.ins.first().map_or(0, |a| m.read_arg(a)));
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                match m.step(op) {
+                    Flow::Next => i += 1,
+                    Flow::Rel(d) => i = (i as i64 + d).max(0) as usize,
+                    Flow::Jump(t) => {
+                        jump = Some(t);
+                        break;
+                    }
+                    Flow::Stop => break 'run Stop::Returned,
+                    Flow::Fault => break 'run Stop::Fault,
+                }
+            }
+            pc = jump.unwrap_or(*next);
+        };
+        Run { machine: m, steps, stop }
+    }
 }
 
 #[cfg(test)]
