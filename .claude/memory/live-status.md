@@ -41,6 +41,13 @@ Still open for the consumer: their `refexec` links `mosura-core` by path; the op
 one. Not done here: an x87 80-bit float model (reported `unmodeled`), a CLI verb (`mosura call
 sleigh.emulate` is the surface).
 
+Entry 6 (added by the consumer the same evening, decode cost): `a7236612` — `Image` decodes on demand
+in 64-byte windows (an instruction the window CUTS is refused: the decoder ZERO-PADS a cut
+instruction and can spell a different one) and keeps the decoded map across runs (`Image::run`);
+`run_with` = one image used once. `558a24e9` bounds `run_traced`'s off-phase decode the same way.
+Gate: a routine planted in 256 KiB of noise decodes ≤ 2 windows, nothing on the second run;
+evidence `validation/reference-execution/decode-to-end.log` (239 decoded for 5 executed).
+
 ## Live status — `master` (2026-09-13): issue #4 global symbol views LANDED on top of `8bb0661c`
 
 The liaison track (Bob's ledger, `docs/bob-issue-tracker.md` + the `BOB_TASK.md` checklist kept in
