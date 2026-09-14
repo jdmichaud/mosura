@@ -252,6 +252,19 @@ if have gcc && have objcopy; then
     rm -f "global_partial_result.gcc-x86-$bits.unstripped"
   done
 
+  # Reference execution: division routines whose inputs select a #DE fault, a loop whose
+  # termination depends on its input, and a caller/callee pair with an interrupt kept as an event.
+  for prog in divide_fault spin_until_zero call_chain; do
+    for bits in 32 64; do
+      gcc -m"$bits" -nostdlib -static -no-pie -Wl,-e,_start "src/$prog.S" \
+        -o "$prog.gcc-x86-$bits.unstripped"
+      derive_truth_elf "$prog.gcc-x86-$bits.unstripped" "$prog" gcc "x86-$bits" \
+        "x86:LE:$bits:default" ""
+      strip -o "$prog.gcc-x86-$bits" "$prog.gcc-x86-$bits.unstripped"
+      rm -f "$prog.gcc-x86-$bits.unstripped"
+    done
+  done
+
   # A callback input whose predecessor definitions require a phi despite its call-output guard.
   for bits in 32 64; do
     gcc -m"$bits" -nostdlib -static -no-pie -Wl,-e,_start src/branch_argument.S -o branch_argument.gcc-x86-"$bits".unstripped

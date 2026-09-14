@@ -1,0 +1,8 @@
+# mosura-ground-truth v1 program=divide_fault compiler=gcc arch=x86-32 lang=x86:LE:32:default
+# derived-from=divide_fault.gcc-x86-32.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 08049000
+func 08049000 0000001c _start code
+func 0804901c 00000003 divide_pair code
+func 0804901f 00000004 divide_word code
+func 08049023 00000003 divide_signed code
