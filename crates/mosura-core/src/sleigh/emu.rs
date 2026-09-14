@@ -1080,7 +1080,11 @@ pub fn run_traced(
             let Some(off) = pc.checked_sub(base).filter(|o| (*o as usize) < bytes.len()) else {
                 break 'run;
             };
-            let Some(insn) = spec.disassemble_ctx(&bytes[off as usize..], pc, context).into_iter().next()
+            // One window, not the rest of the bytes: the decoder zero-pads a cut instruction,
+            // so an instruction the window cuts is refused rather than kept (see `Image::at`).
+            let end = (off as usize + DECODE_WINDOW).min(bytes.len());
+            let Some(insn) = spec.disassemble_ctx(&bytes[off as usize..end], pc, context).into_iter().next()
+                .filter(|i| end == bytes.len() || i.address + i.bytes.len() as u64 <= base + end as u64)
             else {
                 break 'run;
             };
