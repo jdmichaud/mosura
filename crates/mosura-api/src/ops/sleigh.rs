@@ -157,7 +157,7 @@ fn emulate(_s: &mut Session, o: &Options, _p: &mut dyn Progress) -> Result<Table
             seeds.push(("ram", addr + k as u64, u64::from(b), 1));
         }
     }
-    let run = emu::run_with(i.spec, &i.bytes, i.base, &i.ctx, &seeds, &RunOptions { entry, follow_calls, max_steps });
+    let run = emu::run_with(i.spec, &i.bytes, i.base, &i.ctx, &seeds, &RunOptions { entry, follow_calls, max_steps, ..RunOptions::default() });
     let mut b = TableBuilder::new(&EMULATION);
     let (stop, address) = match run.stop {
         Stop::Returned => ("returned", None),

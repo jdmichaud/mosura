@@ -1286,11 +1286,21 @@ pub struct RunOptions {
     pub follow_calls: bool,
     /// The p-code operation budget.
     pub max_steps: usize,
+    /// Record what the run does — every store outside the register and unique spaces, every
+    /// call, every port access, every software interrupt — in [`Machine::effects`], in order.
+    ///
+    /// Off by default, and off is not a lesser mode: the effect list of a whole followed run is
+    /// long, and a caller that only wants the memory the run leaves behind reads it from the
+    /// machine. It is on when the ORDER matters — when a store means something different
+    /// depending on the port write that came before it, which is how unchained VGA works: the
+    /// same byte written to the same address lands in a different plane depending on the map mask
+    /// the program last wrote to the sequencer.
+    pub trace: bool,
 }
 
 impl Default for RunOptions {
     fn default() -> Self {
-        Self { entry: None, follow_calls: false, max_steps: 5_000_000 }
+        Self { entry: None, follow_calls: false, max_steps: 5_000_000, trace: false }
     }
 }
 
@@ -1364,7 +1374,11 @@ impl<'a> Image<'a> {
 
     /// Execute from `opts.entry` (or the first byte) over `inputs`; see [`run_with`].
     pub fn run(&mut self, inputs: &[(&str, u64, u64, u32)], opts: &RunOptions) -> Run {
-        let mut m = Machine { userops: self.spec.userops.clone(), ..Machine::default() };
+        let mut m = Machine {
+            userops: self.spec.userops.clone(),
+            trace: opts.trace,
+            ..Machine::default()
+        };
         for &(space, offset, value, size) in inputs {
             m.write(space, offset, size, value);
         }
