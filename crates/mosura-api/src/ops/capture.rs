@@ -432,7 +432,7 @@ impl Runner<'_> {
             return Ok(None);
         }
         self.case += 1;
-        if self.case % 256 == 0 && !prog.report("capture", self.case, self.total) {
+        if self.case.is_multiple_of(256) && !prog.report("capture", self.case, self.total) {
             return Err(Error::Cancelled);
         }
         let mut m = prepare(&self.image, self.spec, &self.state, &self.cs.fixed);
