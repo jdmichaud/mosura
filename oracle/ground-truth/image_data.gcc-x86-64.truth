@@ -1,0 +1,7 @@
+# mosura-ground-truth v1 program=image_data compiler=gcc arch=x86-64 lang=x86:LE:64:default
+# derived-from=image_data.gcc-x86-64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 0000000000401000
+func 0000000000401000 000000000000000d _start code
+func 000000000040100d 0000000000000011 table_sum code
+func 000000000040101e 000000000000000f bump code
