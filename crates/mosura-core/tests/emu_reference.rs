@@ -296,3 +296,43 @@ fn a_traced_run_records_its_calls() {
         assert!(r.machine.effects.iter().any(|e| matches!(e, Effect::Swi(0x21, _))), "x86-{bits}: {:?}", r.machine.effects);
     }
 }
+
+/// A run can continue from the machine another run left, or from one the caller prepared: its
+/// registers and memory are the next run's starting state, while the effects are each run's own.
+#[test]
+fn a_run_continues_from_a_machine() {
+    use mosura_core::sleigh::emu::Image;
+    for bits in [32, 64] {
+        let f = fixture("divide_fault", bits);
+        let e = f.entry("divide_pair");
+        let mut img = Image::new(f.spec, f.body("divide_pair"), e, f.ctx);
+        let seeds = f.seeds(&[("EDX", 0), ("EAX", 100), ("ECX", 7)]);
+        let first = img.run(&seeds, &RunOptions::default());
+        assert_eq!((first.stop, f.read(&first, "EAX"), f.read(&first, "EDX")), (Stop::Returned, 14, 2), "x86-{bits}");
+        // EDX:EAX = 2:14 over the same ECX: 0x2_0000_000e / 7 = 0x4924_924b remainder 1.
+        let second = img.resume(first.machine, &RunOptions::default());
+        assert_eq!((second.stop, f.read(&second, "EAX"), f.read(&second, "EDX")), (Stop::Returned, 0x4924_924b, 1), "x86-{bits}");
+        // A prepared machine: registers seeded one by one, memory in bulk; neither is an effect.
+        let mut m = img.machine();
+        for &(space, off, value, size) in &seeds {
+            m.write(space, off, size, value);
+        }
+        m.write_bytes("ram", 0x5000, &[1, 2, 3]);
+        let third = img.resume(m, &RunOptions { trace: true, ..RunOptions::default() });
+        assert_eq!(third.stop, Stop::Returned, "x86-{bits}");
+        assert_eq!(third.machine.effects, Vec::<Effect>::new(), "x86-{bits}: the seeds are setup");
+        assert_eq!(third.machine.written("ram"), vec![(0x5000, vec![1, 2, 3])], "x86-{bits}");
+        // `unique` holds the lifted instructions' temporaries, dead between instructions.
+        assert_eq!(third.machine.spaces(), vec!["ram", "register", "unique"], "x86-{bits}");
+
+        let f = fixture("call_chain", bits);
+        let mut img = Image::new(f.spec, f.from("outer"), f.entry("outer"), f.ctx);
+        let traced = RunOptions { trace: true, ..RunOptions::default() };
+        let a = img.run(&f.seeds(&[(f.sp(), STACK), ("EAX", 0)]), &traced);
+        let n = a.machine.effects.len();
+        assert!(n > 0, "x86-{bits}: the CALL's push and the call itself");
+        let b = img.resume(a.machine, &traced);
+        assert_eq!(b.machine.effects.len(), n, "x86-{bits}: the second run's effects are its own");
+        assert_eq!(f.read(&b, "EAX"), 2, "x86-{bits}: outer's +1 twice, the callee skipped both times");
+    }
+}

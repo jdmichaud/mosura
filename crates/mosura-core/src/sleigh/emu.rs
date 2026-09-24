@@ -283,6 +283,32 @@ impl Machine {
         }
     }
 
+    /// Write `bytes` at `offset` in `space`, in order (a block of memory, a saved state).
+    pub fn write_bytes(&mut self, space: &str, offset: u64, bytes: &[u8]) {
+        if space == "const" {
+            return;
+        }
+        if self.trace && space != "register" && space != "unique" {
+            let scratch = self.quiet.is_some_and(|(lo, hi)| offset >= lo && offset < hi);
+            if !scratch {
+                for (i, b) in bytes.iter().enumerate() {
+                    self.effects.push(Effect::Store(space.to_string(), offset + i as u64, 1, u64::from(*b)));
+                }
+            }
+        }
+        let bank = self.mem.entry(space.to_string()).or_default();
+        for (i, b) in bytes.iter().enumerate() {
+            bank.insert(offset + i as u64, *b);
+        }
+    }
+
+    /// The spaces this state holds bytes in, sorted by name.
+    pub fn spaces(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.mem.iter().filter(|(_, bank)| !bank.is_empty()).map(|(n, _)| n.as_str()).collect();
+        names.sort_unstable();
+        names
+    }
+
     fn read_arg(&self, a: &PArg) -> u64 {
         match a {
             PArg::Var(v) => self.read(&v.space, v.offset, v.size),
@@ -1376,12 +1402,29 @@ impl<'a> Image<'a> {
 
     /// Execute from `opts.entry` (or the first byte) over `inputs`; see [`run_with`].
     pub fn run(&mut self, inputs: &[(&str, u64, u64, u32)], opts: &RunOptions) -> Run {
-        let mut m = Machine { userops: self.spec.userops.clone(), ..Machine::default() };
+        let mut m = self.machine();
         for &(space, offset, value, size) in inputs {
             m.write(space, offset, size, value);
         }
-        // The seeding writes above are setup, not effects (as in `run_traced`): the recording
-        // starts with the run.
+        self.resume(m, opts)
+    }
+
+    /// A fresh machine for this image, for a caller that prepares the starting state itself
+    /// ([`Machine::write`], [`Machine::write_bytes`]) and then runs it with [`Image::resume`].
+    pub fn machine(&self) -> Machine {
+        Machine { userops: self.spec.userops.clone(), ..Machine::default() }
+    }
+
+    /// Execute `m` from `opts.entry` (or the first byte): its registers and memory are the
+    /// starting state — a machine the caller prepared, or the one a previous run left, which is
+    /// how a sequence of runs carries its state from one to the next. What the machine recorded
+    /// before (its effects, its unmodeled operations) is cleared: those are each run's own, and
+    /// the writes that prepared the machine are setup, not effects (as in `run_traced`).
+    pub fn resume(&mut self, mut m: Machine, opts: &RunOptions) -> Run {
+        m.effects.clear();
+        m.unmodeled = 0;
+        m.unmodeled_ops.clear();
+        m.last_quotient = None;
         m.trace = opts.trace;
 
         let mut pc = opts.entry.unwrap_or(self.base);
