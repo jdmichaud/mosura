@@ -37,6 +37,8 @@ pub const EMULATE_MEMORY: &str = "emulate.memory";
 pub const EMULATE_FOLLOW_CALLS: &str = "emulate.follow-calls";
 pub const EMULATE_MAX_STEPS: &str = "emulate.max-steps";
 pub const EMULATE_EFFECTS: &str = "emulate.effects";
+pub const EMULATE_STATE: &str = "emulate.state";
+pub const EMULATE_SAVE_STATE: &str = "emulate.save-state";
 pub const ROUND_SCOPE: &str = "round.scope";
 pub const ROUND_SCOPE_FILE: &str = "round.scope-file";
 pub const ROUND_BASELINE: &str = "round.baseline";
@@ -87,6 +89,8 @@ pub fn hand_written() -> Vec<OptionSpec> {
         spec!(EMULATE_MEMORY, OptType::Str, "", Affects::Input, "the initial memory of sleigh.emulate, hexaddr=hexbytes;…"),
         spec!(EMULATE_FOLLOW_CALLS, OptType::Bool, "false", Affects::Input, "sleigh.emulate enters a call whose target lies in the bytes and returns to the caller; off, a call is an event and its callee never runs"),
         spec!(EMULATE_MAX_STEPS, OptType::U64, "5000000", Affects::Input, "the p-code operation budget of sleigh.emulate; a run that spends it stops as step-cap"),
+        spec!(EMULATE_STATE, OptType::Str, "", Affects::Input, "the emulate operations start from the machine state stored in the session under this name (registers and memory; the seeds apply on top)"),
+        spec!(EMULATE_SAVE_STATE, OptType::Str, "", Affects::Input, "the emulate operations store the machine state the run stopped in under this name, replacing any state of that name"),
         spec!(EMULATE_EFFECTS, OptType::Bool, "false", Affects::Input, "the emulate operations also list what the run did, in order, as effect rows: stores outside the register and unique spaces, calls by target, port accesses, software interrupts, a fault"),
         spec!("format", OptType::Str, "", Affects::Input, "what to return: c, raw, or table:<name> (function.decompile)"),
         spec!("toolchain", OptType::Str, "", Affects::Input, "the session toolchain an operation compiles with (toolchain.open's name)"),

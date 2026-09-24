@@ -24,6 +24,8 @@ mosura call sleigh.emulate lang=x86:LE:32:default bytes=f7f1c3 base=0x1000 \
 | `emulate.follow-calls` | enter a `CALL`/`CALLIND` whose target lies inside the bytes and return to the caller at its `RETURN`; off (the default) a call is an event: skipped, its callee never run |
 | `emulate.max-steps` | the p-code operation budget (default 5,000,000) |
 | `emulate.effects` | also list what the run did, in order, as `effect` rows (default off) |
+| `emulate.state` | start from the machine state stored in the session under this name; the seeds apply on top |
+| `emulate.save-state` | store the machine state the run stopped in under this name, replacing any state of that name |
 
 The answer is an `emulation` table of `(kind, name, value)` rows:
 
@@ -53,6 +55,23 @@ The same keys and the same answer, with the function's `entry` in place of `byte
 decoded where the run reaches and read as memory. A routine finds its tables and the initial value
 of every global where the program keeps them, without seeding them, and a followed call enters
 its callee wherever it lives. `entry` must be a function of the analyzed program.
+
+## Carrying state from one run to the next
+
+A sequence of runs — a simulation stepped routine by routine, a counter bumped twice — continues
+from where the last run stopped by naming a state:
+
+```sh
+mosura -S s call function.emulate entry=0x40101e emulate.save-state=shot
+mosura -S s call function.emulate entry=0x40101e emulate.state=shot emulate.save-state=shot
+```
+
+A state is every run of bytes the machine held when the run stopped — registers and memory, in
+every space but `unique` (the lifter's temporaries, dead between instructions) — stored in the
+session (`states/<name>.tbl`, or in memory for an in-memory session). It is stored whatever the
+stop, and a second save under the same name replaces the first: unlike a round, a state is a
+working point, not a measurement. A run that names one starts from it, over the image as loaded,
+and its own seeds apply on top. States of a C API language handle live in that handle's session.
 
 ## Why a run stopped
 

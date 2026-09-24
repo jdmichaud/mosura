@@ -123,3 +123,34 @@ fn function_emulate_lists_the_runs_effects_on_request() {
         assert_eq!(effects(&r), ["swi 0x21"], "x86-{bits}");
     }
 }
+
+/// A run can start from the state another run stopped in, stored in the session: `bump` counts
+/// 42, 43, 44 through one state name, and a run without it starts from the loaded image again.
+/// The state holds registers too, and a seed given with it wins.
+#[test]
+fn a_run_continues_from_a_stored_machine_state() {
+    let c = ctx();
+    for bits in [32, 64] {
+        let (mut s, e) = session(&c, "image_data", bits);
+        let bump = entry(&e, "bump");
+        let mut counts = Vec::new();
+        let first = opts(&[("entry", bump), ("emulate.save-state", "counter")]);
+        counts.push(register(&rows(&dispatch(&c, &mut s, "function.emulate", &first, &mut NoProgress).unwrap()), &["EAX", "RAX"]));
+        let next = opts(&[("entry", bump), ("emulate.state", "counter"), ("emulate.save-state", "counter")]);
+        for _ in 0..2 {
+            counts.push(register(&rows(&dispatch(&c, &mut s, "function.emulate", &next, &mut NoProgress).unwrap()), &["EAX", "RAX"]));
+        }
+        assert_eq!(counts, [42, 43, 44], "x86-{bits}");
+        let fresh = rows(&dispatch(&c, &mut s, "function.emulate", &opts(&[("entry", bump)]), &mut NoProgress).unwrap());
+        assert_eq!(register(&fresh, &["EAX", "RAX"]), 42, "x86-{bits}: without a state the image is as loaded");
+
+        let sum = entry(&e, "table_sum");
+        dispatch(&c, &mut s, "function.emulate", &opts(&[("entry", sum), ("emulate.registers", "ECX=5"), ("emulate.save-state", "five")]), &mut NoProgress).unwrap();
+        let r = rows(&dispatch(&c, &mut s, "function.emulate", &opts(&[("entry", sum), ("emulate.state", "five")]), &mut NoProgress).unwrap());
+        assert_eq!(register(&r, &["EAX", "RAX"]), 0x3333_3338, "x86-{bits}: ECX = 5 from the state");
+        let r = rows(&dispatch(&c, &mut s, "function.emulate", &opts(&[("entry", sum), ("emulate.state", "five"), ("emulate.registers", "ECX=7")]), &mut NoProgress).unwrap());
+        assert_eq!(register(&r, &["EAX", "RAX"]), 0x3333_333a, "x86-{bits}: the seed wins over the state");
+        let missing = dispatch(&c, &mut s, "function.emulate", &opts(&[("entry", sum), ("emulate.state", "nope")]), &mut NoProgress).unwrap_err();
+        assert!(matches!(missing, Error::NotFound(_)), "x86-{bits}: {missing:?}");
+    }
+}

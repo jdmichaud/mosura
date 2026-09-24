@@ -168,3 +168,18 @@ fn emulate_lists_a_port_write_as_an_effect() {
     let list: Vec<&str> = r.iter().filter(|(k, _, _)| k == "effect").map(|(_, _, v)| v.as_str()).collect();
     assert_eq!(list, ["out 0x3f8 1 0x41"], "{r:?}");
 }
+
+/// `sleigh.emulate` carries a state the same way: `inc eax; ret` twice through one state name.
+#[test]
+fn emulate_continues_from_a_stored_state() {
+    let c = ctx();
+    let mut s = Session::open(None).unwrap();
+    let eax = |r: &[(String, String, String)]| r.iter().find(|(k, n, _)| k == "register" && n == "EAX").map(|(_, _, v)| v.clone());
+    let code = [("lang", "x86:LE:32:default"), ("bytes", "40c3"), ("emulate.save-state", "n")];
+    let r = emulation_rows(&dispatch(&c, &mut s, "sleigh.emulate", &opts(&code), &mut NoProgress).unwrap());
+    assert_eq!(eax(&r).as_deref(), Some("0x00000001"), "{r:?}");
+    let mut again = code.to_vec();
+    again.push(("emulate.state", "n"));
+    let r = emulation_rows(&dispatch(&c, &mut s, "sleigh.emulate", &opts(&again), &mut NoProgress).unwrap());
+    assert_eq!(eax(&r).as_deref(), Some("0x00000002"), "{r:?}");
+}
