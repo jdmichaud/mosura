@@ -1,4 +1,4 @@
-# Reference execution: `sleigh.emulate` and `function.emulate`
+# Reference execution: `sleigh.emulate`, `function.emulate` and `function.capture`
 
 How to run one routine of an original binary over a chosen machine state and read what it
 left behind, through the product surface (`mosura call sleigh.emulate …` over raw bytes,
@@ -55,6 +55,75 @@ The same keys and the same answer, with the function's `entry` in place of `byte
 decoded where the run reaches and read as memory. A routine finds its tables and the initial value
 of every global where the program keeps them, without seeding them, and a followed call enters
 its callee wherever it lives. `entry` must be a function of the analyzed program.
+
+## Capturing vectors: `function.capture`
+
+A reimplementation needs thousands of vectors per routine, each the original's own answer.
+`function.capture` runs them all through one function over one decoded image — decoded once, the
+program's loaded image as memory — from a specification given as JSON text in `capture.spec`:
+
+```json
+{
+  "registers": { "ESP": "0x0f000000" },
+  "memory": [ { "address": "0x2387c", "bytes": "0000000001000000" } ],
+  "follow_calls": true,
+  "max_steps": 100000,
+  "inputs":  [ { "name": "edx", "bits": 32, "pieces": [ { "register": "EDX" } ] } ],
+  "outputs": [ { "name": "eax", "bits": 32, "pieces": [ { "register": "EAX" } ] },
+               { "name": "hi",  "bits": 16, "pieces": [ { "space": "register", "offset": 2, "size": 2 } ] } ],
+  "cases": [
+    { "kind": "explicit", "rows": [ { "edx": "0x0" }, { "edx": "0x20000000" } ] },
+    { "kind": "range", "input": "edx", "from": 0, "to": "0x1ff" },
+    { "kind": "sample", "count": 1000, "seed": 1, "distribution": "log2-uniform",
+      "inputs": { "edx": { "min": 1, "max": "0x7fffffff" } } }
+  ]
+}
+```
+
+```sh
+mosura -S s call function.capture entry=0x663 capture.spec="$(cat spec.json)" --format json
+```
+
+| key | meaning |
+| --- | --- |
+| `registers` | registers every vector starts with, by the language's names (a stack pointer, a pointer to a block) |
+| `memory` | bytes every vector starts with, `{address, bytes}` (hex); the image is memory already |
+| `follow_calls` | enter calls whose target is in the image (default false: a call is an event) |
+| `max_steps` | the p-code budget of one vector (default 5,000,000) |
+| `inputs`, `outputs` | logical unsigned values of `bits` (1–64), each assembled from `pieces`: `{register: NAME}`, or `{space, offset, size}` (1–8 bytes) for part of a register or memory, with an optional `shift` — a piece holds `(value >> shift)` in its `size` bytes, little-endian |
+| `cases` | the generators, run in order; a row already produced is skipped |
+
+Numbers are JSON integers or strings in decimal or `0x` hex; `note` is allowed on every object
+with fixed keys, as a comment; any other unknown key is refused, as is a register the language
+does not have or a value wider than its input. The generators:
+
+* `explicit`: `rows`, one object per vector naming every input.
+* `range`: every value of `input` in `[from, to]`, the other inputs from `fixed` (default 0).
+* `sample`: `count` rows from splitmix64 seeded with `seed`; each input drawn in its
+  `inputs.<name>` `{min, max}` (default the full width), `uniform` (Lemire's multiply-shift of one
+  64-bit draw over the span) or `log2-uniform` (one draw picks the bit length uniformly between
+  those of `min` and `max`, a second fills the bits below the top one; a value outside the range is
+  drawn again up to 64 times, then drawn uniformly), then mapped through `offset + scale * draw`
+  modulo the input's width (`scale` signed, default 1). splitmix64:
+  `s += 0x9e3779b97f4a7c15; z = s; z = (z ^ z>>30) * 0xbf58476d1ce4e5b9; z = (z ^ z>>27) *
+  0x94d049bb133111eb; z ^ z>>31`.
+* `chain`: `count` rows from `start`, each next row copying the listed outputs into the listed
+  inputs (`feed: [{output, input}]`). A chain ends at the first row that did not return with
+  nothing unmodeled, or that was already produced.
+
+`emulate.state` names a stored machine state every vector starts from. The answer is a `capture`
+table, one row per vector: `case` (1, 2, …), `generator` (its index in `cases`), `inputs` and
+`outputs` (in the specification's order; no outputs unless the run returned), `stop`, `address`
+(with `no-instruction`), `steps`, `unmodeled` and `unmodeled_ops`. A row is evidence only when it
+`returned` with nothing unmodeled; the others are the rejected cases, each with its reason.
+
+The generators are the reference executor's that vpoolz used (`refexec`), draw for draw, so its
+routine specifications carry over: pieces are the same `{space, offset, size, shift}`; its
+`stack_pointer` and `registers` become `registers` by register name; its `preload` windows are not
+needed, the image being memory; its `depends_on` becomes `follow_calls`; its `name`, `executable`,
+`entry`, `length`, `body` and `notes` belong to the client (`entry` is the operation's own
+parameter). Two differences remain: `bits` need not be a multiple of four, and a vector that met
+an unmodeled operation is a row with its count rather than an error that stops the capture.
 
 ## Carrying state from one run to the next
 
@@ -145,6 +214,6 @@ and unique spaces, calls by target (followed or not), port accesses and software
 writes that prepared the machine are not effects.
 
 The source-built gates are `crates/mosura-core/tests/emu_reference.rs` over
-`oracle/ground-truth/src/{divide_fault,spin_until_zero,call_chain,image_data}.S`; the operation's
-are in `crates/mosura-api/tests/ops_sleigh.rs` and the C API's in
-`crates/mosura-capi/tests/program.rs`.
+`oracle/ground-truth/src/{divide_fault,spin_until_zero,call_chain,image_data}.S`; the operations'
+are in `crates/mosura-api/tests/ops_sleigh.rs` and `crates/mosura-api/tests/ops_emulate.rs`, and
+the C API's in `crates/mosura-capi/tests/program.rs`.

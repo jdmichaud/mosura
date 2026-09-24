@@ -51,11 +51,11 @@ fn settings(o: &Options) -> Result<Settings> {
 }
 
 /// The initial state an operation names: registers by the language's names, memory as bytes.
-struct Seeds {
+pub(crate) struct Seeds {
     /// `(offset, size, value)` in the register space.
-    registers: Vec<(u64, u32, u64)>,
+    pub(crate) registers: Vec<(u64, u32, u64)>,
     /// `(address, bytes)` in the language's default space.
-    memory: Vec<(u64, Vec<u8>)>,
+    pub(crate) memory: Vec<(u64, Vec<u8>)>,
 }
 
 fn seeds(o: &Options, spec: &Spec, lang: &str) -> Result<Seeds> {
@@ -79,25 +79,26 @@ fn seeds(o: &Options, spec: &Spec, lang: &str) -> Result<Seeds> {
 }
 
 /// The language's default space: where the image lives and where memory seeds go.
-fn memory_space(spec: &Spec) -> &str {
+pub(crate) fn memory_space(spec: &Spec) -> &str {
     &spec.spaces[spec.default_space].name
 }
 
-/// The machine state `emulate.state` names, if any.
-fn stored_state(s: &Session, o: &Options) -> Result<Option<Table>> {
+/// The machine state `emulate.state` names, as `(space, address, bytes)` runs (none without it).
+pub(crate) fn stored_state(s: &Session, o: &Options) -> Result<Vec<(String, u64, Vec<u8>)>> {
     match o.get(keys::EMULATE_STATE)? {
-        "" => Ok(None),
-        name => s.read_state(name).map(Some),
+        "" => Ok(Vec::new()),
+        name => {
+            let t = s.read_state(name)?;
+            (0..t.rows()).map(|r| Ok((t.str(r, 0)?.to_string(), t.u64(r, 1)?, t.bytes(r, 2)?.to_vec()))).collect()
+        }
     }
 }
 
-/// A machine for `image`: the stored state, if any, then `seeds` over it.
-fn prepare(image: &Image<'_>, spec: &Spec, state: Option<&Table>, seeds: &Seeds) -> Result<Machine> {
+/// A machine for `image`: the stored state, then `seeds` over it.
+pub(crate) fn prepare(image: &Image<'_>, spec: &Spec, state: &[(String, u64, Vec<u8>)], seeds: &Seeds) -> Machine {
     let mut m = image.machine();
-    if let Some(t) = state {
-        for r in 0..t.rows() {
-            m.write_bytes(t.str(r, 0)?, t.u64(r, 1)?, t.bytes(r, 2)?);
-        }
+    for (space, addr, bytes) in state {
+        m.write_bytes(space, *addr, bytes);
     }
     for &(off, size, value) in &seeds.registers {
         m.write("register", off, size, value);
@@ -105,7 +106,7 @@ fn prepare(image: &Image<'_>, spec: &Spec, state: Option<&Table>, seeds: &Seeds)
     for (addr, bytes) in &seeds.memory {
         m.write_bytes(memory_space(spec), *addr, bytes);
     }
-    Ok(m)
+    m
 }
 
 /// The state a machine holds, as `machine_state` rows: every run of bytes in every space but
@@ -129,7 +130,7 @@ fn save_state(s: &mut Session, o: &Options, run: &Run) -> Result<()> {
 }
 
 /// A program's loaded memory as image blocks: every initialized block of its default space.
-fn program_blocks(p: &Program) -> Vec<(u64, &[u8])> {
+pub(crate) fn program_blocks(p: &Program) -> Vec<(u64, &[u8])> {
     p.memory
         .blocks()
         .filter(|b| b.start.space == p.default_space)
@@ -207,7 +208,7 @@ fn sleigh_emulate(s: &mut Session, o: &Options, _p: &mut dyn Progress) -> Result
     // The bytes are the machine's memory as well as its code, as a loaded program's are.
     let state = stored_state(s, o)?;
     let mut image = Image::new(i.spec, &i.bytes, i.base, &i.ctx).with_image_memory();
-    let m = prepare(&image, i.spec, state.as_ref(), &seeds)?;
+    let m = prepare(&image, i.spec, &state, &seeds);
     let run = image.resume(m, &settings.run_options(entry));
     save_state(s, o, &run)?;
     Ok(emulation_table(i.spec, &run))
@@ -223,7 +224,7 @@ fn function_emulate(s: &mut Session, o: &Options, _p: &mut dyn Progress) -> Resu
     let state = stored_state(s, o)?;
     let blocks = program_blocks(&p);
     let mut image = Image::from_blocks(spec, &blocks, ctx).with_image_memory();
-    let m = prepare(&image, spec, state.as_ref(), &seeds)?;
+    let m = prepare(&image, spec, &state, &seeds);
     let run = image.resume(m, &settings.run_options(Some(entry)));
     save_state(s, o, &run)?;
     Ok(emulation_table(spec, &run))

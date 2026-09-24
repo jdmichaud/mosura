@@ -6,6 +6,7 @@
 //! tier built as another crate (the dev tier) — one `Extension` handed to `register` when the
 //! context is built.
 
+pub mod capture;
 pub mod emit;
 pub mod emulate;
 pub mod equiv;
@@ -87,6 +88,7 @@ impl Op {
 pub static REGISTRY: &[&Op] = &[
     &fid::IDENTIFY,
     &round::BUILDCONFIG_OP,
+    &capture::FUNCTION_CAPTURE,
     &function::DECOMPILE,
     &emit::EMIT,
     &emulate::FUNCTION_EMULATE,
