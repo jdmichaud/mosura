@@ -11,6 +11,39 @@ metadata:
 Moved out of MEMORY.md 2026-08-06 (the index is a hook list; this is its detail). Every number
 here is STALE unless @sha==HEAD — see [[numbers-stale-unless-sha-stamped]].
 
+## Live status — `master` (2026-09-24): the emulation surface — function.emulate, function.capture, states
+
+The consumer's reference executor (`refexec`, outside this repo) linked `mosura-core` by path and
+broke with every internal move. The capabilities it needed are now product operations, so it can
+be a client (the owner asked "should we expose internals" → NO: expose capabilities, one op each;
+`mosura-core` stays free to move, `docs/product/architecture.md` §0).
+
+- Core (`sleigh::emu`): `1ca8a613` seeding a traced run is not an effect · `57df7ff0` a traced run
+  records its calls (`Effect::Call(target, [])`, followed or not; an INT's vector call is not one)
+  · `937a0e88` `Image::machine` / `Machine::write_bytes` / `Image::resume` (continue from any
+  machine; effects and unmodeled counts reset per run) · `1d4fa984` `Image::from_blocks` +
+  `with_image_memory` (never-written bytes read the loaded image; shared `Arc` backing).
+- Fixture `e95e325f` `image_data.S` (table_sum reads .data constants, bump bumps a .data counter).
+- API: `5dc3d237` `sleigh.emulate` bytes are memory too · `a2651bbc` `function.emulate` (new
+  `ops/emulate.rs`) · `90386f64` `emulate.effects` rows (`store|call|in|out|swi|fault` text) ·
+  `70b19e36` session machine states (`states/<name>.tbl`, overwritable, unlike rounds) ·
+  `8b3e4fae` `emulate.state` / `emulate.save-state` · `a44666e7` `function.capture`
+  (`ops/capture.rs`, JSON spec in `capture.spec`; refexec's generators draw for draw).
+- Surfaces: `7e5fcf60` `mosura_program_emulate` / `mosura_program_capture` + binding
+  `Program::emulate` / `Program::capture` (header hand-edited: cbindgen not in the offline cache)
+  · `012275ff` CLI `mosura emulate <fn>` / `mosura capture <fn> --spec FILE`.
+- Validation: the full workspace suite on the final tree — 1354 passed, 0 failed, 28 ignored, 115 binaries (exit 0) on 012275ff's tree; the one later commit, f6f6c2ef, is a lint-only change re-tested by ops_emulate 7/7.
+  Evidence logs (before/after per commit): `<repo parent>/validation/emulate-surface/`.
+- ⚠️ Gotchas: (1) the sample generator must stay splitmix64 + Lemire multiply-shift + log2 bit
+  length EXACTLY — the capture test pins draws computed by an independent Python port (seed 0's
+  first output is the published 0xe220a8397b1dcdaf). (2) `Machine::spaces()` includes `unique`;
+  a saved state drops it. (3) The emulation table's `memory` rows are the language's default
+  space, not a literal `ram`. (4) A chain in `function.capture` ends on a DUPLICATE row too
+  (refexec semantics), not only on a rejected one.
+- For the consumer: `function.capture` replaces refexec's capture core; `function.emulate` +
+  `emulate.effects` + states cover its trace/render modes' execution (their VGA/plane decoding and
+  game specifics stay theirs). Their `preload` windows are unnecessary with image memory.
+
 ## Live status — `master` (2026-09-14): reference execution LANDED (the vpoolz issues doc, entries 1-5)
 
 The consumer's `vpoolz/docs/mosura-issues.md` (in the vpool-re project, outside this repo) listed five

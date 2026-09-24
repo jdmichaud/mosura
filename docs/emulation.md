@@ -126,8 +126,8 @@ table, one row per vector: `case` (1, 2, …), `generator` (its index in `cases`
 (with `no-instruction`), `steps`, `unmodeled` and `unmodeled_ops`. A row is evidence only when it
 `returned` with nothing unmodeled; the others are the rejected cases, each with its reason.
 
-The generators are the reference executor's that vpoolz used (`refexec`), draw for draw, so its
-routine specifications carry over: pieces are the same `{space, offset, size, shift}`; its
+The generators are those of the external reference executor this operation replaces, draw for
+draw, so its routine specifications carry over: pieces are the same `{space, offset, size, shift}`; its
 `stack_pointer` and `registers` become `registers` by register name; its `preload` windows are not
 needed, the image being memory; its `depends_on` becomes `follow_calls`; its `name`, `executable`,
 `entry`, `length`, `body` and `notes` belong to the client (`entry` is the operation's own
