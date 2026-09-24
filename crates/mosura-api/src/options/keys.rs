@@ -36,6 +36,7 @@ pub const EMULATE_REGISTERS: &str = "emulate.registers";
 pub const EMULATE_MEMORY: &str = "emulate.memory";
 pub const EMULATE_FOLLOW_CALLS: &str = "emulate.follow-calls";
 pub const EMULATE_MAX_STEPS: &str = "emulate.max-steps";
+pub const EMULATE_EFFECTS: &str = "emulate.effects";
 pub const ROUND_SCOPE: &str = "round.scope";
 pub const ROUND_SCOPE_FILE: &str = "round.scope-file";
 pub const ROUND_BASELINE: &str = "round.baseline";
@@ -86,6 +87,7 @@ pub fn hand_written() -> Vec<OptionSpec> {
         spec!(EMULATE_MEMORY, OptType::Str, "", Affects::Input, "the initial memory of sleigh.emulate, hexaddr=hexbytes;…"),
         spec!(EMULATE_FOLLOW_CALLS, OptType::Bool, "false", Affects::Input, "sleigh.emulate enters a call whose target lies in the bytes and returns to the caller; off, a call is an event and its callee never runs"),
         spec!(EMULATE_MAX_STEPS, OptType::U64, "5000000", Affects::Input, "the p-code operation budget of sleigh.emulate; a run that spends it stops as step-cap"),
+        spec!(EMULATE_EFFECTS, OptType::Bool, "false", Affects::Input, "the emulate operations also list what the run did, in order, as effect rows: stores outside the register and unique spaces, calls by target, port accesses, software interrupts, a fault"),
         spec!("format", OptType::Str, "", Affects::Input, "what to return: c, raw, or table:<name> (function.decompile)"),
         spec!("toolchain", OptType::Str, "", Affects::Input, "the session toolchain an operation compiles with (toolchain.open's name)"),
         spec!("object", OptType::Str, "", Affects::Input, "a session input holding a compiled object (function.verify)"),

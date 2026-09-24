@@ -156,3 +156,15 @@ fn emulate_reads_its_own_bytes_as_memory() {
     let r = emulation_rows(&dispatch(&c, &mut s, "sleigh.emulate", &opts(&seeded), &mut NoProgress).unwrap());
     assert!(r.contains(&("register".into(), "EAX".into(), "0x12345678".into())), "{r:?}");
 }
+
+/// `emulate.effects` on raw bytes: a port write is an `out` effect row.
+#[test]
+fn emulate_lists_a_port_write_as_an_effect() {
+    let c = ctx();
+    let mut s = Session::open(None).unwrap();
+    // mov dx,0x3f8; mov al,0x41; out dx,al; ret
+    let code = [("lang", "x86:LE:32:default"), ("bytes", "66baf803b041eec3"), ("emulate.effects", "true")];
+    let r = emulation_rows(&dispatch(&c, &mut s, "sleigh.emulate", &opts(&code), &mut NoProgress).unwrap());
+    let list: Vec<&str> = r.iter().filter(|(k, _, _)| k == "effect").map(|(_, _, v)| v.as_str()).collect();
+    assert_eq!(list, ["out 0x3f8 1 0x41"], "{r:?}");
+}

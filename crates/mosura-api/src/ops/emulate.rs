@@ -14,28 +14,39 @@ use crate::session::Session;
 use crate::table::builder::TableBuilder;
 use crate::table::Table;
 use mosura_core::analysis::program::Program;
-use mosura_core::sleigh::emu::{Image, Machine, Run, RunOptions, Stop};
+use mosura_core::sleigh::emu::{Effect, Image, Machine, Run, RunOptions, Stop};
 use mosura_core::sleigh::engine::Spec;
 
-pub static SLEIGH_EMULATE: Op = Op { name: "sleigh.emulate", doc: "execute the p-code of raw bytes from base (or emulate.entry) over an initial state (emulate.registers, emulate.memory; the bytes themselves are memory too) until the routine returns, faults, reaches an address with no instruction, or spends emulate.max-steps; a call is an event unless emulate.follow-calls. Rows: outcome (stop = returned | fault | no-instruction | step-cap, address, steps, unmodeled, unmodeled-op), register (every register the final state holds, widest first), memory (every run of bytes it holds, as hex)", since: "0.1", tier: Tier::Product, params: &["lang", "bytes", "base", "ctx", keys::EMULATE_ENTRY, keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS], result: "emulation", cache: Cache::Transient, run: sleigh_emulate };
-pub static FUNCTION_EMULATE: Op = Op { name: "function.emulate", doc: "execute one function (entry) of a program through the p-code interpreter, with the program's loaded image as memory, over an initial state (emulate.registers, emulate.memory) until it returns, faults, reaches an address with no instruction, or spends emulate.max-steps; a call is an event unless emulate.follow-calls. Rows as sleigh.emulate", since: "0.1", tier: Tier::Product, params: &["program", "entry", keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS], result: "emulation", cache: Cache::Transient, run: function_emulate };
+pub static SLEIGH_EMULATE: Op = Op { name: "sleigh.emulate", doc: "execute the p-code of raw bytes from base (or emulate.entry) over an initial state (emulate.registers, emulate.memory; the bytes themselves are memory too) until the routine returns, faults, reaches an address with no instruction, or spends emulate.max-steps; a call is an event unless emulate.follow-calls. Rows: outcome (stop = returned | fault | no-instruction | step-cap, address, steps, unmodeled, unmodeled-op), register (every register the final state holds, widest first), memory (every run of bytes it holds, as hex), and with emulate.effects every effect of the run in order", since: "0.1", tier: Tier::Product, params: &["lang", "bytes", "base", "ctx", keys::EMULATE_ENTRY, keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS, keys::EMULATE_EFFECTS], result: "emulation", cache: Cache::Transient, run: sleigh_emulate };
+pub static FUNCTION_EMULATE: Op = Op { name: "function.emulate", doc: "execute one function (entry) of a program through the p-code interpreter, with the program's loaded image as memory, over an initial state (emulate.registers, emulate.memory) until it returns, faults, reaches an address with no instruction, or spends emulate.max-steps; a call is an event unless emulate.follow-calls. Rows as sleigh.emulate", since: "0.1", tier: Tier::Product, params: &["program", "entry", keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS, keys::EMULATE_EFFECTS], result: "emulation", cache: Cache::Transient, run: function_emulate };
 
 /// The run settings every emulate operation reads.
 struct Settings {
     follow_calls: bool,
     max_steps: usize,
+    effects: bool,
+}
+
+impl Settings {
+    fn run_options(&self, entry: Option<u64>) -> RunOptions {
+        RunOptions { entry, follow_calls: self.follow_calls, max_steps: self.max_steps, trace: self.effects }
+    }
+}
+
+fn flag(o: &Options, key: &str) -> Result<bool> {
+    match o.get(key)? {
+        "" => Ok(false),
+        v => parse_bool(v).ok_or_else(|| Error::InvalidArg(format!("`{key}` is not a boolean: {v}"))),
+    }
 }
 
 fn settings(o: &Options) -> Result<Settings> {
-    let follow_calls = match o.get(keys::EMULATE_FOLLOW_CALLS)? {
-        "" => false,
-        v => parse_bool(v).ok_or_else(|| Error::InvalidArg(format!("`{}` is not a boolean: {v}", keys::EMULATE_FOLLOW_CALLS)))?,
-    };
+    let follow_calls = flag(o, keys::EMULATE_FOLLOW_CALLS)?;
     let max_steps = match o.get(keys::EMULATE_MAX_STEPS)? {
         "" => RunOptions::default().max_steps,
         v => v.trim().parse::<usize>().map_err(|_| Error::InvalidArg(format!("`{}` is not a count: {v}", keys::EMULATE_MAX_STEPS)))?,
     };
-    Ok(Settings { follow_calls, max_steps })
+    Ok(Settings { follow_calls, max_steps, effects: flag(o, keys::EMULATE_EFFECTS)? })
 }
 
 /// The initial state an operation names: registers by the language's names, memory as bytes.
@@ -92,8 +103,22 @@ fn program_blocks(p: &Program) -> Vec<(u64, &[u8])> {
         .collect()
 }
 
+/// One effect as its row text: a verb and its operands, space-separated, numbers in hex (a size in
+/// decimal) — `store <space> <address> <size> <value>`, `call <target>`, `in|out <port> <size>
+/// <value>`, `swi <number>`, `fault`; any argument values follow, in order.
+fn effect_text(e: &Effect) -> String {
+    let args = |vals: &[u64]| vals.iter().map(|v| format!(" {v:#x}")).collect::<String>();
+    match e {
+        Effect::Store(space, at, size, value) => format!("store {space} {at:#x} {size} {value:#0w$x}", w = 2 + 2 * *size as usize),
+        Effect::Call(target, vals) => format!("call {target:#x}{}", args(vals)),
+        Effect::Fault => "fault".to_string(),
+        Effect::Port(write, port, size, value) => format!("{} {port:#x} {size} {value:#x}", if *write { "out" } else { "in" }),
+        Effect::Swi(n, vals) => format!("swi {n:#x}{}", args(vals)),
+    }
+}
+
 /// The `emulation` answer: the outcome, every register the final state holds, every run of bytes
-/// it holds in memory.
+/// it holds in memory, and — when the run recorded them — its effects in order.
 fn emulation_table(spec: &Spec, run: &Run) -> Table {
     let mut b = TableBuilder::new(&EMULATION);
     let (stop, address) = match run.stop {
@@ -130,6 +155,9 @@ fn emulation_table(spec: &Spec, run: &Run) -> Table {
         let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
         b.row().str("memory").str(&format!("{addr:#x}")).str(&hex);
     }
+    for (i, e) in run.machine.effects.iter().enumerate() {
+        b.row().str("effect").str(&(i + 1).to_string()).str(&effect_text(e));
+    }
     b.finish(false)
 }
 
@@ -145,7 +173,7 @@ fn sleigh_emulate(_s: &mut Session, o: &Options, _p: &mut dyn Progress) -> Resul
     // The bytes are the machine's memory as well as its code, as a loaded program's are.
     let mut image = Image::new(i.spec, &i.bytes, i.base, &i.ctx).with_image_memory();
     let m = prepare(&image, i.spec, &seeds);
-    let run = image.resume(m, &RunOptions { entry, follow_calls: settings.follow_calls, max_steps: settings.max_steps, ..RunOptions::default() });
+    let run = image.resume(m, &settings.run_options(entry));
     Ok(emulation_table(i.spec, &run))
 }
 
@@ -159,6 +187,6 @@ fn function_emulate(s: &mut Session, o: &Options, _p: &mut dyn Progress) -> Resu
     let blocks = program_blocks(&p);
     let mut image = Image::from_blocks(spec, &blocks, ctx).with_image_memory();
     let m = prepare(&image, spec, &seeds);
-    let run = image.resume(m, &RunOptions { entry: Some(entry), follow_calls: settings.follow_calls, max_steps: settings.max_steps, ..RunOptions::default() });
+    let run = image.resume(m, &settings.run_options(Some(entry)));
     Ok(emulation_table(spec, &run))
 }

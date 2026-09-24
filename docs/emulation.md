@@ -23,6 +23,7 @@ mosura call sleigh.emulate lang=x86:LE:32:default bytes=f7f1c3 base=0x1000 \
 | `emulate.memory` | the initial memory, `hexaddr=hexbytes;…` (a lookup table, a stack); the bytes are memory already, as a loaded program's are, and a seed over them wins |
 | `emulate.follow-calls` | enter a `CALL`/`CALLIND` whose target lies inside the bytes and return to the caller at its `RETURN`; off (the default) a call is an event: skipped, its callee never run |
 | `emulate.max-steps` | the p-code operation budget (default 5,000,000) |
+| `emulate.effects` | also list what the run did, in order, as `effect` rows (default off) |
 
 The answer is an `emulation` table of `(kind, name, value)` rows:
 
@@ -34,6 +35,11 @@ The answer is an `emulation` table of `(kind, name, value)` rows:
 | `outcome` | `unmodeled`, `unmodeled-op` | how many operations the interpreter does not model were met, and which (any non-zero count makes the run no evidence at all) |
 | `register` | the register | its final value as hex, one row per register the state holds in full, widest first — `EAX` is reported, its `AX`/`AL`/`AH` inside it are not |
 | `memory` | an address | the bytes the state holds from there, as hex: what was seeded and what the routine stored |
+| `effect` | `1`, `2`, … | with `emulate.effects`: one thing the run did, in order — `store <space> <address> <size> <value>`, `call <target>` (followed or not), `in`/`out <port> <size> <value>`, `swi <number>`, `fault`; numbers in hex, sizes in decimal |
+
+Effects are for when the ORDER matters, which the final memory cannot show: a store whose meaning
+depends on the port write before it, as in unchained VGA where the plane a byte lands in is the
+map mask the program last wrote. The writes that prepared the machine are not effects.
 
 ## Over a program: `function.emulate`
 

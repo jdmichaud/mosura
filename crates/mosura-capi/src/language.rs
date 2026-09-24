@@ -121,10 +121,12 @@ pub unsafe extern "C" fn mosura_lift(l: *mut mosura_language, bytes: mosura_view
 /// Execute the p-code of a byte range with an initial state (`sleigh.emulate`). `initial_state`
 /// (NULL = none) is an option set: `ctx` as for `mosura_lift`, `emulate.registers` (`NAME=hex,…`),
 /// `emulate.memory` (`hexaddr=hexbytes;…`), `emulate.entry` (default: base),
-/// `emulate.follow-calls` (default: a call is an event) and `emulate.max-steps`.
+/// `emulate.follow-calls` (default: a call is an event), `emulate.max-steps` and
+/// `emulate.effects`. The bytes are memory as well as code.
 /// emulation: kind, name, value — `outcome` rows (stop = returned | fault | no-instruction |
 /// step-cap; address; steps; unmodeled; unmodeled-op), `register` rows (every register the final
-/// state holds, widest first) and `memory` rows (every run of bytes it holds, as hex).
+/// state holds, widest first), `memory` rows (every run of bytes it holds, as hex) and, with
+/// `emulate.effects`, `effect` rows (what the run did, in order).
 #[no_mangle]
 pub unsafe extern "C" fn mosura_emulate(l: *mut mosura_language, bytes: mosura_view, base: u64, initial_state: *const mosura_options, out: *mut *mut mosura_table) -> mosura_status {
     guard(|| {
@@ -133,7 +135,7 @@ pub unsafe extern "C" fn mosura_emulate(l: *mut mosura_language, bytes: mosura_v
         let mut params = sleigh_params(l, bytes, base, initial_state)?;
         if !initial_state.is_null() {
             let state = options_of(initial_state)?;
-            for key in [keys::EMULATE_ENTRY, keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS] {
+            for key in [keys::EMULATE_ENTRY, keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS, keys::EMULATE_EFFECTS] {
                 if state.is_set(key) {
                     params.set(key, state.get(key)?)?;
                 }

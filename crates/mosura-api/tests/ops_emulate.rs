@@ -92,3 +92,34 @@ fn function_emulate_runs_over_the_programs_loaded_image() {
         assert!(matches!(e3, Error::InvalidArg(_)), "x86-{bits}: {e3:?}");
     }
 }
+
+fn effects(r: &[(String, String, String)]) -> Vec<String> {
+    r.iter().filter(|(k, _, _)| k == "effect").map(|(_, _, v)| v.clone()).collect()
+}
+
+/// `emulate.effects` lists what the run did, in order: the CALL's push, the call itself, and an
+/// interrupt as `swi`. Off (the default) there are no effect rows.
+#[test]
+fn function_emulate_lists_the_runs_effects_on_request() {
+    let c = ctx();
+    for bits in [32, 64] {
+        let (sp, word) = if bits == 64 { ("RSP", 8) } else { ("ESP", 4) };
+        let (mut s, e) = session(&c, "call_chain", bits);
+        let stack = format!("{sp}=0x0f000000,EAX=0");
+        let traced = opts(&[("entry", entry(&e, "outer")), ("emulate.registers", &stack), ("emulate.follow-calls", "true"), ("emulate.effects", "true")]);
+        let r = rows(&dispatch(&c, &mut s, "function.emulate", &traced, &mut NoProgress).unwrap());
+        let list = effects(&r);
+        assert_eq!(list.len(), 2, "x86-{bits}: {r:?}");
+        let push = format!("store ram {:#x} {word} ", 0x0f00_0000u64 - word);
+        assert!(list[0].starts_with(&push), "x86-{bits}: {} does not start with {push}", list[0]);
+        assert_eq!(list[1], format!("call {}", entry(&e, "inner")), "x86-{bits}");
+        let names: Vec<&str> = r.iter().filter(|(k, _, _)| k == "effect").map(|(_, n, _)| n.as_str()).collect();
+        assert_eq!(names, ["1", "2"], "x86-{bits}: effects are numbered in order");
+        let quiet = opts(&[("entry", entry(&e, "outer")), ("emulate.registers", &stack)]);
+        let r = rows(&dispatch(&c, &mut s, "function.emulate", &quiet, &mut NoProgress).unwrap());
+        assert!(effects(&r).is_empty(), "x86-{bits}: {r:?}");
+        let interrupt = opts(&[("entry", entry(&e, "interrupt_event")), ("emulate.registers", &stack), ("emulate.effects", "true")]);
+        let r = rows(&dispatch(&c, &mut s, "function.emulate", &interrupt, &mut NoProgress).unwrap());
+        assert_eq!(effects(&r), ["swi 0x21"], "x86-{bits}");
+    }
+}

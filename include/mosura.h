@@ -371,10 +371,12 @@ mosura_status mosura_lift(mosura_language *l,
  * Execute the p-code of a byte range with an initial state (`sleigh.emulate`). `initial_state`
  * (NULL = none) is an option set: `ctx` as for `mosura_lift`, `emulate.registers` (`NAME=hex,…`),
  * `emulate.memory` (`hexaddr=hexbytes;…`), `emulate.entry` (default: base),
- * `emulate.follow-calls` (default: a call is an event) and `emulate.max-steps`.
+ * `emulate.follow-calls` (default: a call is an event), `emulate.max-steps` and
+ * `emulate.effects`. The bytes are memory as well as code.
  * emulation: kind, name, value — `outcome` rows (stop = returned | fault | no-instruction |
  * step-cap; address; steps; unmodeled; unmodeled-op), `register` rows (every register the final
- * state holds, widest first) and `memory` rows (every run of bytes it holds, as hex).
+ * state holds, widest first), `memory` rows (every run of bytes it holds, as hex) and, with
+ * `emulate.effects`, `effect` rows (what the run did, in order).
  */
 mosura_status mosura_emulate(mosura_language *l,
                              mosura_view bytes,
