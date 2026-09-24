@@ -7,6 +7,7 @@
 //! context is built.
 
 pub mod emit;
+pub mod emulate;
 pub mod equiv;
 pub mod fid;
 pub mod function;
@@ -88,6 +89,7 @@ pub static REGISTRY: &[&Op] = &[
     &round::BUILDCONFIG_OP,
     &function::DECOMPILE,
     &emit::EMIT,
+    &emulate::FUNCTION_EMULATE,
     &equiv::EQUIV,
     &round::RECOMPILE,
     &round::VERIFY,
@@ -111,7 +113,7 @@ pub static REGISTRY: &[&Op] = &[
     &session::CONFIG,
     &session::CONFIG_SET,
     &sleigh::DISASSEMBLE,
-    &sleigh::EMULATE,
+    &emulate::SLEIGH_EMULATE,
     &sleigh::LIFT,
     &toolchain::CHECK_OP,
     &toolchain::LIST,

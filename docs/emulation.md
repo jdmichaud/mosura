@@ -1,7 +1,8 @@
-# Reference execution: `sleigh.emulate`
+# Reference execution: `sleigh.emulate` and `function.emulate`
 
 How to run one routine of an original binary over a chosen machine state and read what it
-left behind, through the product surface (`mosura call sleigh.emulate …`, `mosura_call` /
+left behind, through the product surface (`mosura call sleigh.emulate …` over raw bytes,
+`mosura call function.emulate …` over a function of the session's program, `mosura_call` /
 `mosura_emulate` in the C API) or the library (`sleigh::emu::run_with`). The interpreter is the
 one the differential check rests on ([semantic-equivalence.md](semantic-equivalence.md)); this
 page is its plain, single-program use: a REFERENCE of the original's results, for a client that
@@ -33,6 +34,21 @@ The answer is an `emulation` table of `(kind, name, value)` rows:
 | `outcome` | `unmodeled`, `unmodeled-op` | how many operations the interpreter does not model were met, and which (any non-zero count makes the run no evidence at all) |
 | `register` | the register | its final value as hex, one row per register the state holds in full, widest first — `EAX` is reported, its `AX`/`AL`/`AH` inside it are not |
 | `memory` | an address | the bytes the state holds from there, as hex: what was seeded and what the routine stored |
+
+## Over a program: `function.emulate`
+
+```sh
+mosura -S s analyze prog.exe
+mosura -S s call function.emulate entry=0x3a4 emulate.registers=ESP=0x0f000000,EDX=0x20000000
+```
+
+The same keys and the same answer, with the function's `entry` in place of `bytes`, `base` and
+`emulate.entry`. The image is the program as loaded: every initialized block of its default space,
+decoded where the run reaches and read as memory. A routine finds its tables and the initial value
+of every global where the program keeps them, without seeding them, and a followed call enters
+its callee wherever it lives. `entry` must be a function of the analyzed program.
+
+## Why a run stopped
 
 Every stop but `returned` is a reason to reject the capture, and the reason is named:
 
