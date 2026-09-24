@@ -37,7 +37,9 @@ pub mod schemas {
     pub static INPUTS: Schema = Schema { name: "inputs", version: 1, columns: &[C::new("label", T::Str), C::new("digest", T::Str), C::new("size", T::U64), C::new("filename", T::Str), C::new("added", T::Str)] };
     pub static CONFIG: Schema = Schema { name: "config", version: 1, columns: &[C::new("key", T::Str), C::new("value", T::Str)] };
     pub static SETS: Schema = Schema { name: "sets", version: 1, columns: &[C::new("kind", T::Str), C::new("key", T::Str), C::new("tables", T::U32), C::new("bytes", T::U64)] };
-    pub static ALL: &[&Schema] = &[&SESSION_MANIFEST, &INPUTS, &CONFIG, &SETS];
+    /// A machine state (`states/<name>.tbl`): every run of bytes it holds, by space.
+    pub static MACHINE_STATE: Schema = Schema { name: "machine_state", version: 1, columns: &[C::new("space", T::Str), C::hex("address", T::U64), C::new("bytes", T::Bytes)] };
+    pub static ALL: &[&Schema] = &[&SESSION_MANIFEST, &INPUTS, &CONFIG, &SETS, &MACHINE_STATE];
     pub fn by_name(name: &str) -> Option<&'static Schema> {
         ALL.iter().copied().find(|s| s.name == name)
     }
@@ -90,6 +92,7 @@ pub struct Session {
     /// The toolchains opened in this session, by name (`toolchain.open`).
     pub toolchains: BTreeMap<String, OpenToolchain>,
     mem_rounds: BTreeMap<String, TableSet>,
+    mem_states: BTreeMap<String, Table>,
 }
 
 /// An opened toolchain: the cached, locked driver and how it was opened.
@@ -106,10 +109,19 @@ fn hex(d: &[u8; 32]) -> String {
     crate::fingerprint::hex(d)
 }
 
+/// A human-chosen name for a stored thing (a round, a machine state): one plain token, so it is
+/// a file name under the session and nothing else.
+fn check_name(what: &str, name: &str) -> Result<()> {
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') {
+        return Err(Error::InvalidArg(format!("{what} name `{name}`: letters, digits, `-`, `_`, `.`")));
+    }
+    Ok(())
+}
+
 impl Session {
     /// Open (creating when absent) the session at `dir`, or an in-memory session for `None`.
     pub fn open(dir: Option<&Path>) -> Result<Session> {
-        let mut s = Session { dir: dir.map(Path::to_path_buf), mem_sets: BTreeMap::new(), mem_inputs: BTreeMap::new(), inputs: Vec::new(), config: BTreeMap::new(), last_program: None, emit_state: None, toolchains: BTreeMap::new(), mem_rounds: BTreeMap::new() };
+        let mut s = Session { dir: dir.map(Path::to_path_buf), mem_sets: BTreeMap::new(), mem_inputs: BTreeMap::new(), inputs: Vec::new(), config: BTreeMap::new(), last_program: None, emit_state: None, toolchains: BTreeMap::new(), mem_rounds: BTreeMap::new(), mem_states: BTreeMap::new() };
         let Some(dir) = dir else { return Ok(s) };
         for sub in ["", "program", "functions", "inputs"] {
             let d = dir.join(sub);
@@ -361,9 +373,7 @@ impl Session {
 
     /// Store a round under `name`; an existing name is refused (rounds are never overwritten).
     pub fn write_round(&mut self, name: &str, set: &TableSet, manifest: &Table) -> Result<()> {
-        if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.') {
-            return Err(Error::InvalidArg(format!("round name `{name}`: letters, digits, `-`, `_`, `.`")));
-        }
+        check_name("round", name)?;
         match self.rounds_dir() {
             Some(dir) => {
                 fs::create_dir_all(&dir).map_err(|e| Error::io(e, dir.clone()))?;
@@ -410,6 +420,45 @@ impl Session {
             }
             Some(_) => Ok(Vec::new()),
             None => Ok(self.mem_rounds.keys().cloned().collect()),
+        }
+    }
+
+    // ── machine states (the working points of run sequences, human-named) ──
+
+    fn states_dir(&self) -> Option<PathBuf> {
+        self.dir.as_ref().map(|d| d.join("states"))
+    }
+
+    /// Store a machine state (`machine_state` rows) under `name`, replacing any state of that
+    /// name. Unlike a round, a state is not a measurement: it is where the next run of a sequence
+    /// starts, and a sequence moves it forward under one name.
+    pub fn write_state(&mut self, name: &str, state: &Table) -> Result<()> {
+        check_name("machine state", name)?;
+        match self.states_dir() {
+            Some(dir) => {
+                fs::create_dir_all(&dir).map_err(|e| Error::io(e, dir.clone()))?;
+                let _lock = Lock::acquire(self.dir.as_deref().expect("a directory session"), Duration::from_secs(5))?;
+                store::write_file_atomic(&dir, &format!("{name}.tbl"), &tbl::write(state))
+            }
+            None => {
+                self.mem_states.insert(name.to_string(), state.clone());
+                Ok(())
+            }
+        }
+    }
+
+    /// The machine state stored under `name`.
+    pub fn read_state(&self, name: &str) -> Result<Table> {
+        check_name("machine state", name)?;
+        match self.states_dir() {
+            Some(dir) => {
+                let path = dir.join(format!("{name}.tbl"));
+                if !path.is_file() {
+                    return Err(Error::NotFound(format!("machine state `{name}`")));
+                }
+                tbl::open_mapped(&path, Some(&schemas::MACHINE_STATE), true)
+            }
+            None => self.mem_states.get(name).cloned().ok_or_else(|| Error::NotFound(format!("machine state `{name}`"))),
         }
     }
 

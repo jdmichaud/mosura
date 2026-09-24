@@ -188,3 +188,31 @@ fn config_persists_across_open() {
     assert_eq!(s2.config_table().rows(), 1);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Machine states are stored by name, read back equal, replaced on a second write under the same
+/// name (a state is the working point of a sequence of runs, not a measurement), refused under a
+/// name that is not a plain token, and missing states are `NotFound` — on disk and in memory.
+#[test]
+fn machine_states_are_stored_by_name_and_replaced() {
+    use mosura_api::session::schemas::MACHINE_STATE;
+    let state = |fill: u8| {
+        let mut b = TableBuilder::new(&MACHINE_STATE);
+        b.row().str("ram").u64(0x2000).bytes(&[fill, 2, 3]);
+        b.row().str("register").u64(0).bytes(&[fill, 0, 0, 0]);
+        b.finish(false)
+    };
+    let dir = scratch("states");
+    for mut s in [Session::open(Some(&dir)).unwrap(), Session::open(None).unwrap()] {
+        assert!(matches!(s.read_state("shot"), Err(mosura_api::Error::NotFound(_))));
+        s.write_state("shot", &state(1)).unwrap();
+        let t = s.read_state("shot").unwrap();
+        assert_eq!((t.rows(), t.str(0, 0).unwrap(), t.u64(0, 1).unwrap(), t.bytes(0, 2).unwrap()), (2, "ram", 0x2000, &[1u8, 2, 3][..]));
+        s.write_state("shot", &state(9)).unwrap();
+        assert_eq!(s.read_state("shot").unwrap().bytes(0, 2).unwrap(), &[9u8, 2, 3][..], "the second write replaces the first");
+        for bad in ["", "a/b", "x y"] {
+            assert!(matches!(s.write_state(bad, &state(1)), Err(mosura_api::Error::InvalidArg(_))), "{bad:?}");
+        }
+    }
+    // A state written to disk survives the session.
+    assert_eq!(Session::open(Some(&dir)).unwrap().read_state("shot").unwrap().bytes(1, 2).unwrap(), &[9u8, 0, 0, 0][..]);
+}
