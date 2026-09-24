@@ -275,3 +275,24 @@ fn seeding_a_traced_run_is_not_an_effect() {
         assert_eq!(r.machine.read("ram", 0x5000, 1), 0xab, "x86-{bits}: the seed is in memory all the same");
     }
 }
+
+/// A traced run records its calls, followed or not: `RunOptions::trace` promises every call, and
+/// unfixed the image run recorded none. A call is recorded by target only (no contract names its
+/// arguments here). An `INT n` is a `Swi`, not a call through its vector.
+#[test]
+fn a_traced_run_records_its_calls() {
+    for bits in [32, 64] {
+        let f = fixture("call_chain", bits);
+        let calls = |r: &Run| r.machine.effects.iter().filter(|e| matches!(e, Effect::Call(..))).cloned().collect::<Vec<_>>();
+        for follow_calls in [true, false] {
+            let opts = RunOptions { follow_calls, trace: true, ..RunOptions::default() };
+            let r = f.run(f.from("outer"), f.entry("outer"), &[(f.sp(), STACK), ("EAX", 0)], &opts);
+            assert_eq!(r.stop, Stop::Returned, "x86-{bits} follow={follow_calls}");
+            assert_eq!(calls(&r), vec![Effect::Call(f.entry("inner"), vec![])], "x86-{bits} follow={follow_calls}");
+        }
+        let opts = RunOptions { follow_calls: true, trace: true, ..RunOptions::default() };
+        let r = f.run(f.body("interrupt_event"), f.entry("interrupt_event"), &[(f.sp(), STACK)], &opts);
+        assert_eq!(calls(&r), vec![], "x86-{bits}: the interrupt's vector is not a call");
+        assert!(r.machine.effects.iter().any(|e| matches!(e, Effect::Swi(0x21, _))), "x86-{bits}: {:?}", r.machine.effects);
+    }
+}

@@ -1287,7 +1287,9 @@ pub struct RunOptions {
     /// The p-code operation budget.
     pub max_steps: usize,
     /// Record what the run does — every store outside the register and unique spaces, every
-    /// call, every port access, every software interrupt — in [`Machine::effects`], in order.
+    /// call (by target: [`Effect::Call`] with no arguments, whether the call is followed or
+    /// skipped as an event), every port access, every software interrupt — in
+    /// [`Machine::effects`], in order.
     ///
     /// Off by default, and off is not a lesser mode: the effect list of a whole followed run is
     /// long, and a caller that only wants the memory the run leaves behind reads it from the
@@ -1395,36 +1397,39 @@ impl<'a> Image<'a> {
                 }
                 steps += 1;
                 let op = &ops[i];
-                if opts.follow_calls {
-                    match opcode_name(op.opcode) {
-                        "CALL" | "CALLIND" => {
-                            // A direct target is the address varnode itself; an indirect one is
-                            // the value it holds (see `run_traced` for why the two must not be
-                            // confused).
-                            let target = match op.ins.first() {
-                                Some(PArg::Var(v)) if opcode_name(op.opcode) == "CALL" && !v.is_const() => v.offset,
-                                Some(arg) => m.read_arg(arg),
-                                None => 0,
-                            };
-                            if target & !0xff == SWI_VECTOR {
-                                // An `INT n`'s call through its vector: the handler is not here.
-                                i += 1;
-                                continue;
-                            }
-                            depth += 1;
-                            jump = Some(target);
-                            break;
-                        }
-                        "RETURN" => {
-                            if depth == 0 {
-                                break 'run Stop::Returned;
-                            }
-                            depth -= 1;
-                            jump = Some(op.ins.first().map_or(0, |a| m.read_arg(a)));
-                            break;
-                        }
-                        _ => {}
+                let name = opcode_name(op.opcode);
+                if matches!(name, "CALL" | "CALLIND") && (opts.follow_calls || m.trace) {
+                    // A direct target is the address varnode itself; an indirect one is the value
+                    // it holds (see `run_traced` for why the two must not be confused).
+                    let target = match op.ins.first() {
+                        Some(PArg::Var(v)) if name == "CALL" && !v.is_const() => v.offset,
+                        Some(arg) => m.read_arg(arg),
+                        None => 0,
+                    };
+                    // An `INT n`'s call through its vector: the handler is not here, and the
+                    // interrupt was already recorded as a `Swi` by the user-op before it.
+                    let interrupt = target & !0xff == SWI_VECTOR;
+                    if m.trace && !interrupt {
+                        // By target only: no contract names this call's arguments.
+                        m.effects.push(Effect::Call(target, Vec::new()));
                     }
+                    if opts.follow_calls {
+                        if interrupt {
+                            i += 1;
+                            continue;
+                        }
+                        depth += 1;
+                        jump = Some(target);
+                        break;
+                    }
+                }
+                if opts.follow_calls && name == "RETURN" {
+                    if depth == 0 {
+                        break 'run Stop::Returned;
+                    }
+                    depth -= 1;
+                    jump = Some(op.ins.first().map_or(0, |a| m.read_arg(a)));
+                    break;
                 }
                 match m.step(op) {
                     Flow::Next => i += 1,
