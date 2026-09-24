@@ -264,6 +264,42 @@ enum Cmd {
     },
     /// Verify a compiled object file against the original function
     Verify { func: String, object: PathBuf },
+    /// Run a function through the p-code interpreter, the program's loaded image as memory
+    /// (docs/emulation.md): the outcome, the registers and memory it left, its effects
+    Emulate {
+        func: String,
+        /// Initial registers, by the language's names
+        #[arg(long, value_name = "NAME=HEX,..")]
+        registers: Option<String>,
+        /// Initial memory
+        #[arg(long, value_name = "ADDR=HEXBYTES;..")]
+        memory: Option<String>,
+        /// Enter calls whose target is in the image (default: a call is an event)
+        #[arg(long)]
+        follow_calls: bool,
+        /// The p-code operation budget (default 5,000,000)
+        #[arg(long, value_name = "N")]
+        max_steps: Option<u64>,
+        /// Also list what the run did, in order
+        #[arg(long)]
+        effects: bool,
+        /// Start from the machine state stored in the session under NAME
+        #[arg(long, value_name = "NAME")]
+        state: Option<String>,
+        /// Store the machine state the run stopped in under NAME
+        #[arg(long = "save-state", value_name = "NAME")]
+        save_state: Option<String>,
+    },
+    /// Run every input vector of a capture specification through a function (docs/emulation.md)
+    Capture {
+        func: String,
+        /// The capture specification (JSON)
+        #[arg(long, value_name = "FILE")]
+        spec: PathBuf,
+        /// Start every vector from the machine state stored in the session under NAME
+        #[arg(long, value_name = "NAME")]
+        state: Option<String>,
+    },
     /// Corpus rounds: run, compare, list, show, export, import
     Round {
         #[command(subcommand)]
@@ -805,6 +841,44 @@ fn run(cli: Cli) -> Res<()> {
             let entry = app.resolve_function(&func)?;
             let t = app.call("function.verify", &[("entry", &format!("{entry:#x}")), ("object", &label)])?;
             app.show(&t)
+        }
+        Cmd::Emulate { func, registers, memory, follow_calls, max_steps, effects, state, save_state } => {
+            let entry = format!("{:#x}", app.resolve_function(&func)?);
+            let steps = max_steps.map(|n| n.to_string());
+            let mut extra: Vec<(&str, &str)> = vec![("entry", &entry)];
+            for (key, value) in [("emulate.registers", &registers), ("emulate.memory", &memory), ("emulate.max-steps", &steps), ("emulate.state", &state), ("emulate.save-state", &save_state)] {
+                if let Some(v) = value {
+                    extra.push((key, v));
+                }
+            }
+            if follow_calls {
+                extra.push(("emulate.follow-calls", "true"));
+            }
+            if effects {
+                extra.push(("emulate.effects", "true"));
+            }
+            let t = app.call("function.emulate", &extra)?;
+            app.show(&t)
+        }
+        Cmd::Capture { func, spec, state } => {
+            let text = std::fs::read_to_string(&spec).map_err(|e| usage(format!("{}: {e}", spec.display())))?;
+            let entry = format!("{:#x}", app.resolve_function(&func)?);
+            let mut extra: Vec<(&str, &str)> = vec![("entry", &entry), ("capture.spec", &text)];
+            if let Some(v) = &state {
+                extra.push(("emulate.state", v));
+            }
+            let t = app.call("function.capture", &extra)?;
+            app.show(&t)?;
+            // What the table says in one line: how many vectors, and why the rejected ones stopped.
+            let stop = t.column_index("stop")?;
+            let mut stops: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+            for r in 0..t.rows() {
+                *stops.entry(t.str(r, stop)?.to_string()).or_default() += 1;
+            }
+            let returned = stops.remove("returned").unwrap_or(0);
+            let rejected: Vec<String> = stops.iter().map(|(k, n)| format!("{n} {k}")).collect();
+            eprintln!("capture: {} vectors: {returned} returned{}", t.rows(), if rejected.is_empty() { String::new() } else { format!(", {}", rejected.join(", ")) });
+            Ok(())
         }
         Cmd::Round { sub } => match sub {
             RoundCmd::Run { name, toolchain, install, baseline, scope, scope_file, expect, exclude_foreign, gates, label } => {

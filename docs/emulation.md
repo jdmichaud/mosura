@@ -48,11 +48,14 @@ map mask the program last wrote. The writes that prepared the machine are not ef
 ## Over a program: `function.emulate`
 
 ```sh
-mosura -S s analyze prog.exe
+mosura -S s add prog.exe && mosura -S s analyze
+mosura -S s emulate 0x3a4 --registers ESP=0x0f000000,EDX=0x20000000 [--follow-calls] [--effects]
 mosura -S s call function.emulate entry=0x3a4 emulate.registers=ESP=0x0f000000,EDX=0x20000000
 ```
 
-The same keys and the same answer, with the function's `entry` in place of `bytes`, `base` and
+The command takes a function by address or name and has a flag for every key (`--registers`,
+`--memory`, `--follow-calls`, `--max-steps`, `--effects`, `--state`, `--save-state`). The same
+keys and the same answer, with the function's `entry` in place of `bytes`, `base` and
 `emulate.entry`. The image is the program as loaded: every initialized block of its default space,
 decoded where the run reaches and read as memory. A routine finds its tables and the initial value
 of every global where the program keeps them, without seeding them, and a followed call enters
@@ -83,8 +86,12 @@ program's loaded image as memory — from a specification given as JSON text in 
 ```
 
 ```sh
-mosura -S s call function.capture entry=0x663 capture.spec="$(cat spec.json)" --format json
+mosura -S s --format json capture 0x663 --spec spec.json [--state NAME]
+mosura -S s call function.capture entry=0x663 capture.spec="$(cat spec.json)"
 ```
+
+The command reads the specification file, prints the table and says on stderr how many vectors
+ran and why the rejected ones stopped (`capture: 2612 vectors: 2608 returned, 4 fault`).
 
 | key | meaning |
 | --- | --- |
@@ -133,8 +140,8 @@ A sequence of runs — a simulation stepped routine by routine, a counter bumped
 from where the last run stopped by naming a state:
 
 ```sh
-mosura -S s call function.emulate entry=0x40101e emulate.save-state=shot
-mosura -S s call function.emulate entry=0x40101e emulate.state=shot emulate.save-state=shot
+mosura -S s emulate 0x40101e --save-state shot
+mosura -S s emulate 0x40101e --state shot --save-state shot
 ```
 
 A state is every run of bytes the machine held when the run stopped — registers and memory, in

@@ -205,8 +205,9 @@ embedded with a `--data-dir` override (`crate::resources`); the guard tests enfo
   claims it, the compiler evidence in the bytes, the resolved language/cspec and the FID databases
   that apply (`-o load.loader=native|le`, `-o load.cspec-x86-32=<id>` to test a hypothesis). The
   same binary is the product's command line: `mosura -S <dir> add <bin>`, `analyze`, `functions`,
-  `decompile <fn>`, `emit <fn>`, `lift <hex>`, `disasm --bytes <hex>`, `read <addr> <len>`, and
-  `mosura call <op>` for every operation (`mosura ops`). Reach for it before writing a throwaway.
+  `decompile <fn>`, `emit <fn>`, `emulate <fn>`, `capture <fn> --spec <json>`, `lift <hex>`,
+  `disasm --bytes <hex>`, `read <addr> <len>`, and `mosura call <op>` for every operation
+  (`mosura ops`). Reach for it before writing a throwaway.
 - Detailed per-feature notes and gotchas: `.claude/memory/mosura-project.md`.
 - Superseded (approximation-era, kept for history): `docs/decompiler-plan.md`,
   `docs/floats-plan.md`, `docs/switches-plan.md`, `docs/type-system-plan.md`.

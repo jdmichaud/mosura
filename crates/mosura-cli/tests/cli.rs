@@ -290,3 +290,35 @@ fn verify_and_emit_all_on_a_watcom_program() {
     assert!(report.starts_with("idx\tva\tname\tstatus\t"), "{}", &report[..60.min(report.len())]);
     let _ = std::fs::remove_dir_all(&s);
 }
+
+/// `emulate` and `capture` over a function of the current program (the source-built `image_data`
+/// fixture): a result from the program's own data, a state carried between invocations of the
+/// command through the session directory, effects on request, and a capture specification file.
+#[test]
+fn emulate_and_capture_a_function_of_the_program() {
+    let s = scratch("emulate-capture");
+    let fixture = workspace().join("oracle/ground-truth/image_data.gcc-x86-32");
+    let truth = std::fs::read_to_string(workspace().join("oracle/ground-truth/image_data.gcc-x86-32.truth")).unwrap();
+    let entry = |name: &str| truth.lines().find_map(|l| l.strip_suffix(&format!(" {name} code"))).and_then(|l| l.split_whitespace().nth(1)).map(|a| format!("0x{a}")).unwrap();
+    ok(&s, &["add", fixture.to_str().unwrap()]);
+    ok(&s, &["analyze"]);
+    let sum = ok(&s, &["--format", "tsv", "emulate", &entry("table_sum"), "--registers", "ECX=5"]);
+    assert!(sum.contains("outcome\tstop\treturned"), "{sum}");
+    assert!(sum.contains("register\tEAX\t0x33333338"), "{sum}");
+    let first = ok(&s, &["--format", "tsv", "emulate", &entry("bump"), "--save-state", "n", "--effects"]);
+    assert!(first.contains("register\tEAX\t0x0000002a"), "{first}");
+    assert!(first.lines().any(|l| l.starts_with("effect\t1\tstore ram ") && l.ends_with(" 4 0x0000002a")), "{first}");
+    let second = ok(&s, &["--format", "tsv", "emulate", &entry("bump"), "--state", "n"]);
+    assert!(second.contains("register\tEAX\t0x0000002b"), "the state outlived the first command: {second}");
+    let spec = s.join("sum.json");
+    std::fs::write(&spec, r#"{"inputs":[{"name":"ecx","bits":32,"pieces":[{"register":"ECX"}]}],"outputs":[{"name":"eax","bits":32,"pieces":[{"register":"EAX"}]}],"cases":[{"kind":"range","input":"ecx","from":0,"to":2}]}"#).unwrap();
+    let o = run(&s, &["--format", "tsv", "capture", &entry("table_sum"), "--spec", spec.to_str().unwrap()]);
+    assert_eq!(o.code, 0, "{}", o.stderr);
+    let rows: Vec<&str> = o.stdout.lines().skip(1).collect();
+    assert_eq!(rows.len(), 3, "{}", o.stdout);
+    assert!(rows[2].starts_with("3\t0\t2\t33333335\treturned\t"), "{}", o.stdout);
+    assert!(o.stderr.contains("3 vectors: 3 returned"), "{}", o.stderr);
+    let missing = run(&s, &["capture", &entry("table_sum"), "--spec", s.join("nope.json").to_str().unwrap()]);
+    assert_eq!(missing.code, 2, "{}", missing.stderr);
+    let _ = std::fs::remove_dir_all(&s);
+}
