@@ -1374,14 +1374,13 @@ impl<'a> Image<'a> {
 
     /// Execute from `opts.entry` (or the first byte) over `inputs`; see [`run_with`].
     pub fn run(&mut self, inputs: &[(&str, u64, u64, u32)], opts: &RunOptions) -> Run {
-        let mut m = Machine {
-            userops: self.spec.userops.clone(),
-            trace: opts.trace,
-            ..Machine::default()
-        };
+        let mut m = Machine { userops: self.spec.userops.clone(), ..Machine::default() };
         for &(space, offset, value, size) in inputs {
             m.write(space, offset, size, value);
         }
+        // The seeding writes above are setup, not effects (as in `run_traced`): the recording
+        // starts with the run.
+        m.trace = opts.trace;
 
         let mut pc = opts.entry.unwrap_or(self.base);
         let mut steps = 0usize;

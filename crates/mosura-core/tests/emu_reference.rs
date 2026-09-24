@@ -9,7 +9,7 @@
 use mosura_core::analysis;
 use mosura_core::decompile::space::Address;
 use mosura_core::paths::ground_truth_dir;
-use mosura_core::sleigh::emu::{self, Run, RunOptions, Stop};
+use mosura_core::sleigh::emu::{self, Effect, Run, RunOptions, Stop};
 use mosura_core::sleigh::engine::Spec;
 
 struct Fixture {
@@ -64,15 +64,17 @@ impl Fixture {
     fn sp(&self) -> &'static str {
         if self.bits == 64 { "RSP" } else { "ESP" }
     }
-    fn run(&self, bytes: &[u8], base: u64, regs: &[(&str, u64)], opts: &RunOptions) -> Run {
-        let inputs: Vec<(&str, u64, u64, u32)> = regs
-            .iter()
+    /// Register seeds by name, as the interpreter takes them.
+    fn seeds(&self, regs: &[(&str, u64)]) -> Vec<(&'static str, u64, u64, u32)> {
+        regs.iter()
             .map(|(n, v)| {
                 let (off, size) = self.reg(n);
                 ("register", off, *v, size)
             })
-            .collect();
-        emu::run_with(self.spec, bytes, base, self.ctx, &inputs, opts)
+            .collect()
+    }
+    fn run(&self, bytes: &[u8], base: u64, regs: &[(&str, u64)], opts: &RunOptions) -> Run {
+        emu::run_with(self.spec, bytes, base, self.ctx, &self.seeds(regs), opts)
     }
     fn read(&self, r: &Run, name: &str) -> u64 {
         let (off, size) = self.reg(name);
@@ -253,5 +255,23 @@ fn decoding_follows_the_run_and_is_kept_across_runs() {
         }
         let elapsed = t0.elapsed();
         assert!(elapsed.as_secs_f64() < 5.0, "x86-{bits}: 1000 runs took {elapsed:?}");
+    }
+}
+
+/// A traced run records what the routine does, not how its machine was seeded: a seeded memory
+/// byte is setup, exactly as `run_traced` treats its own seeding. Unfixed, the seed came back as
+/// the run's first store.
+#[test]
+fn seeding_a_traced_run_is_not_an_effect() {
+    for bits in [32, 64] {
+        let f = fixture("divide_fault", bits);
+        let e = f.entry("divide_pair");
+        let mut inputs = f.seeds(&[("EDX", 0), ("EAX", 100), ("ECX", 7)]);
+        inputs.push(("ram", 0x5000, 0xab, 1));
+        let traced = RunOptions { trace: true, ..RunOptions::default() };
+        let r = emu::run_with(f.spec, f.body("divide_pair"), e, f.ctx, &inputs, &traced);
+        assert_eq!(r.stop, Stop::Returned, "x86-{bits}");
+        assert_eq!(r.machine.effects, Vec::<Effect>::new(), "x86-{bits}: a division and a RET store nothing");
+        assert_eq!(r.machine.read("ram", 0x5000, 1), 0xab, "x86-{bits}: the seed is in memory all the same");
     }
 }
