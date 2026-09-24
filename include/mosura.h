@@ -495,6 +495,31 @@ mosura_status mosura_program_passes(mosura_program *p,
                                     void *progress_user);
 
 /**
+ * Execute the function at `entry` through the p-code interpreter (`function.emulate`), with the
+ * program's loaded image as memory. `opts` (NULL = none): emulate.registers, emulate.memory,
+ * emulate.follow-calls, emulate.max-steps, emulate.effects, emulate.state, emulate.save-state.
+ * emulation: kind, name, value — outcome, register, memory and effect rows, as `mosura_emulate`.
+ */
+mosura_status mosura_program_emulate(mosura_program *p,
+                                     uint64_t entry,
+                                     const mosura_options *opts,
+                                     mosura_table **out);
+
+/**
+ * Run every input vector a capture specification generates through the function at `entry`
+ * (`function.capture`). `spec` is the specification as JSON text (docs/emulation.md); `opts`
+ * (NULL = none): emulate.state. capture: case, generator, inputs, outputs, stop, address, steps,
+ * unmodeled, unmodeled_ops — one row per vector.
+ */
+mosura_status mosura_program_capture(mosura_program *p,
+                                     uint64_t entry,
+                                     const char *spec,
+                                     const mosura_options *opts,
+                                     mosura_progress_fn progress,
+                                     void *progress_user,
+                                     mosura_table **out);
+
+/**
  * A program table by name ("functions", "symbols", "references", "blocks", "listing", …, and
  * the virtual "snapshot"); an empty name lists the tables. Unknown name: MOSURA_ERR_NOT_FOUND.
  */

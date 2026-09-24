@@ -8,7 +8,7 @@ use crate::ctx::{ctx_of, mosura_ctx, mosura_progress_fn};
 use crate::handle::{self, Kind};
 use crate::mem::{bytes, cstr, cstr_opt, out_ptr, view, view_bytes, mosura_bytes, mosura_view};
 use crate::ops::{call_on, keys_for, text_of};
-use crate::options::{mosura_options, options_or_default};
+use crate::options::{mosura_options, options_of, options_or_default};
 use crate::session::{mosura_session, session_of, SessionCell};
 use crate::status::mosura_status;
 use crate::table::{mosura_table, new_table};
@@ -120,6 +120,42 @@ pub unsafe extern "C" fn mosura_program_passes(p: *mut mosura_program, opts: *co
         }
         let params = program_params(&cell, "program.passes", None)?;
         call_on(&cell.shared, "program.passes", Some(&params), progress, progress_user)?;
+        Ok(())
+    })
+}
+
+/// Execute the function at `entry` through the p-code interpreter (`function.emulate`), with the
+/// program's loaded image as memory. `opts` (NULL = none): emulate.registers, emulate.memory,
+/// emulate.follow-calls, emulate.max-steps, emulate.effects, emulate.state, emulate.save-state.
+/// emulation: kind, name, value — outcome, register, memory and effect rows, as `mosura_emulate`.
+#[no_mangle]
+pub unsafe extern "C" fn mosura_program_emulate(p: *mut mosura_program, entry: u64, opts: *const mosura_options, out: *mut *mut mosura_table) -> mosura_status {
+    guard(|| {
+        let cell = program_of(p)?;
+        let out = out_ptr(out, "out")?;
+        let extra = if opts.is_null() { None } else { Some(options_of(opts)?) };
+        let mut params = program_params(cell, "function.emulate", extra)?;
+        params.set("entry", &format!("{entry:#x}"))?;
+        *out = new_table(call_on(&cell.shared, "function.emulate", Some(&params), None, std::ptr::null_mut())?);
+        Ok(())
+    })
+}
+
+/// Run every input vector a capture specification generates through the function at `entry`
+/// (`function.capture`). `spec` is the specification as JSON text (docs/emulation.md); `opts`
+/// (NULL = none): emulate.state. capture: case, generator, inputs, outputs, stop, address, steps,
+/// unmodeled, unmodeled_ops — one row per vector.
+#[no_mangle]
+pub unsafe extern "C" fn mosura_program_capture(p: *mut mosura_program, entry: u64, spec: *const c_char, opts: *const mosura_options, progress: mosura_progress_fn, progress_user: *mut c_void, out: *mut *mut mosura_table) -> mosura_status {
+    guard(|| {
+        let cell = program_of(p)?;
+        let out = out_ptr(out, "out")?;
+        let spec = cstr(spec, "spec")?;
+        let mut extra = if opts.is_null() { Options::new() } else { options_of(opts)?.clone() };
+        extra.set("capture.spec", spec)?;
+        let mut params = program_params(cell, "function.capture", Some(&extra))?;
+        params.set("entry", &format!("{entry:#x}"))?;
+        *out = new_table(call_on(&cell.shared, "function.capture", Some(&params), progress, progress_user)?);
         Ok(())
     })
 }

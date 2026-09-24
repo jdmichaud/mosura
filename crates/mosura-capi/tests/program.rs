@@ -286,3 +286,50 @@ fn a_watcom_function_emits_a_translation_unit() {
         }
     }
 }
+
+/// `mosura_program_emulate` and `mosura_program_capture` run a function of an analyzed program,
+/// its loaded image as memory (the source-built `image_data` fixture: table_sum = ECX + two
+/// constants from .data).
+#[test]
+fn a_function_of_the_program_emulates_and_captures() {
+    let c = ctx();
+    let dir = mosura_core::paths::ground_truth_dir();
+    let data = std::fs::read(dir.join("image_data.gcc-x86-32")).unwrap();
+    let truth = std::fs::read_to_string(dir.join("image_data.gcc-x86-32.truth")).unwrap();
+    let entry = truth.lines().find_map(|l| l.strip_suffix(" table_sum code")).and_then(|l| l.split_whitespace().nth(1)).map(|a| u64::from_str_radix(a, 16).unwrap()).unwrap();
+    let mut s: *mut mosura_session = ptr::null_mut();
+    assert_eq!(unsafe { mosura_session_open(c, ptr::null(), ptr::null(), &mut s) }, MOSURA_OK);
+    let label = CString::new("image_data").unwrap();
+    assert_eq!(unsafe { mosura_session_add_input(s, mosura_view { ptr: data.as_ptr(), len: data.len() }, label.as_ptr(), ptr::null_mut()) }, MOSURA_OK);
+    let mut p: *mut mosura_program = ptr::null_mut();
+    assert_eq!(unsafe { mosura_program_open(s, ptr::null(), ptr::null(), &mut p) }, MOSURA_OK, "{}", last());
+    assert_eq!(unsafe { mosura_program_analyze(p, ptr::null(), None, ptr::null_mut()) }, MOSURA_OK, "{}", last());
+    let ecx = opts(c, &[("emulate.registers", "ECX=5")]);
+    let mut e: *mut mosura_table = ptr::null_mut();
+    assert_eq!(unsafe { mosura_program_emulate(p, entry, ecx, &mut e) }, MOSURA_OK, "{}", last());
+    let eax = find_row(e, 1, "EAX").map(|r| cell_str(e, r, 2));
+    assert_eq!(eax.as_deref(), Some("0x33333338"));
+    let spec = CString::new(r#"{"inputs":[{"name":"ecx","bits":32,"pieces":[{"register":"ECX"}]}],"outputs":[{"name":"eax","bits":32,"pieces":[{"register":"EAX"}]}],"cases":[{"kind":"range","input":"ecx","from":1,"to":3}]}"#).unwrap();
+    let mut t: *mut mosura_table = ptr::null_mut();
+    assert_eq!(unsafe { mosura_program_capture(p, entry, spec.as_ptr(), ptr::null(), None, ptr::null_mut(), &mut t) }, MOSURA_OK, "{}", last());
+    assert_eq!(unsafe { mosura_table_rows(t) }, 3);
+    for r in 0..3u64 {
+        assert_eq!(cell_str(t, r, 4), "returned");
+        let mut v = mosura_view { ptr: ptr::null(), len: 0 };
+        let mut n = 0u64;
+        assert_eq!(unsafe { mosura_table_list(t, r, 3, &mut v, &mut n) }, MOSURA_OK);
+        let bytes = unsafe { std::slice::from_raw_parts(v.ptr, v.len) };
+        assert_eq!((n, u64::from_le_bytes(bytes[..8].try_into().unwrap())), (1, 0x3333_3334 + r));
+    }
+    let bad = CString::new("{").unwrap();
+    assert_eq!(unsafe { mosura_program_capture(p, entry, bad.as_ptr(), ptr::null(), None, ptr::null_mut(), &mut t) }, MOSURA_ERR_INVALID_ARG);
+    for h in [e, t] {
+        unsafe { mosura_release(h as *mut c_void) };
+    }
+    unsafe {
+        mosura_release(ecx as *mut c_void);
+        mosura_release(p as *mut c_void);
+        mosura_release(s as *mut c_void);
+        mosura_release(c as *mut c_void);
+    }
+}

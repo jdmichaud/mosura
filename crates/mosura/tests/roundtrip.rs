@@ -178,3 +178,29 @@ fn the_recompile_side_through_the_binding() {
     assert_eq!(s.round_compare("ra", "nope").unwrap_err().status, Status::MOSURA_ERR_NOT_FOUND);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The binding's `Program::emulate` and `Program::capture` over the source-built `image_data`
+/// fixture: `bump` counts on through a stored state, `table_sum` captures a range.
+#[test]
+fn a_function_emulates_and_captures_through_the_binding() {
+    let dir = mosura_core_paths::corpus_dir().parent().unwrap().join("ground-truth");
+    let bytes = std::fs::read(dir.join("image_data.gcc-x86-32")).unwrap();
+    let truth = std::fs::read_to_string(dir.join("image_data.gcc-x86-32.truth")).unwrap();
+    let entry = |name: &str| truth.lines().find_map(|l| l.strip_suffix(&format!(" {name} code"))).and_then(|l| l.split_whitespace().nth(1)).map(|a| u64::from_str_radix(a, 16).unwrap()).unwrap();
+    let ctx = Ctx::new(CtxConfig::default()).unwrap();
+    let mut s = Session::open(&ctx, None, None).unwrap();
+    s.add_input(&bytes, "image_data").unwrap();
+    let mut p = s.program_open(None, None).unwrap();
+    p.analyze(None, None).unwrap();
+    let eax = |t: &mosura::Table| (0..t.rows()).find(|&r| t.str(r, 1).unwrap() == "EAX").map(|r| t.str(r, 2).unwrap().to_string());
+    let save = ctx.options().unwrap().with("emulate.save-state", "n").unwrap();
+    let carry = ctx.options().unwrap().with("emulate.state", "n").unwrap().with("emulate.save-state", "n").unwrap();
+    assert_eq!(eax(&p.emulate(entry("bump"), Some(&save)).unwrap()).as_deref(), Some("0x0000002a"));
+    assert_eq!(eax(&p.emulate(entry("bump"), Some(&carry)).unwrap()).as_deref(), Some("0x0000002b"));
+    let spec = r#"{"inputs":[{"name":"ecx","bits":32,"pieces":[{"register":"ECX"}]}],"outputs":[{"name":"eax","bits":32,"pieces":[{"register":"EAX"}]}],"cases":[{"kind":"range","input":"ecx","from":0,"to":1}]}"#;
+    let mut reports = 0u32;
+    let t = p.capture(entry("table_sum"), spec, None, Some(&mut |_: &str, _: u64, _: u64| { reports += 1; true })).unwrap();
+    assert_eq!(t.rows(), 2);
+    assert_eq!((t.list_u64(1, 2).unwrap(), t.list_u64(1, 3).unwrap()), (vec![1], vec![0x3333_3334]));
+    assert!(reports > 0, "the capture reports its progress");
+}

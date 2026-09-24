@@ -1,9 +1,11 @@
 # Reference execution: `sleigh.emulate`, `function.emulate` and `function.capture`
 
 How to run one routine of an original binary over a chosen machine state and read what it
-left behind, through the product surface (`mosura call sleigh.emulate …` over raw bytes,
-`mosura call function.emulate …` over a function of the session's program, `mosura_call` /
-`mosura_emulate` in the C API) or the library (`sleigh::emu::run_with`). The interpreter is the
+left behind, through the product surface — `mosura call sleigh.emulate …` over raw bytes,
+`mosura call function.emulate …` over a function of the session's program and `mosura call
+function.capture …` for many vectors at once; in the C API `mosura_emulate`,
+`mosura_program_emulate` and `mosura_program_capture` (or `mosura_call`); in the Rust binding
+`Program::emulate` and `Program::capture` — or the library (`sleigh::emu::run_with`). The interpreter is the
 one the differential check rests on ([semantic-equivalence.md](semantic-equivalence.md)); this
 page is its plain, single-program use: a REFERENCE of the original's results, for a client that
 reimplements the routine and needs vectors the original itself produced.
