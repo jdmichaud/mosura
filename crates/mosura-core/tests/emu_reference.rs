@@ -1,6 +1,7 @@
 //! Reference execution: what a client capturing the ORIGINAL's results needs the interpreter to
 //! say, on source-built routines whose behaviour is known from their own text
-//! (`oracle/ground-truth/src/{divide_fault,spin_until_zero,call_chain}.S`, both x86 widths).
+//! (`oracle/ground-truth/src/{divide_fault,spin_until_zero,call_chain,image_data}.S`, both x86
+//! widths).
 //!
 //! Each property was a gap a downstream reference executor hit: a routine that ran into the step
 //! cap reported its registers as if they were a result; a division the hardware traps on handed
@@ -334,5 +335,46 @@ fn a_run_continues_from_a_machine() {
         let b = img.resume(a.machine, &traced);
         assert_eq!(b.machine.effects.len(), n, "x86-{bits}: the second run's effects are its own");
         assert_eq!(f.read(&b, "EAX"), 2, "x86-{bits}: outer's +1 twice, the callee skipped both times");
+    }
+}
+
+/// The loaded image as the machine's memory: `table_sum` reads two constants from the program's
+/// data block and `bump` updates its counter there, with the code decoded from another block. A
+/// run continued from the machine `bump` left counts on from where it stopped.
+#[test]
+fn the_image_can_be_the_machines_memory() {
+    use mosura_core::sleigh::emu::Image;
+    for bits in [32, 64] {
+        let f = fixture("image_data", bits);
+        let p = analysis::analyze_file(&ground_truth_dir().join(format!("image_data.gcc-x86-{bits}"))).unwrap();
+        let blocks: Vec<(u64, &[u8])> = p
+            .memory
+            .blocks()
+            .filter(|b| b.start.space == p.default_space)
+            .filter_map(|b| b.bytes.as_deref().map(|bytes| (b.start.offset, bytes)))
+            .collect();
+        let at = |name: &str| RunOptions { entry: Some(f.entry(name)), ..RunOptions::default() };
+        let ecx = f.seeds(&[("ECX", 5)]);
+        // Without the image as memory, a never-written byte reads zero.
+        let mut plain = Image::from_blocks(f.spec, &blocks, f.ctx);
+        let r = plain.run(&ecx, &at("table_sum"));
+        assert_eq!((r.stop, f.read(&r, "EAX")), (Stop::Returned, 5), "x86-{bits}");
+        let mut image = Image::from_blocks(f.spec, &blocks, f.ctx).with_image_memory();
+        let r = image.run(&ecx, &at("table_sum"));
+        assert_eq!((r.stop, f.read(&r, "EAX")), (Stop::Returned, 0x3333_3338), "x86-{bits}: the constants come from .data");
+        assert!(r.machine.written("ram").is_empty(), "x86-{bits}: reading the image writes nothing");
+        let r = image.run(&[], &at("bump"));
+        assert_eq!((r.stop, f.read(&r, "EAX")), (Stop::Returned, 42), "x86-{bits}: 41 as loaded, plus one");
+        let written = r.machine.written("ram");
+        assert_eq!(written.len(), 1, "x86-{bits}: {written:x?}");
+        assert_eq!(written[0].1, vec![42, 0, 0, 0], "x86-{bits}");
+        let code = blocks.iter().find(|(s, b)| (*s..*s + b.len() as u64).contains(&f.entry("bump"))).unwrap().0;
+        let data = blocks.iter().find(|(s, b)| (*s..*s + b.len() as u64).contains(&written[0].0)).unwrap().0;
+        assert_ne!(code, data, "x86-{bits}: the counter lives in a block of its own");
+        let again = image.resume(r.machine, &at("bump"));
+        assert_eq!(f.read(&again, "EAX"), 43, "x86-{bits}: continued from the state the last run left");
+        // An address in no block has no instruction.
+        let nowhere = image.run(&[], &RunOptions { entry: Some(0x10), ..RunOptions::default() });
+        assert_eq!(nowhere.stop, Stop::NoInstruction(0x10), "x86-{bits}");
     }
 }

@@ -9,6 +9,7 @@
 use super::engine::Spec;
 use super::pcode::{opcode_name, PArg, PcodeOp};
 use std::collections::{BTreeSet, HashMap};
+use std::sync::Arc;
 
 /// The control-flow effect of executing one p-code op.
 enum Flow {
@@ -86,6 +87,25 @@ fn float_encode(host: f64, size: u32) -> u64 {
     }
 }
 
+/// The bytes a machine's never-written memory reads: the loaded image's own, in its default
+/// space ([`Image::with_image_memory`]).
+struct Backing {
+    space: String,
+    /// `(start, bytes)`, ascending and disjoint.
+    blocks: Vec<(u64, Vec<u8>)>,
+}
+
+impl Backing {
+    fn byte(&self, space: &str, at: u64) -> Option<u8> {
+        if space != self.space {
+            return None;
+        }
+        let i = self.blocks.partition_point(|(start, _)| *start <= at).checked_sub(1)?;
+        let (start, bytes) = &self.blocks[i];
+        bytes.get((at - start) as usize).copied()
+    }
+}
+
 /// A byte-addressable machine state, one byte-map per address space.
 #[derive(Default)]
 pub struct Machine {
@@ -137,6 +157,9 @@ pub struct Machine {
     /// it was signed — kept until something else writes that varnode, so the `SUBPIECE` that
     /// narrows it can tell a quotient the destination holds from one the hardware would trap on.
     last_quotient: Option<(super::pcode::Varnode, u64, bool)>,
+    /// What a never-written byte reads before any fill: the loaded image, when the machine came
+    /// from an image that is its memory ([`Image::with_image_memory`]). Shared, never written.
+    backing: Option<Arc<Backing>>,
 }
 
 /// One observable effect of running a function: what a caller could tell apart.
@@ -254,11 +277,14 @@ impl Machine {
             let at = offset + i as u64;
             let b = match bank.and_then(|m| m.get(&at)).copied() {
                 Some(b) => b,
-                None => match self.fill {
-                    Some(seed) if space != "register" && space != "unique" => {
-                        fill_byte_pool(seed, space, at, &self.pool)
-                    }
-                    _ => 0,
+                None => match self.backing.as_ref().and_then(|img| img.byte(space, at)) {
+                    Some(b) => b,
+                    None => match self.fill {
+                        Some(seed) if space != "register" && space != "unique" => {
+                            fill_byte_pool(seed, space, at, &self.pool)
+                        }
+                        _ => 0,
+                    },
                 },
             };
             v |= (b as u64) << (8 * i);
@@ -1360,16 +1386,44 @@ const DECODE_WINDOW: usize = 64;
 /// it captures thousands of vectors per routine and a followed call may land anywhere.
 pub struct Image<'a> {
     spec: &'a Spec,
-    bytes: &'a [u8],
+    /// The blocks instructions decode from, `(start, bytes)`, ascending and disjoint.
+    blocks: Vec<(u64, &'a [u8])>,
+    /// Where a run starts when its options name no entry.
     base: u64,
     context: &'a [u32],
     /// address → (structured ops, fall-through address)
     decoded: HashMap<u64, (Vec<PcodeOp>, u64)>,
+    /// The blocks as the machines' memory, when requested ([`Image::with_image_memory`]).
+    memory: Option<Arc<Backing>>,
 }
 
 impl<'a> Image<'a> {
+    /// One block of bytes at `base`.
     pub fn new(spec: &'a Spec, bytes: &'a [u8], base: u64, context: &'a [u32]) -> Self {
-        Self { spec, bytes, base, context, decoded: HashMap::new() }
+        let mut image = Self::from_blocks(spec, &[(base, bytes)], context);
+        image.base = base;
+        image
+    }
+
+    /// Several disjoint blocks, `(start, bytes)` — a program's loaded memory: code decodes from
+    /// whichever block holds it, and a run with no entry starts at the lowest block.
+    pub fn from_blocks(spec: &'a Spec, blocks: &[(u64, &'a [u8])], context: &'a [u32]) -> Self {
+        let mut blocks: Vec<(u64, &'a [u8])> = blocks.iter().copied().filter(|(_, b)| !b.is_empty()).collect();
+        blocks.sort_by_key(|(start, _)| *start);
+        let base = blocks.first().map_or(0, |(start, _)| *start);
+        Self { spec, blocks, base, context, decoded: HashMap::new(), memory: None }
+    }
+
+    /// Make the image the machines' memory: a byte no run has written reads the image's own byte
+    /// at that address in the language's default space (zero outside every block), as memory
+    /// holds a program once it is loaded — its constants, its tables, the initial value of every
+    /// global. Without it a never-written byte reads zero, and a routine that reads its own data
+    /// needs that data seeded. The bytes are copied once here and shared by every machine.
+    pub fn with_image_memory(mut self) -> Self {
+        let space = self.spec.spaces[self.spec.default_space].name.clone();
+        let blocks = self.blocks.iter().map(|(start, bytes)| (*start, bytes.to_vec())).collect();
+        self.memory = Some(Arc::new(Backing { space, blocks }));
+        self
     }
 
     /// How many instructions have been decoded so far — about what the runs executed.
@@ -1377,19 +1431,25 @@ impl<'a> Image<'a> {
         self.decoded.len()
     }
 
-    /// The instruction at `pc`, decoding a window on a miss; `None` outside the bytes.
+    /// The instruction at `pc`, decoding a window of the block that holds it on a miss; `None`
+    /// outside every block.
     ///
     /// An instruction the window cuts is NOT kept: the decoder zero-pads a cut instruction
     /// (`Spec::disassemble_ctx`), which can spell a different instruction than the bytes do.
     /// It is decoded whole from its own address when the run reaches it. At the true end of
-    /// the bytes the padding is the loader's own behaviour and the instruction stands.
+    /// a block the padding is the loader's own behaviour and the instruction stands.
     fn at(&mut self, pc: u64) -> Option<&(Vec<PcodeOp>, u64)> {
         if !self.decoded.contains_key(&pc) {
-            let off = pc.checked_sub(self.base).filter(|o| (*o as usize) < self.bytes.len())? as usize;
-            let end = (off + DECODE_WINDOW).min(self.bytes.len());
-            let cut = end < self.bytes.len();
-            let window_end = self.base + end as u64;
-            for insn in self.spec.disassemble_ctx(&self.bytes[off..end], pc, self.context) {
+            let i = self.blocks.partition_point(|(start, _)| *start <= pc).checked_sub(1)?;
+            let (start, bytes) = self.blocks[i];
+            let off = (pc - start) as usize;
+            if off >= bytes.len() {
+                return None;
+            }
+            let end = (off + DECODE_WINDOW).min(bytes.len());
+            let cut = end < bytes.len();
+            let window_end = start + end as u64;
+            for insn in self.spec.disassemble_ctx(&bytes[off..end], pc, self.context) {
                 let next = insn.address + insn.bytes.len() as u64;
                 if cut && next > window_end {
                     break;
@@ -1412,7 +1472,7 @@ impl<'a> Image<'a> {
     /// A fresh machine for this image, for a caller that prepares the starting state itself
     /// ([`Machine::write`], [`Machine::write_bytes`]) and then runs it with [`Image::resume`].
     pub fn machine(&self) -> Machine {
-        Machine { userops: self.spec.userops.clone(), ..Machine::default() }
+        Machine { userops: self.spec.userops.clone(), backing: self.memory.clone(), ..Machine::default() }
     }
 
     /// Execute `m` from `opts.entry` (or the first byte): its registers and memory are the

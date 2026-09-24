@@ -84,7 +84,25 @@ cut instruction, which can spell a different one). A caller capturing many vecto
 image keeps the decoded instructions across runs: `let mut image = Image::new(spec, bytes, base,
 ctx); image.run(inputs, &opts)` — `run_with` is one such image used once. A whole text section
 with the routine inside it therefore costs what the routine executes, and `Image::decoded()`
-says how many instructions that took. The
-source-built gates are `crates/mosura-core/tests/emu_reference.rs` over
-`oracle/ground-truth/src/{divide_fault,spin_until_zero,call_chain}.S`; the operation's are in
-`crates/mosura-api/tests/ops_sleigh.rs` and the C API's in `crates/mosura-capi/tests/program.rs`.
+says how many instructions that took.
+
+`Image::from_blocks(spec, &[(start, bytes), …], ctx)` is an image of several disjoint blocks — a
+program's loaded memory, code decoding from whichever block holds it. `.with_image_memory()`
+makes the blocks the machine's memory as well: a byte no run has written reads the image's own
+byte (zero outside every block), so a routine reads its constants and the initial value of every
+global without seeding them. Without it a never-written byte reads zero.
+
+A run can also start from a machine instead of a seed list: `Image::machine()` hands out a fresh
+one, `Machine::write` and `Machine::write_bytes` prepare it, and `Image::resume(machine, &opts)`
+runs it. The machine a run returns can be resumed the same way, which is how a sequence of runs
+carries its registers and memory from one to the next; each run's effects and unmodeled counts
+are its own. `Machine::spaces()` names the spaces a state holds bytes in.
+
+With `trace` on, `Machine::effects` lists what the run did, in order: stores outside the register
+and unique spaces, calls by target (followed or not), port accesses and software interrupts. The
+writes that prepared the machine are not effects.
+
+The source-built gates are `crates/mosura-core/tests/emu_reference.rs` over
+`oracle/ground-truth/src/{divide_fault,spin_until_zero,call_chain,image_data}.S`; the operation's
+are in `crates/mosura-api/tests/ops_sleigh.rs` and the C API's in
+`crates/mosura-capi/tests/program.rs`.
