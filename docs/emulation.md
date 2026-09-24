@@ -19,7 +19,7 @@ mosura call sleigh.emulate lang=x86:LE:32:default bytes=f7f1c3 base=0x1000 \
 | `lang`, `bytes`, `base`, `ctx` | as for `sleigh.lift`: the language, the bytes as hex, their address, the decode context |
 | `emulate.entry` | where execution starts (default `base`); the bytes may hold a whole image |
 | `emulate.registers` | the initial registers, `NAME=hex,…` — the language's register names, any width (`AX`, `EAX`, `RAX`) |
-| `emulate.memory` | the initial memory, `hexaddr=hexbytes;…` (a lookup table, a stack) |
+| `emulate.memory` | the initial memory, `hexaddr=hexbytes;…` (a lookup table, a stack); the bytes are memory already, as a loaded program's are, and a seed over them wins |
 | `emulate.follow-calls` | enter a `CALL`/`CALLIND` whose target lies inside the bytes and return to the caller at its `RETURN`; off (the default) a call is an event: skipped, its callee never run |
 | `emulate.max-steps` | the p-code operation budget (default 5,000,000) |
 
@@ -68,9 +68,10 @@ event in both modes: its handler is not in the bytes.
 
 The interpreter models integer and binary32/64 float p-code, the `LOCK`/`in`/`out`/`swi` user-ops
 and nothing else; x87's 80-bit arithmetic and the vector extensions are reported as `unmodeled`
-rather than approximated (`semantic-equivalence.md`, calibration). Memory outside the seeded bytes
-reads as zero — there is no fill here, unlike the differential run — and nothing outside the bytes
-executes: no BIOS, no DOS, no extender. A register wider than eight bytes is not reported.
+rather than approximated (`semantic-equivalence.md`, calibration). Memory holds the bytes given
+and the seeds; everything else reads as zero — there is no fill here, unlike the differential run
+— and nothing outside the bytes executes: no BIOS, no DOS, no extender. A register wider than
+eight bytes is not reported.
 
 ## The library
 

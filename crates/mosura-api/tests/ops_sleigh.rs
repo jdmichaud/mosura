@@ -133,3 +133,26 @@ fn emulate_reports_the_outcome_the_registers_and_the_memory() {
         assert!(matches!(e, Error::InvalidArg(_)), "{key}={value}: {e:?}");
     }
 }
+
+fn emulation_rows(t: &mosura_api::table::Table) -> Vec<(String, String, String)> {
+    (0..t.rows()).map(|r| (t.str(r, 0).unwrap().to_string(), t.str(r, 1).unwrap().to_string(), t.str(r, 2).unwrap().to_string())).collect()
+}
+
+/// `sleigh.emulate`'s bytes are the machine's memory as well as its code, as a loaded program's
+/// are: an instruction that reads data placed after it reads the bytes given. A seed over them
+/// wins, and reading them writes nothing.
+#[test]
+fn emulate_reads_its_own_bytes_as_memory() {
+    let c = ctx();
+    let mut s = Session::open(None).unwrap();
+    // mov eax,[0x1006]; ret — then the dword 0x11223344 at 0x1006
+    let code = [("lang", "x86:LE:32:default"), ("bytes", "a106100000c344332211"), ("base", "0x1000")];
+    let r = emulation_rows(&dispatch(&c, &mut s, "sleigh.emulate", &opts(&code), &mut NoProgress).unwrap());
+    assert!(r.contains(&("outcome".into(), "stop".into(), "returned".into())), "{r:?}");
+    assert!(r.contains(&("register".into(), "EAX".into(), "0x11223344".into())), "{r:?}");
+    assert!(!r.iter().any(|(k, _, _)| k == "memory"), "reading the bytes writes nothing: {r:?}");
+    let mut seeded = code.to_vec();
+    seeded.push(("emulate.memory", "0x1006=78563412"));
+    let r = emulation_rows(&dispatch(&c, &mut s, "sleigh.emulate", &opts(&seeded), &mut NoProgress).unwrap());
+    assert!(r.contains(&("register".into(), "EAX".into(), "0x12345678".into())), "{r:?}");
+}

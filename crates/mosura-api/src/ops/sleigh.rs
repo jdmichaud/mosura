@@ -20,7 +20,7 @@ const EMULATE_PARAMS: &[&str] = &["lang", "bytes", "base", "ctx", keys::EMULATE_
 
 pub static DISASSEMBLE: Op = Op { name: "sleigh.disassemble", doc: "disassemble raw bytes (hex) for a language at base, under the language's default context overridden by ctx", since: "0.1", tier: Tier::Product, params: PARAMS, result: "instructions", cache: Cache::Transient, run: disassemble };
 pub static LIFT: Op = Op { name: "sleigh.lift", doc: "disassemble raw bytes and lift each instruction to raw p-code (one row per op; text is the golden form)", since: "0.1", tier: Tier::Product, params: PARAMS, result: "pcode", cache: Cache::Transient, run: lift };
-pub static EMULATE: Op = Op { name: "sleigh.emulate", doc: "execute the p-code of raw bytes from base (or emulate.entry) over an initial state (emulate.registers, emulate.memory) until the routine returns, faults, reaches an address with no instruction, or spends emulate.max-steps; a call is an event unless emulate.follow-calls. Rows: outcome (stop = returned | fault | no-instruction | step-cap, address, steps, unmodeled, unmodeled-op), register (every register the final state holds, widest first), memory (every run of bytes it holds, as hex)", since: "0.1", tier: Tier::Product, params: EMULATE_PARAMS, result: "emulation", cache: Cache::Transient, run: emulate };
+pub static EMULATE: Op = Op { name: "sleigh.emulate", doc: "execute the p-code of raw bytes from base (or emulate.entry) over an initial state (emulate.registers, emulate.memory; the bytes themselves are memory too) until the routine returns, faults, reaches an address with no instruction, or spends emulate.max-steps; a call is an event unless emulate.follow-calls. Rows: outcome (stop = returned | fault | no-instruction | step-cap, address, steps, unmodeled, unmodeled-op), register (every register the final state holds, widest first), memory (every run of bytes it holds, as hex)", since: "0.1", tier: Tier::Product, params: EMULATE_PARAMS, result: "emulation", cache: Cache::Transient, run: emulate };
 
 /// Hex text to bytes: `0x` prefix, spaces and underscores ignored; an odd digit count refused.
 pub fn parse_bytes(s: &str) -> Result<Vec<u8>> {
@@ -157,7 +157,10 @@ fn emulate(_s: &mut Session, o: &Options, _p: &mut dyn Progress) -> Result<Table
             seeds.push(("ram", addr + k as u64, u64::from(b), 1));
         }
     }
-    let run = emu::run_with(i.spec, &i.bytes, i.base, &i.ctx, &seeds, &RunOptions { entry, follow_calls, max_steps, ..RunOptions::default() });
+    // The bytes are the machine's memory as well as its code, as a loaded program's are.
+    let run = emu::Image::new(i.spec, &i.bytes, i.base, &i.ctx)
+        .with_image_memory()
+        .run(&seeds, &RunOptions { entry, follow_calls, max_steps, ..RunOptions::default() });
     let mut b = TableBuilder::new(&EMULATION);
     let (stop, address) = match run.stop {
         Stop::Returned => ("returned", None),
