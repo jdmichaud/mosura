@@ -20,7 +20,7 @@ use mosura_core::analysis::program::{CodeUnit, Program};
 use mosura_core::analysis::{self, Loader};
 use mosura_core::decompile::space::Address;
 
-const LOAD_PARAMS: &[&str] = &["input", keys::LOAD_LOADER, keys::LOAD_LANGUAGE, keys::LOAD_BASE, keys::LOAD_ENTRIES, keys::LOAD_FLOWS, keys::LOAD_CSPEC_X86_32, keys::ANALYSIS_DISABLE, keys::ANALYSIS_SWITCH_TABLE_REFS, keys::ANALYSIS_DATA_POINTER_FUNCTIONS, keys::KNOBS_OFF];
+const LOAD_PARAMS: &[&str] = &["input", keys::LOAD_LOADER, keys::LOAD_LANGUAGE, keys::LOAD_BASE, keys::LOAD_ENTRIES, keys::LOAD_FLOWS, keys::LOAD_DATA, keys::LOAD_CSPEC_X86_32, keys::ANALYSIS_DISABLE, keys::ANALYSIS_SWITCH_TABLE_REFS, keys::ANALYSIS_DATA_POINTER_FUNCTIONS, keys::KNOBS_OFF];
 
 pub static LOAD: Op = Op { name: "program.load", doc: "load the input (no analysis) into a program set", since: "0.1", tier: Tier::Product, params: LOAD_PARAMS, result: "program_summary", cache: Cache::Pure { stage: Stage::Analysis, set: SetKind::Program }, run: |s, o, p| load_or_analyze(s, o, p, false) };
 pub static ANALYZE: Op = Op { name: "program.analyze", doc: "load and auto-analyze the input into a program set", since: "0.1", tier: Tier::Product, params: LOAD_PARAMS, result: "program_summary", cache: Cache::Pure { stage: Stage::Analysis, set: SetKind::Program }, run: |s, o, p| load_or_analyze(s, o, p, true) };
@@ -75,6 +75,74 @@ pub fn declared_flows(o: &Options, program: &mosura_core::analysis::Program) -> 
         flows.push(mosura_core::analysis::program::DeclaredFlow { from: at(from)?, call, targets });
     }
     Ok(flows)
+}
+
+/// The data units `load.data` declares: `KIND:ADDR[*COUNT][@BASE]`, `;`-separated, hex. Each
+/// element is read from the program's image in its byte order; a pointer (`ptr16`, `ptr32`: the
+/// value, plus BASE if given) or an offset (`off16`, `off32`: BASE plus the value, signed) that is
+/// not 0 gets a target. Every element must lie in initialized memory and overlap no other unit.
+pub fn declared_data(o: &Options, program: &Program) -> Result<Vec<mosura_core::analysis::program::DeclaredUnit>> {
+    let bad = |what: String| Error::InvalidArg(format!("`{}`: {what}", keys::LOAD_DATA));
+    let hex = |a: &str| parse_hex(a.trim()).ok_or_else(|| bad(format!("`{a}` is not a number")));
+    let ram = program.default_space;
+    let mut units: Vec<mosura_core::analysis::program::DeclaredUnit> = Vec::new();
+    for decl in o.get(keys::LOAD_DATA)?.split(';').map(str::trim).filter(|d| !d.is_empty()) {
+        let (kind, rest) = decl.split_once(':').ok_or_else(|| bad(format!("`{decl}` is not KIND:ADDR[*COUNT][@BASE]")))?;
+        let (rest, base) = match rest.split_once('@') {
+            Some((r, b)) => (r, Some(hex(b)?)),
+            None => (rest, None),
+        };
+        let (addr, count) = match rest.split_once('*') {
+            Some((a, n)) => (hex(a)?, hex(n)?),
+            None => (hex(rest)?, 1),
+        };
+        // (size, type name, how an element's value becomes a target)
+        let (size, type_name, offset): (u32, &str, Option<bool>) = match kind.trim() {
+            "u8" => (1, "byte", None),
+            "u16" => (2, "word", None),
+            "u32" => (4, "dword", None),
+            "ptr16" => (2, "pointer16", Some(false)),
+            "ptr32" => (4, "pointer32", Some(false)),
+            "off16" => (2, "word", Some(true)),
+            "off32" => (4, "dword", Some(true)),
+            k => return Err(bad(format!("`{k}` is not u8, u16, u32, ptr16, ptr32, off16 or off32"))),
+        };
+        if offset == Some(true) && base.is_none() {
+            return Err(bad(format!("`{decl}`: an offset table needs its @BASE")));
+        }
+        if count == 0 {
+            return Err(bad(format!("`{decl}` declares no element")));
+        }
+        for i in 0..count {
+            let at = Address::new(ram, addr + i * u64::from(size));
+            let bytes = program.memory.read_window(at, size as usize);
+            if bytes.len() < size as usize || (0..u64::from(size)).any(|k| program.memory.block_at(Address::new(ram, at.offset + k)).is_none_or(|b| !b.is_initialized())) {
+                return Err(bad(format!("{:#x} is outside the program's initialized memory", at.offset)));
+            }
+            let mut value = 0u64;
+            for k in 0..size as usize {
+                let byte = if program.big_endian { bytes[k] } else { bytes[size as usize - 1 - k] };
+                value = (value << 8) | u64::from(byte);
+            }
+            let target = match offset {
+                None => None,
+                Some(_) if value == 0 => None,
+                Some(false) => Some(value.wrapping_add(base.unwrap_or(0))),
+                Some(true) => {
+                    let shift = 64 - 8 * size;
+                    Some(base.unwrap_or(0).wrapping_add((((value << shift) as i64) >> shift) as u64))
+                }
+            };
+            let end = at.offset + u64::from(size);
+            let clash = units.iter().any(|u| at.offset < u.at.offset + u64::from(u.length) && u.at.offset < end)
+                || (at.offset..end).any(|k| program.listing.code_unit_containing(Address::new(ram, k), 16).is_some());
+            if clash {
+                return Err(bad(format!("{:#x} overlaps another unit", at.offset)));
+            }
+            units.push(mosura_core::analysis::program::DeclaredUnit { at, length: size, type_name: type_name.to_string(), target: target.map(|t| Address::new(ram, t)) });
+        }
+    }
+    Ok(units)
 }
 
 pub fn loader_of<'a>(o: &Options, language: &'a str, base: &str, entries: &'a [u64]) -> Result<Loader<'a>> {
@@ -196,6 +264,8 @@ fn load_or_analyze(s: &mut Session, o: &Options, p: &mut dyn Progress, analyze: 
     let which = loader_of(o, &language, &base, &entries)?;
     let mut program = analysis::load_bytes_with(&data, filename.as_deref(), which, &knobs).map_err(load_error)?;
     program.declared_flows = declared_flows(o, &program)?;
+    let data = declared_data(o, &program)?;
+    program.declare_data(&data);
     if analyze {
         if !p.report("analyze", 1, 2) {
             return Err(Error::Cancelled);

@@ -250,6 +250,52 @@ fn declared_flows_are_followed() {
     assert!(matches!(run("jump:0x20a=0x9000"), Err(Error::InvalidArg(_))), "a target outside memory");
 }
 
+/// `load.data` declares data units — the tables a dispatch reads, as the program's own words:
+/// `off16:ADDR*COUNT@BASE` (target = BASE + the signed word), `ptr16`/`ptr32` (target = the value,
+/// plus @BASE when given), `u8`/`u16`/`u32` (plain values). Each element is a data unit in the
+/// listing (Ghidra's type names), a pointer or offset element references its target, and a null
+/// element (0) references nothing. The analysis leaves declared data alone: code never decodes
+/// over it. An overlap or an element outside memory is refused.
+#[test]
+fn declared_data_is_in_the_listing_with_its_references() {
+    let c = ctx();
+    let mut image = vec![0u8; 0x300];
+    image[0..8].copy_from_slice(&[0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x02, 0x08]);
+    image[0x208..0x20a].copy_from_slice(&[0x60, 0x16]); // bra.s $220: flow runs into the table
+    // 0x220: off16 table, base 0x220: +0x10, -0x20, 0 (null)
+    image[0x220..0x226].copy_from_slice(&[0x00, 0x10, 0xff, 0xe0, 0x00, 0x00]);
+    // 0x230: ptr32 table: 0x208, 0 (null)
+    image[0x230..0x238].copy_from_slice(&[0x00, 0x00, 0x02, 0x08, 0x00, 0x00, 0x00, 0x00]);
+    image[0x240] = 0x7f; // a plain byte
+    let raw = [("load.loader", "raw"), ("load.language", "68000:BE:32:default"), ("load.base", "0"), ("load.entries", "0x208")];
+    let run = |data: &str| -> Result<(Vec<(u64, u32, String)>, Vec<(u64, u64)>), Error> {
+        let mut s = Session::open(None).unwrap();
+        s.add_input(&image, "rom.bin", None).unwrap();
+        let mut o = raw.to_vec();
+        o.push(("load.data", data));
+        dispatch(&c, &mut s, "program.analyze", &opts(&o), &mut NoProgress)?;
+        let d = dispatch(&c, &mut s, "program.disassemble", &opts(&[("addr", "0x220"), ("len", "48")]), &mut NoProgress)?;
+        let units = (0..d.rows()).map(|r| (d.u64(r, 0).unwrap(), d.u64(r, 1).unwrap() as u32, d.str(r, 3).unwrap().to_string())).collect();
+        let t = dispatch(&c, &mut s, "program.tables", &opts(&[("table", "references")]), &mut NoProgress)?;
+        let mut refs: Vec<(u64, u64)> = (0..t.rows()).map(|r| (t.u64(r, 1).unwrap(), t.u64(r, 3).unwrap())).filter(|(f, _)| (0x220..0x250).contains(f)).collect();
+        refs.sort_unstable();
+        Ok((units, refs))
+    };
+    let (units, refs) = run("off16:0x220*3@0x220; ptr32:0x230*2; u8:0x240").unwrap();
+    let names = |v: &[(u64, u32, String)]| v.iter().map(|(a, l, n)| (*a, *l, n.clone())).collect::<Vec<_>>();
+    assert_eq!(
+        names(&units),
+        [(0x220, 2, "word".into()), (0x222, 2, "word".into()), (0x224, 2, "word".into()), (0x230, 4, "pointer32".into()), (0x234, 4, "pointer32".into()), (0x240, 1, "byte".into())]
+    );
+    assert_eq!(refs, [(0x220, 0x230), (0x222, 0x200), (0x230, 0x208)]);
+    let (undeclared, _) = run("u8:0x240").unwrap();
+    assert!(undeclared.iter().any(|(a, _, n)| *a == 0x220 && n != "word"), "undeclared, the flow decodes the table as code: {undeclared:?}");
+    assert!(matches!(run("u16:0x220; u8:0x221"), Err(Error::InvalidArg(_))), "overlap");
+    assert!(matches!(run("u32:0x2fe"), Err(Error::InvalidArg(_))), "past the image");
+    assert!(matches!(run("off16:0x220*3"), Err(Error::InvalidArg(_))), "an offset needs its base");
+    assert!(matches!(run("f80:0x220"), Err(Error::InvalidArg(_))), "unknown kind");
+}
+
 #[test]
 fn cached_program_configuration_is_request_local() {
     use mosura_api::ops::program::program_of;

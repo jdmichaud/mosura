@@ -8,6 +8,7 @@ pub const LOAD_LANGUAGE: &str = "load.language";
 pub const LOAD_BASE: &str = "load.base";
 pub const LOAD_ENTRIES: &str = "load.entries";
 pub const LOAD_FLOWS: &str = "load.flows";
+pub const LOAD_DATA: &str = "load.data";
 pub const LOAD_CSPEC_X86_32: &str = "load.cspec-x86-32";
 pub const ANALYSIS_DISABLE: &str = "analysis.disable";
 pub const ANALYSIS_SWITCH_TABLE_REFS: &str = "analysis.switch-table-refs";
@@ -73,6 +74,7 @@ pub fn hand_written() -> Vec<OptionSpec> {
         spec!(LOAD_BASE, OptType::Hex, "", Affects::Result, "the load address of a raw image (load.loader=raw)"),
         spec!(LOAD_ENTRIES, OptType::Str, "", Affects::Result, "the entry points of a raw image (load.loader=raw), hex, comma-separated: each is an entry point the analysis starts from, in place of the base (a cartridge's vector table, a ROM's reset address)"),
         spec!(LOAD_FLOWS, OptType::Str, "", Affects::Result, "computed flows the analysis cannot bound, declared: `jump:FROM=TO,TO,…` (a dispatch whose targets are code in the jumping function) and `call:FROM=TO,…` (targets that are functions), `;`-separated, hex — Ghidra's user COMPUTED_JUMP / COMPUTED_CALL references"),
+        spec!(LOAD_DATA, OptType::Str, "", Affects::Result, "data units declared at load, `;`-separated `KIND:ADDR[*COUNT][@BASE]` (hex): u8/u16/u32 plain values; ptr16/ptr32 pointers (target = value, + BASE if given); off16/off32 offsets (target = BASE + signed value, BASE required). A pointer or offset element references its target unless it is 0 (null); code never decodes over declared data"),
         spec!(LOAD_CSPEC_X86_32, OptType::Str, "", Affects::Result, "declare the x86-32 compiler spec at load time (watcom, highc, …) instead of detecting it"),
         spec!(ANALYSIS_DISABLE, OptType::List(&[]), "", Affects::Result, "analyzers to leave out of auto-analysis, by name (an ablation)"),
         spec!(ANALYSIS_SWITCH_TABLE_REFS, OptType::Bool, "false", Affects::Result, "Ghidra's `Switch Table References` option (off by default there too): a computed call or jump names the table of code pointers at its operand, whose entries become references, code and functions — for table-driven programs whose tables sit inline in the code"),
