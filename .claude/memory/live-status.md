@@ -52,9 +52,15 @@ the debugger. `sor` plans 68k routine vectors from mosura. Probing 68k BEFORE it
   my uncommitted tree for sor's hang — wrong; ask how the consumer builds before explaining. The
   `<repo parent>` sshfs mount refuses writes under heavy parallel I/O ("Operation not permitted")
   — use CARGO_BUILD_JOBS=4.
-- OPEN: listing flow kind ignores the CALL_RETURN override (sor 0x3B0E); DATA refs other than
-  lea/pea still op -1; address tables 641 vs Ghidra 409 on 68000; x86 bare-constant DATA rule is a
-  shortcut Ghidra has no equivalent of (find the real mechanism before touching it).
+- `2b7379bc` listing shows the overridden flow type · `d1f68a99` KNOWN load/store refs even outside
+  memory (Ghidra makeReference; "Trust Writable Memory" default ⇒ memory-read pointers are known) +
+  data-ref operand index (text approximation, 757/764 vs Ghidra on sor) · `110f8aa5` heritage BIG-
+  ENDIAN arms (Varnode::overlap/concat/splitPieces/normalizeWriteSize — the "task #5" LE-only gap;
+  68000 D0b is the LEAST significant byte) · `97c7284e` INT_SEXT sign-extends; the constant walk
+  follows COMPUTED_JUMP refs. Workspace 1391 passed.
+- OPEN: READ+WRITE pairs vs Ghidra's READ_WRITE; movem op index (Ghidra: register-list operand);
+  Ghidra re-walks loops (per-iteration refs) — mosura visits once; PC-indexed table DATA refs;
+  address tables 641 vs 409 on 68000; x86 bare-constant DATA rule has no Ghidra equivalent found.
 
 ## Live status — `master` (2026-09-30): the refexec room's four items LANDED
 
