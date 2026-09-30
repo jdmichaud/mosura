@@ -223,10 +223,15 @@ pub fn default_stack_pointer(
 /// The compiler spec's `<stackpointer>` register as `(offset, size)` in the register space — the
 /// same element [`default_stack_pointer`] decodes, for a caller with the SLEIGH language alone and
 /// no decompiler space table (the p-code interpreter). Every compiler spec Ghidra ships names one.
+/// A compiler spec id the language does not declare reads its default compiler spec
+/// ([`crate::lang::default_compiler_spec`]).
 pub fn stack_pointer_register(spec: &Spec, language_id: &str, compiler_spec_id: &str) -> Option<(u64, u32)> {
     static CACHE: OnceLock<CspecCache<Option<(u64, u32)>>> = OnceLock::new();
     cspec_cached(&CACHE, language_id, compiler_spec_id, || {
-        let path = crate::lang::resolve_cspec(language_id, compiler_spec_id)?;
+        // A compiler spec the language does not declare (a raw image's placeholder `default` on
+        // x86) is the language's default one, as Ghidra's program would have.
+        let path = crate::lang::resolve_cspec(language_id, compiler_spec_id)
+            .or_else(|| crate::lang::resolve_cspec(language_id, &crate::lang::default_compiler_spec(language_id)?))?;
         let text = crate::resources::get().read_string(path.to_str()?)?;
         let doc = roxmltree::Document::parse(&text).ok()?;
         let sp = doc.descendants().find(|n| n.is_element() && n.tag_name().name() == "stackpointer")?;

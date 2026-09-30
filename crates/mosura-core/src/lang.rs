@@ -114,6 +114,26 @@ pub fn resolve_cspec(lang_id: &str, compiler_spec_id: &str) -> Option<PathBuf> {
     resolved
 }
 
+/// The id of a language's default compiler spec: its first `<compiler>` in the `.ldefs`, as Ghidra's
+/// `SleighLanguage.getDefaultCompilerSpec` answers. What a program that names no compiler spec
+/// runs under — a raw image carries the placeholder id `default`, which x86-32 and x86-64 do not
+/// declare.
+pub fn default_compiler_spec(lang_id: &str) -> Option<String> {
+    let id4: String = lang_id.split(':').take(4).collect::<Vec<_>>().join(":");
+    let res = crate::resources::get();
+    for name in res.list("ghidra/Processors/") {
+        if language_dir_of_ldefs(&name).is_none() {
+            continue;
+        }
+        let Some(text) = res.read_string(&name) else { continue };
+        let Ok(doc) = roxmltree::Document::parse(&text) else { continue };
+        if let Some(l) = doc.descendants().find(|n| n.tag_name().name() == "language" && n.attribute("id") == Some(id4.as_str())) {
+            return l.children().find(|n| n.tag_name().name() == "compiler").and_then(|c| c.attribute("id")).map(str::to_string);
+        }
+    }
+    None
+}
+
 /// The filesystem walk behind [`resolve_cspec`] — Ghidra's one-time `.ldefs` read.
 /// Does the compiler behind `compiler_spec_id` let a function declare its OWN register convention?
 /// True for the mosura-authored specs — Watcom (`#pragma aux … parm [..] value [..] modify [..]`)
@@ -393,6 +413,34 @@ mod tests {
         let (sla, pspec) = resolve("RISCV:LE:32:default").expect("the vendored tree has RISCV");
         assert!(!sla.to_string_lossy().contains("/old/") && !pspec.to_string_lossy().contains("/old/"), "{sla:?} {pspec:?}");
         assert!(sla.to_string_lossy().ends_with("RISCV/data/languages/riscv.ilp32d.sla"), "{sla:?}");
+    }
+
+    /// Every language names a default compiler spec (its first `<compiler>`), and that spec names a
+    /// stack pointer: a run over any language's raw image can give a skipped call's or a stub's
+    /// stack back. x86-32 declares no compiler `default`, so its default is `windows`.
+    #[test]
+    fn every_language_has_a_default_compiler_spec_with_a_stack_pointer() {
+        let res = crate::resources::get();
+        let mut ids = Vec::new();
+        for name in res.list("ghidra/Processors/") {
+            if language_dir_of_ldefs(&name).is_none() {
+                continue;
+            }
+            let text = res.read_string(&name).unwrap();
+            let doc = roxmltree::Document::parse(&text).unwrap();
+            ids.extend(doc.descendants().filter(|n| n.tag_name().name() == "language").filter_map(|l| l.attribute("id")).map(str::to_string));
+        }
+        assert!(ids.iter().any(|id| id == "x86:LE:32:default"), "{ids:?}");
+        let mut missing = Vec::new();
+        for id in &ids {
+            let sp = default_compiler_spec(id).and_then(|c| resolve_cspec(id, &c)).and_then(|p| res.read_string(p.to_str()?)).is_some_and(|t| t.contains("<stackpointer"));
+            if !sp {
+                missing.push(id.as_str());
+            }
+        }
+        assert!(missing.is_empty(), "no default compiler spec with a stack pointer: {missing:?}");
+        assert_eq!(default_compiler_spec("x86:LE:32:default").as_deref(), Some("windows"));
+        assert_eq!(default_compiler_spec("x86:LE:16:Real Mode").as_deref(), Some("default"));
     }
 
     /// Register groups come from the processor spec: x86 files its flags under FLAGS and names no

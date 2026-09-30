@@ -212,3 +212,30 @@ fn uninitialized_registers_can_leave_out_a_group() {
     assert_eq!(named(&[("emulate.uninitialized-ignore", "FLAGS")], &mut s), ["GS_OFFSET"]);
     assert_eq!(named(&[("emulate.uninitialized-ignore", "FLAGS,GS_OFFSET")], &mut s), Vec::<String>::new());
 }
+
+/// A stub reached from a routine that is itself an entered call returns into that routine, and
+/// the routine's own return then goes back to its caller: E calls A, A reaches the stub S (by a
+/// call, or by a tail jump), and E's work after the call to A still runs. Raw bytes name no
+/// compiler spec, so this also holds only if the stack pointer is found without one: the stub
+/// must hand the stack back as S's return would leave it.
+#[test]
+fn a_stub_reached_from_an_entered_call_returns_into_it() {
+    let c = ctx();
+    let mut s = Session::open(None).unwrap();
+    // E@0x1000: call A; mov ebx,0x11; ret    A@0x100b: call S | jmp S; ret    S@0x1011: mov eax,99; ret
+    let call = "e806000000bb11000000c3e801000000c3b863000000c3";
+    let jump = "e806000000bb11000000c3e901000000c3b863000000c3";
+    for (lang, sp, bx) in [("x86:LE:32:default", "ESP", "EBX"), ("x86:LE:64:default", "RSP", "RBX")] {
+        for (how, bytes) in [("call", call), ("jump", jump)] {
+            let registers = format!("{sp}=0x0f000000");
+            let o = opts(&[("lang", lang), ("bytes", bytes), ("base", "0x1000"), ("emulate.registers", &registers), ("emulate.follow-calls", "true"), ("emulate.effects", "true"), ("emulate.stubs", "0x1011")]);
+            let r = emulation_rows(&dispatch(&c, &mut s, "sleigh.emulate", &o, &mut NoProgress).unwrap());
+            let value = |kind: &str, name: &str| r.iter().find(|(k, n, _)| k == kind && n == name).map(|(_, _, v)| u64::from_str_radix(v.trim_start_matches("0x"), 16).unwrap_or(u64::MAX));
+            let stubs = r.iter().filter(|(k, _, v)| k == "effect" && v.starts_with("stub ")).count();
+            assert_eq!(r.iter().find(|(k, n, _)| k == "outcome" && n == "stop").map(|(_, _, v)| v.as_str()), Some("returned"), "{lang} {how}: {r:?}");
+            assert_eq!((value("register", bx), stubs), (Some(0x11), 1), "{lang} {how}: E's work after the call ran; {r:?}");
+            let word = if sp == "RSP" { 8 } else { 4 };
+            assert_eq!(value("register", sp), Some(0x0f00_0000 + word), "{lang} {how}: E's return popped one word");
+        }
+    }
+}
