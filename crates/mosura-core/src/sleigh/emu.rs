@@ -8,7 +8,8 @@
 
 use super::engine::Spec;
 use super::pcode::{opcode_name, PArg, PcodeOp};
-use std::collections::{BTreeSet, HashMap};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
 /// The control-flow effect of executing one p-code op.
@@ -139,6 +140,12 @@ pub struct Machine {
     /// The instruction executing and the p-code step, set by the run loop before each operation:
     /// the site an effect records.
     at: (u64, usize),
+    /// The registers the program read before anything wrote them, as read — `(offset, size)` in
+    /// the register space — with the site of the first such read. Ghidra's emulator warns
+    /// "Uninitialized register read at <pc>: <register>" for each and reads zero
+    /// (`EmulatorHelper.uninitializedRead`); this keeps the same fact for the caller. Interior
+    /// mutability because operands are read through `&self`.
+    uninitialized: RefCell<BTreeMap<(u64, u32), (u64, usize)>>,
     trace: bool,
     /// Stores inside this half-open range are the program's own scratch (its stack frame) and are
     /// NOT recorded: two implementations of the same function may lay their frames out differently.
@@ -347,9 +354,33 @@ impl Machine {
         self.effect_sites.push(self.at);
     }
 
+    /// The registers the program read before anything wrote them — a caller's seed counts as a
+    /// write, and reads the caller makes afterwards are not the program's — as `(offset, size,
+    /// site)` in the order of their first read. A result that depends on one depends on a value
+    /// nobody supplied: a segment base above all, which reads as zero and moves every access
+    /// through that segment to the wrong address.
+    pub fn uninitialized_registers(&self) -> Vec<(u64, u32, (u64, usize))> {
+        let mut v: Vec<_> = self.uninitialized.borrow().iter().map(|(&(off, size), &site)| (off, size, site)).collect();
+        v.sort_by_key(|&(off, size, (_, step))| (step, off, size));
+        v
+    }
+
+    /// Note a register operand whose bytes were not all written (see [`Machine::uninitialized`]).
+    fn note_register_read(&self, offset: u64, size: u32) {
+        let bank = self.mem.get("register");
+        if !(0..u64::from(size)).all(|i| bank.is_some_and(|b| b.contains_key(&(offset + i)))) {
+            self.uninitialized.borrow_mut().entry((offset, size)).or_insert(self.at);
+        }
+    }
+
     fn read_arg(&self, a: &PArg) -> u64 {
         match a {
-            PArg::Var(v) => self.read(&v.space, v.offset, v.size),
+            PArg::Var(v) => {
+                if v.space == "register" {
+                    self.note_register_read(v.offset, v.size);
+                }
+                self.read(&v.space, v.offset, v.size)
+            }
             PArg::Space(_) => 0,
         }
     }
@@ -1492,11 +1523,13 @@ impl<'a> Image<'a> {
     /// Execute `m` from `opts.entry` (or the first byte): its registers and memory are the
     /// starting state — a machine the caller prepared, or the one a previous run left, which is
     /// how a sequence of runs carries its state from one to the next. What the machine recorded
-    /// before (its effects, its unmodeled operations) is cleared: those are each run's own, and
-    /// the writes that prepared the machine are setup, not effects (as in `run_traced`).
+    /// before (its effects, its unmodeled operations, its uninitialized reads) is cleared: those
+    /// are each run's own, and the writes that prepared the machine are setup, not effects (as
+    /// in `run_traced`).
     pub fn resume(&mut self, mut m: Machine, opts: &RunOptions) -> Run {
         m.effects.clear();
         m.effect_sites.clear();
+        m.uninitialized.get_mut().clear();
         m.unmodeled = 0;
         m.unmodeled_ops.clear();
         m.last_quotient = None;

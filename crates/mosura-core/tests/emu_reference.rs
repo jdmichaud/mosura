@@ -393,3 +393,44 @@ fn each_effect_records_where_and_when() {
         assert_eq!(r.machine.effect_sites, vec![(e, 2), (e, 3)], "x86-{bits}");
     }
 }
+
+/// A register the program reads before anything wrote it is reported with the site of its first
+/// read, as Ghidra's emulator warns "Uninitialized register read at <pc>: <register>" and reads
+/// zero (`EmulatorHelper.uninitializedRead`). A GS or FS read whose base was never set reads from
+/// zero and now says so; with the base seeded, or through a flat DS read, nothing is reported. A
+/// caller's seed counts as a write, and the caller's own reads afterwards are not the program's.
+#[test]
+fn a_register_read_before_anything_wrote_it_is_reported() {
+    for bits in [32, 64] {
+        let f = fixture("segment_base", bits);
+        let memory = [("ram", 0x10u64, 0x1111_1111u64, 4u32), ("ram", 0x5010, 0x2222_2222, 4)];
+        let run = |name: &str, regs: &[(&str, u64)]| {
+            let mut inputs = f.seeds(regs);
+            inputs.extend_from_slice(&memory);
+            emu::run_with(f.spec, f.body(name), f.entry(name), f.ctx, &inputs, &RunOptions::default())
+        };
+        let stack = (f.sp(), STACK);
+        for (routine, base) in [("read_gs", "GS_OFFSET"), ("read_fs", "FS_OFFSET")] {
+            let (off, size) = f.reg(base);
+            let r = run(routine, &[stack]);
+            assert_eq!((r.stop, f.read(&r, "EAX")), (Stop::Returned, 0x1111_1111), "x86-{bits} {routine}: the base read as zero");
+            assert_eq!(r.machine.uninitialized_registers(), vec![(off, size, (f.entry(routine), 1))], "x86-{bits} {routine}");
+            let r = run(routine, &[stack, (base, 0x5000)]);
+            assert_eq!(f.read(&r, "EAX"), 0x2222_2222, "x86-{bits} {routine}");
+            assert!(r.machine.uninitialized_registers().is_empty(), "x86-{bits} {routine}: {:?}", r.machine.uninitialized_registers());
+        }
+        let r = run("read_ds", &[stack]);
+        assert_eq!(f.read(&r, "EAX"), 0x1111_1111, "x86-{bits}");
+        assert!(r.machine.uninitialized_registers().is_empty(), "x86-{bits}: a flat read reads no base");
+        // Any register counts, not only a segment base: unseeded, the RET reads the stack pointer
+        // at its first operation, right after the load's operations.
+        let r = run("read_ds", &[]);
+        let (sp, sp_size) = f.reg(f.sp());
+        let load = &f.spec.disassemble_ctx(f.body("read_ds"), f.entry("read_ds"), f.ctx)[0];
+        let ret = (load.address + load.bytes.len() as u64, load.ops.len() + 1);
+        assert_eq!(r.machine.uninitialized_registers(), vec![(sp, sp_size, ret)], "x86-{bits}");
+        let read = r.machine.uninitialized_registers();
+        let _ = f.read(&r, "EBX");
+        assert_eq!(r.machine.uninitialized_registers(), read, "x86-{bits}: the caller's read is not the program's");
+    }
+}
