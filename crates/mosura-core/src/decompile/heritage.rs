@@ -399,7 +399,7 @@ fn remove_revisited_markers_at(f: &mut Funcdata, remove: &[VarnodeId], range: &M
         let is_indirect = f.op(op).code() == OpCode::Indirect;
         let target = if is_indirect { f.op(op).guarded_op() } else { None };
         let bid = f.op(op).parent;
-        let offset = f.vn(out).loc.offset.wrapping_sub(range.off);
+        let offset = overlap_in(f, f.vn(out).loc.offset, f.vn(out).size, range.space, range.off, range.size);
         f.op_uninsert(op);
         let big = f.new_varnode(range.size, super::space::Address::new(range.space, range.off));
         f.vn_mut(big).set_active_heritage(); // heritage.cc:289
@@ -471,8 +471,8 @@ fn remove13_refinement(refine: &mut [u32]) {
 /// infrastructure and no fixture writes a register sub-piece directly from a call into a guarded
 /// range. The pieces are taken from the plain `SUBPIECE`-of-old-value path (Ghidra's `else`).
 ///
-/// Little-endian only, like [`concat_pieces`]: Ghidra's `addr.isBigEndian()` branches
-/// (`heritage.cc:430`/`451`/`472`) are unrepresentable in mosura's decompiler today (task #5).
+/// Both byte orders: Ghidra's `addr.isBigEndian()` branches (`heritage.cc:430`/`451`/`472`) place
+/// the pieces by significance, which in a big-endian space runs against the addresses.
 fn normalize_write_size(f: &mut Funcdata, vn: VarnodeId, range: &MemRange) -> VarnodeId {
     use super::space::Address;
     let op = f.vn(vn).def.expect("a collected write has a def");
@@ -480,14 +480,17 @@ fn normalize_write_size(f: &mut Funcdata, vn: VarnodeId, range: &MemRange) -> Va
     let vnsize = f.vn(vn).size;
     let base = Address::new(range.space, range.off);
     let acs = f.spaces.get(range.space).addr_size;
-    let overlap = f.vn(vn).loc.offset.wrapping_sub(range.off) as u32; // range bytes below the write
-    let mostsig = range.size - (overlap + vnsize); // range bytes above the write
+    // range bytes less significant than the write (`vn->overlap(addr,size)`), and more significant
+    let overlap = overlap_in(f, f.vn(vn).loc.offset, vnsize, range.space, range.off, range.size) as u32;
+    let mostsig = range.size - (overlap + vnsize);
+    let big_endian = f.spaces.is_big_endian(range.space);
 
     // High piece (`mostsigsize != 0`, heritage.cc:428): SUBPIECE the range's *previous* whole value
     // at offset `overlap + vn->getSize()`. The fresh whole-range read is itself marked
     // activeHeritage (heritage.cc:442) so renaming links it to the range's reaching def.
     let mostvn = if mostsig > 0 {
-        let pieceaddr = Address::new(range.space, range.off + (overlap + vnsize) as u64);
+        // heritage.cc:430 — the most significant piece is at the range start in big-endian
+        let pieceaddr = if big_endian { base } else { Address::new(range.space, range.off + (overlap + vnsize) as u64) };
         let big = f.new_varnode(range.size, base);
         f.vn_mut(big).set_active_heritage();
         let cst = f.new_const(acs, (overlap + vnsize) as u64);
@@ -506,10 +509,14 @@ fn normalize_write_size(f: &mut Funcdata, vn: VarnodeId, range: &MemRange) -> Va
         f.vn_mut(big).set_active_heritage();
         let cst = f.new_const(acs, 0);
         let subop = f.new_op(OpCode::Subpiece, seq, vec![big, cst]);
-        let leastvn = f.new_output(subop, overlap, base);
+        // heritage.cc:451/472 — in big-endian the least significant piece is at the range's end,
+        // and the rejoined middle starts at the write itself
+        let leastaddr = if big_endian { Address::new(range.space, range.off.wrapping_add(u64::from(range.size - overlap))) } else { base };
+        let leastvn = f.new_output(subop, overlap, leastaddr);
         f.op_insert_before(subop, op);
         let pieceop = f.new_op(OpCode::Piece, seq, vec![vn, leastvn]);
-        let mid = f.new_output(pieceop, overlap + vnsize, base);
+        let midaddr = if big_endian { f.vn(vn).loc } else { base };
+        let mid = f.new_output(pieceop, overlap + vnsize, midaddr);
         f.op_insert_after(pieceop, op);
         mid
     } else {
@@ -2013,15 +2020,15 @@ fn split_varnode_by_refinement(
     split
 }
 
-/// Ghidra `Heritage::splitPieces` (heritage.cc:563), little-endian arm (mosura's decompiler
-/// carries no endianness flag — same reduction as `concat_pieces`/`normalize_write_size`): give
-/// each piece a defining SUBPIECE of `startvn`, inserted AFTER the defining op (or at the start
-/// block's head for an input).
+/// Ghidra `Heritage::splitPieces` (heritage.cc:563), both byte orders: give each piece a defining
+/// SUBPIECE of `startvn`, inserted AFTER the defining op (or at the start block's head for an
+/// input).
 fn split_pieces(
     f: &mut Funcdata,
     vnlist: &[VarnodeId],
     insertop: Option<OpId>,
     baseoff: u64,
+    size: u32,
     startvn: VarnodeId,
 ) {
     let seq = match insertop {
@@ -2029,8 +2036,15 @@ fn split_pieces(
         None => super::op::SeqNum { pc: f.addr, uniq: 0 },
     };
     let mut prev = insertop;
+    // heritage.cc:573-600: a piece's SUBPIECE offset is its least significant byte's position —
+    // counted from the end of the range in a big-endian space
+    let big_endian = vnlist.first().is_some_and(|&v| f.spaces.is_big_endian(f.vn(v).loc.space));
     for &vn in vnlist {
-        let diff = f.vn(vn).loc.offset.wrapping_sub(baseoff);
+        let diff = if big_endian {
+            baseoff.wrapping_add(u64::from(size)).wrapping_sub(f.vn(vn).loc.offset.wrapping_add(u64::from(f.vn(vn).size)))
+        } else {
+            f.vn(vn).loc.offset.wrapping_sub(baseoff)
+        };
         let c = f.new_const(4, diff);
         let newop = f.new_op(OpCode::Subpiece, seq, vec![startvn, c]);
         f.op_set_output(newop, vn);
@@ -2076,7 +2090,7 @@ fn refine_write(f: &mut Funcdata, vn: VarnodeId, range_off: u64, refine: &[u32])
     let replacevn = f.new_unique(size);
     let def = f.vn(vn).def.expect("write has a def");
     f.op_set_output(def, replacevn);
-    split_pieces(f, &newvn, Some(def), baseoff, replacevn);
+    split_pieces(f, &newvn, Some(def), baseoff, size, replacevn);
     f.total_replace(vn, replacevn);
     f.delete_varnode(vn);
 }
@@ -2089,7 +2103,8 @@ fn refine_input(f: &mut Funcdata, vn: VarnodeId, range_off: u64, refine: &[u32])
         return;
     }
     let baseoff = f.vn(vn).loc.offset;
-    split_pieces(f, &newvn, None, baseoff, vn);
+    let size = f.vn(vn).size;
+    split_pieces(f, &newvn, None, baseoff, size, vn);
     f.vn_mut(vn).set_write_mask();
 }
 
@@ -2192,6 +2207,20 @@ fn collect(f: &Funcdata, locset: &LocSet, range: &mut MemRange) -> (Collected, u
 
 
 
+/// Ghidra `Varnode::overlap(addr, size)` (varnode.cc) for a Varnode contained in `(range.off,
+/// range.size)`: the byte position of its LEAST significant byte within the range. In a
+/// little-endian space that is its offset from the range start; in a big-endian space the least
+/// significant byte is the LAST one, so it is counted from the range's end — a 68000 `D0b`
+/// (register offset +3) is byte 0 of `D0`, not byte 3.
+fn overlap_in(f: &Funcdata, off: u64, size: u32, range_space: super::space::SpaceId, range_off: u64, range_size: u32) -> u64 {
+    if f.spaces.is_big_endian(range_space) {
+        // `uintb` arithmetic, as in Ghidra: a stack offset below zero is a wrapped value
+        range_off.wrapping_add(u64::from(range_size)).wrapping_sub(off.wrapping_add(u64::from(size)))
+    } else {
+        off.wrapping_sub(range_off)
+    }
+}
+
 /// Faithful port of `Heritage::normalizeReadSize` (`heritage.cc:382`): a free read narrower than the
 /// range it belongs to is redefined as `SUBPIECE(whole, overlap)` of a fresh whole-range free read,
 /// which is returned and takes the narrow varnode's place in the range's read list.
@@ -2203,7 +2232,7 @@ fn normalize_read_size(f: &mut Funcdata, vn: VarnodeId, op: OpId, range: &MemRan
     use super::space::Address;
     let seq = f.op(op).seqnum;
     let whole = f.new_varnode(range.size, Address::new(range.space, range.off));
-    let overlap = f.vn(vn).loc.offset.wrapping_sub(range.off);
+    let overlap = overlap_in(f, f.vn(vn).loc.offset, f.vn(vn).size, range.space, range.off, range.size);
     let cst = f.new_const(f.spaces.get(range.space).addr_size, overlap);
     let newop = f.new_op(OpCode::Subpiece, seq, vec![whole, cst]);
     // `opSetOutput(newop, vn)` — the OLD varnode becomes the SUBPIECE's output (heritage.cc:396).
@@ -2317,11 +2346,10 @@ fn concat_pieces(
     };
     for i in 1..vnlist.len() {
         let vn = vnlist[i];
-        // Little-endian input order (Ghidra's `else` at heritage.cc:542): the running high half is
-        // PIECE's least-significant input. mosura's decompiler carries no endianness flag — the
-        // big-endian branch (`heritage.cc:539`) is unrepresentable here, exactly as in
-        // [`normalize_write_size`]; it re-enables with the multi-arch work (task #5).
-        let newop = f.new_op(OpCode::Piece, seq, vec![vn, preexist]);
+        // heritage.cc:539-545: pieces come in address order, so in a big-endian space the running
+        // prefix is the MOST significant input, in a little-endian one the least.
+        let inputs = if f.spaces.is_big_endian(f.vn(vn).loc.space) { vec![preexist, vn] } else { vec![vn, preexist] };
+        let newop = f.new_op(OpCode::Piece, seq, inputs);
         let newvn = if i == vnlist.len() - 1 {
             f.op_set_output(newop, finalvn);
             finalvn

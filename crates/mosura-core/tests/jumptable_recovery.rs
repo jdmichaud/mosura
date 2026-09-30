@@ -168,3 +168,35 @@ fn two_switches_sharing_their_cases_are_structured() {
     assert!(decompile_function_within(&p, entry, Some(std::time::Duration::ZERO)).is_none(), "a spent limit stops the decompile");
     assert!(decompile_function_within(&p, entry, Some(std::time::Duration::from_secs(600))).is_some(), "an ample one does not");
 }
+
+/// A byte index in a big-endian register: on the 68000 `D0b` is `D0`'s LEAST significant byte
+/// (register offset +3). `moveq #0,d0; move.b (a0),d0; cmpi.b #$e0/#$e4 guards; subi.b #$e0,d0;
+/// lsl.w #2,d0; jmp (T,pc,d0.w)` is a 4-way switch (cases 0xE0-0xE3, stride 4), as Ghidra recovers
+/// it. Heritage placed the byte by little-endian offset — at the TOP of `D0w` — and the table came
+/// out at stride 0x400, or not at all (Ghidra `Varnode::overlap` / `concatPieces` / `splitPieces`
+/// big-endian arms).
+#[test]
+fn a_big_endian_byte_index_recovers_its_switch() {
+    use mosura_core::analysis::{decompiler::decompile_function, loader::raw::load_raw_at};
+    use mosura_core::decompile::space::Address;
+    let mut image = vec![0u8; 0x300];
+    image[0..8].copy_from_slice(&[0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x02, 0x00]);
+    // 200 moveq #0,d0; move.b (a0),d0; cmpi.b #$e0,d0; bcs $21a; cmpi.b #$e4,d0; bcc $21a;
+    // subi.b #$e0,d0; lsl.w #2,d0; jmp (4,pc,d0.w) -> $21c; 21a rts; 21c 4 x bra.w
+    let code = [
+        0x70, 0x00, 0x10, 0x10, 0x0c, 0x00, 0x00, 0xe0, 0x65, 0x10, 0x0c, 0x00, 0x00, 0xe4, 0x64, 0x0a, 0x04, 0x00, 0x00, 0xe0, 0xe5, 0x48, 0x4e, 0xfb,
+        0x00, 0x04, 0x4e, 0x75,
+    ];
+    image[0x200..0x200 + code.len()].copy_from_slice(&code);
+    for (i, t) in [0x230u16, 0x234, 0x238, 0x23c].iter().enumerate() {
+        let at = 0x21c + 4 * i;
+        let disp = (*t as i32 - (at as i32 + 2)) as i16;
+        image[at..at + 4].copy_from_slice(&[0x60, 0x00, (disp >> 8) as u8, disp as u8]);
+        image[*t as usize..*t as usize + 4].copy_from_slice(&[0x72, i as u8, 0x4e, 0x75]);
+    }
+    let mut p = load_raw_at(&image, "68000:BE:32:default", 0, &[0x200]).unwrap();
+    mosura_core::analysis::analyze(&mut p);
+    let mut f = decompile_function(&p, Address::new(p.default_space, 0x200)).expect("decompiles");
+    let targets: Vec<Vec<u64>> = f.jump_tables().into_iter().map(|t| t.targets).collect();
+    assert_eq!(targets, [vec![0x21c, 0x220, 0x224, 0x228]]);
+}
