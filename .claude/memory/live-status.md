@@ -47,9 +47,11 @@ the debugger. `sor` plans 68k routine vectors from mosura. Probing 68k BEFORE it
   flow flags (the old last-opcode rule had been kept alive by a SPURIOUS inst_next reference —
   removing it alone cost FID parity) + flow refs carry the operand index. `4284c2bd`
   Motorola68KAnalyzer lea/pea refs; no bare-constant refs on 68000. Workspace 1386 passed.
-- ⚠️ Other agents BUILD FROM THIS REPO: keep experiments in `git worktree`s, never uncommitted on
-  the main tree. The /home/jd/mosura sshfs mount refuses writes under heavy parallel I/O
-  ("Operation not permitted") — use CARGO_BUILD_JOBS=4.
+- ⚠️ Other agents build mosura from THIS repo (sor: `git archive master`, so master itself must stay
+  shippable): keep experiments in `git worktree`s, not uncommitted on the main tree. I first blamed
+  my uncommitted tree for sor's hang — wrong; ask how the consumer builds before explaining. The
+  /home/jd/mosura sshfs mount refuses writes under heavy parallel I/O ("Operation not permitted")
+  — use CARGO_BUILD_JOBS=4.
 - OPEN: listing flow kind ignores the CALL_RETURN override (sor 0x3B0E); DATA refs other than
   lea/pea still op -1; address tables 641 vs Ghidra 409 on 68000; x86 bare-constant DATA rule is a
   shortcut Ghidra has no equivalent of (find the real mechanism before touching it).
