@@ -239,3 +239,73 @@ fn a_stub_reached_from_an_entered_call_returns_into_it() {
         }
     }
 }
+
+/// A raw-text ground-truth artifact (`<stem>.bin` + its `llvm-nm` list `<stem>.syms`): the text as
+/// hex, where it loads (its first symbol, or `base` for an unlinked object), and a routine's address.
+struct RawText {
+    bytes: String,
+    base: u64,
+    syms: Vec<(u64, String)>,
+}
+
+impl RawText {
+    fn load(stem: &str, base: Option<u64>) -> Self {
+        let dir = mosura_core::paths::ground_truth_dir();
+        let bytes = std::fs::read(dir.join(format!("{stem}.bin"))).unwrap().iter().map(|b| format!("{b:02x}")).collect();
+        let syms: Vec<(u64, String)> = std::fs::read_to_string(dir.join(format!("{stem}.syms")))
+            .unwrap()
+            .lines()
+            .filter_map(|l| {
+                let f: Vec<&str> = l.split_whitespace().collect();
+                (f.len() == 3 && f[1].eq_ignore_ascii_case("t")).then(|| (u64::from_str_radix(f[0], 16).unwrap(), f[2].to_string()))
+            })
+            .collect();
+        let linked = syms.iter().map(|(a, _)| *a).min().unwrap();
+        let base = base.unwrap_or(linked);
+        let syms = syms.into_iter().map(|(a, n)| (a - linked + base, n)).collect();
+        Self { bytes, base, syms }
+    }
+    fn at(&self, name: &str) -> String {
+        format!("{:#x}", self.syms.iter().find(|(_, n)| n == name).unwrap().0)
+    }
+}
+
+/// A big-endian language reads and writes memory and registers big-endian, as its spaces say
+/// (Ghidra's MemoryState reads each space in the space's own byte order). Checked on two
+/// big-endian ISAs, over routines a real toolchain built (`src/big_endian_*.S`): a word read from
+/// the bytes `12 34` is 0x1234, a byte read of `a1 b2 c3 d4` is 0xa1, a stored long lays its bytes
+/// out most significant first. On the 68000 a word lands in D0's low half and a byte in its low
+/// byte, and `movea.w #$c000` addresses 0xffffc000; on MIPS the loads sit in `jr $ra`'s delay slot.
+#[test]
+fn a_big_endian_machine_reads_and_writes_big_endian() {
+    let c = ctx();
+    let mut s = Session::open(None).unwrap();
+    let mut run = |lang: &str, text: &RawText, name: &str, sp: &str| {
+        let (base, entry) = (format!("{:#x}", text.base), text.at(name));
+        let o = opts(&[("lang", lang), ("bytes", &text.bytes), ("base", &base), ("emulate.entry", &entry), ("emulate.registers", sp)]);
+        emulation_rows(&dispatch(&c, &mut s, "sleigh.emulate", &o, &mut NoProgress).unwrap())
+    };
+    let value = |r: &[(String, String, String)], kind: &str, name: &str| r.iter().find(|(k, n, _)| k == kind && n == name).map(|(_, _, v)| v.clone());
+
+    let m68k = RawText::load("big_endian.clang-m68k", Some(0x1000));
+    let m = |name: &str, run: &mut dyn FnMut(&str, &RawText, &str, &str) -> Vec<(String, String, String)>| run("68000:BE:32:default", &m68k, name, "SP=0x00fff000");
+    let r = m("read_word", &mut run);
+    assert_eq!(value(&r, "register", "D0").as_deref(), Some("0x00001234"), "{r:?}");
+    let r = m("read_byte_view", &mut run);
+    assert_eq!(value(&r, "register", "D0").as_deref(), Some("0xffffffa1"), "{r:?}");
+    let r = m("store_long", &mut run);
+    assert_eq!(value(&r, "memory", "0x2000").as_deref(), Some("11223344"), "{r:?}");
+    let r = m("store_high", &mut run);
+    assert_eq!(value(&r, "memory", "0xffffc000").as_deref(), Some("5678"), "{r:?}");
+
+    let mips = RawText::load("big_endian.clang-mips", None);
+    let p = |name: &str, run: &mut dyn FnMut(&str, &RawText, &str, &str) -> Vec<(String, String, String)>| run("MIPS:BE:32:default", &mips, name, "sp=0x7fff0000");
+    let r = p("read_word", &mut run);
+    assert_eq!(value(&r, "register", "v0").as_deref(), Some("0x00001234"), "{r:?}");
+    let r = p("read_byte_view", &mut run);
+    assert_eq!(value(&r, "register", "v0").as_deref(), Some("0x000000a1"), "{r:?}");
+    let r = p("read_long", &mut run);
+    assert_eq!(value(&r, "register", "v0").as_deref(), Some("0xa1b2c3d4"), "{r:?}");
+    let r = p("store_long", &mut run);
+    assert_eq!(value(&r, "memory", "0x2000").as_deref(), Some("11223344"), "{r:?}");
+}

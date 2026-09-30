@@ -178,6 +178,10 @@ pub struct Machine {
     /// What a never-written byte reads before any fill: the loaded image, when the machine came
     /// from an image that is its memory ([`Image::with_image_memory`]). Shared, never written.
     backing: Option<Arc<Backing>>,
+    /// The spaces whose values are laid out most significant byte first, as the language's
+    /// spaces declare (`bigendian`); Ghidra's `MemoryState` reads each space in its own order.
+    /// Empty in a bare [`Machine`]: every space little-endian.
+    big_endian: BTreeSet<String>,
 }
 
 /// One observable effect of running a function: what a caller could tell apart.
@@ -286,7 +290,22 @@ fn call_clobber_fill(seed: u64, target: u64, calls: u64, off: u64) -> u64 {
 }
 
 impl Machine {
-    /// Read a `(space, offset, size)` location as a little-endian value.
+    /// The spaces of `spec` that are big-endian, for [`Machine::big_endian`].
+    fn big_endian_spaces(spec: &Spec) -> BTreeSet<String> {
+        spec.spaces.iter().filter(|s| s.big_endian).map(|s| s.name.clone()).collect()
+    }
+
+    /// Where byte `i` of a value (0 = least significant) lives in a `(space, offset, size)`
+    /// location: `offset + i` in a little-endian space, `offset + size - 1 - i` in a big-endian one.
+    fn byte_at(&self, space: &str, offset: u64, size: u32, i: u32) -> u64 {
+        if self.big_endian.contains(space) {
+            offset + u64::from(size - 1 - i)
+        } else {
+            offset + u64::from(i)
+        }
+    }
+
+    /// Read a `(space, offset, size)` location as a value, in the space's byte order.
     pub fn read(&self, space: &str, offset: u64, size: u32) -> u64 {
         if space == "const" {
             return mask(offset, size);
@@ -294,7 +313,7 @@ impl Machine {
         let bank = self.mem.get(space);
         let mut v = 0u64;
         for i in 0..size.min(8) {
-            let at = offset + i as u64;
+            let at = self.byte_at(space, offset, size, i);
             let b = match bank.and_then(|m| m.get(&at)).copied() {
                 Some(b) => b,
                 None => match self.backing.as_ref().and_then(|img| img.byte(space, at)) {
@@ -312,7 +331,7 @@ impl Machine {
         v
     }
 
-    /// Write `value` to a `(space, offset, size)` location, little-endian.
+    /// Write `value` to a `(space, offset, size)` location, in the space's byte order.
     pub fn write(&mut self, space: &str, offset: u64, size: u32, value: u64) {
         if space == "const" {
             return;
@@ -323,9 +342,10 @@ impl Machine {
                 self.record(Effect::Store(space.to_string(), offset, size, mask(value, size)));
             }
         }
+        let at: Vec<u64> = (0..size.min(8)).map(|i| self.byte_at(space, offset, size, i)).collect();
         let bank = self.mem.entry(space.to_string()).or_default();
-        for i in 0..size.min(8) {
-            bank.insert(offset + i as u64, ((value >> (8 * i)) & 0xff) as u8);
+        for (i, a) in at.into_iter().enumerate() {
+            bank.insert(a, ((value >> (8 * i)) & 0xff) as u8);
         }
     }
 
@@ -1175,6 +1195,7 @@ pub fn run_traced(
         // A software interrupt's handler is not in this image, so it has no declared contract —
         // exactly the situation `default_args` exists for. See [`Effect::Swi`].
         swi_args: cfg.default_args.to_vec(),
+        big_endian: Machine::big_endian_spaces(spec),
         ..Machine::default()
     };
     // The memory image, as DATA — see [`RunConfig::image`]. Only what the caller hands over is
@@ -1585,7 +1606,7 @@ impl<'a> Image<'a> {
     /// A fresh machine for this image, for a caller that prepares the starting state itself
     /// ([`Machine::write`], [`Machine::write_bytes`]) and then runs it with [`Image::resume`].
     pub fn machine(&self) -> Machine {
-        Machine { userops: self.spec.userops.clone(), backing: self.memory.clone(), ..Machine::default() }
+        Machine { userops: self.spec.userops.clone(), backing: self.memory.clone(), big_endian: Machine::big_endian_spaces(self.spec), ..Machine::default() }
     }
 
     /// Execute `m` from `opts.entry` (or the first byte): its registers and memory are the
