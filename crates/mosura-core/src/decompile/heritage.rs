@@ -2237,8 +2237,13 @@ fn guard(
     while slot < read.len() {
         let vn = read[slot];
         let descend = f.vn(vn).descend.clone();
-        // `removeRevisitedMarkers` may have eliminated the descendant (heritage.cc:1167).
-        let Some(&op) = descend.first() else { continue };
+        // `removeRevisitedMarkers` may have eliminated the descendant (heritage.cc:1167): skip
+        // the varnode. Ghidra's loop is a `for` whose `continue` still advances the iterator;
+        // this one must advance by hand, or it spins on the same slot forever.
+        let Some(&op) = descend.first() else {
+            slot += 1;
+            continue;
+        };
         if descend.len() > 1 {
             // Ghidra throws LowlevelError("Free varnode with multiple reads") here. mosura's op
             // graph can legitimately hold the same free varnode in two slots of one op (a
@@ -3129,6 +3134,29 @@ mod tests {
         f.restart_pending = false;
         bump_deadcode_delay(&mut f, reg);
         assert!(!f.restart_pending, "the installed override suppresses a second request");
+    }
+
+    /// A free read whose descendant `removeRevisitedMarkers` eliminated is skipped
+    /// (heritage.cc:1167), and the guard goes on to the next one. Ghidra's loop advances on
+    /// `continue`; the port's `while` did not, and spun on the same slot forever. Run on a thread
+    /// so a regression fails the test instead of hanging the suite.
+    #[test]
+    fn guard_skips_a_read_with_no_descendant() {
+        use crate::decompile::space::{Address, SpaceManager};
+        let (done, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let spaces = SpaceManager::standard();
+            let ram = spaces.by_name("ram").unwrap();
+            let reg = spaces.by_name("register").unwrap();
+            let mut f = Funcdata::new("t", Address::new(ram, 0), spaces);
+            let free = f.new_varnode(4, Address::new(reg, 0));
+            let range = MemRange { space: reg, off: 0, size: 4, flags: MemRange::NEW_ADDRESSES };
+            let mut read = [free];
+            guard(&mut f, &range, false, &mut read, &mut []);
+            done.send(read[0] == free).unwrap();
+        });
+        let untouched = rx.recv_timeout(std::time::Duration::from_secs(20)).expect("guard returns");
+        assert!(untouched, "the skipped read is left as it was");
     }
 
     /// The override is what survives a rebuild, and applying it really does delay removal.
