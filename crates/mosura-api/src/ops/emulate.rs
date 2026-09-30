@@ -17,8 +17,8 @@ use mosura_core::analysis::program::Program;
 use mosura_core::sleigh::emu::{Effect, Image, Machine, Run, RunOptions, Stop};
 use mosura_core::sleigh::engine::Spec;
 
-pub static SLEIGH_EMULATE: Op = Op { name: "sleigh.emulate", doc: "execute the p-code of raw bytes from base (or emulate.entry) over an initial state (emulate.registers, emulate.memory; the bytes themselves are memory too) until the routine returns, faults, reaches an address with no instruction, or spends emulate.max-steps; a call is an event unless emulate.follow-calls. Rows: outcome (stop = returned | fault | no-instruction | step-cap, address, steps, unmodeled, unmodeled-op, uninitialized: a register read before anything wrote it, unanswered-in: a port read that emulate.ports did not answer), register (every register the final state holds, widest first), memory (every run of bytes it holds, as hex), and with emulate.effects every effect of the run in order; emulate.stubs leaves routines out (they return when reached); emulate.state starts from a stored machine state, emulate.save-state stores the one the run stopped in", since: "0.1", tier: Tier::Product, params: &["lang", "bytes", "base", "ctx", keys::EMULATE_ENTRY, keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS, keys::EMULATE_EFFECTS, keys::EMULATE_PORTS, keys::EMULATE_STUBS, keys::EMULATE_STATE, keys::EMULATE_SAVE_STATE], result: "emulation", cache: Cache::Transient, run: sleigh_emulate };
-pub static FUNCTION_EMULATE: Op = Op { name: "function.emulate", doc: "execute a program from entry (a function, or any address of its loaded image) through the p-code interpreter, with the program's loaded image as memory, over an initial state (emulate.registers, emulate.memory) until it returns, faults, reaches an address with no instruction, or spends emulate.max-steps; a call is an event unless emulate.follow-calls. Rows as sleigh.emulate", since: "0.1", tier: Tier::Product, params: &["program", "entry", keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS, keys::EMULATE_EFFECTS, keys::EMULATE_PORTS, keys::EMULATE_STUBS, keys::EMULATE_STATE, keys::EMULATE_SAVE_STATE], result: "emulation", cache: Cache::Transient, run: function_emulate };
+pub static SLEIGH_EMULATE: Op = Op { name: "sleigh.emulate", doc: "execute the p-code of raw bytes from base (or emulate.entry) over an initial state (emulate.registers, emulate.memory; the bytes themselves are memory too) until the routine returns, faults, reaches an address with no instruction, or spends emulate.max-steps; a call is an event unless emulate.follow-calls. Rows: outcome (stop = returned | fault | no-instruction | step-cap, address, steps, unmodeled, unmodeled-op, uninitialized: a register read before anything wrote it, less emulate.uninitialized-ignore, unanswered-in: a port read that emulate.ports did not answer), register (every register the final state holds, widest first), memory (every run of bytes it holds, as hex), and with emulate.effects every effect of the run in order; emulate.stubs leaves routines out (they return when reached); emulate.state starts from a stored machine state, emulate.save-state stores the one the run stopped in", since: "0.1", tier: Tier::Product, params: &["lang", "bytes", "base", "ctx", keys::EMULATE_ENTRY, keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS, keys::EMULATE_EFFECTS, keys::EMULATE_PORTS, keys::EMULATE_STUBS, keys::EMULATE_UNINITIALIZED_IGNORE, keys::EMULATE_STATE, keys::EMULATE_SAVE_STATE], result: "emulation", cache: Cache::Transient, run: sleigh_emulate };
+pub static FUNCTION_EMULATE: Op = Op { name: "function.emulate", doc: "execute a program from entry (a function, or any address of its loaded image) through the p-code interpreter, with the program's loaded image as memory, over an initial state (emulate.registers, emulate.memory) until it returns, faults, reaches an address with no instruction, or spends emulate.max-steps; a call is an event unless emulate.follow-calls. Rows as sleigh.emulate", since: "0.1", tier: Tier::Product, params: &["program", "entry", keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS, keys::EMULATE_EFFECTS, keys::EMULATE_PORTS, keys::EMULATE_STUBS, keys::EMULATE_UNINITIALIZED_IGNORE, keys::EMULATE_STATE, keys::EMULATE_SAVE_STATE], result: "emulation", cache: Cache::Transient, run: function_emulate };
 
 /// The run settings every emulate operation reads.
 struct Settings {
@@ -119,6 +119,35 @@ impl RegisterNames {
     pub(crate) fn name(&self, offset: u64, size: u32) -> String {
         self.0.get(&(offset, size)).cloned().unwrap_or_else(|| format!("register:{offset:#x}:{size}"))
     }
+}
+
+/// The registers `emulate.uninitialized-ignore` leaves out of the uninitialized reads, as
+/// `(offset, size)`: each entry names a register of the language or a register group of its
+/// processor spec (every register the group holds). A read inside a named register is left out
+/// with it (AX with EAX). An entry that is neither is an error, so a misspelling cannot pass as
+/// an empty filter.
+pub(crate) fn ignored_registers(o: &Options, spec: &Spec, lang: &str) -> Result<Vec<(u64, u32)>> {
+    let entries: Vec<&str> = o.get(keys::EMULATE_UNINITIALIZED_IGNORE)?.split(',').map(str::trim).filter(|e| !e.is_empty()).collect();
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+    let groups = mosura_core::lang::register_groups(lang).unwrap_or_default();
+    let table = spec.register_table();
+    let mut ignored = Vec::new();
+    for e in entries {
+        let named: Vec<&str> = groups.iter().filter(|(_, g)| g == e).map(|(r, _)| r.as_str()).chain(std::iter::once(e)).collect();
+        let found: Vec<(u64, u32)> = table.iter().filter(|(_, n)| named.contains(&n.as_str())).map(|(r, _)| *r).collect();
+        if found.is_empty() {
+            return Err(Error::InvalidArg(format!("`{}`: `{e}` is neither a register nor a register group of `{lang}`", keys::EMULATE_UNINITIALIZED_IGNORE)));
+        }
+        ignored.extend(found);
+    }
+    Ok(ignored)
+}
+
+/// Whether a register read lies inside one of `ignored`.
+pub(crate) fn is_ignored(ignored: &[(u64, u32)], off: u64, size: u32) -> bool {
+    ignored.iter().any(|(o, s)| off >= *o && off + u64::from(size) <= *o + u64::from(*s))
 }
 
 /// The language's default space: where the image lives and where memory seeds go.
@@ -227,7 +256,7 @@ fn effect_text(e: &Effect) -> String {
 /// it holds in memory, and — when the run recorded them — its effects in order. `at` and `step`
 /// say where and when a row's event happened (the instruction's address, the 1-based p-code
 /// step); they are 0 for a row that is not an event.
-fn emulation_table(spec: &Spec, run: &Run) -> Table {
+fn emulation_table(spec: &Spec, run: &Run, ignored: &[(u64, u32)]) -> Table {
     let mut b = TableBuilder::new(&EMULATION);
     let mut row = |kind: &str, name: &str, value: &str, (at, step): (u64, usize)| {
         b.row().str(kind).str(name).str(value).u64(at).u64(step as u64);
@@ -247,9 +276,10 @@ fn emulation_table(spec: &Spec, run: &Run) -> Table {
     for name in &run.machine.unmodeled_ops {
         row("outcome", "unmodeled-op", name, (0, 0));
     }
-    // Every register the run read before anything wrote it, at its first such read.
+    // Every register the run read before anything wrote it, at its first such read, less the
+    // ones the caller leaves out.
     let names = RegisterNames::of(spec);
-    for (off, size, site) in run.machine.uninitialized_registers() {
+    for (off, size, site) in run.machine.uninitialized_registers().into_iter().filter(|(off, size, _)| !is_ignored(ignored, *off, *size)) {
         row("outcome", "uninitialized", &names.name(off, size), site);
     }
     // Every port read that nothing answered, at its first such read.
@@ -290,6 +320,7 @@ fn sleigh_emulate(s: &mut Session, o: &Options, _p: &mut dyn Progress) -> Result
     };
     let settings = settings(o)?;
     let seeds = seeds(o, i.spec, &i.lang)?;
+    let ignored = ignored_registers(o, i.spec, &i.lang)?;
     // The bytes are the machine's memory as well as its code, as a loaded program's are.
     let state = stored_state(s, o)?;
     // Raw bytes carry no compiler spec: the language's default one names the stack.
@@ -297,7 +328,7 @@ fn sleigh_emulate(s: &mut Session, o: &Options, _p: &mut dyn Progress) -> Result
     let m = prepare(&image, i.spec, &state, &seeds);
     let run = image.resume(m, &settings.run_options(entry));
     save_state(s, o, &run)?;
-    Ok(emulation_table(i.spec, &run))
+    Ok(emulation_table(i.spec, &run, &ignored))
 }
 
 /// `function.emulate`: a function of a session program, with its loaded image as memory.
@@ -307,11 +338,12 @@ fn function_emulate(s: &mut Session, o: &Options, _p: &mut dyn Progress) -> Resu
     let (spec, ctx) = mosura_core::lang::load_cached(&p.language_id).ok_or_else(|| Error::NotFound(format!("language `{}` (tables unavailable)", p.language_id)))?;
     let settings = settings(o)?;
     let seeds = seeds(o, spec, &p.language_id)?;
+    let ignored = ignored_registers(o, spec, &p.language_id)?;
     let state = stored_state(s, o)?;
     let blocks = program_blocks(&p);
     let mut image = with_stack(Image::from_blocks(spec, &blocks, ctx).with_image_memory(), spec, &p.language_id, &p.compiler_spec_id);
     let m = prepare(&image, spec, &state, &seeds);
     let run = image.resume(m, &settings.run_options(Some(entry)));
     save_state(s, o, &run)?;
-    Ok(emulation_table(spec, &run))
+    Ok(emulation_table(spec, &run, &ignored))
 }

@@ -139,7 +139,7 @@ pub unsafe extern "C" fn mosura_emulate(l: *mut mosura_language, bytes: mosura_v
         let mut params = sleigh_params(l, bytes, base, initial_state)?;
         if !initial_state.is_null() {
             let state = options_of(initial_state)?;
-            for key in [keys::EMULATE_ENTRY, keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS, keys::EMULATE_EFFECTS, keys::EMULATE_PORTS, keys::EMULATE_STUBS, keys::EMULATE_STATE, keys::EMULATE_SAVE_STATE] {
+            for key in [keys::EMULATE_ENTRY, keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS, keys::EMULATE_EFFECTS, keys::EMULATE_PORTS, keys::EMULATE_STUBS, keys::EMULATE_UNINITIALIZED_IGNORE, keys::EMULATE_STATE, keys::EMULATE_SAVE_STATE] {
                 if state.is_set(key) {
                     params.set(key, state.get(key)?)?;
                 }

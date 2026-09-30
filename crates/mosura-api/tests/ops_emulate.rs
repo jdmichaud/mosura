@@ -402,6 +402,44 @@ fn a_register_read_before_anything_wrote_it_is_named() {
     }
 }
 
+/// `emulate.uninitialized-ignore` leaves registers out of the uninitialized reads, in
+/// function.emulate and in every capture row alike; it names registers (any language) or register
+/// groups of the processor spec, and an entry that is neither is refused rather than ignored.
+#[test]
+fn uninitialized_reads_can_leave_registers_out() {
+    let c = ctx();
+    for bits in [32, 64] {
+        let sp = if bits == 64 { "RSP" } else { "ESP" };
+        let (mut s, e) = session(&c, "segment_base", bits);
+        let gs = entry(&e, "read_gs");
+        let text = serde_json::json!({
+            "registers": {}, "inputs": [], "outputs": [reg_slot("eax", "EAX")],
+            "cases": [{ "kind": "explicit", "rows": [{}] }],
+        })
+        .to_string();
+        let column = |ignore: &str, s: &mut Session| {
+            let t = dispatch(&c, s, "function.capture", &opts(&[("entry", gs), ("capture.spec", &text), ("emulate.uninitialized-ignore", ignore)]), &mut NoProgress).unwrap();
+            t.str(0, t.col("uninitialized").unwrap()).unwrap().to_string()
+        };
+        assert_eq!(column("", &mut s), format!("GS_OFFSET,{sp}"), "x86-{bits}");
+        assert_eq!(column("GS_OFFSET", &mut s), sp, "x86-{bits}");
+        assert_eq!(column(&format!("{sp}, GS_OFFSET"), &mut s), "", "x86-{bits}");
+        // FLAGS holds neither register
+        assert_eq!(column("FLAGS", &mut s), format!("GS_OFFSET,{sp}"), "x86-{bits}");
+        let named = |ignore: &str, s: &mut Session| -> Vec<String> {
+            let r = rows(&dispatch(&c, s, "function.emulate", &opts(&[("entry", gs), ("emulate.uninitialized-ignore", ignore)]), &mut NoProgress).unwrap());
+            r.into_iter().filter(|(k, n, _)| k == "outcome" && n == "uninitialized").map(|(_, _, v)| v).collect()
+        };
+        assert_eq!(named(sp, &mut s), ["GS_OFFSET"], "x86-{bits}");
+        for (op, spec) in [("function.emulate", None), ("function.capture", Some(("capture.spec", text.as_str())))] {
+            let mut o = vec![("entry", gs), ("emulate.uninitialized-ignore", "FLAGZ")];
+            o.extend(spec);
+            let err = dispatch(&c, &mut s, op, &opts(&o), &mut NoProgress).unwrap_err();
+            assert!(matches!(&err, Error::InvalidArg(m) if m.contains("FLAGZ")), "{op}: {err:?}");
+        }
+    }
+}
+
 /// `emulate.ports` answers `IN` per port (values in order, the last repeating), and a capture
 /// specification's `ports` does the same for every vector. A port read with no answer is named: an
 /// `unanswered-in` outcome row at its first read, the `unanswered` column of a capture row.

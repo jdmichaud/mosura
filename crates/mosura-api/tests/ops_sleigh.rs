@@ -183,3 +183,32 @@ fn emulate_continues_from_a_stored_state() {
     let r = emulation_rows(&dispatch(&c, &mut s, "sleigh.emulate", &opts(&again), &mut NoProgress).unwrap());
     assert_eq!(eax(&r).as_deref(), Some("0x00000002"), "{r:?}");
 }
+
+/// The processor spec's register groups: the language registers table names each register's
+/// group (x86 marks CF, NT, VIP… FLAGS), and `emulate.uninitialized-ignore` leaves chosen groups or
+/// registers out of the `uninitialized` rows. `pushfd` reads every flag nobody wrote; ignoring
+/// FLAGS leaves the one read that matters here, an unset GS base.
+#[test]
+fn uninitialized_registers_can_leave_out_a_group() {
+    let c = ctx();
+    let mut s = Session::open(None).unwrap();
+    let regs = mosura_api::ops::language::registers_table("x86:LE:32:default").unwrap();
+    let group = regs.col("group").expect("a `group` column");
+    let group_of = |name: &str| (0..regs.rows()).find(|&r| regs.str(r, 0).unwrap() == name).map(|r| regs.str(r, group).unwrap().to_string());
+    assert_eq!((group_of("CF").as_deref(), group_of("NT").as_deref(), group_of("EAX").as_deref()), (Some("FLAGS"), Some("FLAGS"), Some("")));
+    // pushfd; pop eax; mov eax,gs:[0x10]; ret
+    let code = [("lang", "x86:LE:32:default"), ("bytes", "9c5865a110000000c3"), ("emulate.registers", "ESP=0x0f000000")];
+    let named = |extra: &[(&str, &str)], s: &mut Session| {
+        let mut o = code.to_vec();
+        o.extend_from_slice(extra);
+        emulation_rows(&dispatch(&c, s, "sleigh.emulate", &opts(&o), &mut NoProgress).unwrap())
+            .into_iter()
+            .filter(|(k, n, _)| k == "outcome" && n == "uninitialized")
+            .map(|(_, _, v)| v)
+            .collect::<Vec<String>>()
+    };
+    let all = named(&[], &mut s);
+    assert!(all.len() > 5 && all.contains(&"CF".to_string()) && all.contains(&"GS_OFFSET".to_string()), "{all:?}");
+    assert_eq!(named(&[("emulate.uninitialized-ignore", "FLAGS")], &mut s), ["GS_OFFSET"]);
+    assert_eq!(named(&[("emulate.uninitialized-ignore", "FLAGS,GS_OFFSET")], &mut s), Vec::<String>::new());
+}

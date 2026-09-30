@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
 use crate::options::{keys, Options};
-use crate::ops::emulate::{prepare, program_blocks, run_entry, stored_state, with_stack, RegisterNames, Seeds};
+use crate::ops::emulate::{ignored_registers, is_ignored, prepare, program_blocks, run_entry, stored_state, with_stack, RegisterNames, Seeds};
 use crate::ops::program::program_of;
 use crate::ops::schemas::CAPTURE;
 use crate::ops::sleigh::parse_bytes;
@@ -24,7 +24,7 @@ use crate::table::Table;
 use mosura_core::sleigh::emu::{Image, RunOptions, Stop};
 use mosura_core::sleigh::engine::Spec;
 
-pub static FUNCTION_CAPTURE: Op = Op { name: "function.capture", doc: "run many input vectors through a program from entry (a function, or any address of its loaded image) over one decoded image, the program's loaded image as memory: capture.spec (JSON) names the inputs and outputs as register and memory pieces, the seeds every vector shares and the generators (explicit, range, sample, chain); emulate.state is every vector's starting state. One row per vector: case, generator, inputs, outputs (when it returned), stop, address, steps, unmodeled, uninitialized (registers read before anything wrote them), unanswered (ports read that the specification's ports did not answer)", since: "0.1", tier: Tier::Product, params: &["program", "entry", keys::CAPTURE_SPEC, keys::EMULATE_STATE], result: "capture", cache: Cache::Transient, run: capture };
+pub static FUNCTION_CAPTURE: Op = Op { name: "function.capture", doc: "run many input vectors through a program from entry (a function, or any address of its loaded image) over one decoded image, the program's loaded image as memory: capture.spec (JSON) names the inputs and outputs as register and memory pieces, the seeds every vector shares and the generators (explicit, range, sample, chain); emulate.state is every vector's starting state. One row per vector: case, generator, inputs, outputs (when it returned), stop, address, steps, unmodeled, uninitialized (registers read before anything wrote them, less emulate.uninitialized-ignore), unanswered (ports read that the specification's ports did not answer)", since: "0.1", tier: Tier::Product, params: &["program", "entry", keys::CAPTURE_SPEC, keys::EMULATE_STATE, keys::EMULATE_UNINITIALIZED_IGNORE], result: "capture", cache: Cache::Transient, run: capture };
 
 /// `size` bytes at `offset` in `space`, holding the value's bits from `shift` up.
 struct Piece {
@@ -434,6 +434,7 @@ struct Runner<'a> {
     image: Image<'a>,
     spec: &'a Spec,
     names: RegisterNames,
+    ignored: Vec<(u64, u32)>,
     cs: &'a CaptureSpec,
     state: Vec<(String, u64, Vec<u8>)>,
     opts: RunOptions,
@@ -480,7 +481,7 @@ impl Runner<'_> {
             Vec::new()
         };
         let unmodeled: Vec<&str> = run.machine.unmodeled_ops.iter().map(String::as_str).collect();
-        let uninitialized: Vec<String> = run.machine.uninitialized_registers().into_iter().map(|(off, size, _)| self.names.name(off, size)).collect();
+        let uninitialized: Vec<String> = run.machine.uninitialized_registers().into_iter().filter(|(off, size, _)| !is_ignored(&self.ignored, *off, *size)).map(|(off, size, _)| self.names.name(off, size)).collect();
         let unanswered: Vec<u64> = run.machine.unanswered_ports().into_iter().map(|(port, _)| port).collect();
         self.b.row().u64(self.case).u32(generator).list_u64(&row).list_u64(&outputs).str(stop).u64(address).u64(run.steps as u64).u64(run.machine.unmodeled as u64).str(&unmodeled.join(",")).str(&uninitialized.join(",")).list_u64(&unanswered);
         Ok((run.stop == Stop::Returned && run.machine.unmodeled == 0).then_some(outputs))
@@ -502,6 +503,7 @@ fn capture(s: &mut Session, o: &Options, prog: &mut dyn Progress) -> Result<Tabl
         image: with_stack(Image::from_blocks(spec, &blocks, ctx).with_image_memory(), spec, &p.language_id, &p.compiler_spec_id),
         spec,
         names: RegisterNames::of(spec),
+        ignored: ignored_registers(o, spec, &p.language_id)?,
         cs: &cs,
         state,
         opts: RunOptions { entry: Some(entry), follow_calls: cs.follow_calls, max_steps: cs.max_steps, stubs: cs.stubs.clone(), ..RunOptions::default() },
