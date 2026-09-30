@@ -294,6 +294,10 @@ fn declared_data_is_in_the_listing_with_its_references() {
     assert!(matches!(run("u32:0x2fe"), Err(Error::InvalidArg(_))), "past the image");
     assert!(matches!(run("off16:0x220*3"), Err(Error::InvalidArg(_))), "an offset needs its base");
     assert!(matches!(run("f80:0x220"), Err(Error::InvalidArg(_))), "unknown kind");
+    // COUNT is decimal: `*10` is ten words, 0x220..0x234 — clear of 0x236 (sixteen, read as
+    // hex, would reach 0x240), overlapping 0x232.
+    assert!(run("u16:0x220*10; ptr32:0x236").is_ok(), "ten words end at 0x234");
+    assert!(matches!(run("u16:0x220*10; ptr32:0x232"), Err(Error::InvalidArg(_))), "and cover 0x232");
 }
 
 #[test]

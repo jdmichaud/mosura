@@ -77,7 +77,8 @@ pub fn declared_flows(o: &Options, program: &mosura_core::analysis::Program) -> 
     Ok(flows)
 }
 
-/// The data units `load.data` declares: `KIND:ADDR[*COUNT][@BASE]`, `;`-separated, hex. Each
+/// The data units `load.data` declares: `KIND:ADDR[*COUNT][@BASE]`, `;`-separated; ADDR and BASE
+/// hex, COUNT decimal (or 0x…). Each
 /// element is read from the program's image in its byte order; a pointer (`ptr16`, `ptr32`: the
 /// value, plus BASE if given) or an offset (`off16`, `off32`: BASE plus the value, signed) that is
 /// not 0 gets a target. Every element must lie in initialized memory and overlap no other unit.
@@ -92,8 +93,17 @@ pub fn declared_data(o: &Options, program: &Program) -> Result<Vec<mosura_core::
             Some((r, b)) => (r, Some(hex(b)?)),
             None => (rest, None),
         };
+        // A count is a number of elements: decimal, unless written 0x….
+        let count_of = |n: &str| -> Result<u64> {
+            let n = n.trim();
+            match n.strip_prefix("0x").or_else(|| n.strip_prefix("0X")) {
+                Some(h) => u64::from_str_radix(h, 16).ok(),
+                None => n.parse().ok(),
+            }
+            .ok_or_else(|| bad(format!("`{n}` is not a count")))
+        };
         let (addr, count) = match rest.split_once('*') {
-            Some((a, n)) => (hex(a)?, hex(n)?),
+            Some((a, n)) => (hex(a)?, count_of(n)?),
             None => (hex(rest)?, 1),
         };
         // (size, type name, how an element's value becomes a target)
