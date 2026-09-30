@@ -15,6 +15,9 @@ use mosura_core::sleigh::engine::Spec;
 
 struct Fixture {
     bits: u32,
+    /// The analyzed program's language and compiler spec.
+    lang: String,
+    cspec: String,
     spec: &'static Spec,
     ctx: &'static [u32],
     /// `(entry, size, name)` from the build-derived truth file.
@@ -25,7 +28,11 @@ struct Fixture {
 }
 
 fn fixture(program: &str, bits: u32) -> Fixture {
-    let stem = format!("{program}.gcc-x86-{bits}");
+    fixture_of(&format!("{program}.gcc-x86-{bits}"), bits)
+}
+
+/// Any built fixture, by its artifact name (`call_returns.clang-aarch64`).
+fn fixture_of(stem: &str, bits: u32) -> Fixture {
     let truth = std::fs::read_to_string(ground_truth_dir().join(format!("{stem}.truth"))).unwrap();
     let mut funcs = Vec::new();
     for line in truth.lines() {
@@ -36,12 +43,12 @@ fn fixture(program: &str, bits: u32) -> Fixture {
             funcs.push((addr, size, it.next().unwrap().to_string()));
         }
     }
-    let p = analysis::analyze_file(&ground_truth_dir().join(&stem)).unwrap();
+    let p = analysis::analyze_file(&ground_truth_dir().join(stem)).unwrap();
     let lo = funcs.iter().map(|f| f.0).min().unwrap();
     let hi = funcs.iter().map(|f| f.0 + f.1).max().unwrap();
     let image = p.memory.read_window(Address::new(p.default_space, lo), (hi - lo) as usize);
-    let (spec, ctx) = mosura_core::lang::load_cached(&format!("x86:LE:{bits}:default")).expect("x86 language tables");
-    Fixture { bits, spec, ctx, funcs, image, image_base: lo }
+    let (spec, ctx) = mosura_core::lang::load_cached(&p.language_id).expect("language tables");
+    Fixture { bits, lang: p.language_id.clone(), cspec: p.compiler_spec_id.clone(), spec, ctx, funcs, image, image_base: lo }
 }
 
 impl Fixture {
@@ -473,4 +480,42 @@ fn the_caller_answers_in_and_an_unanswered_port_is_reported() {
         let r = f2.run(f2.body("write_pair"), w, &[(f2.sp(), STACK), ("ECX", 0x4120)], &RunOptions { trace: true, ..RunOptions::default() });
         assert_eq!(r.machine.effects, vec![Effect::Port(true, 0x388, 1, 0x20), Effect::Port(true, 0x389, 1, 0x41)], "x86-{bits}");
     }
+}
+
+
+/// The three builds of `call_returns`, with the names their languages give the stack pointer and
+/// the result register.
+fn call_returns() -> Vec<(Fixture, &'static str, &'static str)> {
+    vec![
+        (fixture_of("call_returns.gcc-x86-32", 32), "ESP", "EAX"),
+        (fixture_of("call_returns.gcc-x86-64", 64), "RSP", "EAX"),
+        (fixture_of("call_returns.clang-aarch64", 64), "sp", "x0"),
+    ]
+}
+
+/// A call that is skipped rather than entered returns at once, and the stack stands as the
+/// callee's return would leave it: the stack pointer the compiler spec names is put back to its
+/// value at the start of the call instruction. `caller` reads a marker from its stack after the
+/// call; before, on x86 it read the call's own pushed return address. AArch64, whose call writes
+/// a link register and pushes nothing, is the control. Without the stack pointer the image cannot
+/// know, and the push stays, as the documentation says.
+#[test]
+fn a_skipped_call_gives_its_stack_back() {
+    use mosura_core::analysis::cspec::stack_pointer_register;
+    use mosura_core::sleigh::emu::Image;
+    for (f, sp, result) in call_returns() {
+        let (sp_off, sp_size) = stack_pointer_register(f.spec, &f.lang, &f.cspec).expect("every compiler spec names its stack pointer");
+        assert_eq!((sp_off, sp_size), f.reg(sp), "{}: the compiler spec's stack pointer is {sp}", f.lang);
+        let e = f.entry("caller");
+        let seeds = f.seeds(&[(sp, STACK)]);
+        let mut image = Image::new(f.spec, f.from("caller"), e, f.ctx).with_stack_pointer(sp_off, sp_size);
+        let r = image.run(&seeds, &RunOptions::default());
+        assert_eq!((r.stop, f.read(&r, result) & 0xffff_ffff), (Stop::Returned, 0x1234_abcd), "{}", f.lang);
+        // Calls followed, the callee's own return does the same.
+        let r = image.run(&seeds, &RunOptions { follow_calls: true, ..RunOptions::default() });
+        assert_eq!(f.read(&r, result) & 0xffff_ffff, 0x1234_abcd, "{} followed", f.lang);
+    }
+    let (f, sp, _) = call_returns().remove(0);
+    let r = f.run(f.from("caller"), f.entry("caller"), &[(sp, STACK)], &RunOptions::default());
+    assert_eq!(f.read(&r, "EAX"), f.entry("caller") + 10, "without a stack pointer the pushed return address stays (push 5 bytes, call 5)");
 }

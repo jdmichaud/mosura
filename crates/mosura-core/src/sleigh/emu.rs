@@ -1462,6 +1462,13 @@ const DECODE_WINDOW: usize = 64;
 /// already has. A whole text section with the routine somewhere inside it therefore costs what
 /// the routine executes, not what the section holds — the shape a reference executor needs when
 /// it captures thousands of vectors per routine and a followed call may land anywhere.
+/// One decoded instruction: its p-code, its fall-through address, and whether it calls.
+struct Decoded {
+    ops: Vec<PcodeOp>,
+    next: u64,
+    calls: bool,
+}
+
 pub struct Image<'a> {
     spec: &'a Spec,
     /// The blocks instructions decode from, `(start, bytes)`, ascending and disjoint.
@@ -1469,10 +1476,11 @@ pub struct Image<'a> {
     /// Where a run starts when its options name no entry.
     base: u64,
     context: &'a [u32],
-    /// address → (structured ops, fall-through address)
-    decoded: HashMap<u64, (Vec<PcodeOp>, u64)>,
+    decoded: HashMap<u64, Decoded>,
     /// The blocks as the machines' memory, when requested ([`Image::with_image_memory`]).
     memory: Option<Arc<Backing>>,
+    /// The stack pointer register, `(offset, size)` ([`Image::with_stack_pointer`]).
+    stack_pointer: Option<(u64, u32)>,
 }
 
 impl<'a> Image<'a> {
@@ -1489,7 +1497,23 @@ impl<'a> Image<'a> {
         let mut blocks: Vec<(u64, &'a [u8])> = blocks.iter().copied().filter(|(_, b)| !b.is_empty()).collect();
         blocks.sort_by_key(|(start, _)| *start);
         let base = blocks.first().map_or(0, |(start, _)| *start);
-        Self { spec, blocks, base, context, decoded: HashMap::new(), memory: None }
+        Self { spec, blocks, base, context, decoded: HashMap::new(), memory: None, stack_pointer: None }
+    }
+
+    /// Name the stack pointer register — the compiler spec's `<stackpointer>`
+    /// (`analysis::cspec::stack_pointer_register`) — so a call returns the way the language's
+    /// return does, whatever the language. At every call the run records the call's fall-through
+    /// and the stack pointer as it stood at the start of the call instruction. A call that is
+    /// skipped rather than entered puts that stack pointer back, undoing whatever the call
+    /// instruction did to the stack (a pushed return address on x86, nothing on a link-register
+    /// ISA), which is how the stack stands after a callee's return.
+    ///
+    /// Without it the interpreter does not know which register is the stack: a skipped call
+    /// leaves the stack as the call instruction left it, so on a machine whose call pushes its
+    /// return address the caller's stack reads are one slot off after the call.
+    pub fn with_stack_pointer(mut self, offset: u64, size: u32) -> Self {
+        self.stack_pointer = Some((offset, size));
+        self
     }
 
     /// Make the image the machines' memory: a byte no run has written reads the image's own byte
@@ -1516,7 +1540,7 @@ impl<'a> Image<'a> {
     /// (`Spec::disassemble_ctx`), which can spell a different instruction than the bytes do.
     /// It is decoded whole from its own address when the run reaches it. At the true end of
     /// a block the padding is the loader's own behaviour and the instruction stands.
-    fn at(&mut self, pc: u64) -> Option<&(Vec<PcodeOp>, u64)> {
+    fn at(&mut self, pc: u64) -> Option<&Decoded> {
         if !self.decoded.contains_key(&pc) {
             let i = self.blocks.partition_point(|(start, _)| *start <= pc).checked_sub(1)?;
             let (start, bytes) = self.blocks[i];
@@ -1532,7 +1556,8 @@ impl<'a> Image<'a> {
                 if cut && next > window_end {
                     break;
                 }
-                self.decoded.entry(insn.address).or_insert((insn.ops, next));
+                let calls = insn.ops.iter().any(|o| matches!(opcode_name(o.opcode), "CALL" | "CALLIND"));
+                self.decoded.entry(insn.address).or_insert(Decoded { ops: insn.ops, next, calls });
             }
         }
         self.decoded.get(&pc)
@@ -1571,9 +1596,17 @@ impl<'a> Image<'a> {
 
         let mut pc = opts.entry.unwrap_or(self.base);
         let mut steps = 0usize;
-        let mut depth = 0usize;
+        let stack = self.stack_pointer;
+        // The calls entered and not yet returned from, innermost last: each call's fall-through
+        // and the stack pointer at the start of its instruction (when the image names one).
+        let mut frames: Vec<(u64, Option<u64>)> = Vec::new();
         let stop = 'run: loop {
-            let Some((ops, next)) = self.at(pc) else { break Stop::NoInstruction(pc) };
+            let Some(insn) = self.at(pc) else { break Stop::NoInstruction(pc) };
+            let (ops, next) = (&insn.ops, insn.next);
+            let sp_at_call = match (insn.calls, stack) {
+                (true, Some((off, size))) => Some(m.read("register", off, size)),
+                _ => None,
+            };
             let mut i = 0usize;
             let mut jump = None;
             while i < ops.len() {
@@ -1584,36 +1617,39 @@ impl<'a> Image<'a> {
                 m.at = (pc, steps);
                 let op = &ops[i];
                 let name = opcode_name(op.opcode);
-                if matches!(name, "CALL" | "CALLIND") && (opts.follow_calls || m.trace) {
+                if matches!(name, "CALL" | "CALLIND") {
                     // A direct target is the address varnode itself; an indirect one is the value
-                    // it holds (see `run_traced` for why the two must not be confused).
-                    let target = match op.ins.first() {
+                    // it holds (see `run_traced` for why the two must not be confused). Read only
+                    // when needed, so a skipped call reads nothing it does not use.
+                    let target = (opts.follow_calls || m.trace).then(|| match op.ins.first() {
                         Some(PArg::Var(v)) if name == "CALL" && !v.is_const() => v.offset,
                         Some(arg) => m.read_arg(arg),
                         None => 0,
-                    };
+                    });
                     // An `INT n`'s call through its vector: the handler is not here, and the
                     // interrupt was already recorded as a `Swi` by the user-op before it.
-                    let interrupt = target & !0xff == SWI_VECTOR;
+                    let interrupt = target.is_some_and(|t| t & !0xff == SWI_VECTOR);
                     if m.trace && !interrupt {
                         // By target only: no contract names this call's arguments.
-                        m.record(Effect::Call(target, Vec::new()));
+                        m.record(Effect::Call(target.unwrap_or(0), Vec::new()));
                     }
-                    if opts.follow_calls {
-                        if interrupt {
-                            i += 1;
-                            continue;
-                        }
-                        depth += 1;
-                        jump = Some(target);
+                    if opts.follow_calls && !interrupt {
+                        frames.push((next, sp_at_call));
+                        jump = target;
                         break;
                     }
+                    // Skipped: the callee returns at once, and the stack stands as its return
+                    // would leave it — the stack pointer as it was when the call began.
+                    if let (Some((off, size)), Some(sp)) = (stack, sp_at_call) {
+                        m.write("register", off, size, sp);
+                    }
+                    i += 1;
+                    continue;
                 }
                 if opts.follow_calls && name == "RETURN" {
-                    if depth == 0 {
+                    if frames.pop().is_none() {
                         break 'run Stop::Returned;
                     }
-                    depth -= 1;
                     jump = Some(op.ins.first().map_or(0, |a| m.read_arg(a)));
                     break;
                 }
@@ -1628,7 +1664,7 @@ impl<'a> Image<'a> {
                     Flow::Fault => break 'run Stop::Fault,
                 }
             }
-            pc = jump.unwrap_or(*next);
+            pc = jump.unwrap_or(next);
         };
         Run { machine: m, steps, stop }
     }
