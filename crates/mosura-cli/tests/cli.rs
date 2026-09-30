@@ -343,3 +343,21 @@ fn emulate_answers_a_port() {
     assert!(waiting.contains("outcome\tunanswered-in\t0x3da"), "{waiting}");
     let _ = std::fs::remove_dir_all(&s);
 }
+
+/// `emulate --stubs` leaves a routine out: in the source-built `call_returns` fixture, `middle`
+/// tail-jumps into the stubbed `device`, so `outer` answers 6 instead of 100.
+#[test]
+fn emulate_stubs_a_routine() {
+    let s = scratch("emulate-stubs");
+    let fixture = workspace().join("oracle/ground-truth/call_returns.gcc-x86-32");
+    let truth = std::fs::read_to_string(workspace().join("oracle/ground-truth/call_returns.gcc-x86-32.truth")).unwrap();
+    let entry = |name: &str| truth.lines().find_map(|l| l.strip_suffix(&format!(" {name} code"))).and_then(|l| l.split_whitespace().nth(1)).map(|a| format!("0x{a}")).unwrap();
+    ok(&s, &["add", fixture.to_str().unwrap()]);
+    ok(&s, &["analyze"]);
+    let regs = ["--registers", "ESP=0x0f000000,EAX=0", "--follow-calls"];
+    let real = ok(&s, &[&["--format", "tsv", "emulate", entry("outer").as_str()][..], &regs[..]].concat());
+    assert!(real.contains("register\tEAX\t0x00000064"), "{real}");
+    let stubbed = ok(&s, &[&["--format", "tsv", "emulate", entry("outer").as_str()][..], &regs[..], &["--stubs", entry("device").as_str()][..]].concat());
+    assert!(stubbed.contains("register\tEAX\t0x00000006"), "{stubbed}");
+    let _ = std::fs::remove_dir_all(&s);
+}

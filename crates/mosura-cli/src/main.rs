@@ -286,6 +286,9 @@ enum Cmd {
         /// What IN reads, per port: the values in order, then the last again
         #[arg(long, value_name = "PORT=V,V,..;..")]
         ports: Option<String>,
+        /// Addresses that return at once when reached (the routine is left out of the run)
+        #[arg(long, value_name = "ADDR,..")]
+        stubs: Option<String>,
         /// Start from the machine state stored in the session under NAME
         #[arg(long, value_name = "NAME")]
         state: Option<String>,
@@ -845,11 +848,11 @@ fn run(cli: Cli) -> Res<()> {
             let t = app.call("function.verify", &[("entry", &format!("{entry:#x}")), ("object", &label)])?;
             app.show(&t)
         }
-        Cmd::Emulate { func, registers, memory, follow_calls, max_steps, effects, ports, state, save_state } => {
+        Cmd::Emulate { func, registers, memory, follow_calls, max_steps, effects, ports, stubs, state, save_state } => {
             let entry = format!("{:#x}", app.resolve_function(&func)?);
             let steps = max_steps.map(|n| n.to_string());
             let mut extra: Vec<(&str, &str)> = vec![("entry", &entry)];
-            for (key, value) in [("emulate.registers", &registers), ("emulate.memory", &memory), ("emulate.max-steps", &steps), ("emulate.ports", &ports), ("emulate.state", &state), ("emulate.save-state", &save_state)] {
+            for (key, value) in [("emulate.registers", &registers), ("emulate.memory", &memory), ("emulate.max-steps", &steps), ("emulate.ports", &ports), ("emulate.stubs", &stubs), ("emulate.state", &state), ("emulate.save-state", &save_state)] {
                 if let Some(v) = value {
                     extra.push((key, v));
                 }

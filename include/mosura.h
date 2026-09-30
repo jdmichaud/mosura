@@ -372,7 +372,8 @@ mosura_status mosura_lift(mosura_language *l,
  * (NULL = none) is an option set: `ctx` as for `mosura_lift`, `emulate.registers` (`NAME=hex,…`),
  * `emulate.memory` (`hexaddr=hexbytes;…`), `emulate.entry` (default: base),
  * `emulate.follow-calls` (default: a call is an event), `emulate.max-steps`, `emulate.effects`,
- * `emulate.ports` (what IN reads, `PORT=V,V,…;…`), `emulate.state` and `emulate.save-state` (a
+ * `emulate.ports` (what IN reads, `PORT=V,V,…;…`), `emulate.stubs` (addresses that return when
+ * reached), `emulate.state` and `emulate.save-state` (a
  * machine state kept in the handle's session). The bytes are memory as well as code.
  * emulation: kind, name, value, at, step — `outcome` rows (stop = returned | fault | no-instruction |
  * step-cap; address; steps; unmodeled; unmodeled-op; uninitialized: a register read
@@ -499,8 +500,8 @@ mosura_status mosura_program_passes(mosura_program *p,
 /**
  * Execute the function at `entry` through the p-code interpreter (`function.emulate`), with the
  * program's loaded image as memory. `opts` (NULL = none): emulate.registers, emulate.memory,
- * emulate.follow-calls, emulate.max-steps, emulate.effects, emulate.ports, emulate.state,
- * emulate.save-state.
+ * emulate.follow-calls, emulate.max-steps, emulate.effects, emulate.ports, emulate.stubs,
+ * emulate.state, emulate.save-state.
  * emulation: kind, name, value, at, step — outcome, register, memory and effect rows, as
  * `mosura_emulate`.
  */

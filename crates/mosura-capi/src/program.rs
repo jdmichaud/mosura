@@ -126,8 +126,8 @@ pub unsafe extern "C" fn mosura_program_passes(p: *mut mosura_program, opts: *co
 
 /// Execute the function at `entry` through the p-code interpreter (`function.emulate`), with the
 /// program's loaded image as memory. `opts` (NULL = none): emulate.registers, emulate.memory,
-/// emulate.follow-calls, emulate.max-steps, emulate.effects, emulate.ports, emulate.state,
-/// emulate.save-state.
+/// emulate.follow-calls, emulate.max-steps, emulate.effects, emulate.ports, emulate.stubs,
+/// emulate.state, emulate.save-state.
 /// emulation: kind, name, value, at, step — outcome, register, memory and effect rows, as
 /// `mosura_emulate`.
 #[no_mangle]

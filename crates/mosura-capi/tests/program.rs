@@ -124,6 +124,13 @@ fn languages_registers_and_raw_decoding() {
     assert_eq!(unsafe { mosura_emulate(l, mosura_view { ptr: inp.as_ptr(), len: inp.len() }, 0x1000, answer, &mut a) }, MOSURA_OK, "{}", last());
     let al = find_row(a, 1, "AL").map(|r| cell_str(a, r, 2));
     assert_eq!(al.as_deref(), Some("0x1c"));
+    // emulate.stubs: `call 0x100a; add eax,1; ret; nop; mov eax,99; ret` answers 1, not 100
+    let calls = [0xe8u8, 0x05, 0x00, 0x00, 0x00, 0x83, 0xc0, 0x01, 0xc3, 0x90, 0xb8, 0x63, 0x00, 0x00, 0x00, 0xc3];
+    let stubbed = opts(c, &[("emulate.registers", "ESP=0x0f000000,EAX=0"), ("emulate.follow-calls", "true"), ("emulate.stubs", "0x100a")]);
+    let mut st: *mut mosura_table = ptr::null_mut();
+    assert_eq!(unsafe { mosura_emulate(l, mosura_view { ptr: calls.as_ptr(), len: calls.len() }, 0x1000, stubbed, &mut st) }, MOSURA_OK, "{}", last());
+    let eax = find_row(st, 1, "EAX").map(|r| cell_str(st, r, 2));
+    assert_eq!(eax.as_deref(), Some("0x00000001"));
     // emulate.save-state / emulate.state: `inc eax; ret` twice through one state name
     let inc = [0x40u8, 0xc3];
     let inc_bytes = mosura_view { ptr: inc.as_ptr(), len: inc.len() };
@@ -144,7 +151,7 @@ fn languages_registers_and_raw_decoding() {
     let mut arms: *mut mosura_table = ptr::null_mut();
     assert_eq!(unsafe { mosura_emit_arms(c, &mut arms) }, MOSURA_OK);
     assert_eq!(unsafe { mosura_table_rows(arms) }, 31);
-    for h in [langs, regs, d, p, d16, axes, arms, t, f, e, n1, n2, a] {
+    for h in [langs, regs, d, p, d16, axes, arms, t, f, e, n1, n2, a, st] {
         unsafe { mosura_release(h as *mut c_void) };
     }
     unsafe {
@@ -153,6 +160,7 @@ fn languages_registers_and_raw_decoding() {
         mosura_release(zero as *mut c_void);
         mosura_release(traced as *mut c_void);
         mosura_release(answer as *mut c_void);
+        mosura_release(stubbed as *mut c_void);
         mosura_release(save as *mut c_void);
         mosura_release(carry as *mut c_void);
         mosura_release(l as *mut c_void);
