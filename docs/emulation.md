@@ -247,6 +247,24 @@ are decoded on demand at every address the run reaches, so a callee behind data 
 linear sweep read as one long instruction still decodes. A software interrupt (`INT n`) stays an
 event in both modes: its handler is not in the bytes.
 
+## The address bus
+
+A CPU can drive fewer address lines than its registers are wide. The MC68000 computes 32-bit
+addresses and drives 24 of them, so `($C000).w` — sign-extended to 0xffffc000 — and `$FFC000` are
+the same byte of RAM, and a game may use both. The language cannot say this: Ghidra's 68000 language
+addresses 32 bits, as the 68020 does. `emulate.address-mask` (CLI `--address-mask`) says it: every
+fetch, load and store in the memory space, every seed and stored state written there, and every
+address the run reports (memory rows, store and call effects, a `no-instruction` stop) goes through
+the mask. `0xffffff` is the 68000's; a machine with a 20-bit bus takes `0xfffff`. Addresses given
+to the run — `entry`, `emulate.stubs`, memory seeds — are best given as the bus decodes them; the
+entry and seeds are folded anyway. A zero mask is refused. What lies at the decoded addresses —
+RAM mirrored across a region, registers of a device — is the machine's, not the CPU's, and is not
+modelled.
+
+```sh
+mosura -S s emulate 0x134f --address-mask 0xffffff
+```
+
 ## What it does not do
 
 The interpreter models integer and binary32/64 float p-code, the `LOCK`/`in`/`out`/`swi` user-ops
