@@ -372,11 +372,11 @@ mosura_status mosura_lift(mosura_language *l,
  * (NULL = none) is an option set: `ctx` as for `mosura_lift`, `emulate.registers` (`NAME=hex,…`),
  * `emulate.memory` (`hexaddr=hexbytes;…`), `emulate.entry` (default: base),
  * `emulate.follow-calls` (default: a call is an event), `emulate.max-steps`, `emulate.effects`,
- * `emulate.state` and `emulate.save-state` (a machine state kept in the handle's session). The
- * bytes are memory as well as code.
+ * `emulate.ports` (what IN reads, `PORT=V,V,…;…`), `emulate.state` and `emulate.save-state` (a
+ * machine state kept in the handle's session). The bytes are memory as well as code.
  * emulation: kind, name, value, at, step — `outcome` rows (stop = returned | fault | no-instruction |
  * step-cap; address; steps; unmodeled; unmodeled-op; uninitialized: a register read
- * before anything wrote it), `register` rows (every register the final
+ * before anything wrote it; unanswered-in: a port read nothing answered), `register` rows (every register the final
  * state holds, widest first), `memory` rows (every run of bytes it holds, as hex) and, with
  * `emulate.effects`, `effect` rows (what the run did, in order, each at the instruction address
  * and p-code step in its `at` and `step`).
@@ -499,7 +499,8 @@ mosura_status mosura_program_passes(mosura_program *p,
 /**
  * Execute the function at `entry` through the p-code interpreter (`function.emulate`), with the
  * program's loaded image as memory. `opts` (NULL = none): emulate.registers, emulate.memory,
- * emulate.follow-calls, emulate.max-steps, emulate.effects, emulate.state, emulate.save-state.
+ * emulate.follow-calls, emulate.max-steps, emulate.effects, emulate.ports, emulate.state,
+ * emulate.save-state.
  * emulation: kind, name, value, at, step — outcome, register, memory and effect rows, as
  * `mosura_emulate`.
  */
@@ -512,7 +513,7 @@ mosura_status mosura_program_emulate(mosura_program *p,
  * Run every input vector a capture specification generates through the function at `entry`
  * (`function.capture`). `spec` is the specification as JSON text (docs/emulation.md); `opts`
  * (NULL = none): emulate.state. capture: case, generator, inputs, outputs, stop, address, steps,
- * unmodeled, unmodeled_ops, uninitialized — one row per vector.
+ * unmodeled, unmodeled_ops, uninitialized, unanswered — one row per vector.
  */
 mosura_status mosura_program_capture(mosura_program *p,
                                      uint64_t entry,

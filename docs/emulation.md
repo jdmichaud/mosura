@@ -65,7 +65,7 @@ mosura -S s call function.emulate entry=0x3a4 emulate.registers=ESP=0x0f000000,E
 ```
 
 The command takes a function by address or name and has a flag for every key (`--registers`,
-`--memory`, `--follow-calls`, `--max-steps`, `--effects`, `--state`, `--save-state`). The same
+`--memory`, `--follow-calls`, `--max-steps`, `--effects`, `--ports`, `--state`, `--save-state`). The same
 keys and the same answer, with the function's `entry` in place of `bytes`, `base` and
 `emulate.entry`. The image is the program as loaded: every initialized block of its default space,
 decoded where the run reaches and read as memory. A routine finds its tables and the initial value

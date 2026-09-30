@@ -324,3 +324,22 @@ fn emulate_and_capture_a_function_of_the_program() {
     assert_eq!(missing.code, 2, "{}", missing.stderr);
     let _ = std::fs::remove_dir_all(&s);
 }
+
+/// `emulate --ports` answers IN: the source-built `port_io` fixture's `wait_ready` polls port
+/// 0x3da until bit 3 is set; answered it returns, unanswered it names the port it waited on.
+#[test]
+fn emulate_answers_a_port() {
+    let s = scratch("emulate-ports");
+    let fixture = workspace().join("oracle/ground-truth/port_io.gcc-x86-32");
+    let truth = std::fs::read_to_string(workspace().join("oracle/ground-truth/port_io.gcc-x86-32.truth")).unwrap();
+    let poll = truth.lines().find_map(|l| l.strip_suffix(" wait_ready code")).and_then(|l| l.split_whitespace().nth(1)).map(|a| format!("0x{a}")).unwrap();
+    ok(&s, &["add", fixture.to_str().unwrap()]);
+    ok(&s, &["analyze"]);
+    let answered = ok(&s, &["--format", "tsv", "emulate", &poll, "--registers", "ESP=0x0f000000", "--ports", "0x3da=0,8"]);
+    assert!(answered.contains("outcome\tstop\treturned"), "{answered}");
+    assert!(answered.contains("register\tAL\t0x08"), "{answered}");
+    let waiting = ok(&s, &["--format", "tsv", "emulate", &poll, "--registers", "ESP=0x0f000000", "--max-steps", "100"]);
+    assert!(waiting.contains("outcome\tstop\tstep-cap"), "{waiting}");
+    assert!(waiting.contains("outcome\tunanswered-in\t0x3da"), "{waiting}");
+    let _ = std::fs::remove_dir_all(&s);
+}

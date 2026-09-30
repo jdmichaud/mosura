@@ -117,6 +117,13 @@ fn languages_registers_and_raw_decoding() {
     assert_eq!(unsafe { mosura_emulate(l, mosura_view { ptr: out.as_ptr(), len: out.len() }, 0x1000, traced, &mut e) }, MOSURA_OK, "{}", last());
     let effects: Vec<String> = (0..unsafe { mosura_table_rows(e) }).filter(|&r| cell_str(e, r, 0) == "effect").map(|r| cell_str(e, r, 2)).collect();
     assert_eq!(effects, ["out 0x3f8 1 0x41"]);
+    // emulate.ports: `mov dx,0x60; in al,dx; ret` reads what the caller answers
+    let inp = [0x66u8, 0xba, 0x60, 0x00, 0xec, 0xc3];
+    let answer = opts(c, &[("emulate.ports", "0x60=0x1c")]);
+    let mut a: *mut mosura_table = ptr::null_mut();
+    assert_eq!(unsafe { mosura_emulate(l, mosura_view { ptr: inp.as_ptr(), len: inp.len() }, 0x1000, answer, &mut a) }, MOSURA_OK, "{}", last());
+    let al = find_row(a, 1, "AL").map(|r| cell_str(a, r, 2));
+    assert_eq!(al.as_deref(), Some("0x1c"));
     // emulate.save-state / emulate.state: `inc eax; ret` twice through one state name
     let inc = [0x40u8, 0xc3];
     let inc_bytes = mosura_view { ptr: inc.as_ptr(), len: inc.len() };
@@ -137,7 +144,7 @@ fn languages_registers_and_raw_decoding() {
     let mut arms: *mut mosura_table = ptr::null_mut();
     assert_eq!(unsafe { mosura_emit_arms(c, &mut arms) }, MOSURA_OK);
     assert_eq!(unsafe { mosura_table_rows(arms) }, 31);
-    for h in [langs, regs, d, p, d16, axes, arms, t, f, e, n1, n2] {
+    for h in [langs, regs, d, p, d16, axes, arms, t, f, e, n1, n2, a] {
         unsafe { mosura_release(h as *mut c_void) };
     }
     unsafe {
@@ -145,6 +152,7 @@ fn languages_registers_and_raw_decoding() {
         mosura_release(state as *mut c_void);
         mosura_release(zero as *mut c_void);
         mosura_release(traced as *mut c_void);
+        mosura_release(answer as *mut c_void);
         mosura_release(save as *mut c_void);
         mosura_release(carry as *mut c_void);
         mosura_release(l as *mut c_void);
