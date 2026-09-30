@@ -289,6 +289,9 @@ enum Cmd {
         /// Addresses that return at once when reached (the routine is left out of the run)
         #[arg(long, value_name = "ADDR,..")]
         stubs: Option<String>,
+        /// Registers and register groups (the processor spec's, e.g. FLAGS) to leave out of the uninitialized reads
+        #[arg(long = "uninitialized-ignore", value_name = "NAME,..")]
+        uninitialized_ignore: Option<String>,
         /// Start from the machine state stored in the session under NAME
         #[arg(long, value_name = "NAME")]
         state: Option<String>,
@@ -304,7 +307,9 @@ enum Cmd {
         spec: PathBuf,
         /// Start every vector from the machine state stored in the session under NAME
         #[arg(long, value_name = "NAME")]
-        state: Option<String>,
+        state: Option<String>,        /// Registers and register groups (the processor spec's, e.g. FLAGS) to leave out of the uninitialized reads
+        #[arg(long = "uninitialized-ignore", value_name = "NAME,..")]
+        uninitialized_ignore: Option<String>,
     },
     /// Corpus rounds: run, compare, list, show, export, import
     Round {
@@ -848,11 +853,11 @@ fn run(cli: Cli) -> Res<()> {
             let t = app.call("function.verify", &[("entry", &format!("{entry:#x}")), ("object", &label)])?;
             app.show(&t)
         }
-        Cmd::Emulate { func, registers, memory, follow_calls, max_steps, effects, ports, stubs, state, save_state } => {
+        Cmd::Emulate { func, registers, memory, follow_calls, max_steps, effects, ports, stubs, uninitialized_ignore, state, save_state } => {
             let entry = format!("{:#x}", app.resolve_function(&func)?);
             let steps = max_steps.map(|n| n.to_string());
             let mut extra: Vec<(&str, &str)> = vec![("entry", &entry)];
-            for (key, value) in [("emulate.registers", &registers), ("emulate.memory", &memory), ("emulate.max-steps", &steps), ("emulate.ports", &ports), ("emulate.stubs", &stubs), ("emulate.state", &state), ("emulate.save-state", &save_state)] {
+            for (key, value) in [("emulate.registers", &registers), ("emulate.memory", &memory), ("emulate.max-steps", &steps), ("emulate.ports", &ports), ("emulate.stubs", &stubs), ("emulate.uninitialized-ignore", &uninitialized_ignore), ("emulate.state", &state), ("emulate.save-state", &save_state)] {
                 if let Some(v) = value {
                     extra.push((key, v));
                 }
@@ -866,12 +871,15 @@ fn run(cli: Cli) -> Res<()> {
             let t = app.call("function.emulate", &extra)?;
             app.show(&t)
         }
-        Cmd::Capture { func, spec, state } => {
+        Cmd::Capture { func, spec, state, uninitialized_ignore } => {
             let text = std::fs::read_to_string(&spec).map_err(|e| usage(format!("{}: {e}", spec.display())))?;
             let entry = format!("{:#x}", app.resolve_function(&func)?);
             let mut extra: Vec<(&str, &str)> = vec![("entry", &entry), ("capture.spec", &text)];
             if let Some(v) = &state {
                 extra.push(("emulate.state", v));
+            }
+            if let Some(v) = &uninitialized_ignore {
+                extra.push(("emulate.uninitialized-ignore", v));
             }
             let t = app.call("function.capture", &extra)?;
             app.show(&t)?;

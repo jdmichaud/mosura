@@ -346,6 +346,27 @@ fn emulate_answers_a_port() {
 
 /// `emulate --stubs` leaves a routine out: in the source-built `call_returns` fixture, `middle`
 /// tail-jumps into the stubbed `device`, so `outer` answers 6 instead of 100.
+/// `--uninitialized-ignore` leaves registers out of the uninitialized reads, by name or by the
+/// processor spec's group; `emulate` and `capture` both take it.
+#[test]
+fn emulate_and_capture_leave_uninitialized_registers_out() {
+    let s = scratch("emulate-uninitialized");
+    let fixture = workspace().join("oracle/ground-truth/segment_base.gcc-x86-32");
+    let truth = std::fs::read_to_string(workspace().join("oracle/ground-truth/segment_base.gcc-x86-32.truth")).unwrap();
+    let gs = truth.lines().find_map(|l| l.strip_suffix(" read_gs code")).and_then(|l| l.split_whitespace().nth(1)).map(|a| format!("0x{a}")).unwrap();
+    ok(&s, &["add", fixture.to_str().unwrap()]);
+    ok(&s, &["analyze"]);
+    let all = ok(&s, &["--format", "tsv", "emulate", &gs]);
+    assert!(all.contains("outcome\tuninitialized\tGS_OFFSET") && all.contains("outcome\tuninitialized\tESP"), "{all}");
+    let left = ok(&s, &["--format", "tsv", "emulate", &gs, "--uninitialized-ignore", "ESP"]);
+    assert!(left.contains("outcome\tuninitialized\tGS_OFFSET") && !left.contains("outcome\tuninitialized\tESP"), "{left}");
+    let spec = s.join("spec.json");
+    std::fs::write(&spec, r#"{"inputs": [], "outputs": [{"name": "eax", "bits": 32, "pieces": [{"register": "EAX"}]}], "cases": [{"kind": "explicit", "rows": [{}]}]}"#).unwrap();
+    let rows = ok(&s, &["--format", "tsv", "capture", &gs, "--spec", spec.to_str().unwrap(), "--uninitialized-ignore", "GS_OFFSET,FLAGS"]);
+    assert!(rows.lines().nth(1).is_some_and(|r| r.split('\t').nth(9) == Some("ESP")), "{rows}");
+    let _ = std::fs::remove_dir_all(&s);
+}
+
 #[test]
 fn emulate_stubs_a_routine() {
     let s = scratch("emulate-stubs");
