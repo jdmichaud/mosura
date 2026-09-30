@@ -254,8 +254,8 @@ if have gcc && have objcopy; then
 
   # Reference execution: division routines whose inputs select a #DE fault, a loop whose
   # termination depends on its input, a caller/callee pair with an interrupt kept as an event,
-  # and routines that read and write the program's own data.
-  for prog in divide_fault spin_until_zero call_chain image_data; do
+  # routines that read and write the program's own data, and reads through segment overrides.
+  for prog in divide_fault spin_until_zero call_chain image_data segment_base; do
     for bits in 32 64; do
       gcc -m"$bits" -nostdlib -static -no-pie -Wl,-e,_start "src/$prog.S" \
         -o "$prog.gcc-x86-$bits.unstripped"

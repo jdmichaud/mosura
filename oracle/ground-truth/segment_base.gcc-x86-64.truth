@@ -1,0 +1,8 @@
+# mosura-ground-truth v1 program=segment_base compiler=gcc arch=x86-64 lang=x86:LE:64:default
+# derived-from=segment_base.gcc-x86-64.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 0000000000401000
+func 0000000000401000 0000000000000010 _start code
+func 0000000000401010 0000000000000009 read_gs code
+func 0000000000401019 0000000000000009 read_fs code
+func 0000000000401022 0000000000000008 read_ds code
