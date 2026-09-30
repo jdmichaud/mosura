@@ -36,8 +36,23 @@ the debugger. `sor` plans 68k routine vectors from mosura. Probing 68k BEFORE it
   `02fc0983` structuring rebuilt in-edges per block (quadratic).
 - ⚠️ Ghidra's no-return DISCOVERY misfires on hand-written asm that falls into shared subroutines
   (3 call sites followed by a function entry ⇒ "non-returning") — faithful, not a bug; the remedy
-  is `analysis.disable`. OPEN: TraceDAG pushBranches non-convergence (SoR FUN_bb18, FUN_732ea);
-  address tables 641 vs Ghidra 409 on 68000; declared data for sor's tables.
+  is `analysis.disable`.
+- `00a9e189`/`4b80c9c7`/`2d1fca05` `load.data` (declared tables; COUNT decimal). sor's map now comes
+  from mosura: 25,467 starts = its tracer, reassembles byte-exact.
+- `20ccd8a8` Ghidra's 60 s switch-analysis decompile timeout (Funcdata deadline, scoped over the
+  flow build's partial decompiles by `with_deadline`) + TraceDAG's real bound. ⚠️ A RELEASE build
+  hung for 25+ min where my DEBUG build took 4 s: debug_assert panicked + was caught, release just
+  broke out and ran on. Measure perf fixes on a RELEASE build with the consumer's own inputs.
+- `979414a4` branches typed by SLEIGH template (PcodeOp::dest J_START/J_NEXT), fall-through from
+  flow flags (the old last-opcode rule had been kept alive by a SPURIOUS inst_next reference —
+  removing it alone cost FID parity) + flow refs carry the operand index. `4284c2bd`
+  Motorola68KAnalyzer lea/pea refs; no bare-constant refs on 68000. Workspace 1386 passed.
+- ⚠️ Other agents BUILD FROM THIS REPO: keep experiments in `git worktree`s, never uncommitted on
+  the main tree. The /home/jd/mosura sshfs mount refuses writes under heavy parallel I/O
+  ("Operation not permitted") — use CARGO_BUILD_JOBS=4.
+- OPEN: listing flow kind ignores the CALL_RETURN override (sor 0x3B0E); DATA refs other than
+  lea/pea still op -1; address tables 641 vs Ghidra 409 on 68000; x86 bare-constant DATA rule is a
+  shortcut Ghidra has no equivalent of (find the real mechanism before touching it).
 
 ## Live status — `master` (2026-09-30): the refexec room's four items LANDED
 
