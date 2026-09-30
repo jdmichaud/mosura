@@ -1628,12 +1628,16 @@ impl Structured {
         loop {
             let mut change = false;
             let mut index = 0;
+            // The in-edge view depends only on the graph, which a rule changes only when it
+            // applies: rebuild it after a change, not for every block visited (per block it made
+            // each pass quadratic in the block count).
+            let mut ins = self.in_edges();
             while index < self.order.len() {
                 let bl = self.order[index];
                 index += 1;
-                let ins = self.in_edges();
                 if self.rule_short_circuit(bl, &ins) {
                     change = true;
+                    ins = self.in_edges();
                 }
             }
             if !change {
@@ -1653,6 +1657,9 @@ impl Structured {
                 let mut change = false;
                 let mut index = 0;
                 isolated_count = 0;
+                // Rebuilt only after a rule applies (see `collapse_conditions`).
+                let mut ins = self.in_edges();
+                let mut stale = false;
                 while index < self.order.len() {
                     let bl = match targetbl.take() {
                         Some(t) => {
@@ -1666,41 +1673,52 @@ impl Structured {
                             b
                         }
                     };
-                    let ins = self.in_edges();
+                    if stale {
+                        ins = self.in_edges();
+                        stale = false;
+                    }
                     if self.blocks[bl].out_edges.is_empty() && ins[bl].is_empty() {
                         isolated_count += 1; // a completely collapsed block; not a change
                         continue;
                     }
                     if self.rule_block_goto(bl, &ins) {
                         change = true;
+                        stale = true;
                         continue;
                     }
                     if self.rule_cat(bl, &ins) {
                         change = true;
+                        stale = true;
                         continue;
                     }
                     if self.rule_proper_if(bl, &ins) {
                         change = true;
+                        stale = true;
                         continue;
                     }
                     if self.rule_if_else(bl, &ins) {
                         change = true;
+                        stale = true;
                         continue;
                     }
                     if self.rule_while_do(bl, &ins) {
                         change = true;
+                        stale = true;
                         continue;
                     }
                     if self.rule_do_while(bl, &ins) {
                         change = true;
+                        stale = true;
                         continue;
                     }
                     if self.rule_inf_loop(bl, &ins) {
                         change = true;
+                        stale = true;
                         continue;
                     }
                     if self.rule_switch(bl, &ins) {
                         change = true;
+                        stale = true;
                         continue;
                     }
                 }
@@ -1712,10 +1730,11 @@ impl Structured {
             // nothing else applies.
             let mut fullchange = false;
             let mut index = 0;
+            // The pass stops at its first change, so one view serves it.
+            let ins = self.in_edges();
             while index < self.order.len() {
                 let bl = self.order[index];
                 index += 1;
-                let ins = self.in_edges();
                 if self.rule_if_no_exit(bl, &ins) {
                     fullchange = true;
                     break;
