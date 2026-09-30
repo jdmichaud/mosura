@@ -314,6 +314,13 @@ pub fn modified_flow_type(original: RefType, ov: FlowOverride) -> RefType {
 // faithful port of Ghidra's flow-override mapping; the computed/terminal branches map to the
 // same RefType but test distinct flow properties, so the cascade is kept as-is
 #[allow(clippy::if_same_then_else)]
+/// An instruction's flow type as analysis left it — Ghidra `InstructionDB.getFlowType()` (:321),
+/// `getModifiedFlowType(prototype flow type, flow override)`: a shared-return tail `jmp` whose
+/// override is CALL_RETURN is a CALL_TERMINATOR, whatever its bytes say.
+pub fn overridden_flow_kind(kind: FlowKind, ov: FlowOverride) -> FlowKind {
+    modified_flow_kind(kind, ov)
+}
+
 fn modified_flow_kind(kind: FlowKind, ov: FlowOverride) -> FlowKind {
     let p = props_of(kind);
     // NONE, or a non jump/terminal/call flow, is returned unchanged (:122-125).

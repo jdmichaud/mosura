@@ -381,11 +381,14 @@ fn disassemble(s: &mut Session, o: &Options, _p: &mut dyn Progress) -> Result<Ta
         let bytes = p.memory.read_window(Address::new(p.default_space, addr), len as usize);
         match u {
             CodeUnit::Instruction { flow, .. } => {
+                // The flow type analysis left (Ghidra `getFlowType()`: the prototype's, modified by
+                // any flow override), not the bytes' alone.
+                let kind = mosura_core::analysis::flowtype::overridden_flow_kind(flow.kind, p.flow_override_at(Address::new(p.default_space, addr)));
                 let (mn, body) = match mosura_core::sleigh::disassemble(&p.language_id, &bytes, addr) {
                     Ok(v) if !v.is_empty() => (v[0].mnemonic.clone(), v[0].body.clone()),
                     _ => ("??".to_string(), String::new()),
                 };
-                b.row().u64(addr).u32(len).bytes(&bytes).str(&mn).str(&body).str(&flow_text(flow.kind)).bool(flow.ends_flow).bool(flow.call_target.is_some()).u64(flow.call_target.unwrap_or(0)).list_u64(&flow.flows);
+                b.row().u64(addr).u32(len).bytes(&bytes).str(&mn).str(&body).str(&flow_text(kind)).bool(!mosura_core::analysis::flowtype::overridden_props_of(flow.kind, p.flow_override_at(Address::new(p.default_space, addr))).fallthrough).bool(flow.call_target.is_some()).u64(flow.call_target.unwrap_or(0)).list_u64(&flow.flows);
             }
             CodeUnit::Data { type_name, .. } => {
                 b.row().u64(addr).u32(len).bytes(&bytes).str(type_name).str("").str("DATA").bool(false).bool(false).u64(0).list_u64(&[]);

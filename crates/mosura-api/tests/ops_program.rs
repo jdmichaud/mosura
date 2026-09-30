@@ -357,6 +357,24 @@ fn a_68000_lea_and_pea_reference_the_address_they_compute() {
     assert_eq!(refs, [(0x200, 0x28a, 0), (0x204, 0x1206, 0), (0x208, 0x1234, 0)]);
 }
 
+/// The listing shows the flow type analysis left, as Ghidra's `Instruction.getFlowType()` does:
+/// the prototype's, modified by a flow override. `call_returns`' `middle` ends in `jmp device`, a
+/// tail call to a function `_start` also calls; shared-return analysis overrides it to
+/// CALL_RETURN, so it is a CALL_TERMINATOR, not an UNCONDITIONAL_JUMP.
+#[test]
+fn the_listing_shows_the_overridden_flow_type() {
+    let c = ctx();
+    let dir = mosura_core::paths::ground_truth_dir();
+    let truth = std::fs::read_to_string(dir.join("call_returns.gcc-x86-32.truth")).unwrap();
+    let middle = truth.lines().find_map(|l| l.strip_suffix(" middle code")).and_then(|l| l.split_whitespace().nth(1)).map(|a| u64::from_str_radix(a, 16).unwrap()).unwrap();
+    let mut s = Session::open(None).unwrap();
+    s.add_input(&std::fs::read(dir.join("call_returns.gcc-x86-32")).unwrap(), "call_returns", None).unwrap();
+    dispatch(&c, &mut s, "program.analyze", &Options::new(), &mut NoProgress).unwrap();
+    let d = dispatch(&c, &mut s, "program.disassemble", &opts(&[("entry", &format!("{middle:#x}"))]), &mut NoProgress).unwrap();
+    let last = d.rows() - 1;
+    assert_eq!((d.str(last, 3).unwrap(), d.str(last, 5).unwrap(), d.bool(last, 6).unwrap()), ("JMP", "CALL_TERMINATOR", true));
+}
+
 #[test]
 fn cached_program_configuration_is_request_local() {
     use mosura_api::ops::program::program_of;
