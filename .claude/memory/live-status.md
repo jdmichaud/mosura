@@ -40,6 +40,8 @@ nothing consumer-specific lands here. Reach jd only on a disagreement about what
   cspec (first `<compiler>`, Ghidra `getDefaultCompilerSpec`); all 87 languages checked. LESSON: a
   stub test must have work AFTER the stubbed call, from inside an entered call, on a RAW image.
   Workspace 1373 passed, 0 failed on `db7a6462` (`52-workspace-stubfix.log`).
+- ✅ ACCEPTED by claude on `c0701de5` (2026-09-30): break trace 471/471 values, 8 other shot traces 0
+  diffs, 28 captures + frames match. Step total differs by design (stub = 1 step). Room closed; nothing open.
 - Validation: workspace 1371 passed, 0 failed, 28 ignored, 115 binaries on `da621bad`'s tree
   (`47-workspace-final.log`); clippy exit 0 (`45-clippy.log`, on `324b4dcc`).
 
