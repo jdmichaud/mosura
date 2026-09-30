@@ -232,7 +232,9 @@ Every stop but `returned` is a reason to reject the capture, and the reason is n
 
 Off by default, a call is an event: the callee is not entered and returns at once. The stack then
 stands as the callee's return would leave it: the operation takes the stack pointer from the
-compiler spec's `<stackpointer>` (the language's default compiler spec for raw bytes) and puts it
+compiler spec's `<stackpointer>` — for raw bytes, or any compiler spec the language does not
+declare, the language's default one: its first `<compiler>`, as Ghidra's `getDefaultCompilerSpec`
+answers (x86-32: `windows`) — and puts it
 back to its value at the start of the call instruction, which undoes the return address a
 push-based call left (x86) and changes nothing where the call writes a link register (AArch64).
 That is the single-function mode the differential check wants (a callee's behaviour is its own
