@@ -158,26 +158,73 @@ pub(crate) fn falls_through(
 /// mnemonic (-1) when no operand names it: `bra 0x208` → 0, `dbf D1w,0x23e` → 1. Read from the
 /// rendered operands, split at the top-level commas (not those inside `(d16,PC)`).
 pub(crate) fn flow_operand_index(insn: &crate::sleigh::Instruction, target: u64) -> i32 {
-    let mut operands: Vec<&str> = Vec::new();
-    let (mut depth, mut start) = (0i32, 0usize);
-    for (i, c) in insn.body.char_indices() {
-        match c {
-            '(' | '[' => depth += 1,
-            ')' | ']' => depth -= 1,
-            ',' if depth == 0 => {
-                operands.push(&insn.body[start..i]);
-                start = i + 1;
-            }
-            _ => {}
-        }
-    }
-    operands.push(&insn.body[start..]);
     let names = |text: &str| {
         let t = text.trim();
         let t = t.strip_suffix(".l").or_else(|| t.strip_suffix(".w")).unwrap_or(t);
         t.strip_prefix("0x").and_then(|h| u64::from_str_radix(h, 16).ok()) == Some(target)
     };
-    operands.iter().position(|o| names(o)).map_or(-1, |i| i as i32)
+    split_operands(&insn.body).iter().position(|o| names(o)).map_or(-1, |i| i as i32)
+}
+
+/// The rendered operands of an instruction, split at the top-level commas (not those inside
+/// `(d16,PC)` or `[ebx+ecx*4]`).
+fn split_operands(body: &str) -> Vec<&str> {
+    let mut operands: Vec<&str> = Vec::new();
+    let (mut depth, mut start) = (0i32, 0usize);
+    for (i, c) in body.char_indices() {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                operands.push(&body[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    operands.push(&body[start..]);
+    operands
+}
+
+/// The operand a data reference belongs to — Ghidra `SymbolicPropogator`'s choice
+/// (`findOpIndexForRef`, `findOperandWithVarnodeAssignment`), read from the rendered operands:
+///  - the operand that names the target (an address or scalar operand: `(0xa10008).l`,
+///    `[0x404000]`; a negative displacement read as its 32-bit two's complement);
+///  - else, for a load or store (`access` given, `true` = write), the operand that does the memory
+///    access: the one memory operand, or, where there are two (68000 `move (a5)+,(a4)`, source
+///    first), the source for a read and the destination for a write;
+///  - else the mnemonic (-1).
+pub(crate) fn data_operand_index(body: &str, target: u64, access: Option<bool>) -> i32 {
+    let operands = split_operands(body);
+    let names = |text: &str| {
+        let bytes = text.as_bytes();
+        let mut i = 0;
+        while i + 1 < bytes.len() {
+            if bytes[i] == b'0' && (bytes[i + 1] == b'x' || bytes[i + 1] == b'X') {
+                let neg = i > 0 && bytes[i - 1] == b'-';
+                let digits: String = text[i + 2..].chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+                if let Ok(v) = u64::from_str_radix(&digits, 16) {
+                    let v = if neg { 0u64.wrapping_sub(v) & 0xffff_ffff } else { v };
+                    if v == target {
+                        return true;
+                    }
+                }
+                i += 2 + digits.len();
+            } else {
+                i += 1;
+            }
+        }
+        false
+    };
+    if let Some(i) = operands.iter().position(|o| names(o)) {
+        return i as i32;
+    }
+    let Some(write) = access else { return -1 };
+    let memory: Vec<usize> = operands.iter().enumerate().filter(|(_, o)| o.contains('(') || o.contains('[')).map(|(i, _)| i).collect();
+    match (memory.first(), memory.last()) {
+        (Some(&first), Some(&last)) => (if write { last } else { first }) as i32,
+        _ => -1,
+    }
 }
 
 /// The flow properties to store on a code unit as it is laid down — Ghidra's `InstructionDB`

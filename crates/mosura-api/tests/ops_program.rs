@@ -375,6 +375,32 @@ fn the_listing_shows_the_overridden_flow_type() {
     assert_eq!((d.str(last, 3).unwrap(), d.str(last, 5).unwrap(), d.bool(last, 6).unwrap()), ("JMP", "CALL_TERMINATOR", true));
 }
 
+/// Ghidra's reference rule for a load or store (`SymbolicPropogator.makeReference`): through a
+/// KNOWN constant address the reference is made even where the program has no memory (a
+/// cartridge's I/O and video registers). An immediate, a register set from one, and — under
+/// Ghidra's default "Trust Writable Memory" — a pointer read out of memory are all known.
+#[test]
+fn a_known_address_is_referenced_even_outside_memory() {
+    let c = ctx();
+    let mut image = vec![0u8; 0x240];
+    image[0..8].copy_from_slice(&[0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x02, 0x00]);
+    image[0x100..0x104].copy_from_slice(&[0x00, 0xff, 0x00, 0x00]); // a pointer, to no memory (RAM)
+    // 200: tst.l ($a10008).l   206: lea ($c00000).l,a4   20c: move.w (a4),d0
+    // 20e: movea.l ($100).l,a0   214: move.w (a0),d1   216: rts
+    image[0x200..0x218].copy_from_slice(&[
+        0x4a, 0xb9, 0x00, 0xa1, 0x00, 0x08, 0x49, 0xf9, 0x00, 0xc0, 0x00, 0x00, 0x30, 0x14, 0x20, 0x79, 0x00, 0x00, 0x01, 0x00, 0x32, 0x10,
+        0x4e, 0x75,
+    ]);
+    let mut s = Session::open(None).unwrap();
+    s.add_input(&image, "rom.bin", None).unwrap();
+    let raw = [("load.loader", "raw"), ("load.language", "68000:BE:32:default"), ("load.base", "0"), ("load.entries", "0x200")];
+    dispatch(&c, &mut s, "program.analyze", &opts(&raw), &mut NoProgress).unwrap();
+    let t = dispatch(&c, &mut s, "program.tables", &opts(&[("table", "references")]), &mut NoProgress).unwrap();
+    let mut refs: Vec<(u64, u64)> = (0..t.rows()).map(|r| (t.u64(r, 1).unwrap(), t.u64(r, 3).unwrap())).filter(|(f, _)| (0x200..0x218).contains(f)).collect();
+    refs.sort_unstable();
+    assert_eq!(refs, [(0x200, 0xa1_0008), (0x20c, 0xc0_0000), (0x20e, 0x100), (0x214, 0xff_0000)]);
+}
+
 #[test]
 fn cached_program_configuration_is_request_local() {
     use mosura_api::ops::program::program_of;

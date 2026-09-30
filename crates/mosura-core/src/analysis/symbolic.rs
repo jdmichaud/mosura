@@ -224,12 +224,29 @@ fn motorola68k_evaluate_context(program: &mut Program, vctx: &VarnodeContext, he
     program.reference_manager.add(here, target, RefType::Data, 0);
 }
 
-fn make_ref(program: &mut Program, from: Address, ram: SpaceId, to_off: u64, ref_type: RefType, min: u64) {
+/// Ghidra `SymbolicPropogator.makeReference` (:2582): no reference to address 0 or below the
+/// threshold; a KNOWN reference is made even where the program has no memory (a device register),
+/// while a speculative one must land in memory, unless it is a flow or the target is already
+/// referenced (:2636-2645). A load or store is known unless its address is a *suspect* constant
+/// (`VarnodeContext.isSuspectConstant`) — and with Ghidra's default "Trust Writable Memory" a value
+/// read out of memory is not suspect (`getMemoryValue`, `allowAccess`); only a zero or -1 is, and
+/// neither passes the threshold. So every load and store reference here is known.
+#[allow(clippy::too_many_arguments)] // the reference plus the operand text that names its operand
+fn make_ref(program: &mut Program, from: Address, ram: SpaceId, to_off: u64, ref_type: RefType, min: u64, known: bool, body: &str) {
     let to = Address::new(ram, to_off);
-    if to_off < min || !program.memory.contains(to) {
+    if to_off == 0 || to_off < min {
         return;
     }
-    program.reference_manager.add(from, to, ref_type, -1);
+    if !known && !program.memory.contains(to) && !ref_type.is_flow() && !program.reference_manager.has_reference_to(to) {
+        return;
+    }
+    let access = match ref_type {
+        RefType::Read => Some(false),
+        RefType::Write => Some(true),
+        _ => None,
+    };
+    let op_index = crate::analysis::analyzers::data_operand_index(body, to_off, access);
+    program.reference_manager.add(from, to, ref_type, op_index);
 }
 
 /// The integer/pointer argument storage **registers** of the program's default calling
@@ -331,6 +348,7 @@ fn process_op(
     op: &PcodeOp,
     insn_flow: Option<RefType>,
     call_dests: &mut Vec<u64>,
+    body: &str,
 ) {
     let opcode = OpCode::from_u32(op.opcode);
 
@@ -368,7 +386,7 @@ fn process_op(
         for arg in &op.ins {
             if let PArg::Var(v) = arg {
                 if v.space == "ram" {
-                    make_ref(program, here, ram, v.offset, RefType::Read, MIN_KNOWN_REF);
+                    make_ref(program, here, ram, v.offset, RefType::Read, MIN_KNOWN_REF, true, body);
                 } else if v.space == "const"
                     && const_is_data
                     && !is_pc_marker(v.offset, here.offset, inst_next, insn_flow)
@@ -394,13 +412,13 @@ fn process_op(
                     // 0x...5f). Ghidra references that scalar because it is the operand; excluding
                     // it here as a marker lost the only reference that names the table, and the
                     // "Switch Table References" path (`analyzers::switch_table`) never saw it.
-                    make_ref(program, here, ram, v.offset, RefType::Data, MIN_SPECULATIVE_REF);
+                    make_ref(program, here, ram, v.offset, RefType::Data, MIN_SPECULATIVE_REF, false, body);
                 }
             }
         }
         if let Some(out) = &op.out {
             if out.space == "ram" {
-                make_ref(program, here, ram, out.offset, RefType::Write, MIN_KNOWN_REF);
+                make_ref(program, here, ram, out.offset, RefType::Write, MIN_KNOWN_REF, true, body);
             }
         }
     }
@@ -427,7 +445,7 @@ fn process_op(
             let mut loaded = SymValue::Unknown;
             if let Some(ptr) = op.ins.get(1).and_then(arg_var) {
                 if let SymValue::Const(addr) = vctx.get(ptr) {
-                    make_ref(program, here, ram, addr, RefType::Read, MIN_KNOWN_REF);
+                    make_ref(program, here, ram, addr, RefType::Read, MIN_KNOWN_REF, true, body);
                     if let Some(out) = &op.out {
                         loaded = read_mem_const(program, ram, addr, out.size); // follow the pointer
                     }
@@ -440,7 +458,7 @@ fn process_op(
         Some(OpCode::Store) => {
             if let Some(ptr) = op.ins.get(1).and_then(arg_var) {
                 if let SymValue::Const(addr) = vctx.get(ptr) {
-                    make_ref(program, here, ram, addr, RefType::Write, MIN_KNOWN_REF);
+                    make_ref(program, here, ram, addr, RefType::Write, MIN_KNOWN_REF, true, body);
                 }
             }
         }
@@ -467,7 +485,7 @@ fn process_op(
                 };
                 if let SymValue::Const(target) = val {
                     if let Some(rt) = insn_flow {
-                        make_ref(program, here, ram, target, rt, MIN_KNOWN_REF);
+                        make_ref(program, here, ram, target, rt, MIN_KNOWN_REF, true, body);
                         // A resolved COMPUTED_CALL destination in executable memory is a
                         // function: Ghidra `ConstantPropagationContextEvaluator.evaluateReference`
                         // disassembles a non-indirect flow target in `memory.getExecuteSet()`
@@ -650,7 +668,7 @@ pub fn flow_constants(
                 }
                 _ => {}
             }
-            process_op(program, &mut vctx, here, a + ilen, ram, op, insn_flow, &mut call_dests);
+            process_op(program, &mut vctx, here, a + ilen, ram, op, insn_flow, &mut call_dests, &insn.body);
             match OpCode::from_u32(op.opcode) {
                 Some(OpCode::Branch) => {
                     falls = false;

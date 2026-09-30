@@ -291,8 +291,17 @@ fn real_x32_binary_analyses_cleanly() {
         l.entry
     );
 
-    // No reference may leave mapped memory, and no computed jump may be spurious.
-    for r in program.reference_manager.references() {
+    // No STATIC flow may leave mapped memory: a jump or call whose target the instruction itself
+    // encodes, landing outside the image, would mean the loader mapped it wrong. A data access or a
+    // COMPUTED flow may — its target is a value, and Ghidra references a known value whether or not
+    // the program has memory there (`SymbolicPropogator.makeReference`: a value read out of memory
+    // is known under the default "Trust Writable Memory", and flows are allowed outside the
+    // program), which is how a device register, or a pointer read out of code bytes, is referenced.
+    use mosura_core::analysis::program::RefType;
+    let computed = |t: RefType| {
+        matches!(t, RefType::ComputedJump | RefType::ConditionalComputedJump | RefType::ComputedCall | RefType::ConditionalComputedCall | RefType::ComputedCallTerminator)
+    };
+    for r in program.reference_manager.references().filter(|r| r.ref_type.is_flow() && !computed(r.ref_type)) {
         assert!(
             program.memory.contains(r.to),
             "reference {:#x} -> {:#x} leaves mapped memory",
