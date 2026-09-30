@@ -11,6 +11,32 @@ metadata:
 Moved out of MEMORY.md 2026-08-06 (the index is a hook list; this is its detail). Every number
 here is STALE unless @sha==HEAD — see [[numbers-stale-unless-sha-stamped]].
 
+## Live status — `master` (2026-09-30): the refexec room's four items LANDED
+
+The a2a room `refexec` (`~/chatrooms/refexec/a2a.socket`; jd + the consumer agent `claude`): jd made
+this agent the GUARANTOR that mosura stays generic, well defined, tested on every supported target;
+nothing consumer-specific lands here. Reach jd only on a disagreement about what to do.
+
+- Event-mode stack: `5449b349` call frames + the compiler spec's `<stackpointer>`
+  (`cspec::stack_pointer_register`) — a skipped call gives its stack back; fixture `90711e5d`
+  `call_returns` (x86-32/64, AArch64).
+- (1) any address: `8ace0eab` `run_entry` — any address in an initialized block, not only functions.
+- (2) stubs: `a87246a2` `RunOptions::stubs` (trigger on REACHING the address, call or jump; pop
+  the innermost frame, restore SP; no frame → Returned; `stub` effect) · `a230cd1a` `emulate.stubs`
+  + capture spec `stubs` · `2828a1ec` C API / CLI `--stubs`.
+- (3) render panic: `94ca5354` text table pads by hand (format width caps at 65,535).
+- (4) flag noise: `dddd3f78` `lang::register_groups` (pspec `<register_data>` `group`, Ghidra's
+  `Register.getGroup`) + registers table `group` column (v2) · `67b494fd` `emulate.uninitialized-ignore`
+  (register names or groups; a read inside a named register goes with it; unknown entry = InvalidArg)
+  · `2baf1069` CLI `--uninitialized-ignore` · `f2573deb` docs · `324b4dcc` C API test.
+  Groups exist only where a pspec declares them (x86 FLAGS/FPU/…; ppc SPR; pic STATUS; most none):
+  register names are the portable path.
+- `da621bad` fixture fix: `call_returns`' device was reached ONLY by a tail jump, so the parity gate
+  (full recall of CALL-reachable functions) failed — a jump-only target folds into its jumper, as in
+  Ghidra. A fixture routine reached only by a jump must ALSO be called, or the truth lies.
+- Validation: workspace 1371 passed, 0 failed, 28 ignored, 115 binaries on `da621bad`'s tree
+  (`47-workspace-final.log`); clippy exit 0 (`45-clippy.log`, on `324b4dcc`).
+
 ## Live status — `master` (2026-09-30): consumer issues 8 (segment base) and 10 (port I/O) FIXED
 
 The consumer's issues doc moved to `<vpool-re>/contrib/vpoolz-mosura-issues.md` (entries 7-10 added;
