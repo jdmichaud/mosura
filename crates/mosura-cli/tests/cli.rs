@@ -346,6 +346,23 @@ fn emulate_answers_a_port() {
 
 /// `emulate --stubs` leaves a routine out: in the source-built `call_returns` fixture, `middle`
 /// tail-jumps into the stubbed `device`, so `outer` answers 6 instead of 100.
+/// `--address-mask` on `emulate`: the sign-extended short address and the 24-bit one are one cell
+/// on the 68000 (the raw image: `move.w #$1234,($C000).w; move.w ($FFC000).l,d0; rts`).
+#[test]
+fn emulate_folds_addresses_through_the_address_mask() {
+    let s = scratch("emulate-address-mask");
+    std::fs::create_dir_all(&s).unwrap();
+    let image = s.join("alias.bin");
+    std::fs::write(&image, [0x31u8, 0xfc, 0x12, 0x34, 0xc0, 0x00, 0x30, 0x39, 0x00, 0xff, 0xc0, 0x00, 0x4e, 0x75]).unwrap();
+    ok(&s, &["add", image.to_str().unwrap()]);
+    ok(&s, &["analyze", "-o", "load.loader=raw", "-o", "load.language=68000:BE:32:default", "-o", "load.base=0x1000"]);
+    let folded = ok(&s, &["--format", "tsv", "emulate", "0x1000", "--registers", "SP=0x00fff000", "--address-mask", "0xffffff"]);
+    assert!(folded.contains("register\tD0w\t0x1234"), "{folded}");
+    let apart = ok(&s, &["--format", "tsv", "emulate", "0x1000", "--registers", "SP=0x00fff000"]);
+    assert!(!apart.contains("register\tD0w\t0x1234"), "{apart}");
+    let _ = std::fs::remove_dir_all(&s);
+}
+
 /// `--uninitialized-ignore` leaves registers out of the uninitialized reads, by name or by the
 /// processor spec's group; `emulate` and `capture` both take it.
 #[test]
