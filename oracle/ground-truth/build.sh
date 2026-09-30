@@ -177,6 +177,13 @@ if have clang-19 && have rustc && have llvm-nm-19 && have llvm-objdump-19 && hav
       "AARCH64:LE:64:v8A" "" "" llvm-nm-19 llvm-objdump-19
     llvm-objcopy-19 --strip-all function_input_extension.clang-aarch64.unstripped function_input_extension.clang-aarch64
     rm -f function_input_extension.clang-aarch64.unstripped
+    # call_returns.S for a link-register ISA (reference execution: skipped calls and stubs).
+    clang-19 --target=aarch64-linux-gnu -nostdlib -static -fuse-ld="$clang_lld" -Wl,-e,_start \
+      src/call_returns_aarch64.S -o call_returns.clang-aarch64.unstripped
+    derive_truth_elf call_returns.clang-aarch64.unstripped call_returns clang aarch64 \
+      "AARCH64:LE:64:v8A" "" "" llvm-nm-19 llvm-objdump-19
+    llvm-objcopy-19 --strip-all call_returns.clang-aarch64.unstripped call_returns.clang-aarch64
+    rm -f call_returns.clang-aarch64.unstripped
   fi
 fi
 
@@ -254,9 +261,9 @@ if have gcc && have objcopy; then
 
   # Reference execution: division routines whose inputs select a #DE fault, a loop whose
   # termination depends on its input, a caller/callee pair with an interrupt kept as an event,
-  # routines that read and write the program's own data, reads through segment overrides, and
-  # port input and output.
-  for prog in divide_fault spin_until_zero call_chain image_data segment_base port_io; do
+  # routines that read and write the program's own data, reads through segment overrides, port
+  # input and output, and calls that return without their callee running.
+  for prog in divide_fault spin_until_zero call_chain image_data segment_base port_io call_returns; do
     for bits in 32 64; do
       gcc -m"$bits" -nostdlib -static -no-pie -Wl,-e,_start "src/$prog.S" \
         -o "$prog.gcc-x86-$bits.unstripped"

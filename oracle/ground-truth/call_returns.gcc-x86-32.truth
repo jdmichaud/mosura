@@ -1,0 +1,10 @@
+# mosura-ground-truth v1 program=call_returns compiler=gcc arch=x86-32 lang=x86:LE:32:default
+# derived-from=call_returns.gcc-x86-32.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 08049000
+func 08049000 0000000b _start code
+func 0804900b 00000011 caller code
+func 0804901c 00000006 callee code
+func 08049022 00000009 outer code
+func 0804902b 00000007 middle code
+func 08049032 00000006 device code
