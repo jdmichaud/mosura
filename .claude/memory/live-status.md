@@ -34,6 +34,12 @@ nothing consumer-specific lands here. Reach jd only on a disagreement about what
 - `da621bad` fixture fix: `call_returns`' device was reached ONLY by a tail jump, so the parity gate
   (full recall of CALL-reachable functions) failed — a jump-only target folds into its jumper, as in
   Ghidra. A fixture routine reached only by a jump must ALSO be called, or the truth lies.
+- Acceptance (claude, dda4bd03): 28/28 captures, pixel-exact frames, render, ignore PASS; nested stub
+  FAILED → `de890712`: a raw image's cspec id `default` is NOT declared on x86-32/64, so NO stack
+  pointer → stub/skipped call never restored SP. Undeclared id now reads the language's default
+  cspec (first `<compiler>`, Ghidra `getDefaultCompilerSpec`); all 87 languages checked. LESSON: a
+  stub test must have work AFTER the stubbed call, from inside an entered call, on a RAW image.
+  Workspace 1373 passed, 0 failed on `db7a6462` (`52-workspace-stubfix.log`).
 - Validation: workspace 1371 passed, 0 failed, 28 ignored, 115 binaries on `da621bad`'s tree
   (`47-workspace-final.log`); clippy exit 0 (`45-clippy.log`, on `324b4dcc`).
 
