@@ -140,6 +140,15 @@ fn languages_registers_and_raw_decoding() {
     assert_eq!(unsafe { mosura_emulate(l, mosura_view { ptr: pushfd.as_ptr(), len: pushfd.len() }, 0x1000, ignore, &mut left) }, MOSURA_OK, "{}", last());
     assert!(uninitialized(all).contains(&"NT".to_string()), "{:?}", uninitialized(all));
     assert_eq!(uninitialized(left), ["ESP"]);
+    // emulate.address-mask: on the 68000, `move.w #$1234,($C000).w; move.w ($FFC000).l,d0; rts` reads back 0x1234
+    let l68 = CString::new("68000:BE:32:default").unwrap();
+    let mut m68: *mut mosura_language = ptr::null_mut();
+    assert_eq!(unsafe { mosura_language_open(c, l68.as_ptr(), &mut m68) }, MOSURA_OK, "{}", last());
+    let alias = [0x31u8, 0xfc, 0x12, 0x34, 0xc0, 0x00, 0x30, 0x39, 0x00, 0xff, 0xc0, 0x00, 0x4e, 0x75];
+    let bus = opts(c, &[("emulate.registers", "SP=0x00fff000"), ("emulate.address-mask", "0xffffff")]);
+    let mut folded: *mut mosura_table = ptr::null_mut();
+    assert_eq!(unsafe { mosura_emulate(m68, mosura_view { ptr: alias.as_ptr(), len: alias.len() }, 0x1000, bus, &mut folded) }, MOSURA_OK, "{}", last());
+    assert_eq!(find_row(folded, 1, "D0w").map(|r| cell_str(folded, r, 2)).as_deref(), Some("0x1234"));
     // emulate.save-state / emulate.state: `inc eax; ret` twice through one state name
     let inc = [0x40u8, 0xc3];
     let inc_bytes = mosura_view { ptr: inc.as_ptr(), len: inc.len() };

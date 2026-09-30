@@ -182,6 +182,10 @@ pub struct Machine {
     /// spaces declare (`bigendian`); Ghidra's `MemoryState` reads each space in its own order.
     /// Empty in a bare [`Machine`]: every space little-endian.
     big_endian: BTreeSet<String>,
+    /// The address lines of the memory space, `(space, mask)` ([`Image::with_address_mask`]): every
+    /// byte address in that space is taken through the mask before it is read or written, so the
+    /// addresses a narrower bus cannot tell apart are one cell. `None`: every bit decodes.
+    address_mask: Option<(String, u64)>,
 }
 
 /// One observable effect of running a function: what a caller could tell apart.
@@ -298,10 +302,15 @@ impl Machine {
     /// Where byte `i` of a value (0 = least significant) lives in a `(space, offset, size)`
     /// location: `offset + i` in a little-endian space, `offset + size - 1 - i` in a big-endian one.
     fn byte_at(&self, space: &str, offset: u64, size: u32, i: u32) -> u64 {
-        if self.big_endian.contains(space) {
-            offset + u64::from(size - 1 - i)
-        } else {
-            offset + u64::from(i)
+        let at = if self.big_endian.contains(space) { offset + u64::from(size - 1 - i) } else { offset + u64::from(i) };
+        self.bus(space, at)
+    }
+
+    /// `address` as the memory bus decodes it in `space` ([`Machine::address_mask`]).
+    fn bus(&self, space: &str, address: u64) -> u64 {
+        match &self.address_mask {
+            Some((masked, mask)) if masked == space => address & mask,
+            _ => address,
         }
     }
 
@@ -336,6 +345,7 @@ impl Machine {
         if space == "const" {
             return;
         }
+        let offset = self.bus(space, offset);
         if self.trace && space != "register" && space != "unique" {
             let scratch = self.quiet.is_some_and(|(lo, hi)| offset >= lo && offset < hi);
             if !scratch {
@@ -358,13 +368,15 @@ impl Machine {
             let scratch = self.quiet.is_some_and(|(lo, hi)| offset >= lo && offset < hi);
             if !scratch {
                 for (i, b) in bytes.iter().enumerate() {
-                    self.record(Effect::Store(space.to_string(), offset + i as u64, 1, u64::from(*b)));
+                    let at = self.bus(space, offset + i as u64);
+                    self.record(Effect::Store(space.to_string(), at, 1, u64::from(*b)));
                 }
             }
         }
+        let at: Vec<u64> = (0..bytes.len() as u64).map(|i| self.bus(space, offset + i)).collect();
         let bank = self.mem.entry(space.to_string()).or_default();
-        for (i, b) in bytes.iter().enumerate() {
-            bank.insert(offset + i as u64, *b);
+        for (a, b) in at.into_iter().zip(bytes) {
+            bank.insert(a, *b);
         }
     }
 
@@ -1512,6 +1524,8 @@ pub struct Image<'a> {
     memory: Option<Arc<Backing>>,
     /// The stack pointer register, `(offset, size)` ([`Image::with_stack_pointer`]).
     stack_pointer: Option<(u64, u32)>,
+    /// The memory space's address lines ([`Image::with_address_mask`]).
+    address_mask: Option<u64>,
 }
 
 impl<'a> Image<'a> {
@@ -1528,7 +1542,7 @@ impl<'a> Image<'a> {
         let mut blocks: Vec<(u64, &'a [u8])> = blocks.iter().copied().filter(|(_, b)| !b.is_empty()).collect();
         blocks.sort_by_key(|(start, _)| *start);
         let base = blocks.first().map_or(0, |(start, _)| *start);
-        Self { spec, blocks, base, context, decoded: HashMap::new(), memory: None, stack_pointer: None }
+        Self { spec, blocks, base, context, decoded: HashMap::new(), memory: None, stack_pointer: None, address_mask: None }
     }
 
     /// Name the stack pointer register — the compiler spec's `<stackpointer>`
@@ -1544,6 +1558,15 @@ impl<'a> Image<'a> {
     /// return address the caller's stack reads are one slot off after the call.
     pub fn with_stack_pointer(mut self, offset: u64, size: u32) -> Self {
         self.stack_pointer = Some((offset, size));
+        self
+    }
+
+    /// Decode only the address lines `mask` keeps in the language's default space, as a CPU with
+    /// a narrower bus than its registers does (the MC68000 drives 24 of its 32 address bits:
+    /// `0xffffff`). Every fetch, load and store in that space, and the addresses the run reports,
+    /// go through the mask, so `0xffffc000` and `0x00ffc000` are one cell on a 68000.
+    pub fn with_address_mask(mut self, mask: u64) -> Self {
+        self.address_mask = Some(mask);
         self
     }
 
@@ -1606,7 +1629,13 @@ impl<'a> Image<'a> {
     /// A fresh machine for this image, for a caller that prepares the starting state itself
     /// ([`Machine::write`], [`Machine::write_bytes`]) and then runs it with [`Image::resume`].
     pub fn machine(&self) -> Machine {
-        Machine { userops: self.spec.userops.clone(), backing: self.memory.clone(), big_endian: Machine::big_endian_spaces(self.spec), ..Machine::default() }
+        Machine {
+            userops: self.spec.userops.clone(),
+            backing: self.memory.clone(),
+            big_endian: Machine::big_endian_spaces(self.spec),
+            address_mask: self.address_mask.map(|mask| (self.spec.spaces[self.spec.default_space].name.clone(), mask)),
+            ..Machine::default()
+        }
     }
 
     /// Execute `m` from `opts.entry` (or the first byte): its registers and memory are the
@@ -1631,7 +1660,11 @@ impl<'a> Image<'a> {
         // The calls entered and not yet returned from, innermost last: each call's fall-through
         // and the stack pointer at the start of its instruction (when the image names one).
         let mut frames: Vec<(u64, Option<u64>)> = Vec::new();
+        let bus = self.address_mask;
         let stop = 'run: loop {
+            if let Some(mask) = bus {
+                pc &= mask;
+            }
             if opts.stubs.contains(&pc) {
                 if steps >= opts.max_steps {
                     break 'run Stop::StepCap;
@@ -1676,6 +1709,10 @@ impl<'a> Image<'a> {
                     // An `INT n`'s call through its vector: the handler is not here, and the
                     // interrupt was already recorded as a `Swi` by the user-op before it.
                     let interrupt = target.is_some_and(|t| t & !0xff == SWI_VECTOR);
+                    let target = match (target, bus) {
+                        (Some(t), Some(mask)) if !interrupt => Some(t & mask),
+                        (t, _) => t,
+                    };
                     if m.trace && !interrupt {
                         // By target only: no contract names this call's arguments.
                         m.record(Effect::Call(target.unwrap_or(0), Vec::new()));

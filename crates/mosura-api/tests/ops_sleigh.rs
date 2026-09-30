@@ -309,3 +309,31 @@ fn a_big_endian_machine_reads_and_writes_big_endian() {
     let r = p("store_long", &mut run);
     assert_eq!(value(&r, "memory", "0x2000").as_deref(), Some("11223344"), "{r:?}");
 }
+
+/// `emulate.address-mask` decodes only the address lines a CPU drives: the MC68000 drives 24, so
+/// with `0xffffff` the short address `($C000).w` (0xffffc000) and the long `$FFC000` are one cell,
+/// and a jump to `$0100xxxx` lands on `$xxxx`. Without the mask they are distinct addresses; a
+/// zero mask is refused.
+#[test]
+fn an_address_mask_folds_the_addresses_a_narrow_bus_cannot_tell_apart() {
+    let c = ctx();
+    let mut s = Session::open(None).unwrap();
+    // 1000: move.w #$1234,($C000).w   1006: move.w ($FFC000).l,d0   100c: jmp ($01001012).l
+    // 1012: moveq #7,d1               1014: rts
+    let bytes = "31fc1234c000303900ffc0004ef90100101272074e75";
+    let mut run = |mask: &str| {
+        let mut o = vec![("lang", "68000:BE:32:default"), ("bytes", bytes), ("base", "0x1000"), ("emulate.registers", "SP=0x00fff000")];
+        if !mask.is_empty() {
+            o.push(("emulate.address-mask", mask));
+        }
+        dispatch(&c, &mut s, "sleigh.emulate", &opts(&o), &mut NoProgress).map(|t| emulation_rows(&t))
+    };
+    let value = |r: &[(String, String, String)], kind: &str, name: &str| r.iter().find(|(k, n, _)| k == kind && n == name).map(|(_, _, v)| v.clone());
+    let r = run("0xffffff").unwrap();
+    assert_eq!((value(&r, "outcome", "stop").as_deref(), value(&r, "register", "D0w").as_deref(), value(&r, "register", "D1").as_deref()), (Some("returned"), Some("0x1234"), Some("0x00000007")), "{r:?}");
+    assert_eq!(value(&r, "memory", "0xffc000").as_deref(), Some("1234"), "{r:?}");
+    let r = run("").unwrap();
+    assert_eq!((value(&r, "outcome", "stop").as_deref(), value(&r, "outcome", "address").as_deref()), (Some("no-instruction"), Some("0x1001012")), "{r:?}");
+    assert_eq!(value(&r, "memory", "0xffffc000").as_deref(), Some("1234"), "{r:?}");
+    assert!(matches!(run("0"), Err(mosura_api::error::Error::InvalidArg(_))));
+}

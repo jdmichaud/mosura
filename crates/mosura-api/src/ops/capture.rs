@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
 use crate::options::{keys, Options};
-use crate::ops::emulate::{ignored_registers, is_ignored, prepare, program_blocks, run_entry, stored_state, with_stack, RegisterNames, Seeds};
+use crate::ops::emulate::{address_mask, ignored_registers, is_ignored, prepare, program_blocks, run_entry, stored_state, with_bus, with_stack, RegisterNames, Seeds};
 use crate::ops::program::program_of;
 use crate::ops::schemas::CAPTURE;
 use crate::ops::sleigh::parse_bytes;
@@ -24,7 +24,7 @@ use crate::table::Table;
 use mosura_core::sleigh::emu::{Image, RunOptions, Stop};
 use mosura_core::sleigh::engine::Spec;
 
-pub static FUNCTION_CAPTURE: Op = Op { name: "function.capture", doc: "run many input vectors through a program from entry (a function, or any address of its loaded image) over one decoded image, the program's loaded image as memory: capture.spec (JSON) names the inputs and outputs as register and memory pieces, the seeds every vector shares and the generators (explicit, range, sample, chain); emulate.state is every vector's starting state. One row per vector: case, generator, inputs, outputs (when it returned), stop, address, steps, unmodeled, uninitialized (registers read before anything wrote them, less emulate.uninitialized-ignore), unanswered (ports read that the specification's ports did not answer)", since: "0.1", tier: Tier::Product, params: &["program", "entry", keys::CAPTURE_SPEC, keys::EMULATE_STATE, keys::EMULATE_UNINITIALIZED_IGNORE], result: "capture", cache: Cache::Transient, run: capture };
+pub static FUNCTION_CAPTURE: Op = Op { name: "function.capture", doc: "run many input vectors through a program from entry (a function, or any address of its loaded image) over one decoded image, the program's loaded image as memory: capture.spec (JSON) names the inputs and outputs as register and memory pieces, the seeds every vector shares and the generators (explicit, range, sample, chain); emulate.state is every vector's starting state; emulate.address-mask decodes only the address lines a narrow bus drives. One row per vector: case, generator, inputs, outputs (when it returned), stop, address, steps, unmodeled, uninitialized (registers read before anything wrote them, less emulate.uninitialized-ignore), unanswered (ports read that the specification's ports did not answer)", since: "0.1", tier: Tier::Product, params: &["program", "entry", keys::CAPTURE_SPEC, keys::EMULATE_STATE, keys::EMULATE_UNINITIALIZED_IGNORE, keys::EMULATE_ADDRESS_MASK], result: "capture", cache: Cache::Transient, run: capture };
 
 /// `size` bytes at `offset` in `space`, holding the value's bits from `shift` up.
 struct Piece {
@@ -500,7 +500,7 @@ fn capture(s: &mut Session, o: &Options, prog: &mut dyn Progress) -> Result<Tabl
     let state = stored_state(s, o)?;
     let blocks = program_blocks(&p);
     let mut runner = Runner {
-        image: with_stack(Image::from_blocks(spec, &blocks, ctx).with_image_memory(), spec, &p.language_id, &p.compiler_spec_id),
+        image: with_bus(with_stack(Image::from_blocks(spec, &blocks, ctx).with_image_memory(), spec, &p.language_id, &p.compiler_spec_id), address_mask(o)?),
         spec,
         names: RegisterNames::of(spec),
         ignored: ignored_registers(o, spec, &p.language_id)?,

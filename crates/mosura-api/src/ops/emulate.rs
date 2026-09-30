@@ -17,8 +17,8 @@ use mosura_core::analysis::program::Program;
 use mosura_core::sleigh::emu::{Effect, Image, Machine, Run, RunOptions, Stop};
 use mosura_core::sleigh::engine::Spec;
 
-pub static SLEIGH_EMULATE: Op = Op { name: "sleigh.emulate", doc: "execute the p-code of raw bytes from base (or emulate.entry) over an initial state (emulate.registers, emulate.memory; the bytes themselves are memory too) until the routine returns, faults, reaches an address with no instruction, or spends emulate.max-steps; a call is an event unless emulate.follow-calls. Rows: outcome (stop = returned | fault | no-instruction | step-cap, address, steps, unmodeled, unmodeled-op, uninitialized: a register read before anything wrote it, less emulate.uninitialized-ignore, unanswered-in: a port read that emulate.ports did not answer), register (every register the final state holds, widest first), memory (every run of bytes it holds, as hex), and with emulate.effects every effect of the run in order; emulate.stubs leaves routines out (they return when reached); emulate.state starts from a stored machine state, emulate.save-state stores the one the run stopped in", since: "0.1", tier: Tier::Product, params: &["lang", "bytes", "base", "ctx", keys::EMULATE_ENTRY, keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS, keys::EMULATE_EFFECTS, keys::EMULATE_PORTS, keys::EMULATE_STUBS, keys::EMULATE_UNINITIALIZED_IGNORE, keys::EMULATE_STATE, keys::EMULATE_SAVE_STATE], result: "emulation", cache: Cache::Transient, run: sleigh_emulate };
-pub static FUNCTION_EMULATE: Op = Op { name: "function.emulate", doc: "execute a program from entry (a function, or any address of its loaded image) through the p-code interpreter, with the program's loaded image as memory, over an initial state (emulate.registers, emulate.memory) until it returns, faults, reaches an address with no instruction, or spends emulate.max-steps; a call is an event unless emulate.follow-calls. Rows as sleigh.emulate", since: "0.1", tier: Tier::Product, params: &["program", "entry", keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS, keys::EMULATE_EFFECTS, keys::EMULATE_PORTS, keys::EMULATE_STUBS, keys::EMULATE_UNINITIALIZED_IGNORE, keys::EMULATE_STATE, keys::EMULATE_SAVE_STATE], result: "emulation", cache: Cache::Transient, run: function_emulate };
+pub static SLEIGH_EMULATE: Op = Op { name: "sleigh.emulate", doc: "execute the p-code of raw bytes from base (or emulate.entry) over an initial state (emulate.registers, emulate.memory; the bytes themselves are memory too) until the routine returns, faults, reaches an address with no instruction, or spends emulate.max-steps; a call is an event unless emulate.follow-calls. Rows: outcome (stop = returned | fault | no-instruction | step-cap, address, steps, unmodeled, unmodeled-op, uninitialized: a register read before anything wrote it, less emulate.uninitialized-ignore, unanswered-in: a port read that emulate.ports did not answer), register (every register the final state holds, widest first), memory (every run of bytes it holds, as hex), and with emulate.effects every effect of the run in order; emulate.stubs leaves routines out (they return when reached); emulate.address-mask decodes only the address lines a narrow bus drives; emulate.state starts from a stored machine state, emulate.save-state stores the one the run stopped in", since: "0.1", tier: Tier::Product, params: &["lang", "bytes", "base", "ctx", keys::EMULATE_ENTRY, keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS, keys::EMULATE_EFFECTS, keys::EMULATE_PORTS, keys::EMULATE_STUBS, keys::EMULATE_UNINITIALIZED_IGNORE, keys::EMULATE_ADDRESS_MASK, keys::EMULATE_STATE, keys::EMULATE_SAVE_STATE], result: "emulation", cache: Cache::Transient, run: sleigh_emulate };
+pub static FUNCTION_EMULATE: Op = Op { name: "function.emulate", doc: "execute a program from entry (a function, or any address of its loaded image) through the p-code interpreter, with the program's loaded image as memory, over an initial state (emulate.registers, emulate.memory) until it returns, faults, reaches an address with no instruction, or spends emulate.max-steps; a call is an event unless emulate.follow-calls. Rows as sleigh.emulate", since: "0.1", tier: Tier::Product, params: &["program", "entry", keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS, keys::EMULATE_EFFECTS, keys::EMULATE_PORTS, keys::EMULATE_STUBS, keys::EMULATE_UNINITIALIZED_IGNORE, keys::EMULATE_ADDRESS_MASK, keys::EMULATE_STATE, keys::EMULATE_SAVE_STATE], result: "emulation", cache: Cache::Transient, run: function_emulate };
 
 /// The run settings every emulate operation reads.
 struct Settings {
@@ -213,6 +213,26 @@ pub(crate) fn with_stack<'a>(image: Image<'a>, spec: &Spec, lang: &str, cspec: &
     }
 }
 
+/// The address lines `emulate.address-mask` names, when it names any: hex, and not zero (a bus
+/// with no address line addresses nothing).
+pub(crate) fn address_mask(o: &Options) -> Result<Option<u64>> {
+    match o.get(keys::EMULATE_ADDRESS_MASK)?.trim() {
+        "" => Ok(None),
+        v => match parse_hex(v) {
+            Some(0) | None => Err(Error::InvalidArg(format!("`{}` is not a non-zero hex mask: {v}", keys::EMULATE_ADDRESS_MASK))),
+            Some(mask) => Ok(Some(mask)),
+        },
+    }
+}
+
+/// `image` decoding only the address lines `mask` keeps.
+pub(crate) fn with_bus(image: Image<'_>, mask: Option<u64>) -> Image<'_> {
+    match mask {
+        Some(mask) => image.with_address_mask(mask),
+        None => image,
+    }
+}
+
 /// Where a run over a program starts: `entry`, any address inside an initialized block of the
 /// program's default space. Not only a function the analysis found — in an assembly program many
 /// routines are reached only through pointer tables, and a run may start mid-routine.
@@ -324,7 +344,7 @@ fn sleigh_emulate(s: &mut Session, o: &Options, _p: &mut dyn Progress) -> Result
     // The bytes are the machine's memory as well as its code, as a loaded program's are.
     let state = stored_state(s, o)?;
     // Raw bytes carry no compiler spec: the language's default one names the stack.
-    let mut image = with_stack(Image::new(i.spec, &i.bytes, i.base, &i.ctx).with_image_memory(), i.spec, &i.lang, "default");
+    let mut image = with_bus(with_stack(Image::new(i.spec, &i.bytes, i.base, &i.ctx).with_image_memory(), i.spec, &i.lang, "default"), address_mask(o)?);
     let m = prepare(&image, i.spec, &state, &seeds);
     let run = image.resume(m, &settings.run_options(entry));
     save_state(s, o, &run)?;
@@ -341,7 +361,7 @@ fn function_emulate(s: &mut Session, o: &Options, _p: &mut dyn Progress) -> Resu
     let ignored = ignored_registers(o, spec, &p.language_id)?;
     let state = stored_state(s, o)?;
     let blocks = program_blocks(&p);
-    let mut image = with_stack(Image::from_blocks(spec, &blocks, ctx).with_image_memory(), spec, &p.language_id, &p.compiler_spec_id);
+    let mut image = with_bus(with_stack(Image::from_blocks(spec, &blocks, ctx).with_image_memory(), spec, &p.language_id, &p.compiler_spec_id), address_mask(o)?);
     let m = prepare(&image, spec, &state, &seeds);
     let run = image.resume(m, &settings.run_options(Some(entry)));
     save_state(s, o, &run)?;
