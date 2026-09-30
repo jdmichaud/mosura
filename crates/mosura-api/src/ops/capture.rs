@@ -25,7 +25,7 @@ use crate::table::Table;
 use mosura_core::sleigh::emu::{Image, RunOptions, Stop};
 use mosura_core::sleigh::engine::Spec;
 
-pub static FUNCTION_CAPTURE: Op = Op { name: "function.capture", doc: "run many input vectors through one function (entry) of a program over one decoded image, the program's loaded image as memory: capture.spec (JSON) names the inputs and outputs as register and memory pieces, the seeds every vector shares and the generators (explicit, range, sample, chain); emulate.state is every vector's starting state. One row per vector: case, generator, inputs, outputs (when it returned), stop, address, steps, unmodeled, uninitialized (registers read before anything wrote them)", since: "0.1", tier: Tier::Product, params: &["program", "entry", keys::CAPTURE_SPEC, keys::EMULATE_STATE], result: "capture", cache: Cache::Transient, run: capture };
+pub static FUNCTION_CAPTURE: Op = Op { name: "function.capture", doc: "run many input vectors through one function (entry) of a program over one decoded image, the program's loaded image as memory: capture.spec (JSON) names the inputs and outputs as register and memory pieces, the seeds every vector shares and the generators (explicit, range, sample, chain); emulate.state is every vector's starting state. One row per vector: case, generator, inputs, outputs (when it returned), stop, address, steps, unmodeled, uninitialized (registers read before anything wrote them), unanswered (ports read that the specification's ports did not answer)", since: "0.1", tier: Tier::Product, params: &["program", "entry", keys::CAPTURE_SPEC, keys::EMULATE_STATE], result: "capture", cache: Cache::Transient, run: capture };
 
 /// `size` bytes at `offset` in `space`, holding the value's bits from `shift` up.
 struct Piece {
@@ -220,8 +220,8 @@ fn parse_spec(text: &str, spec: &Spec, lang: &str) -> Result<CaptureSpec> {
     let v: Value = serde_json::from_str(text).map_err(|e| bad("not JSON", e))?;
     let top = "the specification";
     let m = object(&v, top)?;
-    only(m, &["registers", "memory", "follow_calls", "max_steps", "inputs", "outputs", "cases"], top)?;
-    let mut fixed = Seeds { registers: Vec::new(), memory: Vec::new() };
+    only(m, &["registers", "memory", "ports", "follow_calls", "max_steps", "inputs", "outputs", "cases"], top)?;
+    let mut fixed = Seeds { registers: Vec::new(), memory: Vec::new(), ports: Vec::new() };
     if let Some(r) = m.get("registers") {
         for (name, value) in object(r, "registers")? {
             let (Some(offset), Some(size)) = (spec.register_offset(name), spec.register_size(name)) else {
@@ -242,6 +242,20 @@ fn parse_spec(text: &str, spec: &Spec, lang: &str) -> Result<CaptureSpec> {
             let address = num(em.get("address"), &format!("{mw}.address"))?;
             let bytes = parse_bytes(string(em.get("bytes"), &format!("{mw}.bytes"))?).map_err(|e| bad(&mw, e))?;
             fixed.memory.push((address, bytes));
+        }
+    }
+    if let Some(p) = m.get("ports") {
+        for (port, values) in object(p, "ports")? {
+            let pw = format!("ports.{port}");
+            let number = num(Some(&Value::String(port.clone())), &pw)?;
+            let values = match values {
+                Value::Array(list) => list.iter().enumerate().map(|(i, v)| num(Some(v), &format!("{pw}[{i}]"))).collect::<Result<Vec<u64>>>()?,
+                v => vec![num(Some(v), &pw)?],
+            };
+            if values.is_empty() {
+                return Err(bad(&pw, "no values"));
+            }
+            fixed.ports.push((number, values));
         }
     }
     let follow_calls = match m.get("follow_calls") {
@@ -463,7 +477,8 @@ impl Runner<'_> {
         };
         let unmodeled: Vec<&str> = run.machine.unmodeled_ops.iter().map(String::as_str).collect();
         let uninitialized: Vec<String> = run.machine.uninitialized_registers().into_iter().map(|(off, size, _)| self.names.name(off, size)).collect();
-        self.b.row().u64(self.case).u32(generator).list_u64(&row).list_u64(&outputs).str(stop).u64(address).u64(run.steps as u64).u64(run.machine.unmodeled as u64).str(&unmodeled.join(",")).str(&uninitialized.join(","));
+        let unanswered: Vec<u64> = run.machine.unanswered_ports().into_iter().map(|(port, _)| port).collect();
+        self.b.row().u64(self.case).u32(generator).list_u64(&row).list_u64(&outputs).str(stop).u64(address).u64(run.steps as u64).u64(run.machine.unmodeled as u64).str(&unmodeled.join(",")).str(&uninitialized.join(",")).list_u64(&unanswered);
         Ok((run.stop == Stop::Returned && run.machine.unmodeled == 0).then_some(outputs))
     }
 }

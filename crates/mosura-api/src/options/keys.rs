@@ -37,6 +37,7 @@ pub const EMULATE_MEMORY: &str = "emulate.memory";
 pub const EMULATE_FOLLOW_CALLS: &str = "emulate.follow-calls";
 pub const EMULATE_MAX_STEPS: &str = "emulate.max-steps";
 pub const EMULATE_EFFECTS: &str = "emulate.effects";
+pub const EMULATE_PORTS: &str = "emulate.ports";
 pub const EMULATE_STATE: &str = "emulate.state";
 pub const EMULATE_SAVE_STATE: &str = "emulate.save-state";
 pub const CAPTURE_SPEC: &str = "capture.spec";
@@ -93,6 +94,7 @@ pub fn hand_written() -> Vec<OptionSpec> {
         spec!(CAPTURE_SPEC, OptType::Str, "", Affects::Input, "the capture specification of function.capture, as JSON text: inputs and outputs as register and memory pieces, the seeds every vector shares, the generators (docs/emulation.md)"),
         spec!(EMULATE_STATE, OptType::Str, "", Affects::Input, "the emulate operations start from the machine state stored in the session under this name (registers and memory; the seeds apply on top)"),
         spec!(EMULATE_SAVE_STATE, OptType::Str, "", Affects::Input, "the emulate operations store the machine state the run stopped in under this name, replacing any state of that name"),
+        spec!(EMULATE_PORTS, OptType::Str, "", Affects::Input, "what IN reads in the emulate operations, per port: PORT=V,V,…;… (hex); a port's reads return its values in order, then the last again; an unanswered port reads zero and is reported"),
         spec!(EMULATE_EFFECTS, OptType::Bool, "false", Affects::Input, "the emulate operations also list what the run did, in order, as effect rows: stores outside the register and unique spaces, calls by target, port accesses, software interrupts, a fault"),
         spec!("format", OptType::Str, "", Affects::Input, "what to return: c, raw, or table:<name> (function.decompile)"),
         spec!("toolchain", OptType::Str, "", Affects::Input, "the session toolchain an operation compiles with (toolchain.open's name)"),

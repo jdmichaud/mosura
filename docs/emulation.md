@@ -26,6 +26,7 @@ mosura call sleigh.emulate lang=x86:LE:32:default bytes=f7f1c3 base=0x1000 \
 | `emulate.follow-calls` | enter a `CALL`/`CALLIND` whose target lies inside the bytes and return to the caller at its `RETURN`; off (the default) a call is an event: skipped, its callee never run |
 | `emulate.max-steps` | the p-code operation budget (default 5,000,000) |
 | `emulate.effects` | also list what the run did, in order, as `effect` rows (default off) |
+| `emulate.ports` | what `IN` reads, per port: `PORT=V,V,…;…` (hex); a port's reads return its values in order, then the last again — `0x3da=0,0,8` turns ready on the third poll |
 | `emulate.state` | start from the machine state stored in the session under this name; the seeds apply on top |
 | `emulate.save-state` | store the machine state the run stopped in under this name, replacing any state of that name |
 
@@ -40,9 +41,16 @@ the run — and are 0 for a row that is not an event:
 | `outcome` | `steps` | how many p-code operations executed |
 | `outcome` | `unmodeled`, `unmodeled-op` | how many operations the interpreter does not model were met, and which (any non-zero count makes the run no evidence at all) |
 | `outcome` | `uninitialized` | a register the run read before anything wrote it (the seeds count as writes), at its first such read — see below |
+| `outcome` | `unanswered-in` | a port the run read that `emulate.ports` did not answer, at its first such read: it read zero |
 | `register` | the register | its final value as hex, one row per register the state holds in full, widest first — `EAX` is reported, its `AX`/`AL`/`AH` inside it are not |
 | `memory` | an address | the bytes the state holds from there, as hex: what was seeded and what the routine stored |
 | `effect` | `1`, `2`, … | with `emulate.effects`: one thing the run did, in order, at the instruction and step its `at` and `step` name — `store <space> <address> <size> <value>`, `call <target>` (followed or not), `in`/`out <port> <size> <value>`, `swi <number>`, `fault`; numbers in hex, sizes in decimal |
+
+A device the routine talks to is outside the image: an `OUT` is an effect, and an `IN` reads what
+`emulate.ports` answers for its port — the values in order, then the last again, so a status bit
+that turns on after two polls is `0,0,8` — or zero, reported as an `unanswered-in` row, when
+nothing answers it. A routine that polls an unanswered port for a bit that never comes spins to its
+step budget; the row says which port it was waiting on.
 
 Effects are for when the ORDER matters, which the final memory cannot show: a store whose meaning
 depends on the port write before it, as in unchained VGA where the plane a byte lands in is the
@@ -100,6 +108,7 @@ ran and why the rejected ones stopped (`capture: 2612 vectors: 2608 returned, 4 
 | --- | --- |
 | `registers` | registers every vector starts with, by the language's names (a stack pointer, a pointer to a block) |
 | `memory` | bytes every vector starts with, `{address, bytes}` (hex); the image is memory already |
+| `ports` | what `IN` reads for every vector, `{"0x3da": [0, 0, 8], "0x60": "0x1c"}`: a port's values in order, then the last again |
 | `follow_calls` | enter calls whose target is in the image (default false: a call is an event) |
 | `max_steps` | the p-code budget of one vector (default 5,000,000) |
 | `inputs`, `outputs` | logical unsigned values of `bits` (1–64), each assembled from `pieces`: `{register: NAME}`, or `{space, offset, size}` (1–8 bytes) for part of a register or memory, with an optional `shift` — a piece holds `(value >> shift)` in its `size` bytes, little-endian |
@@ -130,7 +139,8 @@ table, one row per vector: `case` (1, 2, …), `generator` (its index in `cases`
 the vector read before anything wrote them, in the order of their first read). A row is evidence
 only when it `returned` with nothing unmodeled; the others are the rejected cases, each with its
 reason. A row whose `uninitialized` names a register the specification meant to set — a segment
-base above all — depends on a value nobody supplied.
+base above all — depends on a value nobody supplied. The `unanswered` column lists the ports the
+vector read that `ports` did not answer (they read zero), in the order of their first read.
 
 The generators are those of the external reference executor this operation replaces, draw for
 draw, so its routine specifications carry over: pieces are the same `{space, offset, size, shift}`; its

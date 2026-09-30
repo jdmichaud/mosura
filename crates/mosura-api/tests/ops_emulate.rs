@@ -397,3 +397,52 @@ fn a_register_read_before_anything_wrote_it_is_named() {
         assert_eq!(column(serde_json::json!({}), &mut s), format!("GS_OFFSET,{sp}"), "x86-{bits}: in the order of their first read");
     }
 }
+
+/// `emulate.ports` answers `IN` per port (values in order, the last repeating), and a capture
+/// specification's `ports` does the same for every vector. A port read with no answer is named: an
+/// `unanswered-in` outcome row at its first read, the `unanswered` column of a capture row.
+#[test]
+fn in_is_answered_by_the_caller_and_an_unanswered_port_is_named() {
+    let c = ctx();
+    for bits in [32, 64] {
+        let sp = if bits == 64 { "RSP" } else { "ESP" };
+        let (mut s, e) = session(&c, "port_io", bits);
+        let poll = entry(&e, "wait_ready");
+        let stack = format!("{sp}=0x0f000000");
+        let t = dispatch(&c, &mut s, "function.emulate", &opts(&[("entry", poll), ("emulate.registers", &stack), ("emulate.max-steps", "1000")]), &mut NoProgress).unwrap();
+        let r = rows(&t);
+        assert_eq!(stop(&r), "step-cap", "x86-{bits}: an unanswered status port never turns ready");
+        let named: Vec<(String, u64)> = (0..t.rows())
+            .filter(|&i| t.str(i, 0).unwrap() == "outcome" && t.str(i, 1).unwrap() == "unanswered-in")
+            .map(|i| (t.str(i, 2).unwrap().to_string(), t.u64(i, 3).unwrap()))
+            .collect();
+        let poll_at = u64::from_str_radix(poll.trim_start_matches("0x"), 16).unwrap();
+        assert_eq!(named, [("0x3da".to_string(), poll_at + 4)], "x86-{bits}: at the IN, after the 4-byte mov");
+
+        let answered = opts(&[("entry", poll), ("emulate.registers", &stack), ("emulate.ports", "0x3da=0,0,8"), ("emulate.effects", "true")]);
+        let r = rows(&dispatch(&c, &mut s, "function.emulate", &answered, &mut NoProgress).unwrap());
+        assert_eq!((stop(&r), register(&r, &["AL"])), ("returned", 8), "x86-{bits}: {r:?}");
+        assert_eq!(effects(&r), ["in 0x3da 1 0x0", "in 0x3da 1 0x0", "in 0x3da 1 0x8"], "x86-{bits}");
+        assert!(!r.iter().any(|(k, n, _)| k == "outcome" && n == "unanswered-in"), "x86-{bits}: {r:?}");
+
+        let spec = |ports: serde_json::Value| serde_json::json!({
+            "registers": { sp: "0x0f000000" }, "ports": ports, "max_steps": 200,
+            "inputs": [], "outputs": [{ "name": "al", "bits": 8, "pieces": [{ "register": "AL" }] }],
+            "cases": [{ "kind": "explicit", "rows": [{}] }],
+        });
+        let capture_row = |ports: serde_json::Value, s: &mut Session| {
+            let text = spec(ports).to_string();
+            let t = dispatch(&c, s, "function.capture", &opts(&[("entry", poll), ("capture.spec", &text)]), &mut NoProgress).unwrap();
+            let unanswered: Vec<u64> = t.list_u64(0, t.col("unanswered").expect("an `unanswered` column")).unwrap().collect();
+            (t.str(0, 4).unwrap().to_string(), t.list_u64(0, 3).unwrap().collect::<Vec<u64>>(), unanswered)
+        };
+        assert_eq!(capture_row(serde_json::json!({ "0x3da": [0, "0x8"] }), &mut s), ("returned".to_string(), vec![8], vec![]), "x86-{bits}");
+        assert_eq!(capture_row(serde_json::json!({ "0x3da": 8 }), &mut s), ("returned".to_string(), vec![8], vec![]), "x86-{bits}: a single value");
+        assert_eq!(capture_row(serde_json::json!({}), &mut s), ("step-cap".to_string(), vec![], vec![0x3da]), "x86-{bits}");
+
+        for bad in ["0x3da", "0x3da=", "zz=1", "0x3da=0,q"] {
+            let err = dispatch(&c, &mut s, "function.emulate", &opts(&[("entry", poll), ("emulate.ports", bad)]), &mut NoProgress).unwrap_err();
+            assert!(matches!(err, Error::InvalidArg(_)), "x86-{bits} {bad:?}: {err:?}");
+        }
+    }
+}
