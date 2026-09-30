@@ -208,6 +208,48 @@ fn a_raw_image_is_analysed_from_the_entry_points_it_declares() {
     assert!(matches!(dispatch(&c, &mut s, "program.analyze", &opts(&[("load.entries", "0x208")]), &mut NoProgress), Err(Error::InvalidArg(_))), "raw only");
 }
 
+/// `load.flows` declares computed flows the analysis cannot bound (Ghidra's user COMPUTED_JUMP and
+/// COMPUTED_CALL references, what its switch recovery writes): a 68000 reset routine dispatches
+/// through `jmp (2,pc,d0.w)` into a table of two `bra.w`, and case A calls through `jsr (a0)`.
+/// Undeclared, the analysis stops at the `jmp`. Declared, the table and both cases are code and
+/// inside the routine's body, and the call's target is a function of its own. A malformed
+/// declaration or an address outside memory is refused.
+#[test]
+fn declared_flows_are_followed() {
+    let c = ctx();
+    let mut image = vec![0u8; 0x280];
+    image[0..8].copy_from_slice(&[0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x02, 0x08]);
+    // 208: moveq #0,d0   20a: jmp (2,pc,d0.w)   20e: bra.w $220   212: bra.w $230
+    image[0x208..0x216].copy_from_slice(&[0x70, 0x00, 0x4e, 0xfb, 0x00, 0x02, 0x60, 0x00, 0x00, 0x10, 0x60, 0x00, 0x00, 0x1c]);
+    image[0x220..0x224].copy_from_slice(&[0x4e, 0x90, 0x4e, 0x75]); // A: jsr (a0); rts
+    image[0x230..0x234].copy_from_slice(&[0x72, 0x02, 0x4e, 0x75]); // B: moveq #2,d1; rts
+    image[0x260..0x264].copy_from_slice(&[0x74, 0x03, 0x4e, 0x75]); // called: moveq #3,d2; rts
+    let raw = [("load.loader", "raw"), ("load.language", "68000:BE:32:default"), ("load.base", "0"), ("load.entries", "0x208")];
+    let run = |flows: &str| -> Result<(Vec<u64>, Vec<u64>), Error> {
+        let mut s = Session::open(None).unwrap();
+        s.add_input(&image, "rom.bin", None).unwrap();
+        let mut o = raw.to_vec();
+        if !flows.is_empty() {
+            o.push(("load.flows", flows));
+        }
+        dispatch(&c, &mut s, "program.analyze", &opts(&o), &mut NoProgress)?;
+        let t = dispatch(&c, &mut s, "program.tables", &opts(&[("table", "functions")]), &mut NoProgress)?;
+        let mut functions: Vec<u64> = (0..t.rows()).map(|r| t.u64(r, 1).unwrap()).collect();
+        functions.sort_unstable();
+        let body = dispatch(&c, &mut s, "program.disassemble", &opts(&[("entry", "0x208")]), &mut NoProgress)?;
+        let body: Vec<u64> = (0..body.rows()).map(|r| body.u64(r, 0).unwrap()).collect();
+        Ok((functions, body))
+    };
+    let (functions, body) = run("").unwrap();
+    assert_eq!((functions, body), (vec![0x208], vec![0x208, 0x20a]), "undeclared: the analysis stops at the jmp");
+    let (functions, body) = run("jump:0x20a=0x20e,0x212; call:0x220=0x260").unwrap();
+    assert_eq!(functions, [0x208, 0x260]);
+    assert_eq!(body, [0x208, 0x20a, 0x20e, 0x212, 0x220, 0x222, 0x230, 0x232]);
+    assert!(matches!(run("jump:0x20a"), Err(Error::InvalidArg(_))), "no targets");
+    assert!(matches!(run("hop:0x20a=0x20e"), Err(Error::InvalidArg(_))), "unknown kind");
+    assert!(matches!(run("jump:0x20a=0x9000"), Err(Error::InvalidArg(_))), "a target outside memory");
+}
+
 #[test]
 fn cached_program_configuration_is_request_local() {
     use mosura_api::ops::program::program_of;

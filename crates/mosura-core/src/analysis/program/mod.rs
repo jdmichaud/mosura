@@ -55,6 +55,18 @@ pub enum CalleeContract {
     Done(Option<Vec<u64>>),
 }
 
+/// A computed flow the caller declares: the targets of a computed jump or call that analysis cannot
+/// bound on its own (a dispatch table whose size only the program's data or its behaviour shows).
+/// Ghidra's user-defined `COMPUTED_JUMP` / `COMPUTED_CALL` references — what its switch recovery
+/// writes for a table it does bound: a jump's targets are code inside the function that jumps, a
+/// call's targets are functions of their own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredFlow {
+    pub from: Address,
+    pub call: bool,
+    pub targets: Vec<Address>,
+}
+
 /// The whole-program database (Ghidra `Program`).
 #[derive(Clone, Debug)]
 pub struct Program {
@@ -103,6 +115,8 @@ pub struct Program {
     /// External entry points (Ghidra `SymbolTable.addExternalEntryPoint`) — the
     /// addresses analysis seeds disassembly from. Populated by the loader.
     pub entry_points: Vec<Address>,
+    /// Computed flows the caller declares ([`DeclaredFlow`]): applied when analysis starts.
+    pub declared_flows: Vec<DeclaredFlow>,
     pub reference_manager: ReferenceManager,
     /// The loader's relocation records (Ghidra `Program.getRelocationTable`). Empty and
     /// non-relocatable unless a loader populates it — in that state every consumer's filter is
@@ -230,6 +244,7 @@ impl Program {
             function_manager: FunctionManager::new(),
             listing: Listing::new(),
             entry_points: Vec::new(),
+            declared_flows: Vec::new(),
             reference_manager: ReferenceManager::new(),
             relocation_table: RelocationTable::new(),
             comments: std::collections::BTreeMap::new(),

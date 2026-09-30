@@ -20,7 +20,7 @@ use mosura_core::analysis::program::{CodeUnit, Program};
 use mosura_core::analysis::{self, Loader};
 use mosura_core::decompile::space::Address;
 
-const LOAD_PARAMS: &[&str] = &["input", keys::LOAD_LOADER, keys::LOAD_LANGUAGE, keys::LOAD_BASE, keys::LOAD_ENTRIES, keys::LOAD_CSPEC_X86_32, keys::ANALYSIS_DISABLE, keys::ANALYSIS_SWITCH_TABLE_REFS, keys::ANALYSIS_DATA_POINTER_FUNCTIONS, keys::KNOBS_OFF];
+const LOAD_PARAMS: &[&str] = &["input", keys::LOAD_LOADER, keys::LOAD_LANGUAGE, keys::LOAD_BASE, keys::LOAD_ENTRIES, keys::LOAD_FLOWS, keys::LOAD_CSPEC_X86_32, keys::ANALYSIS_DISABLE, keys::ANALYSIS_SWITCH_TABLE_REFS, keys::ANALYSIS_DATA_POINTER_FUNCTIONS, keys::KNOBS_OFF];
 
 pub static LOAD: Op = Op { name: "program.load", doc: "load the input (no analysis) into a program set", since: "0.1", tier: Tier::Product, params: LOAD_PARAMS, result: "program_summary", cache: Cache::Pure { stage: Stage::Analysis, set: SetKind::Program }, run: |s, o, p| load_or_analyze(s, o, p, false) };
 pub static ANALYZE: Op = Op { name: "program.analyze", doc: "load and auto-analyze the input into a program set", since: "0.1", tier: Tier::Product, params: LOAD_PARAMS, result: "program_summary", cache: Cache::Pure { stage: Stage::Analysis, set: SetKind::Program }, run: |s, o, p| load_or_analyze(s, o, p, true) };
@@ -45,6 +45,36 @@ pub fn raw_entries(o: &Options) -> Result<Vec<u64>> {
         .filter(|e| !e.is_empty())
         .map(|e| parse_hex(e).ok_or_else(|| Error::InvalidArg(format!("`{}`: `{e}` is not an address", keys::LOAD_ENTRIES))))
         .collect()
+}
+
+/// The computed flows `load.flows` declares: `jump:FROM=TO,…` and `call:FROM=TO,…`, `;`-separated,
+/// hex. Every address must lie in the program's memory: a flow into nothing declares nothing.
+pub fn declared_flows(o: &Options, program: &mosura_core::analysis::Program) -> Result<Vec<mosura_core::analysis::program::DeclaredFlow>> {
+    let bad = |what: String| Error::InvalidArg(format!("`{}`: {what}", keys::LOAD_FLOWS));
+    let at = |a: &str| -> Result<Address> {
+        let off = parse_hex(a.trim()).ok_or_else(|| bad(format!("`{a}` is not an address")))?;
+        let addr = Address::new(program.default_space, off);
+        if program.memory.block_at(addr).is_none() {
+            return Err(bad(format!("{off:#x} is outside the program's memory")));
+        }
+        Ok(addr)
+    };
+    let mut flows = Vec::new();
+    for decl in o.get(keys::LOAD_FLOWS)?.split(';').map(str::trim).filter(|d| !d.is_empty()) {
+        let (kind, rest) = decl.split_once(':').ok_or_else(|| bad(format!("`{decl}` is not KIND:FROM=TO,…")))?;
+        let call = match kind.trim() {
+            "jump" => false,
+            "call" => true,
+            k => return Err(bad(format!("`{k}` is not jump or call"))),
+        };
+        let (from, to) = rest.split_once('=').ok_or_else(|| bad(format!("`{decl}` names no targets")))?;
+        let targets = to.split(',').filter(|t| !t.trim().is_empty()).map(|t| at(t)).collect::<Result<Vec<_>>>()?;
+        if targets.is_empty() {
+            return Err(bad(format!("`{decl}` names no targets")));
+        }
+        flows.push(mosura_core::analysis::program::DeclaredFlow { from: at(from)?, call, targets });
+    }
+    Ok(flows)
 }
 
 pub fn loader_of<'a>(o: &Options, language: &'a str, base: &str, entries: &'a [u64]) -> Result<Loader<'a>> {
@@ -165,6 +195,7 @@ fn load_or_analyze(s: &mut Session, o: &Options, p: &mut dyn Progress, analyze: 
     let entries = raw_entries(o)?;
     let which = loader_of(o, &language, &base, &entries)?;
     let mut program = analysis::load_bytes_with(&data, filename.as_deref(), which, &knobs).map_err(load_error)?;
+    program.declared_flows = declared_flows(o, &program)?;
     if analyze {
         if !p.report("analyze", 1, 2) {
             return Err(Error::Cancelled);

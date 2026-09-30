@@ -347,6 +347,23 @@ pub fn analyze(program: &mut Program) {
     // (Ghidra `codeDefined`), which the disassembler raises once `FunctionCreator` has scheduled
     // these entries for decoding. Handing them entry points is the defect this seeding used to
     // paper over.
+    // The flows the caller declares (`Program::declared_flows`): Ghidra's user COMPUTED_JUMP /
+    // COMPUTED_CALL references. A jump's targets are decoded and belong to the jumping function's
+    // body (the body walk follows COMPUTED_JUMP, `follows_flow_ref`); a call's targets are
+    // functions, seeded like the entry points.
+    let mut declared_code = AddressSet::new();
+    for f in program.declared_flows.clone() {
+        let ref_type = if f.call { program::RefType::ComputedCall } else { program::RefType::ComputedJump };
+        for t in &f.targets {
+            program.reference_manager.add(f.from, *t, ref_type, -1);
+            if f.call {
+                seed.add_range(t.space, t.offset, t.offset);
+            } else {
+                declared_code.add_range(t.space, t.offset, t.offset);
+            }
+        }
+    }
+    mgr.scheduling().disassemble(&declared_code);
     mgr.scheduling().function_defined(&seed);
     // Seed the BYTE analyzers with the loaded blocks — Ghidra's `AutoAnalysisManager.blockAdded`
     // fires for every block the loader lays down, which is how a BYTE_ANALYZER like
