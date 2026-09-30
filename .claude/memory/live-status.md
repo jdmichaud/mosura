@@ -11,6 +11,22 @@ metadata:
 Moved out of MEMORY.md 2026-08-06 (the index is a hook list; this is its detail). Every number
 here is STALE unless @sha==HEAD — see [[numbers-stale-unless-sha-stamped]].
 
+## Live status — `master` (2026-09-30): sor-project room — 68000 emulation made correct
+
+Room `sor-project` (`~/chatrooms/sor/a2a.socket`): jd assigned me as mosura's SOLE owner for the
+Streets of Rage (Mega Drive) re-implementation — `sor` builds it, `claude` advises, `blastem` owns
+the debugger. `sor` plans 68k routine vectors from mosura. Probing 68k BEFORE it relied on it found:
+- `37c8daad` lifter: a fixed varnode's offset now wraps into its space (Ghidra `generateLocation`
+  → `wrapOffset`); `($C000).w` lifted to a 64-bit `ram:0xffffffffffffc000`. Test `sleigh_wrap_offset`.
+- `d60b1138` interpreter was LITTLE-ENDIAN FOR EVERY LANGUAGE: 68000 ROM `12 34` read 0x3412, D0w
+  landed in D0's high half. Machine now reads/writes each space in the `.sla` space's byte order.
+  Ground truth `5aab00b0`: `big_endian.clang-{m68k,mips}.{bin,syms}` (clang/lld-built raw text;
+  lld links no m68k, mosura's ELF loader has NO MIPS). Test fails without the fix.
+- `4ec1c229`/`7f2407f4`/`b9927c0a` `emulate.address-mask` (CLI `--address-mask`): the 68000 drives 24
+  address lines (`0xffffff`); Ghidra's language says 32, so it is an explicit option, not inferred.
+- Workspace 1377 passed, 0 failed on `4ec1c229`'s tree (`65-workspace-mask.log`).
+- LESSON: emulation had only ever been exercised on LE targets; "all targets" claims need a BE test.
+
 ## Live status — `master` (2026-09-30): the refexec room's four items LANDED
 
 The a2a room `refexec` (`~/chatrooms/refexec/a2a.socket`; jd + the consumer agent `claude`): jd made
