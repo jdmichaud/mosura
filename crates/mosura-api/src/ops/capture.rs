@@ -13,8 +13,7 @@ use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
 use crate::options::{keys, Options};
-use crate::ops::emulate::{prepare, program_blocks, stored_state, with_stack, RegisterNames, Seeds};
-use crate::ops::function::entry_of;
+use crate::ops::emulate::{prepare, program_blocks, run_entry, stored_state, with_stack, RegisterNames, Seeds};
 use crate::ops::program::program_of;
 use crate::ops::schemas::CAPTURE;
 use crate::ops::sleigh::parse_bytes;
@@ -25,7 +24,7 @@ use crate::table::Table;
 use mosura_core::sleigh::emu::{Image, RunOptions, Stop};
 use mosura_core::sleigh::engine::Spec;
 
-pub static FUNCTION_CAPTURE: Op = Op { name: "function.capture", doc: "run many input vectors through one function (entry) of a program over one decoded image, the program's loaded image as memory: capture.spec (JSON) names the inputs and outputs as register and memory pieces, the seeds every vector shares and the generators (explicit, range, sample, chain); emulate.state is every vector's starting state. One row per vector: case, generator, inputs, outputs (when it returned), stop, address, steps, unmodeled, uninitialized (registers read before anything wrote them), unanswered (ports read that the specification's ports did not answer)", since: "0.1", tier: Tier::Product, params: &["program", "entry", keys::CAPTURE_SPEC, keys::EMULATE_STATE], result: "capture", cache: Cache::Transient, run: capture };
+pub static FUNCTION_CAPTURE: Op = Op { name: "function.capture", doc: "run many input vectors through a program from entry (a function, or any address of its loaded image) over one decoded image, the program's loaded image as memory: capture.spec (JSON) names the inputs and outputs as register and memory pieces, the seeds every vector shares and the generators (explicit, range, sample, chain); emulate.state is every vector's starting state. One row per vector: case, generator, inputs, outputs (when it returned), stop, address, steps, unmodeled, uninitialized (registers read before anything wrote them), unanswered (ports read that the specification's ports did not answer)", since: "0.1", tier: Tier::Product, params: &["program", "entry", keys::CAPTURE_SPEC, keys::EMULATE_STATE], result: "capture", cache: Cache::Transient, run: capture };
 
 /// `size` bytes at `offset` in `space`, holding the value's bits from `shift` up.
 struct Piece {
@@ -490,7 +489,7 @@ impl Runner<'_> {
 
 fn capture(s: &mut Session, o: &Options, prog: &mut dyn Progress) -> Result<Table> {
     let (_, p) = program_of(s, o)?;
-    let entry = entry_of(&p, o)?;
+    let entry = run_entry(&p, o)?;
     let (spec, ctx) = mosura_core::lang::load_cached(&p.language_id).ok_or_else(|| Error::NotFound(format!("language `{}` (tables unavailable)", p.language_id)))?;
     let text = o.get(keys::CAPTURE_SPEC)?;
     if text.trim().is_empty() {

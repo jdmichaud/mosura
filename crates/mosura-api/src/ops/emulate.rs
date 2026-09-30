@@ -5,7 +5,6 @@
 
 use crate::error::{Error, Result};
 use crate::options::{keys, parse_bool, parse_hex, Options};
-use crate::ops::function::entry_of;
 use crate::ops::program::program_of;
 use crate::ops::schemas::EMULATION;
 use crate::ops::sleigh::{inputs, parse_bytes};
@@ -19,7 +18,7 @@ use mosura_core::sleigh::emu::{Effect, Image, Machine, Run, RunOptions, Stop};
 use mosura_core::sleigh::engine::Spec;
 
 pub static SLEIGH_EMULATE: Op = Op { name: "sleigh.emulate", doc: "execute the p-code of raw bytes from base (or emulate.entry) over an initial state (emulate.registers, emulate.memory; the bytes themselves are memory too) until the routine returns, faults, reaches an address with no instruction, or spends emulate.max-steps; a call is an event unless emulate.follow-calls. Rows: outcome (stop = returned | fault | no-instruction | step-cap, address, steps, unmodeled, unmodeled-op, uninitialized: a register read before anything wrote it, unanswered-in: a port read that emulate.ports did not answer), register (every register the final state holds, widest first), memory (every run of bytes it holds, as hex), and with emulate.effects every effect of the run in order; emulate.stubs leaves routines out (they return when reached); emulate.state starts from a stored machine state, emulate.save-state stores the one the run stopped in", since: "0.1", tier: Tier::Product, params: &["lang", "bytes", "base", "ctx", keys::EMULATE_ENTRY, keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS, keys::EMULATE_EFFECTS, keys::EMULATE_PORTS, keys::EMULATE_STUBS, keys::EMULATE_STATE, keys::EMULATE_SAVE_STATE], result: "emulation", cache: Cache::Transient, run: sleigh_emulate };
-pub static FUNCTION_EMULATE: Op = Op { name: "function.emulate", doc: "execute one function (entry) of a program through the p-code interpreter, with the program's loaded image as memory, over an initial state (emulate.registers, emulate.memory) until it returns, faults, reaches an address with no instruction, or spends emulate.max-steps; a call is an event unless emulate.follow-calls. Rows as sleigh.emulate", since: "0.1", tier: Tier::Product, params: &["program", "entry", keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS, keys::EMULATE_EFFECTS, keys::EMULATE_PORTS, keys::EMULATE_STUBS, keys::EMULATE_STATE, keys::EMULATE_SAVE_STATE], result: "emulation", cache: Cache::Transient, run: function_emulate };
+pub static FUNCTION_EMULATE: Op = Op { name: "function.emulate", doc: "execute a program from entry (a function, or any address of its loaded image) through the p-code interpreter, with the program's loaded image as memory, over an initial state (emulate.registers, emulate.memory) until it returns, faults, reaches an address with no instruction, or spends emulate.max-steps; a call is an event unless emulate.follow-calls. Rows as sleigh.emulate", since: "0.1", tier: Tier::Product, params: &["program", "entry", keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS, keys::EMULATE_EFFECTS, keys::EMULATE_PORTS, keys::EMULATE_STUBS, keys::EMULATE_STATE, keys::EMULATE_SAVE_STATE], result: "emulation", cache: Cache::Transient, run: function_emulate };
 
 /// The run settings every emulate operation reads.
 struct Settings {
@@ -185,6 +184,21 @@ pub(crate) fn with_stack<'a>(image: Image<'a>, spec: &Spec, lang: &str, cspec: &
     }
 }
 
+/// Where a run over a program starts: `entry`, any address inside an initialized block of the
+/// program's default space. Not only a function the analysis found — in an assembly program many
+/// routines are reached only through pointer tables, and a run may start mid-routine.
+pub(crate) fn run_entry(p: &Program, o: &Options) -> Result<u64> {
+    let v = o.get("entry")?;
+    if v.is_empty() {
+        return Err(Error::InvalidArg("`entry` is required (an address)".into()));
+    }
+    let entry = parse_hex(v).ok_or_else(|| Error::InvalidArg(format!("`entry` is not an address: {v}")))?;
+    if !program_blocks(p).iter().any(|(start, bytes)| entry >= *start && entry - start < bytes.len() as u64) {
+        return Err(Error::NotFound(format!("{entry:#x} is in no initialized block of the program")));
+    }
+    Ok(entry)
+}
+
 /// A program's loaded memory as image blocks: every initialized block of its default space.
 pub(crate) fn program_blocks(p: &Program) -> Vec<(u64, &[u8])> {
     p.memory
@@ -289,7 +303,7 @@ fn sleigh_emulate(s: &mut Session, o: &Options, _p: &mut dyn Progress) -> Result
 /// `function.emulate`: a function of a session program, with its loaded image as memory.
 fn function_emulate(s: &mut Session, o: &Options, _p: &mut dyn Progress) -> Result<Table> {
     let (_, p) = program_of(s, o)?;
-    let entry = entry_of(&p, o)?;
+    let entry = run_entry(&p, o)?;
     let (spec, ctx) = mosura_core::lang::load_cached(&p.language_id).ok_or_else(|| Error::NotFound(format!("language `{}` (tables unavailable)", p.language_id)))?;
     let settings = settings(o)?;
     let seeds = seeds(o, spec, &p.language_id)?;

@@ -44,7 +44,8 @@ impl Program {
         check(unsafe { mosura_capi::mosura_program_passes(self.ptr(), opt_ptr(opts), f, user) })
     }
 
-    /// Execute the function at `entry` through the p-code interpreter, the loaded image as memory
+    /// Execute from `entry` (any address of the loaded image) through the p-code interpreter, the
+    /// loaded image as memory
     /// (`function.emulate`; opts: the `emulate.*` keys): the `emulation` table.
     pub fn emulate(&self, entry: u64, opts: Option<&Options>) -> Result<Table> {
         let mut out: *mut mosura_table = std::ptr::null_mut();
@@ -52,8 +53,8 @@ impl Program {
         Ok(Table::from_raw(out))
     }
 
-    /// Every input vector a capture specification (JSON) generates, through the function at
-    /// `entry` (`function.capture`; opts: emulate.state): the `capture` table.
+    /// Every input vector a capture specification (JSON) generates, from `entry` (any address of
+    /// the loaded image) (`function.capture`; opts: emulate.state): the `capture` table.
     pub fn capture(&self, entry: u64, spec: &str, opts: Option<&Options>, progress: Option<ProgressFn<'_>>) -> Result<Table> {
         let spec_c = CString::new(spec).unwrap_or_default();
         let mut p = progress;

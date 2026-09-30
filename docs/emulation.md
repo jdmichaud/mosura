@@ -72,7 +72,9 @@ keys and the same answer, with the function's `entry` in place of `bytes`, `base
 `emulate.entry`. The image is the program as loaded: every initialized block of its default space,
 decoded where the run reaches and read as memory. A routine finds its tables and the initial value
 of every global where the program keeps them, without seeding them, and a followed call enters
-its callee wherever it lives. `entry` must be a function of the analyzed program.
+its callee wherever it lives. `entry` is any address inside an initialized block of the program —
+a function the analysis found, a routine reached only through a pointer table that it did not
+find, or a point inside a routine.
 
 ## Stubs
 

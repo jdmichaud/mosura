@@ -500,3 +500,27 @@ fn a_stubbed_routine_returns_at_once() {
         assert!(matches!(bad, Error::InvalidArg(_)), "{stem}: {bad:?}");
     }
 }
+
+/// The emulate operations start at any address of the loaded image, not only at a function the
+/// analysis found: routines reached only through pointer tables are common in assembly programs.
+/// Here the run starts inside `outer`, after its call (`add eax,1; ret`), on x86-32; an address
+/// outside every initialized block is refused.
+#[test]
+fn a_run_can_start_at_any_address_of_the_image() {
+    let c = ctx();
+    let (mut s, e) = session_of(&c, "call_returns.gcc-x86-32");
+    let inside = format!("{:#x}", u64::from_str_radix(entry(&e, "outer").trim_start_matches("0x"), 16).unwrap() + 5);
+    let r = rows(&dispatch(&c, &mut s, "function.emulate", &opts(&[("entry", &inside), ("emulate.registers", "ESP=0x0f000000,EAX=4")]), &mut NoProgress).unwrap());
+    assert_eq!((stop(&r), register(&r, &["EAX"])), ("returned", 5), "{r:?}");
+    let spec = serde_json::json!({
+        "registers": { "ESP": "0x0f000000" }, "inputs": [reg_slot("a", "EAX")], "outputs": [reg_slot("a", "EAX")],
+        "cases": [{ "kind": "range", "input": "a", "from": 0, "to": 2 }],
+    })
+    .to_string();
+    let t = dispatch(&c, &mut s, "function.capture", &opts(&[("entry", &inside), ("capture.spec", &spec)]), &mut NoProgress).unwrap();
+    assert_eq!((0..t.rows()).map(|r| t.list_u64(r, 3).unwrap().collect::<Vec<u64>>()).collect::<Vec<_>>(), [vec![1], vec![2], vec![3]]);
+    for outside in ["0x10", "0xfffffff0"] {
+        let err = dispatch(&c, &mut s, "function.emulate", &opts(&[("entry", outside)]), &mut NoProgress).unwrap_err();
+        assert!(matches!(err, Error::NotFound(_)), "{outside}: {err:?}");
+    }
+}
