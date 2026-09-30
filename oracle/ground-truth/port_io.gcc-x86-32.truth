@@ -1,0 +1,7 @@
+# mosura-ground-truth v1 program=port_io compiler=gcc arch=x86-32 lang=x86:LE:32:default
+# derived-from=port_io.gcc-x86-32.unstripped via=nm+objdump (build artifact, NOT Ghidra)
+compiler gcc
+entry 08049000
+func 08049000 0000000b _start code
+func 0804900b 0000000a wait_ready code
+func 08049015 0000000d write_pair code
