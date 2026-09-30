@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
 use crate::options::{keys, Options};
-use crate::ops::emulate::{prepare, program_blocks, stored_state, RegisterNames, Seeds};
+use crate::ops::emulate::{prepare, program_blocks, stored_state, with_stack, RegisterNames, Seeds};
 use crate::ops::function::entry_of;
 use crate::ops::program::program_of;
 use crate::ops::schemas::CAPTURE;
@@ -495,7 +495,7 @@ fn capture(s: &mut Session, o: &Options, prog: &mut dyn Progress) -> Result<Tabl
     let state = stored_state(s, o)?;
     let blocks = program_blocks(&p);
     let mut runner = Runner {
-        image: Image::from_blocks(spec, &blocks, ctx).with_image_memory(),
+        image: with_stack(Image::from_blocks(spec, &blocks, ctx).with_image_memory(), spec, &p.language_id, &p.compiler_spec_id),
         spec,
         names: RegisterNames::of(spec),
         cs: &cs,

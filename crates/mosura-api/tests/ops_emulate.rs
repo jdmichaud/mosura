@@ -19,8 +19,12 @@ fn opts(pairs: &[(&str, &str)]) -> Options {
 
 /// A session holding one analyzed fixture, and its routines' entries by name (`0x…`).
 fn session(c: &Context, program: &str, bits: u32) -> (Session, Vec<(String, String)>) {
+    session_of(c, &format!("{program}.gcc-x86-{bits}"))
+}
+
+/// The same, for any built fixture by its artifact name (`call_returns.clang-aarch64`).
+fn session_of(c: &Context, stem: &str) -> (Session, Vec<(String, String)>) {
     let dir = mosura_core::paths::ground_truth_dir();
-    let stem = format!("{program}.gcc-x86-{bits}");
     let truth = std::fs::read_to_string(dir.join(format!("{stem}.truth"))).unwrap();
     let entries = truth
         .lines()
@@ -30,7 +34,7 @@ fn session(c: &Context, program: &str, bits: u32) -> (Session, Vec<(String, Stri
         })
         .collect();
     let mut s = Session::open(None).unwrap();
-    s.add_input(&std::fs::read(dir.join(&stem)).unwrap(), &stem, None).unwrap();
+    s.add_input(&std::fs::read(dir.join(stem)).unwrap(), stem, None).unwrap();
     dispatch(c, &mut s, "program.analyze", &Options::new(), &mut NoProgress).unwrap();
     (s, entries)
 }
@@ -443,6 +447,23 @@ fn in_is_answered_by_the_caller_and_an_unanswered_port_is_named() {
         for bad in ["0x3da", "0x3da=", "zz=1", "0x3da=0,q"] {
             let err = dispatch(&c, &mut s, "function.emulate", &opts(&[("entry", poll), ("emulate.ports", bad)]), &mut NoProgress).unwrap_err();
             assert!(matches!(err, Error::InvalidArg(_)), "x86-{bits} {bad:?}: {err:?}");
+        }
+    }
+}
+
+
+/// A skipped call returns with the stack as the callee's return would leave it, on every ISA: the
+/// operations give the interpreter the compiler spec's stack pointer. `caller` reads its marker
+/// back after the call, on x86-32, x86-64 and AArch64, calls skipped (the default) or followed.
+#[test]
+fn a_skipped_call_leaves_the_callers_stack_intact() {
+    let c = ctx();
+    for (stem, sp, result) in [("call_returns.gcc-x86-32", "ESP", "EAX"), ("call_returns.gcc-x86-64", "RSP", "RAX"), ("call_returns.clang-aarch64", "sp", "x0")] {
+        let (mut s, e) = session_of(&c, stem);
+        let stack = format!("{sp}=0x0f000000");
+        for follow in ["false", "true"] {
+            let r = rows(&dispatch(&c, &mut s, "function.emulate", &opts(&[("entry", entry(&e, "caller")), ("emulate.registers", &stack), ("emulate.follow-calls", follow)]), &mut NoProgress).unwrap());
+            assert_eq!((stop(&r), register(&r, &[result]) & 0xffff_ffff), ("returned", 0x1234_abcd), "{stem} follow={follow}: {r:?}");
         }
     }
 }

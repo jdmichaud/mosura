@@ -168,6 +168,15 @@ fn save_state(s: &mut Session, o: &Options, run: &Run) -> Result<()> {
     }
 }
 
+/// Tell the image which register is the stack — the compiler spec's `<stackpointer>` — so a call
+/// that is skipped, or a stub, returns with the stack as the language's return leaves it.
+pub(crate) fn with_stack<'a>(image: Image<'a>, spec: &Spec, lang: &str, cspec: &str) -> Image<'a> {
+    match mosura_core::analysis::cspec::stack_pointer_register(spec, lang, cspec) {
+        Some((offset, size)) => image.with_stack_pointer(offset, size),
+        None => image,
+    }
+}
+
 /// A program's loaded memory as image blocks: every initialized block of its default space.
 pub(crate) fn program_blocks(p: &Program) -> Vec<(u64, &[u8])> {
     p.memory
@@ -260,7 +269,8 @@ fn sleigh_emulate(s: &mut Session, o: &Options, _p: &mut dyn Progress) -> Result
     let seeds = seeds(o, i.spec, &i.lang)?;
     // The bytes are the machine's memory as well as its code, as a loaded program's are.
     let state = stored_state(s, o)?;
-    let mut image = Image::new(i.spec, &i.bytes, i.base, &i.ctx).with_image_memory();
+    // Raw bytes carry no compiler spec: the language's default one names the stack.
+    let mut image = with_stack(Image::new(i.spec, &i.bytes, i.base, &i.ctx).with_image_memory(), i.spec, &i.lang, "default");
     let m = prepare(&image, i.spec, &state, &seeds);
     let run = image.resume(m, &settings.run_options(entry));
     save_state(s, o, &run)?;
@@ -276,7 +286,7 @@ fn function_emulate(s: &mut Session, o: &Options, _p: &mut dyn Progress) -> Resu
     let seeds = seeds(o, spec, &p.language_id)?;
     let state = stored_state(s, o)?;
     let blocks = program_blocks(&p);
-    let mut image = Image::from_blocks(spec, &blocks, ctx).with_image_memory();
+    let mut image = with_stack(Image::from_blocks(spec, &blocks, ctx).with_image_memory(), spec, &p.language_id, &p.compiler_spec_id);
     let m = prepare(&image, spec, &state, &seeds);
     let run = image.resume(m, &settings.run_options(Some(entry)));
     save_state(s, o, &run)?;

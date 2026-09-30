@@ -196,10 +196,13 @@ Every stop but `returned` is a reason to reject the capture, and the reason is n
 
 ## Calls
 
-Off by default, a call is an event: the instruction's own p-code has already pushed the return
-address, the `CALL` itself is skipped, and the routine's own `RET` pops that word. That is the
-single-function mode the differential check wants (a callee's behaviour is its own business), and
-it captures leaf routines exactly.
+Off by default, a call is an event: the callee is not entered and returns at once. The stack then
+stands as the callee's return would leave it: the operation takes the stack pointer from the
+compiler spec's `<stackpointer>` (the language's default compiler spec for raw bytes) and puts it
+back to its value at the start of the call instruction, which undoes the return address a
+push-based call left (x86) and changes nothing where the call writes a link register (AArch64).
+That is the single-function mode the differential check wants (a callee's behaviour is its own
+business), and it captures a routine's own work exactly, stack reads after a call included.
 
 With `emulate.follow-calls`, a call whose target lies in the bytes is entered and its `RETURN`
 comes back to the caller — nesting to any depth, the stack pointer seeded by the caller. The bytes
