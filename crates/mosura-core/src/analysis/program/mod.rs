@@ -55,6 +55,18 @@ pub enum CalleeContract {
     Done(Option<Vec<u64>>),
 }
 
+/// A data unit the caller declares: a table the program reads, which the analysis would
+/// otherwise see as undefined bytes (or decode as code). `type_name` is Ghidra's datatype name
+/// (`byte`, `word`, `dword`, `pointer16`, `pointer32`); `target` is the address the element refers
+/// to, when it is a pointer or an offset and not null.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeclaredUnit {
+    pub at: Address,
+    pub length: u32,
+    pub type_name: String,
+    pub target: Option<Address>,
+}
+
 /// A computed flow the caller declares: the targets of a computed jump or call that analysis cannot
 /// bound on its own (a dispatch table whose size only the program's data or its behaviour shows).
 /// Ghidra's user-defined `COMPUTED_JUMP` / `COMPUTED_CALL` references — what its switch recovery
@@ -214,6 +226,21 @@ pub struct Program {
 }
 
 impl Program {
+    /// Define the declared data units ([`DeclaredUnit`]): each is a data unit in the listing and
+    /// a defined data item, and a pointer or offset element gets its DATA reference to the
+    /// target — what creating a pointer (or an offset reference) does in Ghidra. Called at load,
+    /// before analysis, so no flow decodes over them. The caller has checked they overlap
+    /// nothing.
+    pub fn declare_data(&mut self, units: &[DeclaredUnit]) {
+        for u in units {
+            self.listing.define(u.at, listing::CodeUnit::Data { length: u.length, type_name: u.type_name.clone() });
+            self.defined_data.push((u.at, u.type_name.clone(), u.length));
+            if let Some(t) = u.target {
+                self.reference_manager.add(u.at, t, RefType::Data, 0);
+            }
+        }
+    }
+
     /// A fresh, empty program for the given language/space layout. The loader (A2)
     /// fills `memory`; later analyzers fill the rest.
     pub fn new(
