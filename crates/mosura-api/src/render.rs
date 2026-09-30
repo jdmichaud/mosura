@@ -3,8 +3,6 @@
 //! prints its cells bare, which is how a function's C or an IR dump travels as a table without the
 //! generic dispatcher knowing). The 40-odd bespoke writers of the examples become this one function.
 
-use std::fmt::Write as _;
-
 use crate::error::Result;
 use crate::schema::{ColHint, ColType, Column, Schema};
 use crate::table::Table;
@@ -121,12 +119,17 @@ pub fn render(t: &Table, format: Format) -> Result<String> {
                     if c > 0 {
                         out.push_str("  ");
                     }
+                    // Padded by hand: a format width is limited to 65,535, and a cell (a long
+                    // memory row) can be wider.
+                    let pad = widths[c].saturating_sub(cell.chars().count());
                     if numeric[c] {
-                        let _ = write!(out, "{:>w$}", cell, w = widths[c]);
+                        out.extend(std::iter::repeat_n(' ', pad));
+                        out.push_str(cell);
                     } else if c + 1 == row.len() {
                         out.push_str(cell);
                     } else {
-                        let _ = write!(out, "{:<w$}", cell, w = widths[c]);
+                        out.push_str(cell);
+                        out.extend(std::iter::repeat_n(' ', pad));
                     }
                 }
                 out.push('\n');
@@ -190,5 +193,21 @@ mod tests {
         b.row().str("int f(void)\n{\n  return 1;\n}\n");
         b.row().str("second unit");
         assert_eq!(render(&b.finish(false), Format::Text).unwrap(), "int f(void)\n{\n  return 1;\n}\nsecond unit\n");
+    }
+
+    /// A cell wider than the formatter's width limit (65,535) in a column that is not the last
+    /// one, as a long memory row of an emulation table is: the text table still lines up.
+    #[test]
+    fn text_aligns_a_cell_wider_than_the_formatter_allows() {
+        let long = "ab".repeat(40_000);
+        let mut b = TableBuilder::new(&FNS);
+        b.row().u64(0x1000).str(&long).u32(3).bool(true).list_u64(&[]);
+        b.row().u64(0x2000).str("x").u32(12).bool(false).list_u64(&[]);
+        let text = render(&b.finish(true), Format::Text).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines.len(), 4);
+        assert!(lines[2].contains(&long));
+        // the short name is padded to the long one's width, so the rows line up
+        assert_eq!(lines[2].chars().count(), lines[3].chars().count());
     }
 }
