@@ -11,6 +11,32 @@ metadata:
 Moved out of MEMORY.md 2026-08-06 (the index is a hook list; this is its detail). Every number
 here is STALE unless @sha==HEAD — see [[numbers-stale-unless-sha-stamped]].
 
+## Live status — `master` (2026-09-30): consumer issues 8 (segment base) and 10 (port I/O) FIXED
+
+The consumer's issues doc moved to `<vpool-re>/contrib/vpoolz-mosura-issues.md` (entries 7-10 added;
+their "Found" text for 10 was stale: IN/OUT have been modelled since 3c0e8863, 2026-09-07).
+
+- Issue 8: `e2e99f78` the interpreter keeps every register read before any write, with the site of
+  its first read (`Machine::uninitialized_registers`) — Ghidra's EmulatorHelper warns "Uninitialized
+  register read at <pc>: <reg>" and reads zero; ours reports instead of warning. GENERIC, not a
+  segment rule: an unseeded RET's stack pointer is named too; report, never reject.
+  `72aaf8d1` `uninitialized` outcome rows + capture column (CAPTURE v2). Fixture `083e7e90`
+  `segment_base.S` (FS/GS lift as FS_OFFSET/GS_OFFSET + disp; DS/ES/SS/CS flat).
+- Issue 10: `1424250c` every effect records its site (`Machine::effect_sites`, (pc, 1-based step),
+  index for index; the differential harness compares effects alone) · `297a9453` EMULATION v2 adds
+  `at` + `step` columns · `089e7931` `Machine::answer_port(port, values)` (values in order, last
+  repeats; answers survive `resume`) + `unanswered_ports` · `2a3972fb` `emulate.ports` key, capture
+  spec `ports`, `unanswered-in` rows, CAPTURE v3 `unanswered` column · `10d2f818` C API forward +
+  CLI `--ports`. Fixture `964d07ec` `port_io.S`.
+- Validation: workspace 1360 passed, 0 failed, 28 ignored, 115 binaries on `10d2f818`'s tree;
+  clippy adds nothing. Evidence: `<repo parent>/validation/emulate-surface/2*-*.log`.
+- Issue 9 (callee clobbers EBX, decompiler) still OPEN: the gcc cspec says EBX is preserved and the
+  hand-written callee `0xaa0e` → `0xaa8c` writes it (`0xaaaf MOV EBX,EAX`); no clobber declaration
+  mechanism exists yet. Evidence `<repo parent>/validation/issue-9/`.
+- ⚠️ Gotchas: an unanswered IN reads ZERO in emulate/capture (the per-port pseudo-random value is only
+  the differential run's fill). A 32-bit write zero-extends into RAX on x86-64, so step counts differ
+  by width: derive expected steps from the decoded instruction, never hard-code them.
+
 ## Live status — `master` (2026-09-24): the emulation surface — function.emulate, function.capture, states
 
 The consumer's reference executor (`refexec`, outside this repo) linked `mosura-core` by path and
