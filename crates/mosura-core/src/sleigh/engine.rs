@@ -135,6 +135,8 @@ mod aid {
     pub const NUMCT: u32 = 53;
     /// `ATTRIB_LABELS` (slaformat.cc:78) — how many `<label>`s a constructor's template declares.
     pub const LABELS: u32 = 55;
+    /// `ATTRIB_WORDSIZE` (slaformat.cc:66) — addressable unit size of a space, in bytes.
+    pub const WORDSIZE: u32 = 43;
 }
 
 #[derive(Debug)]
@@ -171,6 +173,26 @@ pub struct Space {
     pub index: u64,
     pub size: u64,
     pub big_endian: bool,
+    /// Bytes per addressable unit (`wordsize`, 1 unless the `.sla` says otherwise).
+    pub wordsize: u64,
+}
+
+impl Space {
+    /// Ghidra `AddrSpace::wrapOffset` (space.hh:383): an offset past the space's highest byte
+    /// address wraps modulo the space's byte size, a negative remainder made positive.
+    pub fn wrap_offset(&self, off: u64) -> u64 {
+        let mask = if self.size >= 8 { u64::MAX } else { (1u64 << (self.size * 8)) - 1 };
+        let highest = mask.wrapping_mul(self.wordsize).wrapping_add(self.wordsize - 1);
+        if off <= highest {
+            return off;
+        }
+        let modulus = highest.wrapping_add(1) as i64;
+        let mut res = (off as i64) % modulus;
+        if res < 0 {
+            res += modulus;
+        }
+        res as u64
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -472,6 +494,7 @@ impl Spec {
                 index: sp.attr_int(aid::INDEX).unwrap_or(0) as u64,
                 size: sp.attr_int(aid::SIZE).unwrap_or(0) as u64,
                 big_endian: sp.attr_bool(aid::BIGENDIAN).unwrap_or(big_endian),
+                wordsize: sp.attr_int(aid::WORDSIZE).filter(|w| *w > 0).unwrap_or(1) as u64,
                 name,
             });
         }
@@ -885,10 +908,18 @@ impl Spec {
         let space = self.resolve_const_h(&v.space, node, walker)?;
         let mut offset = self.resolve_const_h(&v.offset, node, walker)?;
         let size = self.resolve_const_h(&v.size, node, walker)?;
-        // const-space varnodes carry their value masked to their size (Ghidra
-        // `generateLocation`); a sign-extended negative immediate prints truncated.
-        if space == 0 && (1..8).contains(&size) {
-            offset &= (1u64 << (size * 8)) - 1;
+        // Ghidra `generateLocation` (sleigh.cc:152): a const-space varnode carries its value
+        // masked to its size (a sign-extended negative immediate prints truncated); any other
+        // space but unique wraps the offset into the space (`wrapOffset`), so a sign-extended
+        // absolute address is an address of the space.
+        if space == 0 {
+            if (1..8).contains(&size) {
+                offset &= (1u64 << (size * 8)) - 1;
+            }
+        } else if space != self.spaces[self.unique_space].index {
+            if let Some(sp) = self.spaces.iter().find(|s| s.index == space) {
+                offset = sp.wrap_offset(offset);
+            }
         }
         Some(Varnode { space: self.space_name(space).to_string(), offset, size: size as u32 })
     }
