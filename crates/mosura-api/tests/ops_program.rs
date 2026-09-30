@@ -401,6 +401,44 @@ fn a_known_address_is_referenced_even_outside_memory() {
     assert_eq!(refs, [(0x200, 0xa1_0008), (0x20c, 0xc0_0000), (0x20e, 0x100), (0x214, 0xff_0000)]);
 }
 
+/// Constant propagation sign-extends where the instruction does: 68000 `movea.w` turns the word
+/// 0xB900 into the address 0xFFFFB900 (Ghidra's `INT_SEXT`), so the load through A1 references
+/// 0xFFFFB900 — not 0xB900, a ROM address the code never touches.
+#[test]
+fn a_sign_extended_address_is_referenced_sign_extended() {
+    let c = ctx();
+    let mut image = vec![0u8; 0x240];
+    image[0..8].copy_from_slice(&[0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x02, 0x00]);
+    // 200: move.w #$b900,($fb42).w   206: movea.w ($fb42).w,a1   20a: move.b (a1),d0   20c: rts
+    image[0x200..0x20e].copy_from_slice(&[0x31, 0xfc, 0xb9, 0x00, 0xfb, 0x42, 0x32, 0x78, 0xfb, 0x42, 0x10, 0x11, 0x4e, 0x75]);
+    let mut s = Session::open(None).unwrap();
+    s.add_input(&image, "rom.bin", None).unwrap();
+    let raw = [("load.loader", "raw"), ("load.language", "68000:BE:32:default"), ("load.base", "0"), ("load.entries", "0x200")];
+    dispatch(&c, &mut s, "program.analyze", &opts(&raw), &mut NoProgress).unwrap();
+    let t = dispatch(&c, &mut s, "program.tables", &opts(&[("table", "references")]), &mut NoProgress).unwrap();
+    let from_20a: Vec<u64> = (0..t.rows()).filter(|&r| t.u64(r, 1).unwrap() == 0x20a).map(|r| t.u64(r, 3).unwrap()).collect();
+    assert_eq!(from_20a, [0xffff_b900]);
+}
+
+/// Constant propagation follows a computed jump to its references, as Ghidra's walk follows an
+/// instruction's flows: behind `jmp (a0)`, declared to reach 0x210, the `lea (0x20,pc),a1` there is
+/// evaluated and references 0x232. The walk used to end its path at the computed jump.
+#[test]
+fn constant_propagation_follows_a_computed_jump() {
+    let c = ctx();
+    let mut image = vec![0u8; 0x240];
+    image[0..8].copy_from_slice(&[0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x02, 0x00]);
+    image[0x200..0x202].copy_from_slice(&[0x4e, 0xd0]); // jmp (a0)
+    image[0x210..0x216].copy_from_slice(&[0x43, 0xfa, 0x00, 0x20, 0x4e, 0x75]); // lea (0x20,pc),a1; rts
+    let mut s = Session::open(None).unwrap();
+    s.add_input(&image, "rom.bin", None).unwrap();
+    let raw = [("load.loader", "raw"), ("load.language", "68000:BE:32:default"), ("load.base", "0"), ("load.entries", "0x200"), ("load.flows", "jump:0x200=0x210")];
+    dispatch(&c, &mut s, "program.analyze", &opts(&raw), &mut NoProgress).unwrap();
+    let t = dispatch(&c, &mut s, "program.tables", &opts(&[("table", "references")]), &mut NoProgress).unwrap();
+    let from_210: Vec<u64> = (0..t.rows()).filter(|&r| t.u64(r, 1).unwrap() == 0x210).map(|r| t.u64(r, 3).unwrap()).collect();
+    assert_eq!(from_210, [0x232]);
+}
+
 #[test]
 fn cached_program_configuration_is_request_local() {
     use mosura_api::ops::program::program_of;

@@ -514,8 +514,18 @@ fn process_op(
         Some(OpCode::IntAnd) => fold2(vctx, op, here.offset, |a, b| a & b),
         Some(OpCode::IntOr) => fold2(vctx, op, here.offset, |a, b| a | b),
         Some(OpCode::IntZext | OpCode::IntSext) => {
-            // Pass the (masked) value through a widening copy.
-            let v = op.ins.first().and_then(arg_var).map(|v| vctx.get(v)).unwrap_or(SymValue::Unknown);
+            // A widening copy: zero-extended, or sign-extended from the input's width (68000
+            // `movea.w` turns the word 0xB900 into the address 0xFFFFB900).
+            let input = op.ins.first().and_then(arg_var);
+            let v = input.map(|v| vctx.get(v)).unwrap_or(SymValue::Unknown);
+            let v = match (v, input, &op.out) {
+                (SymValue::Const(c), Some(inv), Some(out)) if opcode == Some(OpCode::IntSext) && inv.size < 8 => {
+                    let sign = 1u64 << (8 * inv.size - 1);
+                    let c = c & ((sign << 1) - 1);
+                    SymValue::Const(mask((c ^ sign).wrapping_sub(sign), out.size))
+                }
+                (v, _, _) => v,
+            };
             if let Some(out) = &op.out {
                 vctx.put_at(out, v, here.offset);
             }
@@ -681,7 +691,20 @@ pub fn flow_constants(
                         branch_targets.push(t);
                     }
                 }
-                Some(OpCode::Return | OpCode::Branchind) => falls = false,
+                Some(OpCode::Return) => falls = false,
+                Some(OpCode::Branchind) => {
+                    falls = false;
+                    // A computed jump flows to its references — a recovered switch table, a
+                    // declared flow — as Ghidra's walk does (`getInstructionFlows`: the
+                    // instruction's flows, which for a computed jump are its flow references).
+                    branch_targets.extend(
+                        program
+                            .reference_manager
+                            .refs_from(here)
+                            .filter(|r| matches!(r.ref_type, RefType::ComputedJump | RefType::ConditionalComputedJump))
+                            .map(|r| r.to.offset),
+                    );
+                }
                 _ => {}
             }
         }
