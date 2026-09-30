@@ -434,3 +434,43 @@ fn a_register_read_before_anything_wrote_it_is_reported() {
         assert_eq!(r.machine.uninitialized_registers(), read, "x86-{bits}: the caller's read is not the program's");
     }
 }
+
+/// The caller answers `IN` per port with a sequence of values, the last repeating: a status port
+/// polled until ready returns after the third read when answered 0, 0, 8. A port nobody answered
+/// is reported with the site of its first read, as a register nobody wrote is; unanswered, the
+/// poll spins until its budget runs out. `OUT` writes are effects, in order.
+#[test]
+fn the_caller_answers_in_and_an_unanswered_port_is_reported() {
+    use mosura_core::sleigh::emu::Image;
+    use mosura_core::sleigh::pcode::opcode_name;
+    for bits in [32, 64] {
+        let f = fixture("port_io", bits);
+        let e = f.entry("wait_ready");
+        let insns = f.spec.disassemble_ctx(f.body("wait_ready"), e, f.ctx);
+        let read = (insns[1].address, insns[0].ops.len() + 1 + insns[1].ops.iter().position(|o| opcode_name(o.opcode) == "CALLOTHER").unwrap());
+        let mut img = Image::new(f.spec, f.body("wait_ready"), e, f.ctx);
+        let stack = f.seeds(&[(f.sp(), STACK)]);
+        let prepare = |img: &Image<'_>| {
+            let mut m = img.machine();
+            for &(space, off, value, size) in &stack {
+                m.write(space, off, size, value);
+            }
+            m
+        };
+        let spin = img.resume(prepare(&img), &RunOptions { max_steps: 1000, ..RunOptions::default() });
+        assert_eq!(spin.stop, Stop::StepCap, "x86-{bits}: an unanswered status port never turns ready");
+        assert_eq!(spin.machine.unanswered_ports(), vec![(0x3da, read)], "x86-{bits}");
+
+        let mut m = prepare(&img);
+        m.answer_port(0x3da, vec![0, 0, 8]);
+        let r = img.resume(m, &RunOptions { trace: true, ..RunOptions::default() });
+        assert_eq!((r.stop, f.read(&r, "AL")), (Stop::Returned, 8), "x86-{bits}");
+        assert_eq!(r.machine.effects, vec![Effect::Port(false, 0x3da, 1, 0), Effect::Port(false, 0x3da, 1, 0), Effect::Port(false, 0x3da, 1, 8)], "x86-{bits}");
+        assert!(r.machine.unanswered_ports().is_empty(), "x86-{bits}");
+
+        let f2 = &f;
+        let w = f2.entry("write_pair");
+        let r = f2.run(f2.body("write_pair"), w, &[(f2.sp(), STACK), ("ECX", 0x4120)], &RunOptions { trace: true, ..RunOptions::default() });
+        assert_eq!(r.machine.effects, vec![Effect::Port(true, 0x388, 1, 0x20), Effect::Port(true, 0x389, 1, 0x41)], "x86-{bits}");
+    }
+}

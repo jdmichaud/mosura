@@ -146,6 +146,11 @@ pub struct Machine {
     /// (`EmulatorHelper.uninitializedRead`); this keeps the same fact for the caller. Interior
     /// mutability because operands are read through `&self`.
     uninitialized: RefCell<BTreeMap<(u64, u32), (u64, usize)>>,
+    /// What `IN` reads, per port, as the caller supplied it ([`Machine::answer_port`]): the
+    /// values, and how many reads of the port have happened.
+    port_answers: HashMap<u64, (Vec<u64>, usize)>,
+    /// The ports the program read with no answer supplied, with the site of the first such read.
+    unanswered: BTreeMap<u64, (u64, usize)>,
     trace: bool,
     /// Stores inside this half-open range are the program's own scratch (its stack frame) and are
     /// NOT recorded: two implementations of the same function may lay their frames out differently.
@@ -362,6 +367,24 @@ impl Machine {
     pub fn uninitialized_registers(&self) -> Vec<(u64, u32, (u64, usize))> {
         let mut v: Vec<_> = self.uninitialized.borrow().iter().map(|(&(off, size), &site)| (off, size, site)).collect();
         v.sort_by_key(|&(off, size, (_, step))| (step, off, size));
+        v
+    }
+
+    /// Answer `IN` from `port`: its reads return `values` in order, then the last one again — a
+    /// status port that turns ready after two polls is `[0, 0, 8]`, a latch that always reads the
+    /// same byte is `[v]`. Each value is cut to the width of the read. A port nobody answers
+    /// reads zero (in a differential run, the fill) and is reported
+    /// ([`Machine::unanswered_ports`]). The answers belong to the machine, so a machine resumed
+    /// for the next run of a sequence continues their sequence.
+    pub fn answer_port(&mut self, port: u64, values: Vec<u64>) {
+        self.port_answers.insert(port, (values, 0));
+    }
+
+    /// The ports the program read with no answer supplied, `(port, site)` in the order of their
+    /// first read: the run depended on a value nobody supplied, and a poll on one may never end.
+    pub fn unanswered_ports(&self) -> Vec<(u64, (u64, usize))> {
+        let mut v: Vec<_> = self.unanswered.iter().map(|(&port, &site)| (port, site)).collect();
+        v.sort_by_key(|&(port, (_, step))| (step, port));
         v
     }
 
@@ -672,8 +695,18 @@ impl Machine {
             // cut off by the step/effect budget, which the verdict already reports as `finished=`.
             UserOp::In => {
                 let port = op.ins.get(1).map_or(0, |a| self.read_arg(a));
-                // 0x494e is 'IN': a tag that keeps port space from aliasing the memory fill.
-                let v = self.fill.map_or(0, |seed| mask(mix(seed, port, 0x494e), osize));
+                let v = match self.port_answers.get_mut(&port) {
+                    Some((values, reads)) if !values.is_empty() => {
+                        let v = values[(*reads).min(values.len() - 1)];
+                        *reads += 1;
+                        mask(v, osize)
+                    }
+                    _ => {
+                        self.unanswered.entry(port).or_insert(self.at);
+                        // 0x494e is 'IN': a tag that keeps port space from aliasing the memory fill.
+                        self.fill.map_or(0, |seed| mask(mix(seed, port, 0x494e), osize))
+                    }
+                };
                 if self.trace {
                     self.record(Effect::Port(false, port, osize, v));
                 }
@@ -1523,13 +1556,14 @@ impl<'a> Image<'a> {
     /// Execute `m` from `opts.entry` (or the first byte): its registers and memory are the
     /// starting state — a machine the caller prepared, or the one a previous run left, which is
     /// how a sequence of runs carries its state from one to the next. What the machine recorded
-    /// before (its effects, its unmodeled operations, its uninitialized reads) is cleared: those
-    /// are each run's own, and the writes that prepared the machine are setup, not effects (as
-    /// in `run_traced`).
+    /// before (its effects, its unmodeled operations, its uninitialized and unanswered reads) is
+    /// cleared: those are each run's own, and the writes that prepared the machine are setup,
+    /// not effects (as in `run_traced`). Its port answers stay, and continue their sequence.
     pub fn resume(&mut self, mut m: Machine, opts: &RunOptions) -> Run {
         m.effects.clear();
         m.effect_sites.clear();
         m.uninitialized.get_mut().clear();
+        m.unanswered.clear();
         m.unmodeled = 0;
         m.unmodeled_ops.clear();
         m.last_quotient = None;
