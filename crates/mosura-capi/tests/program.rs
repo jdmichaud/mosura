@@ -131,6 +131,15 @@ fn languages_registers_and_raw_decoding() {
     assert_eq!(unsafe { mosura_emulate(l, mosura_view { ptr: calls.as_ptr(), len: calls.len() }, 0x1000, stubbed, &mut st) }, MOSURA_OK, "{}", last());
     let eax = find_row(st, 1, "EAX").map(|r| cell_str(st, r, 2));
     assert_eq!(eax.as_deref(), Some("0x00000001"));
+    // emulate.uninitialized-ignore: `pushfd; pop eax; ret` reads every flag; FLAGS leaves only the stack pointer
+    let pushfd = [0x9cu8, 0x58, 0xc3];
+    let uninitialized = |t: *const mosura_table| (0..unsafe { mosura_table_rows(t) }).filter(|&r| cell_str(t, r, 1) == "uninitialized").map(|r| cell_str(t, r, 2)).collect::<Vec<_>>();
+    let ignore = opts(c, &[("emulate.uninitialized-ignore", "FLAGS")]);
+    let (mut all, mut left): (*mut mosura_table, *mut mosura_table) = (ptr::null_mut(), ptr::null_mut());
+    assert_eq!(unsafe { mosura_emulate(l, mosura_view { ptr: pushfd.as_ptr(), len: pushfd.len() }, 0x1000, ptr::null(), &mut all) }, MOSURA_OK, "{}", last());
+    assert_eq!(unsafe { mosura_emulate(l, mosura_view { ptr: pushfd.as_ptr(), len: pushfd.len() }, 0x1000, ignore, &mut left) }, MOSURA_OK, "{}", last());
+    assert!(uninitialized(all).contains(&"NT".to_string()), "{:?}", uninitialized(all));
+    assert_eq!(uninitialized(left), ["ESP"]);
     // emulate.save-state / emulate.state: `inc eax; ret` twice through one state name
     let inc = [0x40u8, 0xc3];
     let inc_bytes = mosura_view { ptr: inc.as_ptr(), len: inc.len() };
