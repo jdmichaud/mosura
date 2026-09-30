@@ -184,6 +184,18 @@ if have clang-19 && have rustc && have llvm-nm-19 && have llvm-objdump-19 && hav
       "AARCH64:LE:64:v8A" "" "" llvm-nm-19 llvm-objdump-19
     llvm-objcopy-19 --strip-all call_returns.clang-aarch64.unstripped call_returns.clang-aarch64
     rm -f call_returns.clang-aarch64.unstripped
+    # Big-endian memory and registers (reference execution), as raw text with a symbol list: the
+    # 68000 set assembled (lld links no m68k; the routines need no relocation) and the MIPS BE set
+    # linked by lld (mosura loads no MIPS ELF; the text is the image).
+    clang-19 --target=m68k-linux-gnu -c src/big_endian_m68k.S -o big_endian.clang-m68k.o
+    llvm-objcopy-19 -O binary -j .text big_endian.clang-m68k.o big_endian.clang-m68k.bin
+    llvm-nm-19 big_endian.clang-m68k.o | sort > big_endian.clang-m68k.syms
+    rm -f big_endian.clang-m68k.o
+    clang-19 --target=mips-linux-gnu -fno-pic -mno-abicalls -nostdlib -static -fuse-ld="$clang_lld" \
+      src/big_endian_mips.S -o big_endian.clang-mips.elf
+    llvm-objcopy-19 -O binary -j .text big_endian.clang-mips.elf big_endian.clang-mips.bin
+    llvm-nm-19 big_endian.clang-mips.elf | sort > big_endian.clang-mips.syms
+    rm -f big_endian.clang-mips.elf
   fi
 fi
 

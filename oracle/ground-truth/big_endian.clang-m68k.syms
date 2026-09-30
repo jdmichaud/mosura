@@ -1,0 +1,6 @@
+00000000 T read_word
+00000008 T read_byte_view
+00000010 T store_long
+0000001c T store_high
+00000026 t data_word
+00000028 t data_long

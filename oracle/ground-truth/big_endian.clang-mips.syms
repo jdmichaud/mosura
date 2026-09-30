@@ -1,0 +1,8 @@
+00020190 T __start
+000201b8 T read_word
+000201c4 T read_byte_view
+000201d0 T read_long
+000201dc T store_long
+000201f0 t data_word
+000201f4 t data_long
+000381f0 d _gp
