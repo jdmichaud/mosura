@@ -207,6 +207,24 @@ pub fn pspec_tracked_sets(pspec: &Path) -> Option<Vec<(String, u64)>> {
     Some(sets)
 }
 
+/// The register groups a language's `.pspec` declares (`<register_data><register name=..
+/// group=../>`, Ghidra's `Register.getGroup`), as `(register, group)` pairs; empty when the
+/// processor declares none (most name no group; x86 groups its FLAGS, FPU, DEBUG, CONTROL…), `None`
+/// when the language or its `.pspec` cannot be read.
+pub fn register_groups(language_id: &str) -> Option<Vec<(String, String)>> {
+    let (_, pspec) = resolve(language_id)?;
+    let text = crate::resources::get().read_string(pspec.to_str()?)?;
+    let doc = roxmltree::Document::parse(&text).ok()?;
+    let groups = doc
+        .descendants()
+        .filter(|n| n.tag_name().name() == "register_data")
+        .flat_map(|d| d.children())
+        .filter(|n| n.tag_name().name() == "register")
+        .filter_map(|n| Some((n.attribute("name")?.to_string(), n.attribute("group")?.to_string())))
+        .collect();
+    Some(groups)
+}
+
 /// Resolve pspec `<tracked_set>` `(name, value)` pairs against a [`Spec`]'s register table into the
 /// `(offset, size, value)` triples [`Spec::tracked_context`] holds — dropping any name the register
 /// table does not know (Ghidra would error; mosura skips, so an unknown tracked register is inert
@@ -375,6 +393,17 @@ mod tests {
         let (sla, pspec) = resolve("RISCV:LE:32:default").expect("the vendored tree has RISCV");
         assert!(!sla.to_string_lossy().contains("/old/") && !pspec.to_string_lossy().contains("/old/"), "{sla:?} {pspec:?}");
         assert!(sla.to_string_lossy().ends_with("RISCV/data/languages/riscv.ilp32d.sla"), "{sla:?}");
+    }
+
+    /// Register groups come from the processor spec: x86 files its flags under FLAGS and names no
+    /// group for a general register; a processor that declares none answers an empty list.
+    #[test]
+    fn register_groups_are_the_pspecs() {
+        let x86: std::collections::HashMap<String, String> = register_groups("x86:LE:32:default").expect("x86 pspec").into_iter().collect();
+        assert_eq!((x86.get("CF").map(String::as_str), x86.get("NT").map(String::as_str), x86.get("DR0").map(String::as_str)), (Some("FLAGS"), Some("FLAGS"), Some("DEBUG")));
+        assert!(!x86.contains_key("EAX"));
+        assert_eq!(register_groups("RISCV:LE:32:default").map(|g| g.len()), Some(0));
+        assert!(register_groups("nope:LE:32:default").is_none());
     }
 
     /// The x86 `.pspec` declares the direction flag as a tracked register at 0 (`<tracked_set>`),

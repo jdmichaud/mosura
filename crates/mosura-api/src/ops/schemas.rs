@@ -27,7 +27,7 @@ pub static FILES: Schema = Schema { name: "files", version: 1, columns: &[C::new
 pub static DATA: Schema = Schema { name: "data", version: 1, columns: &[C::new("name", T::Str), C::new("source", T::Str)] };
 
 pub static LANGUAGES: Schema = Schema { name: "languages", version: 1, columns: &[C::new("id", T::Str), C::new("processor", T::Str), C::new("endian", T::Str), C::new("size", T::U32), C::new("variant", T::Str), C::new("version", T::Str), C::new("description", T::Str), C::new("cspecs", T::Str)] };
-pub static REGISTERS: Schema = Schema { name: "registers", version: 1, columns: &[C::new("name", T::Str), C::new("space", T::Str), C::hex("offset", T::U64), C::new("size", T::U32)] };
+pub static REGISTERS: Schema = Schema { name: "registers", version: 2, columns: &[C::new("name", T::Str), C::new("space", T::Str), C::hex("offset", T::U64), C::new("size", T::U32), C::new("group", T::Str)] };
 pub static EMIT_AXES: Schema = Schema { name: "emit_axes", version: 1, columns: &[C::new("name", T::Str), C::new("values", T::Str), C::new("default", T::Str), C::new("doc", T::Str)] };
 pub static EMIT_ARMS: Schema = Schema { name: "emit_arms", version: 1, columns: &[C::new("name", T::Str)] };
 

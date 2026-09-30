@@ -21,7 +21,7 @@ impl Language {
         Ok(Language { raw: Raw::new(out) })
     }
 
-    /// registers: name, space, offset, size.
+    /// registers: name, space, offset, size, group (the processor spec's register group; empty when none).
     pub fn registers(&self) -> Result<Table> {
         let mut out: *mut mosura_table = std::ptr::null_mut();
         check(unsafe { mosura_capi::mosura_language_registers(self.raw.ptr(), &mut out) })?;

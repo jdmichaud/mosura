@@ -65,7 +65,7 @@ pub unsafe extern "C" fn mosura_language_open(ctx: *mut mosura_ctx, language_id:
     })
 }
 
-/// registers: name, space, offset, size.
+/// registers: name, space, offset, size, group (the processor spec's register group; empty when none).
 #[no_mangle]
 pub unsafe extern "C" fn mosura_language_registers(l: *mut mosura_language, out: *mut *mut mosura_table) -> mosura_status {
     guard(|| {

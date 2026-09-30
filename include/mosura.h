@@ -342,7 +342,7 @@ mosura_status mosura_languages(mosura_ctx *ctx, mosura_table **out);
 mosura_status mosura_language_open(mosura_ctx *ctx, const char *language_id, mosura_language **out);
 
 /**
- * registers: name, space, offset, size.
+ * registers: name, space, offset, size, group (the processor spec's register group; empty when none).
  */
 mosura_status mosura_language_registers(mosura_language *l, mosura_table **out);
 

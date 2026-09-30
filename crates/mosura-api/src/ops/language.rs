@@ -39,14 +39,16 @@ pub fn languages_table() -> Table {
     b.finish(true)
 }
 
-/// The register file of a language: name, space, offset, size — sorted by offset, wider first.
+/// The register file of a language: name, space, offset, size, and the group its processor spec
+/// files it under (empty when none) — sorted by offset, wider first.
 pub fn registers_table(lang_id: &str) -> Result<Table> {
     let (spec, _) = mosura_core::lang::load_cached(lang_id).ok_or_else(|| Error::NotFound(format!("language `{lang_id}` (tables unavailable)")))?;
     let mut regs: Vec<((u64, u32), String)> = spec.register_table();
     regs.sort_by(|a, b| (a.0 .0, std::cmp::Reverse(a.0 .1), &a.1).cmp(&(b.0 .0, std::cmp::Reverse(b.0 .1), &b.1)));
+    let groups: std::collections::HashMap<String, String> = mosura_core::lang::register_groups(lang_id).unwrap_or_default().into_iter().collect();
     let mut b = TableBuilder::new(&REGISTERS);
     for ((off, size), name) in &regs {
-        b.row().str(name).str("register").u64(*off).u32(*size);
+        b.row().str(name).str("register").u64(*off).u32(*size).str(groups.get(name).map_or("", String::as_str));
     }
     Ok(b.finish(false))
 }
