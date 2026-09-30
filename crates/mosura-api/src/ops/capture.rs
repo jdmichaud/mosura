@@ -500,7 +500,7 @@ fn capture(s: &mut Session, o: &Options, prog: &mut dyn Progress) -> Result<Tabl
         names: RegisterNames::of(spec),
         cs: &cs,
         state,
-        opts: RunOptions { entry: Some(entry), follow_calls: cs.follow_calls, max_steps: cs.max_steps, trace: false },
+        opts: RunOptions { entry: Some(entry), follow_calls: cs.follow_calls, max_steps: cs.max_steps, ..RunOptions::default() },
         seen: HashSet::new(),
         b: TableBuilder::new(&CAPTURE),
         case: 0,

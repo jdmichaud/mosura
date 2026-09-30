@@ -30,7 +30,7 @@ struct Settings {
 
 impl Settings {
     fn run_options(&self, entry: Option<u64>) -> RunOptions {
-        RunOptions { entry, follow_calls: self.follow_calls, max_steps: self.max_steps, trace: self.effects }
+        RunOptions { entry, follow_calls: self.follow_calls, max_steps: self.max_steps, trace: self.effects, ..RunOptions::default() }
     }
 }
 
@@ -188,7 +188,7 @@ pub(crate) fn program_blocks(p: &Program) -> Vec<(u64, &[u8])> {
 
 /// One effect as its row text: a verb and its operands, space-separated, numbers in hex (a size in
 /// decimal) — `store <space> <address> <size> <value>`, `call <target>`, `in|out <port> <size>
-/// <value>`, `swi <number>`, `fault`; any argument values follow, in order.
+/// <value>`, `swi <number>`, `stub <address>`, `fault`; any argument values follow, in order.
 fn effect_text(e: &Effect) -> String {
     let args = |vals: &[u64]| vals.iter().map(|v| format!(" {v:#x}")).collect::<String>();
     match e {
@@ -197,6 +197,7 @@ fn effect_text(e: &Effect) -> String {
         Effect::Fault => "fault".to_string(),
         Effect::Port(write, port, size, value) => format!("{} {port:#x} {size} {value:#x}", if *write { "out" } else { "in" }),
         Effect::Swi(n, vals) => format!("swi {n:#x}{}", args(vals)),
+        Effect::Stub(at) => format!("stub {at:#x}"),
     }
 }
 

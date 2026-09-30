@@ -519,3 +519,38 @@ fn a_skipped_call_gives_its_stack_back() {
     let r = f.run(f.from("caller"), f.entry("caller"), &[(sp, STACK)], &RunOptions::default());
     assert_eq!(f.read(&r, "EAX"), f.entry("caller") + 10, "without a stack pointer the pushed return address stays (push 5 bytes, call 5)");
 }
+
+/// A stub returns at once when control reaches it, by call or by jump: to the innermost entered
+/// call's fall-through, with the stack pointer as that call began — the language's return, on
+/// x86 and AArch64 alike. `middle` tail-jumps into the stubbed `device`, so `outer` answers
+/// 5 + 1 = 6 instead of 100, with its stack exactly as after the real run; a stubbed call target
+/// returns before doing anything; a stub reached with no entered call to return to (the entry
+/// itself) ends the run as returned. Each hit is a `Stub` effect and costs one step.
+#[test]
+fn a_stub_returns_when_control_reaches_it() {
+    use mosura_core::analysis::cspec::stack_pointer_register;
+    use mosura_core::sleigh::emu::Image;
+    for (f, sp, result) in call_returns() {
+        let (sp_off, sp_size) = stack_pointer_register(f.spec, &f.lang, &f.cspec).unwrap();
+        let seeds = f.seeds(&[(sp, STACK), (result, 0)]);
+        let mut image = Image::new(f.spec, &f.image, f.image_base, f.ctx).with_stack_pointer(sp_off, sp_size);
+        let at = |entry: &str, stubs: &[&str], trace: bool| RunOptions {
+            entry: Some(f.entry(entry)),
+            follow_calls: true,
+            trace,
+            stubs: stubs.iter().map(|s| f.entry(s)).collect(),
+            ..RunOptions::default()
+        };
+        let real = image.run(&seeds, &at("outer", &[], false));
+        assert_eq!((real.stop, f.read(&real, result)), (Stop::Returned, 100), "{}", f.lang);
+        let stubbed = image.run(&seeds, &at("outer", &["device"], true));
+        assert_eq!((stubbed.stop, f.read(&stubbed, result)), (Stop::Returned, 6), "{}: the tail jump returned to outer", f.lang);
+        assert_eq!(f.read(&stubbed, sp), f.read(&real, sp), "{}: the stack stands as after the real run", f.lang);
+        let stubs: Vec<&Effect> = stubbed.machine.effects.iter().filter(|e| matches!(e, Effect::Stub(_))).collect();
+        assert_eq!(stubs, [&Effect::Stub(f.entry("device"))], "{}", f.lang);
+        let called = image.run(&seeds, &at("outer", &["middle"], false));
+        assert_eq!((f.read(&called, result), f.read(&called, sp)), (1, f.read(&real, sp)), "{}: a stubbed call target", f.lang);
+        let entry = image.run(&seeds, &at("device", &["device"], false));
+        assert_eq!((entry.stop, f.read(&entry, result), entry.steps), (Stop::Returned, 0, 1), "{}: a stubbed entry", f.lang);
+    }
+}

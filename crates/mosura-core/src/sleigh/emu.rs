@@ -208,6 +208,8 @@ pub enum Effect {
     /// whose target declares no contract — because an `INT 0x21` with `AH = 0x4c` and one with
     /// `AH = 0x3d` are different programs and comparing the number alone would not tell them apart.
     Swi(u64, Vec<u64>),
+    /// Control reached a stub ([`RunOptions::stubs`]), which returned at once: `(address)`.
+    Stub(u64),
 }
 
 /// A cheap deterministic mix — not a hash, just a spreader.
@@ -1428,11 +1430,19 @@ pub struct RunOptions {
     /// same byte written to the same address lands in a different plane depending on the map mask
     /// the program last wrote to the sequencer.
     pub trace: bool,
+    /// Addresses that return at once when control reaches them, by a call or by a jump — the
+    /// harness's way to leave a routine out of a run (a device driver, a sound routine) without
+    /// patching the image. A stub returns as the language's return does: to the fall-through of
+    /// the innermost call the run entered, with the stack pointer as that call began
+    /// ([`Image::with_stack_pointer`]). Reached with no entered call to return to — the entry
+    /// itself, or a jump from the entry routine — it ends the run as [`Stop::Returned`]. Each hit
+    /// costs one step and, traced, is an [`Effect::Stub`].
+    pub stubs: BTreeSet<u64>,
 }
 
 impl Default for RunOptions {
     fn default() -> Self {
-        Self { entry: None, follow_calls: false, max_steps: 5_000_000, trace: false }
+        Self { entry: None, follow_calls: false, max_steps: 5_000_000, trace: false, stubs: BTreeSet::new() }
     }
 }
 
@@ -1601,6 +1611,22 @@ impl<'a> Image<'a> {
         // and the stack pointer at the start of its instruction (when the image names one).
         let mut frames: Vec<(u64, Option<u64>)> = Vec::new();
         let stop = 'run: loop {
+            if opts.stubs.contains(&pc) {
+                if steps >= opts.max_steps {
+                    break 'run Stop::StepCap;
+                }
+                steps += 1;
+                m.at = (pc, steps);
+                if m.trace {
+                    m.record(Effect::Stub(pc));
+                }
+                let Some((ret, sp)) = frames.pop() else { break 'run Stop::Returned };
+                if let (Some((off, size)), Some(sp)) = (stack, sp) {
+                    m.write("register", off, size, sp);
+                }
+                pc = ret;
+                continue;
+            }
             let Some(insn) = self.at(pc) else { break Stop::NoInstruction(pc) };
             let (ops, next) = (&insn.ops, insn.next);
             let sp_at_call = match (insn.calls, stack) {
