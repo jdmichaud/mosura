@@ -197,6 +197,21 @@ address, so with the base unset a driver's `gs:[disp]` reads flat `disp`, somewh
 executable, and the run otherwise looks clean. Seed the base by name (`emulate.registers=
 GS_OFFSET=…`); a run that did not is named by its `uninitialized` row.
 
+Some reads are expected and only crowd the rows out: x86's `PUSHFD` reads every flag, `NT`, `ID`
+and `VIP` included. `emulate.uninitialized-ignore` (CLI `--uninitialized-ignore`) leaves them out,
+in `sleigh.emulate`, `function.emulate` and `function.capture` alike: a comma-separated list of
+register names and register groups. The groups are the processor spec's (`<register_data>`, Ghidra's
+`Register.getGroup`), listed in the `group` column of `mosura registers --language …`: x86 files
+its flags under `FLAGS`, its x87 state under `FPU` and `ST`, and so on; most processors declare no
+group, and a register name works on every one. A read inside a named register goes with it (`AX`
+with `EAX`). An entry that is neither a register nor a group of the language is an error rather
+than a filter that matches nothing.
+
+```sh
+mosura -S s emulate 0x40101e --uninitialized-ignore FLAGS
+mosura -S s capture 0x40101e --spec routine.json --uninitialized-ignore FLAGS,EBP
+```
+
 Every stop but `returned` is a reason to reject the capture, and the reason is named:
 
 * **`fault`** — the program trapped. A division by zero, or a quotient the destination cannot
