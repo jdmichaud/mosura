@@ -26,6 +26,18 @@ the debugger. `sor` plans 68k routine vectors from mosura. Probing 68k BEFORE it
   address lines (`0xffffff`); Ghidra's language says 32, so it is an explicit option, not inferred.
 - Workspace 1377 passed, 0 failed on `4ec1c229`'s tree (`65-workspace-mask.log`).
 - LESSON: emulation had only ever been exercised on LE targets; "all targets" claims need a BE test.
+- Code map for sor (R1): `ad838b8e` `load.entries` (raw image entry points) · `60923c18` `load.flows`
+  (`jump:FROM=TO,…;call:FROM=TO,…` = Ghidra user COMPUTED_JUMP/CALL refs). Measured vs sor's golden
+  (25,351 starts): vectors only 1,850 · Ghidra 6,508 · entries+flows 24,824 · + `analysis.disable=
+  Non-Returning Functions - Discovered` 25,362 (25,327 golden, 24 missing, 35 extra). Evidence
+  `<repo parent>/validation/sor-codemap/`.
+- Found on the way: `929c1d35` heritage `guard` infinite loop (while+continue without advance) ·
+  `c00bca86` jump-table cap was 4096 (unowned) vs Ghidra 1024 → 2048-case switch, minutes/decompile ·
+  `02fc0983` structuring rebuilt in-edges per block (quadratic).
+- ⚠️ Ghidra's no-return DISCOVERY misfires on hand-written asm that falls into shared subroutines
+  (3 call sites followed by a function entry ⇒ "non-returning") — faithful, not a bug; the remedy
+  is `analysis.disable`. OPEN: TraceDAG pushBranches non-convergence (SoR FUN_bb18, FUN_732ea);
+  address tables 641 vs Ghidra 409 on 68000; declared data for sor's tables.
 
 ## Live status — `master` (2026-09-30): the refexec room's four items LANDED
 
