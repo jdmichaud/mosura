@@ -356,3 +356,44 @@ fn capture_refuses_a_malformed_specification() {
     let err = dispatch(&c, &mut s, "function.capture", &opts(&[("entry", entry(&e, "table_sum"))]), &mut NoProgress).unwrap_err();
     assert!(matches!(err, Error::InvalidArg(_)), "no specification: {err:?}");
 }
+
+/// A register the run read before anything wrote it is named: an `uninitialized` outcome row at
+/// the site of its first read, and the `uninitialized` column of a capture row. A GS read with
+/// its base unset reads from zero and says so; seeded, it reads the right memory and says nothing.
+#[test]
+fn a_register_read_before_anything_wrote_it_is_named() {
+    let c = ctx();
+    for bits in [32, 64] {
+        let sp = if bits == 64 { "RSP" } else { "ESP" };
+        let (mut s, e) = session(&c, "segment_base", bits);
+        let gs = entry(&e, "read_gs");
+        let memory = ("emulate.memory", "0x10=11111111;0x5010=22222222");
+        let stack = format!("{sp}=0x0f000000");
+        let t = dispatch(&c, &mut s, "function.emulate", &opts(&[("entry", gs), memory, ("emulate.registers", &stack)]), &mut NoProgress).unwrap();
+        let r = rows(&t);
+        assert_eq!(register(&r, &["EAX", "RAX"]), 0x1111_1111, "x86-{bits}: the base read as zero");
+        let named: Vec<(String, u64, u64)> = (0..t.rows())
+            .filter(|&i| t.str(i, 0).unwrap() == "outcome" && t.str(i, 1).unwrap() == "uninitialized")
+            .map(|i| (t.str(i, 2).unwrap().to_string(), t.u64(i, 3).unwrap(), t.u64(i, 4).unwrap()))
+            .collect();
+        let at = u64::from_str_radix(gs.trim_start_matches("0x"), 16).unwrap();
+        assert_eq!(named, [("GS_OFFSET".to_string(), at, 1)], "x86-{bits}");
+        let seeded = format!("{stack},GS_OFFSET=0x5000");
+        let r = rows(&dispatch(&c, &mut s, "function.emulate", &opts(&[("entry", gs), memory, ("emulate.registers", &seeded)]), &mut NoProgress).unwrap());
+        assert_eq!(register(&r, &["EAX", "RAX"]), 0x2222_2222, "x86-{bits}");
+        assert!(!r.iter().any(|(k, n, _)| k == "outcome" && n == "uninitialized"), "x86-{bits}: {r:?}");
+
+        let spec = |registers: serde_json::Value| serde_json::json!({
+            "registers": registers, "inputs": [], "outputs": [reg_slot("eax", "EAX")],
+            "cases": [{ "kind": "explicit", "rows": [{}] }],
+        });
+        let column = |registers: serde_json::Value, s: &mut Session| {
+            let text = spec(registers).to_string();
+            let t = dispatch(&c, s, "function.capture", &opts(&[("entry", gs), ("capture.spec", &text)]), &mut NoProgress).unwrap();
+            t.str(0, t.col("uninitialized").expect("an `uninitialized` column")).unwrap().to_string()
+        };
+        assert_eq!(column(serde_json::json!({ sp: "0x0f000000" }), &mut s), "GS_OFFSET", "x86-{bits}");
+        assert_eq!(column(serde_json::json!({ sp: "0x0f000000", "GS_OFFSET": "0x5000" }), &mut s), "", "x86-{bits}");
+        assert_eq!(column(serde_json::json!({}), &mut s), format!("GS_OFFSET,{sp}"), "x86-{bits}: in the order of their first read");
+    }
+}

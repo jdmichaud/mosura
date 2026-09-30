@@ -39,6 +39,7 @@ the run — and are 0 for a row that is not an event:
 | `outcome` | `address` | with `no-instruction`: the address that had none (past the bytes, or a call target outside them) |
 | `outcome` | `steps` | how many p-code operations executed |
 | `outcome` | `unmodeled`, `unmodeled-op` | how many operations the interpreter does not model were met, and which (any non-zero count makes the run no evidence at all) |
+| `outcome` | `uninitialized` | a register the run read before anything wrote it (the seeds count as writes), at its first such read — see below |
 | `register` | the register | its final value as hex, one row per register the state holds in full, widest first — `EAX` is reported, its `AX`/`AL`/`AH` inside it are not |
 | `memory` | an address | the bytes the state holds from there, as hex: what was seeded and what the routine stored |
 | `effect` | `1`, `2`, … | with `emulate.effects`: one thing the run did, in order, at the instruction and step its `at` and `step` name — `store <space> <address> <size> <value>`, `call <target>` (followed or not), `in`/`out <port> <size> <value>`, `swi <number>`, `fault`; numbers in hex, sizes in decimal |
@@ -125,8 +126,11 @@ does not have or a value wider than its input. The generators:
 `emulate.state` names a stored machine state every vector starts from. The answer is a `capture`
 table, one row per vector: `case` (1, 2, …), `generator` (its index in `cases`), `inputs` and
 `outputs` (in the specification's order; no outputs unless the run returned), `stop`, `address`
-(with `no-instruction`), `steps`, `unmodeled` and `unmodeled_ops`. A row is evidence only when it
-`returned` with nothing unmodeled; the others are the rejected cases, each with its reason.
+(with `no-instruction`), `steps`, `unmodeled`, `unmodeled_ops` and `uninitialized` (the registers
+the vector read before anything wrote them, in the order of their first read). A row is evidence
+only when it `returned` with nothing unmodeled; the others are the rejected cases, each with its
+reason. A row whose `uninitialized` names a register the specification meant to set — a segment
+base above all — depends on a value nobody supplied.
 
 The generators are those of the external reference executor this operation replaces, draw for
 draw, so its routine specifications carry over: pieces are the same `{space, offset, size, shift}`; its
@@ -154,6 +158,15 @@ working point, not a measurement. A run that names one starts from it, over the 
 and its own seeds apply on top. States of a C API language handle live in that handle's session.
 
 ## Why a run stopped
+
+A register nobody wrote reads as zero, as in Ghidra's emulator, which warns "Uninitialized register
+read at <pc>: <register>" for each (`EmulatorHelper.uninitializedRead`); the `uninitialized` rows
+are that warning. Most are harmless — a callee-saved register pushed and popped, the stack pointer
+of an unseeded `RET` — but a result that depends on one depends on a value nobody supplied. A
+segment base is the sharp case: an `FS:` or `GS:` override adds `FS_OFFSET` or `GS_OFFSET` to the
+address, so with the base unset a driver's `gs:[disp]` reads flat `disp`, somewhere in the
+executable, and the run otherwise looks clean. Seed the base by name (`emulate.registers=
+GS_OFFSET=…`); a run that did not is named by its `uninitialized` row.
 
 Every stop but `returned` is a reason to reject the capture, and the reason is named:
 

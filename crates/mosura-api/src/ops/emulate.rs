@@ -18,7 +18,7 @@ use mosura_core::analysis::program::Program;
 use mosura_core::sleigh::emu::{Effect, Image, Machine, Run, RunOptions, Stop};
 use mosura_core::sleigh::engine::Spec;
 
-pub static SLEIGH_EMULATE: Op = Op { name: "sleigh.emulate", doc: "execute the p-code of raw bytes from base (or emulate.entry) over an initial state (emulate.registers, emulate.memory; the bytes themselves are memory too) until the routine returns, faults, reaches an address with no instruction, or spends emulate.max-steps; a call is an event unless emulate.follow-calls. Rows: outcome (stop = returned | fault | no-instruction | step-cap, address, steps, unmodeled, unmodeled-op), register (every register the final state holds, widest first), memory (every run of bytes it holds, as hex), and with emulate.effects every effect of the run in order; emulate.state starts from a stored machine state, emulate.save-state stores the one the run stopped in", since: "0.1", tier: Tier::Product, params: &["lang", "bytes", "base", "ctx", keys::EMULATE_ENTRY, keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS, keys::EMULATE_EFFECTS, keys::EMULATE_STATE, keys::EMULATE_SAVE_STATE], result: "emulation", cache: Cache::Transient, run: sleigh_emulate };
+pub static SLEIGH_EMULATE: Op = Op { name: "sleigh.emulate", doc: "execute the p-code of raw bytes from base (or emulate.entry) over an initial state (emulate.registers, emulate.memory; the bytes themselves are memory too) until the routine returns, faults, reaches an address with no instruction, or spends emulate.max-steps; a call is an event unless emulate.follow-calls. Rows: outcome (stop = returned | fault | no-instruction | step-cap, address, steps, unmodeled, unmodeled-op, uninitialized: a register read before anything wrote it), register (every register the final state holds, widest first), memory (every run of bytes it holds, as hex), and with emulate.effects every effect of the run in order; emulate.state starts from a stored machine state, emulate.save-state stores the one the run stopped in", since: "0.1", tier: Tier::Product, params: &["lang", "bytes", "base", "ctx", keys::EMULATE_ENTRY, keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS, keys::EMULATE_EFFECTS, keys::EMULATE_STATE, keys::EMULATE_SAVE_STATE], result: "emulation", cache: Cache::Transient, run: sleigh_emulate };
 pub static FUNCTION_EMULATE: Op = Op { name: "function.emulate", doc: "execute one function (entry) of a program through the p-code interpreter, with the program's loaded image as memory, over an initial state (emulate.registers, emulate.memory) until it returns, faults, reaches an address with no instruction, or spends emulate.max-steps; a call is an event unless emulate.follow-calls. Rows as sleigh.emulate", since: "0.1", tier: Tier::Product, params: &["program", "entry", keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS, keys::EMULATE_EFFECTS, keys::EMULATE_STATE, keys::EMULATE_SAVE_STATE], result: "emulation", cache: Cache::Transient, run: function_emulate };
 
 /// The run settings every emulate operation reads.
@@ -76,6 +76,24 @@ fn seeds(o: &Options, spec: &Spec, lang: &str) -> Result<Seeds> {
         memory.push((addr, parse_bytes(hex)?));
     }
     Ok(Seeds { registers, memory })
+}
+
+/// The language's registers by storage, to name a register the interpreter reports by
+/// `(offset, size)`: the register exactly there (the first by name when several alias it), else
+/// `register:<offset>:<size>`. Built once per operation.
+pub(crate) struct RegisterNames(std::collections::HashMap<(u64, u32), String>);
+
+impl RegisterNames {
+    pub(crate) fn of(spec: &Spec) -> Self {
+        let mut names: std::collections::HashMap<(u64, u32), String> = std::collections::HashMap::new();
+        for ((off, size), name) in spec.register_table() {
+            names.entry((off, size)).and_modify(|n| if name < *n { *n = name.clone() }).or_insert(name);
+        }
+        Self(names)
+    }
+    pub(crate) fn name(&self, offset: u64, size: u32) -> String {
+        self.0.get(&(offset, size)).cloned().unwrap_or_else(|| format!("register:{offset:#x}:{size}"))
+    }
 }
 
 /// The language's default space: where the image lives and where memory seeds go.
@@ -175,6 +193,11 @@ fn emulation_table(spec: &Spec, run: &Run) -> Table {
     row("outcome", "unmodeled", &run.machine.unmodeled.to_string(), (0, 0));
     for name in &run.machine.unmodeled_ops {
         row("outcome", "unmodeled-op", name, (0, 0));
+    }
+    // Every register the run read before anything wrote it, at its first such read.
+    let names = RegisterNames::of(spec);
+    for (off, size, site) in run.machine.uninitialized_registers() {
+        row("outcome", "uninitialized", &names.name(off, size), site);
     }
     // Every register the final state holds in full, widest first at each offset; a register
     // inside one already reported (AX inside EAX) is not repeated. Wider than a machine word is

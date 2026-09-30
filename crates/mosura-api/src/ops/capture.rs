@@ -13,7 +13,7 @@ use serde_json::{Map, Value};
 
 use crate::error::{Error, Result};
 use crate::options::{keys, Options};
-use crate::ops::emulate::{prepare, program_blocks, stored_state, Seeds};
+use crate::ops::emulate::{prepare, program_blocks, stored_state, RegisterNames, Seeds};
 use crate::ops::function::entry_of;
 use crate::ops::program::program_of;
 use crate::ops::schemas::CAPTURE;
@@ -25,7 +25,7 @@ use crate::table::Table;
 use mosura_core::sleigh::emu::{Image, RunOptions, Stop};
 use mosura_core::sleigh::engine::Spec;
 
-pub static FUNCTION_CAPTURE: Op = Op { name: "function.capture", doc: "run many input vectors through one function (entry) of a program over one decoded image, the program's loaded image as memory: capture.spec (JSON) names the inputs and outputs as register and memory pieces, the seeds every vector shares and the generators (explicit, range, sample, chain); emulate.state is every vector's starting state. One row per vector: case, generator, inputs, outputs (when it returned), stop, address, steps, unmodeled", since: "0.1", tier: Tier::Product, params: &["program", "entry", keys::CAPTURE_SPEC, keys::EMULATE_STATE], result: "capture", cache: Cache::Transient, run: capture };
+pub static FUNCTION_CAPTURE: Op = Op { name: "function.capture", doc: "run many input vectors through one function (entry) of a program over one decoded image, the program's loaded image as memory: capture.spec (JSON) names the inputs and outputs as register and memory pieces, the seeds every vector shares and the generators (explicit, range, sample, chain); emulate.state is every vector's starting state. One row per vector: case, generator, inputs, outputs (when it returned), stop, address, steps, unmodeled, uninitialized (registers read before anything wrote them)", since: "0.1", tier: Tier::Product, params: &["program", "entry", keys::CAPTURE_SPEC, keys::EMULATE_STATE], result: "capture", cache: Cache::Transient, run: capture };
 
 /// `size` bytes at `offset` in `space`, holding the value's bits from `shift` up.
 struct Piece {
@@ -415,6 +415,7 @@ impl SplitMix64 {
 struct Runner<'a> {
     image: Image<'a>,
     spec: &'a Spec,
+    names: RegisterNames,
     cs: &'a CaptureSpec,
     state: Vec<(String, u64, Vec<u8>)>,
     opts: RunOptions,
@@ -461,7 +462,8 @@ impl Runner<'_> {
             Vec::new()
         };
         let unmodeled: Vec<&str> = run.machine.unmodeled_ops.iter().map(String::as_str).collect();
-        self.b.row().u64(self.case).u32(generator).list_u64(&row).list_u64(&outputs).str(stop).u64(address).u64(run.steps as u64).u64(run.machine.unmodeled as u64).str(&unmodeled.join(","));
+        let uninitialized: Vec<String> = run.machine.uninitialized_registers().into_iter().map(|(off, size, _)| self.names.name(off, size)).collect();
+        self.b.row().u64(self.case).u32(generator).list_u64(&row).list_u64(&outputs).str(stop).u64(address).u64(run.steps as u64).u64(run.machine.unmodeled as u64).str(&unmodeled.join(",")).str(&uninitialized.join(","));
         Ok((run.stop == Stop::Returned && run.machine.unmodeled == 0).then_some(outputs))
     }
 }
@@ -480,6 +482,7 @@ fn capture(s: &mut Session, o: &Options, prog: &mut dyn Progress) -> Result<Tabl
     let mut runner = Runner {
         image: Image::from_blocks(spec, &blocks, ctx).with_image_memory(),
         spec,
+        names: RegisterNames::of(spec),
         cs: &cs,
         state,
         opts: RunOptions { entry: Some(entry), follow_calls: cs.follow_calls, max_steps: cs.max_steps, trace: false },

@@ -375,7 +375,8 @@ mosura_status mosura_lift(mosura_language *l,
  * `emulate.state` and `emulate.save-state` (a machine state kept in the handle's session). The
  * bytes are memory as well as code.
  * emulation: kind, name, value, at, step — `outcome` rows (stop = returned | fault | no-instruction |
- * step-cap; address; steps; unmodeled; unmodeled-op), `register` rows (every register the final
+ * step-cap; address; steps; unmodeled; unmodeled-op; uninitialized: a register read
+ * before anything wrote it), `register` rows (every register the final
  * state holds, widest first), `memory` rows (every run of bytes it holds, as hex) and, with
  * `emulate.effects`, `effect` rows (what the run did, in order, each at the instruction address
  * and p-code step in its `at` and `step`).
@@ -511,7 +512,7 @@ mosura_status mosura_program_emulate(mosura_program *p,
  * Run every input vector a capture specification generates through the function at `entry`
  * (`function.capture`). `spec` is the specification as JSON text (docs/emulation.md); `opts`
  * (NULL = none): emulate.state. capture: case, generator, inputs, outputs, stop, address, steps,
- * unmodeled, unmodeled_ops — one row per vector.
+ * unmodeled, unmodeled_ops, uninitialized — one row per vector.
  */
 mosura_status mosura_program_capture(mosura_program *p,
                                      uint64_t entry,

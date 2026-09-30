@@ -145,7 +145,7 @@ pub unsafe extern "C" fn mosura_program_emulate(p: *mut mosura_program, entry: u
 /// Run every input vector a capture specification generates through the function at `entry`
 /// (`function.capture`). `spec` is the specification as JSON text (docs/emulation.md); `opts`
 /// (NULL = none): emulate.state. capture: case, generator, inputs, outputs, stop, address, steps,
-/// unmodeled, unmodeled_ops — one row per vector.
+/// unmodeled, unmodeled_ops, uninitialized — one row per vector.
 #[no_mangle]
 pub unsafe extern "C" fn mosura_program_capture(p: *mut mosura_program, entry: u64, spec: *const c_char, opts: *const mosura_options, progress: mosura_progress_fn, progress_user: *mut c_void, out: *mut *mut mosura_table) -> mosura_status {
     guard(|| {
