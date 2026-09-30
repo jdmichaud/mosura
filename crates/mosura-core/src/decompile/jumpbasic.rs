@@ -835,9 +835,11 @@ pub fn find_determining_varnodes(data: &mut Funcdata, op: OpId, slot: i32) -> Pa
     path_meld
 }
 
-/// The maximum normalized-range size mosura accepts for a jump table (Ghidra's `maxtablesize`);
-/// matches the cap in [`super::jumptable::recover_one`].
-const MAX_TABLE_SIZE: u64 = 4096;
+/// The maximum normalized-range size of a jump table: Ghidra's `max_jumptable_size`
+/// (`Architecture::resetDefaultsInternal`, architecture.cc:1433; the Java side's
+/// `DecompileOptions.SUGGESTED_MAX_JUMPTABLE_ENTRIES`, which "must match"), handed to
+/// `recoverModel` as `maxtablesize`. A range larger than this is no switch Ghidra recovers.
+const MAX_TABLE_SIZE: u64 = 1024;
 
 /// Ghidra `JumpBasic::calcRange` (`jumptable.cc:1120`): the range of values `vn` can hold when
 /// control reaches the switch. Start from an initial range (constant value / boolean / nzmask +

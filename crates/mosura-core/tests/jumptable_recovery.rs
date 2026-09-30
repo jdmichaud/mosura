@@ -107,3 +107,31 @@ fn switch_o2_register_guard_with_cold_block_below_entry() {
         "7 COMPUTED_JUMP targets, matching Ghidra analyzeHeadless"
     );
 }
+
+/// Ghidra recovers a jump table only if its normalized range holds at most `max_jumptable_size`
+/// = 1024 values (architecture.cc:1433; `JumpBasic::recoverModel` rejects a larger `jrange`).
+/// `and edi,MASK; jmp [rdi*8+0x3000]` over 2048 pointers to distinct `ret`s, decompiled as the switch analyzer does
+/// (a loaded raw program): MASK 0x3ff is 1024 cases and is recovered, MASK 0x7ff is 2048 and is
+/// not. (mosura capped at 4096, and a 68000 dispatcher whose range came out at 2048 became a
+/// 2048-case switch that took minutes to decompile, once per extent.)
+#[test]
+fn a_jump_table_over_1024_entries_is_declined() {
+    use mosura_core::analysis::{decompiler::decompile_function, loader::raw::load_raw_at};
+    use mosura_core::decompile::space::Address;
+    let cases = |mask: u16| {
+        let mut image = vec![0u8; 0x3000 + 2048 * 8];
+        image[0x1000..0x100d].copy_from_slice(&[0x81, 0xe7, mask as u8, (mask >> 8) as u8, 0x00, 0x00, 0xff, 0x24, 0xfd, 0x00, 0x30, 0x00, 0x00]);
+        // every case its own `ret`, so no two cases merge
+        image[0x1100..0x1100 + 2048].fill(0xc3);
+        for i in 0..2048 {
+            image[0x3000 + 8 * i..0x3008 + 8 * i].copy_from_slice(&(0x1100 + i as u64).to_le_bytes());
+        }
+        let mut p = load_raw_at(&image, "x86:LE:64:default", 0, &[0x1000]).unwrap();
+        mosura_core::analysis::analyze(&mut p);
+        let mut f = decompile_function(&p, Address::new(p.default_space, 0x1000)).expect("decompiles");
+        f.jump_tables().into_iter().map(|t| t.targets.len()).collect::<Vec<_>>()
+    };
+    assert_eq!(cases(0xf), [16], "the shape is recovered");
+    assert_eq!(cases(0x3ff), [1024], "1024 cases: recovered");
+    assert_eq!(cases(0x7ff), Vec::<usize>::new(), "2048 cases: over Ghidra's maximum, declined");
+}
