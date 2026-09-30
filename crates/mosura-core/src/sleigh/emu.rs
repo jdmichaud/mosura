@@ -133,6 +133,12 @@ pub struct Machine {
     swi_args: Vec<(u64, u32)>,
     /// Observable effects, in order (see [`Effect`]). Recorded only when `trace` is on.
     pub effects: Vec<Effect>,
+    /// Where each effect happened, index for index with [`Machine::effects`]: the address of the
+    /// instruction and the 1-based p-code step of the run.
+    pub effect_sites: Vec<(u64, usize)>,
+    /// The instruction executing and the p-code step, set by the run loop before each operation:
+    /// the site an effect records.
+    at: (u64, usize),
     trace: bool,
     /// Stores inside this half-open range are the program's own scratch (its stack frame) and are
     /// NOT recorded: two implementations of the same function may lay their frames out differently.
@@ -300,7 +306,7 @@ impl Machine {
         if self.trace && space != "register" && space != "unique" {
             let scratch = self.quiet.is_some_and(|(lo, hi)| offset >= lo && offset < hi);
             if !scratch {
-                self.effects.push(Effect::Store(space.to_string(), offset, size, mask(value, size)));
+                self.record(Effect::Store(space.to_string(), offset, size, mask(value, size)));
             }
         }
         let bank = self.mem.entry(space.to_string()).or_default();
@@ -318,7 +324,7 @@ impl Machine {
             let scratch = self.quiet.is_some_and(|(lo, hi)| offset >= lo && offset < hi);
             if !scratch {
                 for (i, b) in bytes.iter().enumerate() {
-                    self.effects.push(Effect::Store(space.to_string(), offset + i as u64, 1, u64::from(*b)));
+                    self.record(Effect::Store(space.to_string(), offset + i as u64, 1, u64::from(*b)));
                 }
             }
         }
@@ -333,6 +339,12 @@ impl Machine {
         let mut names: Vec<&str> = self.mem.iter().filter(|(_, bank)| !bank.is_empty()).map(|(n, _)| n.as_str()).collect();
         names.sort_unstable();
         names
+    }
+
+    /// Record an effect at the current site ([`Machine::effect_sites`]).
+    fn record(&mut self, e: Effect) {
+        self.effects.push(e);
+        self.effect_sites.push(self.at);
     }
 
     fn read_arg(&self, a: &PArg) -> u64 {
@@ -531,7 +543,7 @@ impl Machine {
     /// The program trapped: record the event when tracing and end the run.
     fn fault(&mut self) -> Flow {
         if self.trace {
-            self.effects.push(Effect::Fault);
+            self.record(Effect::Fault);
         }
         Flow::Fault
     }
@@ -616,7 +628,7 @@ impl Machine {
                 let val = op.ins.get(2).map_or(0, |a| self.read_arg(a));
                 let sz = op.ins.get(2).and_then(PArg::as_var).map_or(0, |v| v.size);
                 if self.trace {
-                    self.effects.push(Effect::Port(true, port, sz, val));
+                    self.record(Effect::Port(true, port, sz, val));
                 }
                 return Flow::Next;
             }
@@ -632,7 +644,7 @@ impl Machine {
                 // 0x494e is 'IN': a tag that keeps port space from aliasing the memory fill.
                 let v = self.fill.map_or(0, |seed| mask(mix(seed, port, 0x494e), osize));
                 if self.trace {
-                    self.effects.push(Effect::Port(false, port, osize, v));
+                    self.record(Effect::Port(false, port, osize, v));
                 }
                 v
             }
@@ -649,7 +661,7 @@ impl Machine {
                     args.push(self.read("register", off, sz));
                 }
                 if self.trace {
-                    self.effects.push(Effect::Swi(n, args));
+                    self.record(Effect::Swi(n, args));
                 }
                 SWI_VECTOR | (n & 0xff)
             }
@@ -1112,6 +1124,7 @@ pub fn run_traced(
     }
     // The seeding writes above are setup, not effects.
     m.effects.clear();
+    m.effect_sites.clear();
 
     let mut pc = base;
     let mut steps = 0usize;
@@ -1151,6 +1164,7 @@ pub fn run_traced(
             if steps > cfg.max_steps || m.effects.len() > cfg.max_effects {
                 break 'run;
             }
+            m.at = (pc, steps);
             let op = &ops[i];
             match opcode_name(op.opcode) {
                 // A CALL is an EVENT: record the target and the arguments its contract names,
@@ -1185,7 +1199,7 @@ pub fn run_traced(
                         let args = cfg.call_args.get(&target).map(|v| v.as_slice()).unwrap_or(cfg.default_args);
                         args.iter().map(|&(off, sz)| m.read("register", off, sz)).collect()
                     };
-                    m.effects.push(Effect::Call(target, vals));
+                    m.record(Effect::Call(target, vals));
                     calls += 1;
                     // The callee returned: take its return address back off the stack.
                     let (spoff, spsz) = cfg.sp;
@@ -1482,6 +1496,7 @@ impl<'a> Image<'a> {
     /// the writes that prepared the machine are setup, not effects (as in `run_traced`).
     pub fn resume(&mut self, mut m: Machine, opts: &RunOptions) -> Run {
         m.effects.clear();
+        m.effect_sites.clear();
         m.unmodeled = 0;
         m.unmodeled_ops.clear();
         m.last_quotient = None;
@@ -1499,6 +1514,7 @@ impl<'a> Image<'a> {
                     break 'run Stop::StepCap;
                 }
                 steps += 1;
+                m.at = (pc, steps);
                 let op = &ops[i];
                 let name = opcode_name(op.opcode);
                 if matches!(name, "CALL" | "CALLIND") && (opts.follow_calls || m.trace) {
@@ -1514,7 +1530,7 @@ impl<'a> Image<'a> {
                     let interrupt = target & !0xff == SWI_VECTOR;
                     if m.trace && !interrupt {
                         // By target only: no contract names this call's arguments.
-                        m.effects.push(Effect::Call(target, Vec::new()));
+                        m.record(Effect::Call(target, Vec::new()));
                     }
                     if opts.follow_calls {
                         if interrupt {

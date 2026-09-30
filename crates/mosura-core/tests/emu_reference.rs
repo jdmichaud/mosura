@@ -378,3 +378,18 @@ fn the_image_can_be_the_machines_memory() {
         assert_eq!(nowhere.stop, Stop::NoInstruction(0x10), "x86-{bits}");
     }
 }
+
+/// Each effect records where and when it happened, index for index with the effects: the address
+/// of the instruction and the 1-based p-code step. `call_chain`'s outer pushes its return address
+/// at the second operation of its CALL and makes the call at the third.
+#[test]
+fn each_effect_records_where_and_when() {
+    for bits in [32, 64] {
+        let f = fixture("call_chain", bits);
+        let e = f.entry("outer");
+        let traced = RunOptions { follow_calls: true, trace: true, ..RunOptions::default() };
+        let r = f.run(f.from("outer"), e, &[(f.sp(), STACK), ("EAX", 0)], &traced);
+        assert_eq!(r.machine.effects.len(), 2, "x86-{bits}: {:?}", r.machine.effects);
+        assert_eq!(r.machine.effect_sites, vec![(e, 2), (e, 3)], "x86-{bits}");
+    }
+}
