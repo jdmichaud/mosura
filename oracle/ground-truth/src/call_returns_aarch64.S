@@ -5,7 +5,8 @@
  *   callee  x0 = 7.
  *   outer   calls middle and adds one: x0 = middle's result + 1.
  *   middle  x0 = 5, then tail-branches into device.
- *   device  x0 = 99: stubbed, outer answers 6; entered, 100.
+ *   device  x0 = 99: stubbed, outer answers 6; entered, 100. _start calls it too, so the
+ *           analysis reaches it by a call, not only by middle's branch.
  */
 .text
 .globl _start, caller, callee, outer, middle, device
@@ -13,6 +14,7 @@
 _start:
     bl caller
     bl outer
+    bl device
     ret
 .size _start,.-_start
 

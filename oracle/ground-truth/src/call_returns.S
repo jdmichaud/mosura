@@ -9,7 +9,8 @@
  *   outer   calls middle and adds one: EAX = middle's result + 1.
  *   middle  EAX = 5, then tail-jumps into device.
  *   device  EAX = 99: the routine a harness stubs out. Stubbed, the tail jump returns to outer
- *           at once, so outer answers 6; entered, 100.
+ *           at once, so outer answers 6; entered, 100. _start also calls it, so it is a
+ *           function the analysis reaches by a call, not only the target of middle's jump.
  */
 #if defined(__x86_64__)
 #define SP %rsp
@@ -24,6 +25,7 @@
 _start:
     call caller
     call outer
+    call device
     ret
 .size _start,.-_start
 
