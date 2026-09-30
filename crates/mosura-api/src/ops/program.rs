@@ -20,7 +20,7 @@ use mosura_core::analysis::program::{CodeUnit, Program};
 use mosura_core::analysis::{self, Loader};
 use mosura_core::decompile::space::Address;
 
-const LOAD_PARAMS: &[&str] = &["input", keys::LOAD_LOADER, keys::LOAD_LANGUAGE, keys::LOAD_BASE, keys::LOAD_CSPEC_X86_32, keys::ANALYSIS_DISABLE, keys::ANALYSIS_SWITCH_TABLE_REFS, keys::ANALYSIS_DATA_POINTER_FUNCTIONS, keys::KNOBS_OFF];
+const LOAD_PARAMS: &[&str] = &["input", keys::LOAD_LOADER, keys::LOAD_LANGUAGE, keys::LOAD_BASE, keys::LOAD_ENTRIES, keys::LOAD_CSPEC_X86_32, keys::ANALYSIS_DISABLE, keys::ANALYSIS_SWITCH_TABLE_REFS, keys::ANALYSIS_DATA_POINTER_FUNCTIONS, keys::KNOBS_OFF];
 
 pub static LOAD: Op = Op { name: "program.load", doc: "load the input (no analysis) into a program set", since: "0.1", tier: Tier::Product, params: LOAD_PARAMS, result: "program_summary", cache: Cache::Pure { stage: Stage::Analysis, set: SetKind::Program }, run: |s, o, p| load_or_analyze(s, o, p, false) };
 pub static ANALYZE: Op = Op { name: "program.analyze", doc: "load and auto-analyze the input into a program set", since: "0.1", tier: Tier::Product, params: LOAD_PARAMS, result: "program_summary", cache: Cache::Pure { stage: Stage::Analysis, set: SetKind::Program }, run: |s, o, p| load_or_analyze(s, o, p, true) };
@@ -37,7 +37,20 @@ pub fn input_of(s: &Session, o: &Options) -> Result<[u8; 32]> {
 }
 
 /// The loader `load.loader` names (with `load.language`/`load.base` for `raw`).
-pub fn loader_of<'a>(o: &Options, language: &'a str, base: &str) -> Result<Loader<'a>> {
+/// The entry points `load.entries` declares for a raw image (hex, comma-separated; none when unset).
+pub fn raw_entries(o: &Options) -> Result<Vec<u64>> {
+    o.get(keys::LOAD_ENTRIES)?
+        .split(',')
+        .map(str::trim)
+        .filter(|e| !e.is_empty())
+        .map(|e| parse_hex(e).ok_or_else(|| Error::InvalidArg(format!("`{}`: `{e}` is not an address", keys::LOAD_ENTRIES))))
+        .collect()
+}
+
+pub fn loader_of<'a>(o: &Options, language: &'a str, base: &str, entries: &'a [u64]) -> Result<Loader<'a>> {
+    if !entries.is_empty() && o.get(keys::LOAD_LOADER)? != "raw" {
+        return Err(Error::InvalidArg(format!("`{}` declares a raw image's entry points: it needs load.loader=raw", keys::LOAD_ENTRIES)));
+    }
     Ok(match o.get(keys::LOAD_LOADER)? {
         "default" => Loader::Default,
         "native" => Loader::Native,
@@ -50,7 +63,7 @@ pub fn loader_of<'a>(o: &Options, language: &'a str, base: &str) -> Result<Loade
                 return Err(Error::InvalidArg("load.loader=raw needs load.language".into()));
             }
             let base = if base.is_empty() { 0 } else { parse_hex(base).ok_or_else(|| Error::InvalidArg(format!("load.base `{base}` is not an address")))? };
-            Loader::Raw { language, base }
+            Loader::Raw { language, base, entries }
         }
         other => return Err(Error::InvalidArg(format!("unknown loader `{other}`"))),
     })
@@ -149,7 +162,8 @@ fn load_or_analyze(s: &mut Session, o: &Options, p: &mut dyn Progress, analyze: 
     let filename = s.input_filename(&digest).map(str::to_string);
     let knobs = o.knobs()?;
     let (language, base) = (o.get(keys::LOAD_LANGUAGE)?.to_string(), o.get(keys::LOAD_BASE)?.to_string());
-    let which = loader_of(o, &language, &base)?;
+    let entries = raw_entries(o)?;
+    let which = loader_of(o, &language, &base, &entries)?;
     let mut program = analysis::load_bytes_with(&data, filename.as_deref(), which, &knobs).map_err(load_error)?;
     if analyze {
         if !p.report("analyze", 1, 2) {

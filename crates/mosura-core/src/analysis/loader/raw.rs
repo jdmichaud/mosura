@@ -53,15 +53,38 @@ fn empty_program(language_id: &str, compiler_spec_id: &str, base: u64) -> Result
 /// A raw image: one readable, writable, executable block `ram` at `base`, the entry point and one
 /// function at `base`.
 pub fn load_raw(data: &[u8], language_id: &str, base: u64) -> Result<Program, LoadError> {
+    load_raw_at(data, language_id, base, &[])
+}
+
+/// A raw image whose entry points the caller declares: a flat image says nothing about where its
+/// code starts (a cartridge's vector table, a ROM's reset address are the platform's, not the
+/// processor's), so each declared address becomes an entry point with an `entry_<addr>` label —
+/// Ghidra's `addExternalEntryPoint`, whose functions the analysis creates. None declared: the base
+/// is the entry and a function, as [`load_raw`] does. A declared address outside the image is an
+/// error.
+pub fn load_raw_at(data: &[u8], language_id: &str, base: u64, entries: &[u64]) -> Result<Program, LoadError> {
     if data.is_empty() {
         return Err(LoadError::Unsupported("empty raw image".into()));
     }
     let mut p = empty_program(language_id, "default", base)?;
     let ram = p.default_space;
     p.memory.add_block("ram", Address::new(ram, base), data.len() as u64, true, true, true, Some(data.to_vec()));
-    p.entry_points.push(Address::new(ram, base));
-    p.function_manager.create_function(Address::new(ram, base), &format!("FUN_{base:08x}"), AddressSet::default());
-    p.symbol_table.add_symbol(Address::new(ram, base), "entry", SymbolType::Label);
+    if entries.is_empty() {
+        p.entry_points.push(Address::new(ram, base));
+        p.function_manager.create_function(Address::new(ram, base), &format!("FUN_{base:08x}"), AddressSet::default());
+        p.symbol_table.add_symbol(Address::new(ram, base), "entry", SymbolType::Label);
+        return Ok(p);
+    }
+    let end = base + data.len() as u64;
+    for &e in entries {
+        if e < base || e >= end {
+            return Err(LoadError::Unsupported(format!("entry {e:#x} is outside the raw image {base:#x}..{end:#x}")));
+        }
+        if !p.entry_points.contains(&Address::new(ram, e)) {
+            p.entry_points.push(Address::new(ram, e));
+            p.symbol_table.add_symbol(Address::new(ram, e), &format!("entry_{e:08x}"), SymbolType::Label);
+        }
+    }
     Ok(p)
 }
 
@@ -122,6 +145,17 @@ mod tests {
         assert_eq!(p.addr_size_bits, 32);
         assert!(load_raw(&[], "x86:LE:32:default", 0).is_err());
         assert!(load_raw(&[0x90], "nope:LE:32:default", 0).is_err());
+    }
+
+    /// Declared entry points replace the base: each is an entry point with a label, and no function
+    /// is made at the base (on a 68000 the first bytes are the vector table, not code).
+    #[test]
+    fn a_raw_image_takes_the_entry_points_it_is_given() {
+        let p = load_raw_at(&[0, 0, 0, 0, 0x4e, 0x71, 0x4e, 0x75], "68000:BE:32:default", 0, &[6, 4, 6]).unwrap();
+        let ram = p.default_space;
+        assert_eq!(p.entry_points, vec![Address::new(ram, 6), Address::new(ram, 4)]);
+        assert_eq!(p.function_manager.function_count(), 0);
+        assert!(load_raw_at(&[0x4e, 0x75], "68000:BE:32:default", 0x100, &[0x102]).is_err());
     }
 
     #[test]

@@ -176,6 +176,38 @@ fn loaders_are_selected_by_option() {
     assert!(t.u64(0, 11).unwrap() >= 7, "the fixture's instructions were decoded: {}", t.u64(0, 11).unwrap());
 }
 
+/// `load.entries` declares a raw image's entry points: a 68000 image starts with its vector table
+/// (the initial stack pointer at 0, the reset address at 4), so the analysis must start at the
+/// reset routine, not at the base. Declared, the functions are the reset routine and what it calls,
+/// with nothing at 0; undeclared, the base is the entry as before. It needs load.loader=raw, and
+/// an entry outside the image is refused.
+#[test]
+fn a_raw_image_is_analysed_from_the_entry_points_it_declares() {
+    let c = ctx();
+    let mut image = vec![0u8; 0x220];
+    image[0..8].copy_from_slice(&[0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x02, 0x08]);
+    // 208: jsr $210; rts      210: moveq #1,d0; rts
+    image[0x208..0x214].copy_from_slice(&[0x4e, 0xb9, 0x00, 0x00, 0x02, 0x10, 0x4e, 0x75, 0x70, 0x01, 0x4e, 0x75]);
+    let raw = [("load.loader", "raw"), ("load.language", "68000:BE:32:default"), ("load.base", "0")];
+    let functions = |extra: &[(&str, &str)]| -> Result<Vec<u64>, Error> {
+        let mut s = Session::open(None).unwrap();
+        s.add_input(&image, "rom.bin", None).unwrap();
+        let mut o = raw.to_vec();
+        o.extend_from_slice(extra);
+        dispatch(&c, &mut s, "program.analyze", &opts(&o), &mut NoProgress)?;
+        let t = dispatch(&c, &mut s, "program.tables", &opts(&[("table", "functions")]), &mut NoProgress)?;
+        let mut entries: Vec<u64> = (0..t.rows()).map(|r| t.u64(r, 1).unwrap()).collect();
+        entries.sort_unstable();
+        Ok(entries)
+    };
+    assert_eq!(functions(&[("load.entries", "0x208")]).unwrap(), [0x208, 0x210]);
+    assert_eq!(functions(&[]).unwrap().first(), Some(&0), "undeclared: the base");
+    assert!(matches!(functions(&[("load.entries", "0x400")]), Err(Error::Format(_))), "outside the image");
+    let mut s = Session::open(None).unwrap();
+    s.add_input(&image, "rom.bin", None).unwrap();
+    assert!(matches!(dispatch(&c, &mut s, "program.analyze", &opts(&[("load.entries", "0x208")]), &mut NoProgress), Err(Error::InvalidArg(_))), "raw only");
+}
+
 #[test]
 fn cached_program_configuration_is_request_local() {
     use mosura_api::ops::program::program_of;

@@ -188,7 +188,7 @@ pub fn analyze_native_file_with(path: &Path, knobs: &Knobs) -> Result<Program, A
 /// [`load_bytes_with`]). `Default` is the container dispatch of [`analyze_file`] (a `.com` extension
 /// on the file name selects the CP/M loader, as [`loader::load_path_with`] does); `Native` the first
 /// beyond-Ghidra loader that claims the bytes; `Le`/`X32`/`Com` name one loader; `Raw` is a flat
-/// image at `base` for `language`; `Xml` a Ghidra `<binaryimage>` datatest.
+/// image at `base` for `language`, with the entry points declared for it; `Xml` a Ghidra `<binaryimage>` datatest.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Loader<'a> {
     Default,
@@ -196,7 +196,7 @@ pub enum Loader<'a> {
     Le,
     X32,
     Com,
-    Raw { language: &'a str, base: u64 },
+    Raw { language: &'a str, base: u64, entries: &'a [u64] },
     Xml,
 }
 
@@ -223,7 +223,7 @@ pub fn load_bytes_with(data: &[u8], filename: Option<&str>, which: Loader<'_>, k
         Loader::Le => loader::load_le_with(data, knobs)?,
         Loader::X32 => loader::load_x32_with(data, knobs)?,
         Loader::Com => loader::load_com(data)?,
-        Loader::Raw { language, base } => loader::raw::load_raw(data, language, base)?,
+        Loader::Raw { language, base, entries } => loader::raw::load_raw_at(data, language, base, entries)?,
         Loader::Xml => loader::raw::load_datatest_bytes(data)?,
     };
     let mut program = loader::with_compiler_version(data, program);

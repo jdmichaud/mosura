@@ -6,7 +6,7 @@
 use crate::error::Result;
 use crate::options::{keys, Options};
 use crate::ops::schemas::IDENTIFY as IDENTIFY_SCHEMA;
-use crate::ops::{program::{input_of, loader_of}, Cache, Op, Progress, Tier};
+use crate::ops::{program::{input_of, loader_of, raw_entries}, Cache, Op, Progress, Tier};
 use crate::session::Session;
 use crate::table::builder::TableBuilder;
 use crate::table::Table;
@@ -17,7 +17,7 @@ pub static IDENTIFY: Op = Op {
     doc: "what the input is: container, claiming loaders, compiler evidence, load-only facts, FID databases (no analysis)",
     since: "0.1",
     tier: Tier::Product,
-    params: &["input", keys::LOAD_LOADER, keys::LOAD_LANGUAGE, keys::LOAD_BASE, keys::LOAD_CSPEC_X86_32],
+    params: &["input", keys::LOAD_LOADER, keys::LOAD_LANGUAGE, keys::LOAD_BASE, keys::LOAD_ENTRIES, keys::LOAD_CSPEC_X86_32],
     result: "identify",
     cache: Cache::Transient,
     run: identify,
@@ -79,7 +79,8 @@ fn identify(s: &mut Session, o: &Options, _p: &mut dyn Progress) -> Result<Table
     // load-only facts
     let knobs = o.knobs()?;
     let (language, base) = (o.get(keys::LOAD_LANGUAGE)?.to_string(), o.get(keys::LOAD_BASE)?.to_string());
-    let which = loader_of(o, &language, &base)?;
+    let entries = raw_entries(o)?;
+    let which = loader_of(o, &language, &base, &entries)?;
     match analysis::load_bytes_with(&data, Some(&filename), which, &knobs) {
         Err(e) => row("load", "failed", &e.to_string()),
         Ok(p) => {

@@ -6,6 +6,7 @@ use super::{Affects, OptType, OptionSpec};
 pub const LOAD_LOADER: &str = "load.loader";
 pub const LOAD_LANGUAGE: &str = "load.language";
 pub const LOAD_BASE: &str = "load.base";
+pub const LOAD_ENTRIES: &str = "load.entries";
 pub const LOAD_CSPEC_X86_32: &str = "load.cspec-x86-32";
 pub const ANALYSIS_DISABLE: &str = "analysis.disable";
 pub const ANALYSIS_SWITCH_TABLE_REFS: &str = "analysis.switch-table-refs";
@@ -69,6 +70,7 @@ pub fn hand_written() -> Vec<OptionSpec> {
         spec!(LOAD_LOADER, OptType::Enum(LOADERS), "default", Affects::Result, "which loader claims the input: the container dispatch (default), the beyond-Ghidra native loaders, the LE view, X-32, .com, a raw image (with load.language and load.base), or a Ghidra <binaryimage> datatest"),
         spec!(LOAD_LANGUAGE, OptType::Str, "", Affects::Result, "the SLEIGH language id of a raw image (load.loader=raw), e.g. x86:LE:32:default"),
         spec!(LOAD_BASE, OptType::Hex, "", Affects::Result, "the load address of a raw image (load.loader=raw)"),
+        spec!(LOAD_ENTRIES, OptType::Str, "", Affects::Result, "the entry points of a raw image (load.loader=raw), hex, comma-separated: each is an entry point the analysis starts from, in place of the base (a cartridge's vector table, a ROM's reset address)"),
         spec!(LOAD_CSPEC_X86_32, OptType::Str, "", Affects::Result, "declare the x86-32 compiler spec at load time (watcom, highc, …) instead of detecting it"),
         spec!(ANALYSIS_DISABLE, OptType::List(&[]), "", Affects::Result, "analyzers to leave out of auto-analysis, by name (an ablation)"),
         spec!(ANALYSIS_SWITCH_TABLE_REFS, OptType::Bool, "false", Affects::Result, "Ghidra's `Switch Table References` option (off by default there too): a computed call or jump names the table of code pointers at its operand, whose entries become references, code and functions — for table-driven programs whose tables sit inline in the code"),
