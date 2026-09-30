@@ -14,7 +14,7 @@
 
 use crate::analysis::program::RefType;
 use crate::decompile::opcode::OpCode;
-use crate::sleigh::pcode::{PArg, PcodeOp};
+use crate::sleigh::pcode::{BranchDest, PArg, PcodeOp};
 
 // SleighInstructionPrototype.java:46-54 — the flow flags used to resolve flow type.
 const RETURN: u32 = 0x01;
@@ -37,10 +37,9 @@ pub enum FlowOverride {
 
 /// The destination kind of a lifted `BRANCH`/`CBRANCH`, i.e. which `ConstTpl` destination
 /// type Ghidra's `walkTemplates` sees (SleighInstructionPrototype.java:227-254). mosura reads
-/// the *lifted* p-code rather than the templates, so the kind is recovered from the target
-/// varnode: a `const`-space target is p-code-relative (`J_RELATIVE`), a `ram` target equal to
-/// the instruction's own address is `J_START`, one equal to the address *after* it is
-/// `J_NEXT`, and anything else is a real out-of-instruction destination.
+/// the *lifted* p-code rather than the templates: a `const`-space target is p-code-relative
+/// (`J_RELATIVE`), and a `ram` target carries the template kind the lifter recorded on the op
+/// ([`BranchDest`]: `J_START`, `J_NEXT`, or a real out-of-instruction destination).
 enum Dest {
     Relative,
     Start,
@@ -48,17 +47,16 @@ enum Dest {
     Out,
 }
 
-fn dest_kind(op: &PcodeOp, inst_start: u64, inst_next: u64) -> Dest {
+fn dest_kind(op: &PcodeOp, _inst_start: u64, _inst_next: u64) -> Dest {
+    // The template kind the lifter recorded ([`BranchDest`]), never the value: a displacement
+    // that lands on the instruction itself (`bra.b *`) or on the next one (`bra.w *+4`) is still
+    // `JUMPOUT` — only a template that literally says `inst_start`/`inst_next` is J_START/J_NEXT.
     match op.ins.first() {
-        Some(PArg::Var(v)) if v.space == "ram" => {
-            if v.offset == inst_next {
-                Dest::Next
-            } else if v.offset == inst_start {
-                Dest::Start
-            } else {
-                Dest::Out
-            }
-        }
+        Some(PArg::Var(v)) if v.space == "ram" => match op.dest {
+            BranchDest::Start => Dest::Start,
+            BranchDest::Next => Dest::Next,
+            BranchDest::Other => Dest::Out,
+        },
         _ => Dest::Relative,
     }
 }
@@ -454,7 +452,7 @@ mod tests {
         PArg::Var(Varnode { space: "register".into(), offset: off, size: 8 })
     }
     fn op(opcode: OpCode, ins: Vec<PArg>) -> PcodeOp {
-        PcodeOp { opcode: opcode as u32, out: None, ins }
+        PcodeOp { opcode: opcode as u32, out: None, ins, dest: Default::default() }
     }
     /// A one-instruction probe at 0x1000 of length 2, so `inst_next` is 0x1002 — no test
     /// destination below coincides with either, keeping them plain `JUMPOUT` targets.
@@ -526,7 +524,8 @@ mod tests {
         let pc_rel = PArg::Var(Varnode { space: "const".into(), offset: 3, size: 8 });
         let rep_movs = [
             op(OpCode::IntEqual, vec![reg(0x10), reg(0x20)]),
-            op(OpCode::Cbranch, vec![ram(NEXT), reg(0x200)]), // guard exit → J_NEXT
+            // guard exit → J_NEXT: the template says `inst_next`, as the lifter records it
+            PcodeOp { dest: BranchDest::Next, ..op(OpCode::Cbranch, vec![ram(NEXT), reg(0x200)]) },
             op(OpCode::Load, vec![reg(0x30)]),
             op(OpCode::Store, vec![reg(0x38)]),
             op(OpCode::Branch, vec![pc_rel]), // loop back → J_RELATIVE

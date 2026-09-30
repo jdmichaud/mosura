@@ -48,12 +48,28 @@ impl PArg {
     }
 }
 
+/// What a `BRANCH`/`CBRANCH`/`CALL` destination was in its SLEIGH template — Ghidra's
+/// `ConstTpl` type of the destination offset (`SleighInstructionPrototype.walkTemplates`):
+/// literally `inst_start` (`J_START`), literally `inst_next` (`J_NEXT`), or anything else — an
+/// operand, a computed or constant address (`JUMPOUT`). The kind is the template's, not the
+/// value's: a displacement that happens to land on the instruction itself or right after it is
+/// still an out-of-instruction jump.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BranchDest {
+    #[default]
+    Other,
+    Start,
+    Next,
+}
+
 /// One p-code operation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct PcodeOp {
     pub opcode: u32,
     pub out: Option<Varnode>,
     pub ins: Vec<PArg>,
+    /// The template kind of a branch or call destination ([`BranchDest`]); `Other` elsewhere.
+    pub dest: BranchDest,
 }
 
 impl PcodeOp {

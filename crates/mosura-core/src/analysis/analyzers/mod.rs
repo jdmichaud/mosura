@@ -130,10 +130,14 @@ pub(crate) fn falls_through(
         return crate::analysis::flowtype::overridden_flow_props(&insn.ops, addr.offset, next, ov)
             .fallthrough;
     }
-    let last = insn.ops.last().and_then(|o| OpCode::from_u32(o.opcode));
-    if matches!(last, Some(OpCode::Return | OpCode::Branch | OpCode::Branchind)) {
+    // Ghidra's flow flags (`SleighInstructionPrototype`), not the last opcode: an instruction
+    // with an internal p-code loop — x86 `rep movs`, 68000 `dbf` — ends in a BRANCH yet falls
+    // through, by its `BRANCH_TO_END` guard (`goto inst_next`).
+    let next = addr.offset + insn.bytes.len() as u64;
+    if !crate::analysis::flowtype::flow_props(&insn.ops, addr.offset, next).fallthrough {
         return false;
     }
+    let last = insn.ops.last().and_then(|o| OpCode::from_u32(o.opcode));
     if matches!(last, Some(OpCode::Call)) {
         let target = insn.ops.iter().rev().find_map(|o| {
             matches!(OpCode::from_u32(o.opcode), Some(OpCode::Call))
@@ -149,6 +153,33 @@ pub(crate) fn falls_through(
     true
 }
 
+/// The operand a flow reference belongs to — Ghidra puts a flow reference on the operand whose
+/// address is the target (`OperandType.ADDRESS` with `getAddress(i) == target`), and on the
+/// mnemonic (-1) when no operand names it: `bra 0x208` → 0, `dbf D1w,0x23e` → 1. Read from the
+/// rendered operands, split at the top-level commas (not those inside `(d16,PC)`).
+pub(crate) fn flow_operand_index(insn: &crate::sleigh::Instruction, target: u64) -> i32 {
+    let mut operands: Vec<&str> = Vec::new();
+    let (mut depth, mut start) = (0i32, 0usize);
+    for (i, c) in insn.body.char_indices() {
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                operands.push(&insn.body[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    operands.push(&insn.body[start..]);
+    let names = |text: &str| {
+        let t = text.trim();
+        let t = t.strip_suffix(".l").or_else(|| t.strip_suffix(".w")).unwrap_or(t);
+        t.strip_prefix("0x").and_then(|h| u64::from_str_radix(h, 16).ok()) == Some(target)
+    };
+    operands.iter().position(|o| names(o)).map_or(-1, |i| i as i32)
+}
+
 /// The flow properties to store on a code unit as it is laid down — Ghidra's `InstructionDB`
 /// record (see [`InstructionFlow`]). Every field is derived from the p-code the disassembler has
 /// just decoded, so no later reader has to decode again.
@@ -158,13 +189,14 @@ pub(crate) fn instruction_flow(
     inst_next: u64,
 ) -> InstructionFlow {
     let last = insn.ops.last().and_then(|o| OpCode::from_u32(o.opcode));
-    // `Instruction.getFlows()` — the static BRANCH/CBRANCH destinations. A target equal to the
-    // instruction's own address is the `hlt` idiom (SLEIGH lifts it to `BRANCH <self>`) and is not
-    // a flow edge, exactly as in the disassembler's own reference emission above.
+    // `Instruction.getFlows()` — the static BRANCH/CBRANCH destinations whose template is a real
+    // destination (`JUMPOUT`). A template `inst_start` (the `hlt` idiom) or `inst_next` (an internal
+    // guard, as in 68000 `dbf`) is not a flow edge, exactly as in the disassembler's reference
+    // emission; a displacement that lands on either (`bra.b *`) is.
     let mut flows: Vec<u64> = Vec::new();
     for op in &insn.ops {
         if matches!(OpCode::from_u32(op.opcode), Some(OpCode::Branch | OpCode::Cbranch)) {
-            if let Some(t) = static_target(op).filter(|&t| t != inst_start) {
+            if let Some(t) = static_target(op).filter(|_| op.dest == crate::sleigh::pcode::BranchDest::Other) {
                 if !flows.contains(&t) {
                     flows.push(t);
                 }
@@ -174,7 +206,8 @@ pub(crate) fn instruction_flow(
     InstructionFlow {
         kind: crate::analysis::flowtype::flow_kind(&insn.ops, inst_start, inst_next),
         flows,
-        ends_flow: matches!(last, Some(OpCode::Return | OpCode::Branch | OpCode::Branchind)),
+        // Ghidra's flow flags, as `falls_through` reads them (`rep`/`dbf` fall through).
+        ends_flow: !crate::analysis::flowtype::flow_props(&insn.ops, inst_start, inst_next).fallthrough,
         // Only when the LAST op is a call, matching `falls_through`'s no-return arm.
         call_target: matches!(last, Some(OpCode::Call))
             .then(|| {
@@ -369,28 +402,30 @@ impl Analyzer for Disassembler {
             for op in &insn.ops {
                 let opcode = OpCode::from_u32(op.opcode);
                 match opcode {
-                    // A target equal to the instruction itself is a halt idiom
-                    // (SLEIGH lifts `hlt` to `BRANCH <self>`), not a real flow edge —
-                    // Ghidra emits no reference for it.
+                    // A destination whose TEMPLATE is `inst_start` (a halt idiom: x86 `hlt` lifts
+                    // to `BRANCH inst_start`) or `inst_next` (an internal guard) is not a flow
+                    // edge — Ghidra's `walkTemplates` gives them NO_FALLTHRU / BRANCH_TO_END and
+                    // no reference. A displacement that merely lands there (68000 `bra.b *`,
+                    // `bra.w` to the next instruction) is a real jump and is referenced.
                     Some(OpCode::Branch | OpCode::Cbranch) => {
-                        if let Some(t) = Self::static_target(op).filter(|&t| t != a) {
+                        if let Some(t) = Self::static_target(op).filter(|_| op.dest == crate::sleigh::pcode::BranchDest::Other) {
                             work.push(t);
                             let rt = if matches!(opcode, Some(OpCode::Cbranch)) {
                                 RefType::ConditionalJump
                             } else {
                                 RefType::UnconditionalJump
                             };
-                            program.reference_manager.add(addr, Address::new(ram, t), rt, -1);
+                            program.reference_manager.add(addr, Address::new(ram, t), rt, flow_operand_index(&insn, t));
                         }
                     }
                     Some(OpCode::Call) => {
-                        if let Some(t) = Self::static_target(op).filter(|&t| t != a) {
+                        if let Some(t) = Self::static_target(op).filter(|_| op.dest == crate::sleigh::pcode::BranchDest::Other) {
                             call_targets.add_range(ram, t, t);
                             program.reference_manager.add(
                                 addr,
                                 Address::new(ram, t),
                                 RefType::UnconditionalCall,
-                                -1,
+                                flow_operand_index(&insn, t),
                             );
                         }
                     }

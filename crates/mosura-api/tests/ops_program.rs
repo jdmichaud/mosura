@@ -300,6 +300,39 @@ fn declared_data_is_in_the_listing_with_its_references() {
     assert!(matches!(run("u16:0x220*10; ptr32:0x232"), Err(Error::InvalidArg(_))), "and cover 0x232");
 }
 
+/// A branch's flow is decided by its SLEIGH template, as Ghidra's `walkTemplates` does, not by
+/// where its target lands: a 68000 `bra.w` whose displacement reaches the next instruction and a
+/// `bra.b *` that reaches itself are jumps with a reference (Ghidra: UNCONDITIONAL_JUMP), while
+/// `dbf`'s internal `goto inst_next` is no flow edge — only its displacement target is referenced,
+/// from the operand that names it.
+#[test]
+fn a_branch_is_typed_by_its_template_not_its_target() {
+    let c = ctx();
+    let mut image = vec![0u8; 0x220];
+    image[0..8].copy_from_slice(&[0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x02, 0x00]);
+    // 200: bra.w $204   204: moveq #2,d1   206: dbf d1,$206   20a: bra.b $20a
+    image[0x200..0x20c].copy_from_slice(&[0x60, 0x00, 0x00, 0x02, 0x72, 0x02, 0x51, 0xc9, 0xff, 0xfe, 0x60, 0xfe]);
+    let mut s = Session::open(None).unwrap();
+    s.add_input(&image, "rom.bin", None).unwrap();
+    let raw = [("load.loader", "raw"), ("load.language", "68000:BE:32:default"), ("load.base", "0"), ("load.entries", "0x200")];
+    dispatch(&c, &mut s, "program.analyze", &opts(&raw), &mut NoProgress).unwrap();
+    let d = dispatch(&c, &mut s, "program.disassemble", &opts(&[("addr", "0x200"), ("len", "12")]), &mut NoProgress).unwrap();
+    let kinds: Vec<(u64, String)> = (0..d.rows()).map(|r| (d.u64(r, 0).unwrap(), d.str(r, 5).unwrap().to_string())).collect();
+    assert_eq!(
+        kinds,
+        [(0x200, "UNCONDITIONAL_JUMP".to_string()), (0x204, "FALL_THROUGH".into()), (0x206, "CONDITIONAL_JUMP".into()), (0x20a, "UNCONDITIONAL_JUMP".into())]
+    );
+    let t = dispatch(&c, &mut s, "program.tables", &opts(&[("table", "references")]), &mut NoProgress).unwrap();
+    // (from, to, operand): the reference sits on the operand that names the target
+    let mut refs: Vec<(u64, u64, i64)> =
+        (0..t.rows()).map(|r| (t.u64(r, 1).unwrap(), t.u64(r, 3).unwrap(), t.i64(r, 5).unwrap())).filter(|(f, _, _)| (0x200..0x20c).contains(f)).collect();
+    refs.sort_unstable();
+    assert_eq!(refs, [(0x200, 0x204, 0), (0x206, 0x206, 1), (0x20a, 0x20a, 0)]);
+    // and the listing's flows are the same: no `inst_next` guard of `dbf`, the self-jump of `bra.b *`
+    let flows: Vec<(u64, Vec<u64>)> = (0..d.rows()).map(|r| (d.u64(r, 0).unwrap(), d.list_u64(r, 9).unwrap().collect())).collect();
+    assert_eq!(flows, [(0x200, vec![0x204]), (0x204, vec![]), (0x206, vec![0x206]), (0x20a, vec![0x20a])]);
+}
+
 #[test]
 fn cached_program_configuration_is_request_local() {
     use mosura_api::ops::program::program_of;

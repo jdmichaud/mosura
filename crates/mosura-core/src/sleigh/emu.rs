@@ -1775,7 +1775,7 @@ mod tests {
         arg("const", value, size)
     }
     fn pcode(name: &str, out: Option<Varnode>, ins: Vec<PArg>) -> PcodeOp {
-        PcodeOp { opcode: opcode(name), out, ins }
+        PcodeOp { opcode: opcode(name), out, ins, dest: Default::default() }
     }
 
     /// A machine set up the way [`run_traced`] sets one up: recording effects, unset memory drawn

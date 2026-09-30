@@ -515,6 +515,7 @@ pub fn raw_funcdata_flow_image_overrides(
                                 offset: 1,
                                 size: 4,
                             })],
+                            dest: Default::default(),
                         });
                     }
                 }
@@ -613,6 +614,7 @@ pub fn raw_funcdata_flow_image_overrides(
             opcode: OpCode::Return as u32,
             out: None,
             ins: vec![PArg::Var(crate::sleigh::pcode::Varnode { space: "const".into(), offset: 1, size: 4 })],
+            dest: Default::default(),
         });
     }
     // Emit ops in flow-decode (creation) order, not address order — Ghidra's PcodeOpBank deadlist.

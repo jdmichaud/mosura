@@ -836,10 +836,10 @@ impl Spec {
                                 }
                             }
                             lab.refs.push((ops.len(), id + lab.base as u64, size));
-                            ops.push(PcodeOp { opcode: op.opcode, out: None, ins });
+                            ops.push(PcodeOp { opcode: op.opcode, out: None, ins, dest: Default::default() });
                         }
                         (None, Some(mut v)) => ops.append(&mut v),
-                        (None, None) => ops.push(PcodeOp { opcode: op.opcode, out: None, ins: Vec::new() }),
+                        (None, None) => ops.push(PcodeOp { opcode: op.opcode, out: None, ins: Vec::new(), dest: Default::default() }),
                     }
                 }
             }
@@ -866,6 +866,7 @@ impl Spec {
                     opcode: LOAD,
                     out: Some(temp.clone()),
                     ins: vec![PArg::Space(self.space_name(ptr.value_space).to_string()), PArg::Var(self.ptr_varnode(ptr))],
+                    dest: Default::default(),
                 });
                 ins.push(PArg::Var(temp));
             } else {
@@ -876,18 +877,31 @@ impl Spec {
             Some(out) if self.dynamic_ptr(out, node, walker).is_some() => {
                 let ptr = self.dynamic_ptr(out, node, walker)?;
                 let temp = self.varnode_h(out, node, walker)?;
-                ops.push(PcodeOp { opcode: op.opcode, out: Some(temp.clone()), ins });
+                ops.push(PcodeOp { opcode: op.opcode, out: Some(temp.clone()), ins, dest: Default::default() });
                 ops.push(PcodeOp {
                     opcode: STORE,
                     out: None,
                     ins: vec![PArg::Space(self.space_name(ptr.value_space).to_string()), PArg::Var(self.ptr_varnode(ptr)), PArg::Var(temp)],
+                    dest: Default::default(),
                 });
             }
             Some(out) => {
                 let o = self.varnode_h(out, node, walker)?;
-                ops.push(PcodeOp { opcode: op.opcode, out: Some(o), ins });
+                ops.push(PcodeOp { opcode: op.opcode, out: Some(o), ins, dest: Default::default() });
             }
-            None => ops.push(PcodeOp { opcode: op.opcode, out: None, ins }),
+            None => {
+                // A branch or call records its destination's template kind (`walkTemplates`'
+                // `destType`): literally `inst_start` or `inst_next`, or anything else.
+                const BRANCH: u32 = 4;
+                const CBRANCH: u32 = 5;
+                const CALL: u32 = 7;
+                let dest = match (op.opcode, op.inputs.first().map(|v| &v.offset)) {
+                    (BRANCH | CBRANCH | CALL, Some(ConstTpl::Start)) => crate::sleigh::pcode::BranchDest::Start,
+                    (BRANCH | CBRANCH | CALL, Some(ConstTpl::Next)) => crate::sleigh::pcode::BranchDest::Next,
+                    _ => crate::sleigh::pcode::BranchDest::Other,
+                };
+                ops.push(PcodeOp { opcode: op.opcode, out: None, ins, dest })
+            }
         }
         Some(ops)
     }
