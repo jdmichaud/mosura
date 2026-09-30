@@ -467,3 +467,36 @@ fn a_skipped_call_leaves_the_callers_stack_intact() {
         }
     }
 }
+
+/// `emulate.stubs` and a capture specification's `stubs` leave routines out of a run: reached by
+/// the tail jump in `middle`, the stubbed `device` returns to `outer`, which answers 6 instead of
+/// 100, on x86-32, x86-64 and AArch64; the hit is a `stub <address>` effect.
+#[test]
+fn a_stubbed_routine_returns_at_once() {
+    let c = ctx();
+    for (stem, sp, result) in [("call_returns.gcc-x86-32", "ESP", "EAX"), ("call_returns.gcc-x86-64", "RSP", "RAX"), ("call_returns.clang-aarch64", "sp", "x0")] {
+        let (mut s, e) = session_of(&c, stem);
+        let regs = format!("{sp}=0x0f000000,{result}=0");
+        let device = entry(&e, "device");
+        let run = |stubs: &str, s: &mut Session| {
+            let o = opts(&[("entry", entry(&e, "outer")), ("emulate.registers", &regs), ("emulate.follow-calls", "true"), ("emulate.effects", "true"), ("emulate.stubs", stubs)]);
+            rows(&dispatch(&c, s, "function.emulate", &o, &mut NoProgress).unwrap())
+        };
+        let r = run("", &mut s);
+        assert_eq!(register(&r, &[result]), 100, "{stem}");
+        let r = run(device, &mut s);
+        assert_eq!((stop(&r), register(&r, &[result])), ("returned", 6), "{stem}: {r:?}");
+        assert!(effects(&r).contains(&format!("stub {device}")), "{stem}: {:?}", effects(&r));
+
+        let spec = serde_json::json!({
+            "registers": { sp: "0x0f000000" }, "follow_calls": true, "stubs": [device],
+            "inputs": [reg_slot("r", result)], "outputs": [reg_slot("r", result)],
+            "cases": [{ "kind": "explicit", "rows": [{ "r": 0 }] }],
+        })
+        .to_string();
+        let t = dispatch(&c, &mut s, "function.capture", &opts(&[("entry", entry(&e, "outer")), ("capture.spec", &spec)]), &mut NoProgress).unwrap();
+        assert_eq!(t.list_u64(0, 3).unwrap().collect::<Vec<u64>>(), vec![6], "{stem}");
+        let bad = dispatch(&c, &mut s, "function.emulate", &opts(&[("entry", entry(&e, "outer")), ("emulate.stubs", "zz")]), &mut NoProgress).unwrap_err();
+        assert!(matches!(bad, Error::InvalidArg(_)), "{stem}: {bad:?}");
+    }
+}

@@ -26,6 +26,7 @@ mosura call sleigh.emulate lang=x86:LE:32:default bytes=f7f1c3 base=0x1000 \
 | `emulate.follow-calls` | enter a `CALL`/`CALLIND` whose target lies inside the bytes and return to the caller at its `RETURN`; off (the default) a call is an event: skipped, its callee never run |
 | `emulate.max-steps` | the p-code operation budget (default 5,000,000) |
 | `emulate.effects` | also list what the run did, in order, as `effect` rows (default off) |
+| `emulate.stubs` | addresses (hex, comma-separated) that return at once when control reaches them — see [Stubs](#stubs) |
 | `emulate.ports` | what `IN` reads, per port: `PORT=V,V,…;…` (hex); a port's reads return its values in order, then the last again — `0x3da=0,0,8` turns ready on the third poll |
 | `emulate.state` | start from the machine state stored in the session under this name; the seeds apply on top |
 | `emulate.save-state` | store the machine state the run stopped in under this name, replacing any state of that name |
@@ -44,7 +45,7 @@ the run — and are 0 for a row that is not an event:
 | `outcome` | `unanswered-in` | a port the run read that `emulate.ports` did not answer, at its first such read: it read zero |
 | `register` | the register | its final value as hex, one row per register the state holds in full, widest first — `EAX` is reported, its `AX`/`AL`/`AH` inside it are not |
 | `memory` | an address | the bytes the state holds from there, as hex: what was seeded and what the routine stored |
-| `effect` | `1`, `2`, … | with `emulate.effects`: one thing the run did, in order, at the instruction and step its `at` and `step` name — `store <space> <address> <size> <value>`, `call <target>` (followed or not), `in`/`out <port> <size> <value>`, `swi <number>`, `fault`; numbers in hex, sizes in decimal |
+| `effect` | `1`, `2`, … | with `emulate.effects`: one thing the run did, in order, at the instruction and step its `at` and `step` name — `store <space> <address> <size> <value>`, `call <target>` (followed or not), `in`/`out <port> <size> <value>`, `swi <number>`, `stub <address>`, `fault`; numbers in hex, sizes in decimal |
 
 A device the routine talks to is outside the image: an `OUT` is an effect, and an `IN` reads what
 `emulate.ports` answers for its port — the values in order, then the last again, so a status bit
@@ -71,6 +72,20 @@ keys and the same answer, with the function's `entry` in place of `bytes`, `base
 decoded where the run reaches and read as memory. A routine finds its tables and the initial value
 of every global where the program keeps them, without seeding them, and a followed call enters
 its callee wherever it lives. `entry` must be a function of the analyzed program.
+
+## Stubs
+
+A harness leaves some routines out of a run — a device driver, a sound routine that polls
+hardware, anything irrelevant to what is observed — without patching the image. A stub is an
+address that returns at once when control reaches it, by a call or by a jump: hand-written code
+often tail-jumps into a routine (`jmp device` in place of `call device; ret`), and the stub
+catches both, as a return instruction written at its entry would. It returns as the language's
+return does: to the fall-through of the innermost call the run entered, with the stack pointer as
+that call began. That rule needs only the compiler spec's stack pointer, so it is the same on a
+push-based ISA (x86) and a link-register one (AArch64). A stub reached with no entered call to
+return to — the entry itself, or a jump out of the entry routine — ends the run as `returned`.
+Each hit costs one step and, with `emulate.effects`, is a `stub <address>` row. Registers are left
+as they are: a stub has no result.
 
 ## Capturing vectors: `function.capture`
 
@@ -108,6 +123,7 @@ ran and why the rejected ones stopped (`capture: 2612 vectors: 2608 returned, 4 
 | --- | --- |
 | `registers` | registers every vector starts with, by the language's names (a stack pointer, a pointer to a block) |
 | `memory` | bytes every vector starts with, `{address, bytes}` (hex); the image is memory already |
+| `stubs` | addresses that return at once for every vector, `["0x8c50", …]` — see [Stubs](#stubs) |
 | `ports` | what `IN` reads for every vector, `{"0x3da": [0, 0, 8], "0x60": "0x1c"}`: a port's values in order, then the last again |
 | `follow_calls` | enter calls whose target is in the image (default false: a call is an event) |
 | `max_steps` | the p-code budget of one vector (default 5,000,000) |

@@ -18,19 +18,20 @@ use mosura_core::analysis::program::Program;
 use mosura_core::sleigh::emu::{Effect, Image, Machine, Run, RunOptions, Stop};
 use mosura_core::sleigh::engine::Spec;
 
-pub static SLEIGH_EMULATE: Op = Op { name: "sleigh.emulate", doc: "execute the p-code of raw bytes from base (or emulate.entry) over an initial state (emulate.registers, emulate.memory; the bytes themselves are memory too) until the routine returns, faults, reaches an address with no instruction, or spends emulate.max-steps; a call is an event unless emulate.follow-calls. Rows: outcome (stop = returned | fault | no-instruction | step-cap, address, steps, unmodeled, unmodeled-op, uninitialized: a register read before anything wrote it, unanswered-in: a port read that emulate.ports did not answer), register (every register the final state holds, widest first), memory (every run of bytes it holds, as hex), and with emulate.effects every effect of the run in order; emulate.state starts from a stored machine state, emulate.save-state stores the one the run stopped in", since: "0.1", tier: Tier::Product, params: &["lang", "bytes", "base", "ctx", keys::EMULATE_ENTRY, keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS, keys::EMULATE_EFFECTS, keys::EMULATE_PORTS, keys::EMULATE_STATE, keys::EMULATE_SAVE_STATE], result: "emulation", cache: Cache::Transient, run: sleigh_emulate };
-pub static FUNCTION_EMULATE: Op = Op { name: "function.emulate", doc: "execute one function (entry) of a program through the p-code interpreter, with the program's loaded image as memory, over an initial state (emulate.registers, emulate.memory) until it returns, faults, reaches an address with no instruction, or spends emulate.max-steps; a call is an event unless emulate.follow-calls. Rows as sleigh.emulate", since: "0.1", tier: Tier::Product, params: &["program", "entry", keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS, keys::EMULATE_EFFECTS, keys::EMULATE_PORTS, keys::EMULATE_STATE, keys::EMULATE_SAVE_STATE], result: "emulation", cache: Cache::Transient, run: function_emulate };
+pub static SLEIGH_EMULATE: Op = Op { name: "sleigh.emulate", doc: "execute the p-code of raw bytes from base (or emulate.entry) over an initial state (emulate.registers, emulate.memory; the bytes themselves are memory too) until the routine returns, faults, reaches an address with no instruction, or spends emulate.max-steps; a call is an event unless emulate.follow-calls. Rows: outcome (stop = returned | fault | no-instruction | step-cap, address, steps, unmodeled, unmodeled-op, uninitialized: a register read before anything wrote it, unanswered-in: a port read that emulate.ports did not answer), register (every register the final state holds, widest first), memory (every run of bytes it holds, as hex), and with emulate.effects every effect of the run in order; emulate.stubs leaves routines out (they return when reached); emulate.state starts from a stored machine state, emulate.save-state stores the one the run stopped in", since: "0.1", tier: Tier::Product, params: &["lang", "bytes", "base", "ctx", keys::EMULATE_ENTRY, keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS, keys::EMULATE_EFFECTS, keys::EMULATE_PORTS, keys::EMULATE_STUBS, keys::EMULATE_STATE, keys::EMULATE_SAVE_STATE], result: "emulation", cache: Cache::Transient, run: sleigh_emulate };
+pub static FUNCTION_EMULATE: Op = Op { name: "function.emulate", doc: "execute one function (entry) of a program through the p-code interpreter, with the program's loaded image as memory, over an initial state (emulate.registers, emulate.memory) until it returns, faults, reaches an address with no instruction, or spends emulate.max-steps; a call is an event unless emulate.follow-calls. Rows as sleigh.emulate", since: "0.1", tier: Tier::Product, params: &["program", "entry", keys::EMULATE_REGISTERS, keys::EMULATE_MEMORY, keys::EMULATE_FOLLOW_CALLS, keys::EMULATE_MAX_STEPS, keys::EMULATE_EFFECTS, keys::EMULATE_PORTS, keys::EMULATE_STUBS, keys::EMULATE_STATE, keys::EMULATE_SAVE_STATE], result: "emulation", cache: Cache::Transient, run: function_emulate };
 
 /// The run settings every emulate operation reads.
 struct Settings {
     follow_calls: bool,
     max_steps: usize,
     effects: bool,
+    stubs: std::collections::BTreeSet<u64>,
 }
 
 impl Settings {
     fn run_options(&self, entry: Option<u64>) -> RunOptions {
-        RunOptions { entry, follow_calls: self.follow_calls, max_steps: self.max_steps, trace: self.effects, ..RunOptions::default() }
+        RunOptions { entry, follow_calls: self.follow_calls, max_steps: self.max_steps, trace: self.effects, stubs: self.stubs.clone() }
     }
 }
 
@@ -47,7 +48,14 @@ fn settings(o: &Options) -> Result<Settings> {
         "" => RunOptions::default().max_steps,
         v => v.trim().parse::<usize>().map_err(|_| Error::InvalidArg(format!("`{}` is not a count: {v}", keys::EMULATE_MAX_STEPS)))?,
     };
-    Ok(Settings { follow_calls, max_steps, effects: flag(o, keys::EMULATE_EFFECTS)? })
+    let stubs = o
+        .get(keys::EMULATE_STUBS)?
+        .split(',')
+        .map(str::trim)
+        .filter(|a| !a.is_empty())
+        .map(|a| parse_hex(a).ok_or_else(|| Error::InvalidArg(format!("`{}`: `{a}` is not an address", keys::EMULATE_STUBS))))
+        .collect::<Result<_>>()?;
+    Ok(Settings { follow_calls, max_steps, effects: flag(o, keys::EMULATE_EFFECTS)?, stubs })
 }
 
 /// The initial state an operation names: registers by the language's names, memory as bytes.

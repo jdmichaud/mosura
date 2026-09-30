@@ -67,6 +67,7 @@ impl Gen {
 struct CaptureSpec {
     fixed: Seeds,
     follow_calls: bool,
+    stubs: std::collections::BTreeSet<u64>,
     max_steps: usize,
     inputs: Vec<Slot>,
     outputs: Vec<Slot>,
@@ -220,7 +221,7 @@ fn parse_spec(text: &str, spec: &Spec, lang: &str) -> Result<CaptureSpec> {
     let v: Value = serde_json::from_str(text).map_err(|e| bad("not JSON", e))?;
     let top = "the specification";
     let m = object(&v, top)?;
-    only(m, &["registers", "memory", "ports", "follow_calls", "max_steps", "inputs", "outputs", "cases"], top)?;
+    only(m, &["registers", "memory", "ports", "stubs", "follow_calls", "max_steps", "inputs", "outputs", "cases"], top)?;
     let mut fixed = Seeds { registers: Vec::new(), memory: Vec::new(), ports: Vec::new() };
     if let Some(r) = m.get("registers") {
         for (name, value) in object(r, "registers")? {
@@ -261,6 +262,10 @@ fn parse_spec(text: &str, spec: &Spec, lang: &str) -> Result<CaptureSpec> {
     let follow_calls = match m.get("follow_calls") {
         None => false,
         Some(b) => b.as_bool().ok_or_else(|| bad("follow_calls", "not a boolean"))?,
+    };
+    let stubs = match m.get("stubs") {
+        None => Default::default(),
+        s => array(s, "stubs")?.iter().enumerate().map(|(i, a)| num(Some(a), &format!("stubs[{i}]"))).collect::<Result<_>>()?,
     };
     let max_steps = match m.get("max_steps") {
         None => RunOptions::default().max_steps,
@@ -377,7 +382,7 @@ fn parse_spec(text: &str, spec: &Spec, lang: &str) -> Result<CaptureSpec> {
             k => return Err(bad(&cw, format!("unknown kind `{k}` (explicit, range, sample, chain)"))),
         });
     }
-    Ok(CaptureSpec { fixed, follow_calls, max_steps, inputs, outputs, cases })
+    Ok(CaptureSpec { fixed, follow_calls, stubs, max_steps, inputs, outputs, cases })
 }
 
 /// The reference executor's seeded generator: splitmix64 (Vigna), one 64-bit draw per call.
@@ -500,7 +505,7 @@ fn capture(s: &mut Session, o: &Options, prog: &mut dyn Progress) -> Result<Tabl
         names: RegisterNames::of(spec),
         cs: &cs,
         state,
-        opts: RunOptions { entry: Some(entry), follow_calls: cs.follow_calls, max_steps: cs.max_steps, ..RunOptions::default() },
+        opts: RunOptions { entry: Some(entry), follow_calls: cs.follow_calls, max_steps: cs.max_steps, stubs: cs.stubs.clone(), ..RunOptions::default() },
         seen: HashSet::new(),
         b: TableBuilder::new(&CAPTURE),
         case: 0,
