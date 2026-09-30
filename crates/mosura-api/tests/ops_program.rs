@@ -333,6 +333,30 @@ fn a_branch_is_typed_by_its_template_not_its_target() {
     assert_eq!(flows, [(0x200, vec![0x204]), (0x204, vec![]), (0x206, vec![0x206]), (0x20a, vec![0x20a])]);
 }
 
+/// The 68000's constant-propagation evaluator (Ghidra `Motorola68KAnalyzer.evaluateContext`): a
+/// `lea` references the address it loads — a PC-relative one always, as operand 0's DATA
+/// reference — and a `pea` references the constant it pushes. The displacement of a PC-relative
+/// operand is no address: Ghidra makes no reference from a bare constant.
+#[test]
+fn a_68000_lea_and_pea_reference_the_address_they_compute() {
+    let c = ctx();
+    let mut image = vec![0u8; 0x1400];
+    image[0..8].copy_from_slice(&[0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x02, 0x00]);
+    // 200: lea (0x88,pc),a5 -> 0x28a   204: lea (0x1000,pc),a1 -> 0x1206   208: pea ($1234).l   20e: rts
+    image[0x200..0x210].copy_from_slice(&[0x4b, 0xfa, 0x00, 0x88, 0x43, 0xfa, 0x10, 0x00, 0x48, 0x79, 0x00, 0x00, 0x12, 0x34, 0x4e, 0x75]);
+    let mut s = Session::open(None).unwrap();
+    s.add_input(&image, "rom.bin", None).unwrap();
+    let raw = [("load.loader", "raw"), ("load.language", "68000:BE:32:default"), ("load.base", "0"), ("load.entries", "0x200")];
+    dispatch(&c, &mut s, "program.analyze", &opts(&raw), &mut NoProgress).unwrap();
+    let t = dispatch(&c, &mut s, "program.tables", &opts(&[("table", "references")]), &mut NoProgress).unwrap();
+    let mut refs: Vec<(u64, u64, i64)> = (0..t.rows())
+        .map(|r| (t.u64(r, 1).unwrap(), t.u64(r, 3).unwrap(), t.i64(r, 5).unwrap()))
+        .filter(|(f, _, _)| (0x200..0x20e).contains(f))
+        .collect();
+    refs.sort_unstable();
+    assert_eq!(refs, [(0x200, 0x28a, 0), (0x204, 0x1206, 0), (0x208, 0x1234, 0)]);
+}
+
 #[test]
 fn cached_program_configuration_is_request_local() {
     use mosura_api::ops::program::program_of;

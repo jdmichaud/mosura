@@ -165,6 +165,65 @@ fn is_computed_flow(r: RefType) -> bool {
     )
 }
 
+/// Whether the program's processor is the 68000 family (Ghidra `Motorola68KAnalyzer.canAnalyze`:
+/// the language's processor is "68000").
+fn is_68000(program: &Program) -> bool {
+    program.language_id.starts_with("68000:")
+}
+
+/// `Motorola68KAnalyzer`'s `evaluateContext` (Motorola68KAnalyzer.java:71): after `pea` or `lea`,
+/// the value it produced becomes a DATA reference on operand 0 (source ANALYSIS), unless that
+/// operand already carries one.
+///  - `pea`: the value pushed, when constant, above 4096, not a round or mask-like value, and in
+///    memory (:74-93).
+///  - `lea`: the destination register's value, when it is above 4096 and in memory — or always
+///    when operand 0 is PC-relative (:96-114).
+fn motorola68k_evaluate_context(program: &mut Program, vctx: &VarnodeContext, here: Address, insn: &crate::sleigh::Instruction, ram: SpaceId) {
+    const STORE: u32 = 3;
+    let value_of = |a: Option<&PArg>| match a.and_then(arg_var).map(|v| vctx.get(v)) {
+        Some(SymValue::Const(c)) => Some(c & 0xffff_ffff),
+        _ => None,
+    };
+    let (lval, pc_relative) = match insn.mnemonic.to_ascii_lowercase().as_str() {
+        "pea" => {
+            let Some(lval) = value_of(insn.ops.iter().rev().find(|o| o.opcode == STORE).and_then(|o| o.ins.get(2))) else { return };
+            const SKIP: [u64; 9] = [0xffff, 0xff00, 0xff_ffff, 0xff_0000, 0xff_00ff, 0xffff_ffff, 0xffff_ff00, 0xffff_0000, 0xff00_0000];
+            if lval <= 4096 || lval % 1024 == 0 || SKIP.contains(&lval) || !program.memory.contains(Address::new(ram, lval)) {
+                return;
+            }
+            (lval, false)
+        }
+        "lea" => {
+            // `instr.getRegister(1)`: the address register the instruction writes last.
+            let Some(dest) = insn.ops.last().and_then(|o| o.out.as_ref()).filter(|o| o.space == "register") else { return };
+            let Some(lval) = value_of(Some(&PArg::Var(dest.clone()))) else { return };
+            // `getOpObjects(0)` holds the PC register: operand 0 is PC-relative.
+            // Operand 0 is everything before the operand separator — the top-level comma, not the
+            // commas inside `(d16,PC)` or `(d8,PC,Xn)`.
+            let mut depth = 0i32;
+            let split = insn.body.char_indices().find(|&(_, c)| {
+                match c {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+                c == ',' && depth == 0
+            });
+            let op0 = split.map_or(insn.body.as_str(), |(i, _)| &insn.body[..i]);
+            (lval, op0.contains("PC"))
+        }
+        _ => return,
+    };
+    let target = Address::new(ram, lval);
+    if !(lval > 4096 && program.memory.contains(target) || pc_relative) {
+        return;
+    }
+    if program.reference_manager.refs_from(here).any(|r| r.op_index == 0) {
+        return;
+    }
+    program.reference_manager.add(here, target, RefType::Data, 0);
+}
+
 fn make_ref(program: &mut Program, from: Address, ram: SpaceId, to_off: u64, ref_type: RefType, min: u64) {
     let to = Address::new(ram, to_off);
     if to_off < min || !program.memory.contains(to) {
@@ -299,7 +358,13 @@ fn process_op(
         // A `const` that is a mapped address is a DATA reference — but not in a STORE,
         // whose value operand is often a return address pushed by a `call` (a valid code
         // address that is not a data reference; Ghidra accounts for it via call semantics).
-        let const_is_data = !matches!(opcode, Some(OpCode::Store));
+        //
+        // Not on the 68000: Ghidra's `SymbolicPropogator` makes no reference from a bare constant
+        // input — its references come from load/store addresses, flows and parameters — and the
+        // 68000's evaluator (`Motorola68KAnalyzer`) adds its `lea`/`pea` targets itself
+        // ([`motorola68k_evaluate_context`]). Taken as an address there, a PC-relative
+        // displacement (`lea (0x48c,PC),A1`) became a reference to 0x48c.
+        let const_is_data = !matches!(opcode, Some(OpCode::Store)) && !is_68000(program);
         for arg in &op.ins {
             if let PArg::Var(v) = arg {
                 if v.space == "ram" {
@@ -601,6 +666,11 @@ pub fn flow_constants(
                 Some(OpCode::Return | OpCode::Branchind) => falls = false,
                 _ => {}
             }
+        }
+        // The processor's own evaluator (Ghidra picks a `ConstantPropagationAnalyzer` subclass per
+        // processor; the 68000's is `Motorola68KAnalyzer`).
+        if is_68000(program) {
+            motorola68k_evaluate_context(program, &vctx, here, &insn, ram);
         }
         // Queue branch targets (each path gets its own context); skip already-interpreted
         // ones so we don't clone the context needlessly (back-edges of loops). The
