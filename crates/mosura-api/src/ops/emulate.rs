@@ -153,23 +153,28 @@ fn effect_text(e: &Effect) -> String {
 }
 
 /// The `emulation` answer: the outcome, every register the final state holds, every run of bytes
-/// it holds in memory, and — when the run recorded them — its effects in order.
+/// it holds in memory, and — when the run recorded them — its effects in order. `at` and `step`
+/// say where and when a row's event happened (the instruction's address, the 1-based p-code
+/// step); they are 0 for a row that is not an event.
 fn emulation_table(spec: &Spec, run: &Run) -> Table {
     let mut b = TableBuilder::new(&EMULATION);
+    let mut row = |kind: &str, name: &str, value: &str, (at, step): (u64, usize)| {
+        b.row().str(kind).str(name).str(value).u64(at).u64(step as u64);
+    };
     let (stop, address) = match run.stop {
         Stop::Returned => ("returned", None),
         Stop::Fault => ("fault", None),
         Stop::NoInstruction(a) => ("no-instruction", Some(a)),
         Stop::StepCap => ("step-cap", None),
     };
-    b.row().str("outcome").str("stop").str(stop);
+    row("outcome", "stop", stop, (0, 0));
     if let Some(a) = address {
-        b.row().str("outcome").str("address").str(&format!("{a:#x}"));
+        row("outcome", "address", &format!("{a:#x}"), (0, 0));
     }
-    b.row().str("outcome").str("steps").str(&run.steps.to_string());
-    b.row().str("outcome").str("unmodeled").str(&run.machine.unmodeled.to_string());
+    row("outcome", "steps", &run.steps.to_string(), (0, 0));
+    row("outcome", "unmodeled", &run.machine.unmodeled.to_string(), (0, 0));
     for name in &run.machine.unmodeled_ops {
-        b.row().str("outcome").str("unmodeled-op").str(name);
+        row("outcome", "unmodeled-op", name, (0, 0));
     }
     // Every register the final state holds in full, widest first at each offset; a register
     // inside one already reported (AX inside EAX) is not repeated. Wider than a machine word is
@@ -183,15 +188,15 @@ fn emulation_table(spec: &Spec, run: &Run) -> Table {
         if *size > 8 || !holds(*off, *size) || reported.iter().any(|(o, s)| *off >= *o && *off + u64::from(*size) <= *o + u64::from(*s)) {
             continue;
         }
-        b.row().str("register").str(name).str(&format!("{:#0w$x}", run.machine.read("register", *off, *size), w = 2 + 2 * *size as usize));
+        row("register", name, &format!("{:#0w$x}", run.machine.read("register", *off, *size), w = 2 + 2 * *size as usize), (0, 0));
         reported.push((*off, *size));
     }
     for (addr, bytes) in run.machine.written(memory_space(spec)) {
         let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-        b.row().str("memory").str(&format!("{addr:#x}")).str(&hex);
+        row("memory", &format!("{addr:#x}"), &hex, (0, 0));
     }
-    for (i, e) in run.machine.effects.iter().enumerate() {
-        b.row().str("effect").str(&(i + 1).to_string()).str(&effect_text(e));
+    for (i, (e, site)) in run.machine.effects.iter().zip(&run.machine.effect_sites).enumerate() {
+        row("effect", &(i + 1).to_string(), &effect_text(e), *site);
     }
     b.finish(false)
 }

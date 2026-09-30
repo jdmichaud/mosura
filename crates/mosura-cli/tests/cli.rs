@@ -307,7 +307,9 @@ fn emulate_and_capture_a_function_of_the_program() {
     assert!(sum.contains("register\tEAX\t0x33333338"), "{sum}");
     let first = ok(&s, &["--format", "tsv", "emulate", &entry("bump"), "--save-state", "n", "--effects"]);
     assert!(first.contains("register\tEAX\t0x0000002a"), "{first}");
-    assert!(first.lines().any(|l| l.starts_with("effect\t1\tstore ram ") && l.ends_with(" 4 0x0000002a")), "{first}");
+    let store = first.lines().map(|l| l.split('\t').collect::<Vec<_>>()).find(|f| f[0] == "effect" && f[1] == "1").expect("an effect row");
+    assert!(store[2].starts_with("store ram ") && store[2].ends_with(" 4 0x0000002a"), "{first}");
+    assert_eq!((store[3], store[4]), (entry("bump").trim_start_matches("0x").trim_start_matches('0'), "2"), "the store is the second operation of bump's first instruction (the overflow flag is first): {first}");
     let second = ok(&s, &["--format", "tsv", "emulate", &entry("bump"), "--state", "n"]);
     assert!(second.contains("register\tEAX\t0x0000002b"), "the state outlived the first command: {second}");
     let spec = s.join("sum.json");

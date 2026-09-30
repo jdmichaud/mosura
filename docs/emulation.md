@@ -29,7 +29,9 @@ mosura call sleigh.emulate lang=x86:LE:32:default bytes=f7f1c3 base=0x1000 \
 | `emulate.state` | start from the machine state stored in the session under this name; the seeds apply on top |
 | `emulate.save-state` | store the machine state the run stopped in under this name, replacing any state of that name |
 
-The answer is an `emulation` table of `(kind, name, value)` rows:
+The answer is an `emulation` table of `(kind, name, value, at, step)` rows; `at` and `step` say
+where and when a row's event happened — the instruction's address and the 1-based p-code step of
+the run — and are 0 for a row that is not an event:
 
 | kind | name | value |
 | --- | --- | --- |
@@ -39,7 +41,7 @@ The answer is an `emulation` table of `(kind, name, value)` rows:
 | `outcome` | `unmodeled`, `unmodeled-op` | how many operations the interpreter does not model were met, and which (any non-zero count makes the run no evidence at all) |
 | `register` | the register | its final value as hex, one row per register the state holds in full, widest first — `EAX` is reported, its `AX`/`AL`/`AH` inside it are not |
 | `memory` | an address | the bytes the state holds from there, as hex: what was seeded and what the routine stored |
-| `effect` | `1`, `2`, … | with `emulate.effects`: one thing the run did, in order — `store <space> <address> <size> <value>`, `call <target>` (followed or not), `in`/`out <port> <size> <value>`, `swi <number>`, `fault`; numbers in hex, sizes in decimal |
+| `effect` | `1`, `2`, … | with `emulate.effects`: one thing the run did, in order, at the instruction and step its `at` and `step` name — `store <space> <address> <size> <value>`, `call <target>` (followed or not), `in`/`out <port> <size> <value>`, `swi <number>`, `fault`; numbers in hex, sizes in decimal |
 
 Effects are for when the ORDER matters, which the final memory cannot show: a store whose meaning
 depends on the port write before it, as in unchained VGA where the plane a byte lands in is the

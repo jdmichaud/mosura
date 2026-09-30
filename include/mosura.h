@@ -374,10 +374,11 @@ mosura_status mosura_lift(mosura_language *l,
  * `emulate.follow-calls` (default: a call is an event), `emulate.max-steps`, `emulate.effects`,
  * `emulate.state` and `emulate.save-state` (a machine state kept in the handle's session). The
  * bytes are memory as well as code.
- * emulation: kind, name, value — `outcome` rows (stop = returned | fault | no-instruction |
+ * emulation: kind, name, value, at, step — `outcome` rows (stop = returned | fault | no-instruction |
  * step-cap; address; steps; unmodeled; unmodeled-op), `register` rows (every register the final
  * state holds, widest first), `memory` rows (every run of bytes it holds, as hex) and, with
- * `emulate.effects`, `effect` rows (what the run did, in order).
+ * `emulate.effects`, `effect` rows (what the run did, in order, each at the instruction address
+ * and p-code step in its `at` and `step`).
  */
 mosura_status mosura_emulate(mosura_language *l,
                              mosura_view bytes,
@@ -498,7 +499,8 @@ mosura_status mosura_program_passes(mosura_program *p,
  * Execute the function at `entry` through the p-code interpreter (`function.emulate`), with the
  * program's loaded image as memory. `opts` (NULL = none): emulate.registers, emulate.memory,
  * emulate.follow-calls, emulate.max-steps, emulate.effects, emulate.state, emulate.save-state.
- * emulation: kind, name, value — outcome, register, memory and effect rows, as `mosura_emulate`.
+ * emulation: kind, name, value, at, step — outcome, register, memory and effect rows, as
+ * `mosura_emulate`.
  */
 mosura_status mosura_program_emulate(mosura_program *p,
                                      uint64_t entry,

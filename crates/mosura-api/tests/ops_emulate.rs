@@ -115,6 +115,12 @@ fn function_emulate_lists_the_runs_effects_on_request() {
         assert_eq!(list[1], format!("call {}", entry(&e, "inner")), "x86-{bits}");
         let names: Vec<&str> = r.iter().filter(|(k, _, _)| k == "effect").map(|(_, n, _)| n.as_str()).collect();
         assert_eq!(names, ["1", "2"], "x86-{bits}: effects are numbered in order");
+        // Each effect row says where and when: the CALL instruction, its second and third operation.
+        let t = dispatch(&c, &mut s, "function.emulate", &traced, &mut NoProgress).unwrap();
+        let (at, step) = (t.col("at").expect("an `at` column"), t.col("step").expect("a `step` column"));
+        let sites: Vec<(u64, u64)> = (0..t.rows()).filter(|&r| t.str(r, 0).unwrap() == "effect").map(|r| (t.u64(r, at).unwrap(), t.u64(r, step).unwrap())).collect();
+        let outer = u64::from_str_radix(entry(&e, "outer").trim_start_matches("0x"), 16).unwrap();
+        assert_eq!(sites, [(outer, 2), (outer, 3)], "x86-{bits}");
         let quiet = opts(&[("entry", entry(&e, "outer")), ("emulate.registers", &stack)]);
         let r = rows(&dispatch(&c, &mut s, "function.emulate", &quiet, &mut NoProgress).unwrap());
         assert!(effects(&r).is_empty(), "x86-{bits}: {r:?}");
