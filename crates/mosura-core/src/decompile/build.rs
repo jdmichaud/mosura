@@ -483,6 +483,11 @@ pub fn raw_funcdata_flow_image_overrides(
     // repeating until the table set is stable. This replaces the old build-time table-base read
     // heuristic — the case targets now come from the faithful recovery, not a pattern guess.
     loop {
+        // A time-limited decompile past its deadline stops recovering (Ghidra's timeout ends the
+        // whole decompile); the function built below then times out in its first action.
+        if super::funcdata::scoped_deadline_passed() {
+            break;
+        }
         while let Some(a) = worklist.pop() {
             if decoded.contains_key(&a) {
                 continue;

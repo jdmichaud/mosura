@@ -262,6 +262,9 @@ fn block_index_of(blocks: &[FlowBlock], rpo: &[i32], b: usize) -> i32 {
 /// liveness) produces the same two components and prints both.
 #[derive(Clone)]
 pub struct Structured {
+    /// The decompile's deadline ([`Funcdata::deadline`]): the long loops of the collapse stop at
+    /// it, since a timed-out decompile is abandoned anyway.
+    pub deadline: Option<std::time::Instant>,
     /// The number of composite nodes the collapse created — the `>0` signal Ghidra's
     /// `ActionBlockStructure` feeds the mainloop repeat (`count += collapse.getChangeCount()`,
     /// blockaction.cc:2180). Ghidra counts individual rule applications; mosura counts the
@@ -1445,6 +1448,7 @@ impl Structured {
         let in_adj = self.in_edges();
         let n = self.blocks.len();
         let tracer = TraceDag {
+            deadline: self.deadline,
             blocks: &self.blocks,
             rpo: &self.rpo,
             in_adj,
@@ -1764,6 +1768,9 @@ impl Structured {
         let cap = 16 + self.blocks.iter().map(|b| b.out_edges.len() + 1).sum::<usize>();
         let mut spins = 0usize;
         while isolated_count < self.order.len() {
+            if self.deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                break; // out of time: the decompile is abandoned
+            }
             spins += 1;
             if spins > cap {
                 debug_assert!(false, "structure collapse did not converge in {cap} goto selections");
@@ -2658,6 +2665,7 @@ struct BadEdgeScore {
 /// during a trace (no collapse happens), so `in_adj` is snapshotted once; `visitcount` is the tracer's
 /// own copy of Ghidra's per-`FlowBlock` field (only touched by `removeTrace`, discarded at the end).
 struct TraceDag<'a> {
+    deadline: Option<std::time::Instant>,
     blocks: &'a [FlowBlock],
     rpo: &'a [i32],
     in_adj: Vec<Vec<(usize, usize)>>,
@@ -3080,11 +3088,21 @@ impl<'a> TraceDag<'a> {
     fn push_branches(&mut self) {
         let mut cursor = self.ahead;
         let mut missed = 0i32;
-        // Ghidra relies on the algorithm's own progress guarantee; a generous cap guards a port bug.
-        let cap = 16 + 8 * self.blocks.iter().map(|b| b.out_edges.len() + 1).sum::<usize>();
+        // Ghidra has no cap: it relies on the algorithm's progress guarantee. Every step either
+        // progresses — a retirement, an opened branch or a removed trace, a bounded number per edge
+        // — or counts a miss, and a miss is followed by progress within `activecount` steps. So
+        // (progress events) × (active traces) bounds a correct run, and the cap guards only a port
+        // bug. (A linear cap fired on two 256-way switches sharing their targets, which converge
+        // in ~133k steps over ~770 edges.)
+        let edges = self.blocks.iter().map(|b| b.out_edges.len() + 1).sum::<usize>();
+        let cap = (3 * edges + 16).saturating_mul(edges + 16);
         let mut steps = 0usize;
         while self.activecount > 0 {
             steps += 1;
+            // out of time: the decompile is abandoned (checked every 4096 steps, it is a clock read)
+            if steps % 4096 == 0 && self.deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                break;
+            }
             if steps > cap {
                 debug_assert!(false, "TraceDAG pushBranches did not converge");
                 break;
@@ -3342,6 +3360,7 @@ pub fn structure(f: &Funcdata) -> Structured {
     };
     let n = f.num_blocks();
     let mut s = Structured {
+        deadline: f.deadline,
         collapse_count: 0,
         blocks,
         roots: Vec::new(),
@@ -3875,6 +3894,7 @@ mod tests {
             blocks[a].out_labels.push(0);
         }
         Structured {
+            deadline: None,
             collapse_count: 0,
             blocks,
             roots: Vec::new(),

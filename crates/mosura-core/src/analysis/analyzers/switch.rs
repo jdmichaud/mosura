@@ -14,6 +14,10 @@ use crate::analysis::priority::AnalysisPriority;
 use crate::analysis::program::{AddressSet, Program, RefType};
 use crate::decompile::space::{Address, SpaceId};
 
+/// `DecompilerSwitchAnalyzer.OPTION_DEFAULT_DECOMPILER_TIMEOUT_SECS` (:54): each function's
+/// decompile runs under this limit, and one that exceeds it recovers no switch.
+pub const DECOMPILER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
 pub struct DecompilerSwitchAnalyzer {
     ram: SpaceId,
 }
@@ -128,7 +132,10 @@ impl Analyzer for DecompilerSwitchAnalyzer {
         let mut case_targets = AddressSet::new();
         for entry_off in self.find_functions(program, &locations) {
             let entry = Address::new(ram, entry_off);
-            let Some(mut f) = crate::analysis::decompiler::decompile_function(program, entry) else {
+            let t0 = std::time::Instant::now();
+            let decompiled = crate::analysis::decompiler::decompile_function_within(program, entry, Some(DECOMPILER_TIMEOUT));
+            crate::debug!(crate::debug::Topic::Analysis, "switch decompile FUN_{:08x} took {:?}{}", entry_off, t0.elapsed(), if decompiled.is_none() { " (no answer)" } else { "" });
+            let Some(mut f) = decompiled else {
                 continue;
             };
             for jt in f.jump_tables() {

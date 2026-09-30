@@ -186,6 +186,10 @@ impl Action for ActionGroup {
         loop {
             let mut round = 0;
             for a in &mut self.list {
+                // Past the decompile's deadline nothing more runs (the timeout's effect).
+                if data.past_deadline() {
+                    return total + round;
+                }
                 // Ghidra `Action::perform` (action.cc:316-322) brackets every action's `apply` with
                 // `debugActivate()` / `debugModPrint(getName())`, so the OPACTION_DEBUG facility
                 // attributes each op mutation to the action that made it. Both calls early-out on a
@@ -264,6 +268,9 @@ impl Action for ActionPool {
         // (cheap: ~40 rules × the opcodes that actually occur).
         let mut perop: HashMap<OpCode, Vec<usize>> = HashMap::new();
         loop {
+            if data.past_deadline() {
+                return total;
+            }
             let mut round = 0;
             // Ghidra `ActionPool::apply` (action.cc:877) iterates `data.beginOpAll()..endOpAll()`,
             // i.e. the `optree` keyed by `SeqNum` — ops in (space index, address offset, uniq) order,

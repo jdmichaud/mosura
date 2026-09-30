@@ -135,3 +135,36 @@ fn a_jump_table_over_1024_entries_is_declined() {
     assert_eq!(cases(0x3ff), [1024], "1024 cases: recovered");
     assert_eq!(cases(0x7ff), Vec::<usize>::new(), "2048 cases: over Ghidra's maximum, declined");
 }
+
+/// Two computed jumps into `bra.w` tables that share their cases (a 68000 music driver's command
+/// dispatch): each index is `(x & 0xff) << 2`, so each recovers 256 targets over the same code, and
+/// structuring traces ~770 edges. `TraceDAG::pushBranches` converges in ~133k steps; the port's
+/// linear safety cap (~8k) cut it off and the function was skipped. Ghidra has no cap.
+#[test]
+fn two_switches_sharing_their_cases_are_structured() {
+    use mosura_core::analysis::{decompiler::decompile_function, loader::raw::load_raw_at};
+    use mosura_core::decompile::space::Address;
+    let mut image = vec![0u8; 0x800];
+    image[0..8].copy_from_slice(&[0x00, 0xff, 0xff, 0x00, 0x00, 0x00, 0x01, 0x00]);
+    // 100: andi.w #$ff,d5; lsl.w #2,d5; tst.b (1,a3); bmi.b 110
+    // 10c: jmp (114,pc,d5.w)   110: jmp (124,pc,d5.w)
+    // 114: bra.w A,SELF,B,C    124: bra.w B,SELF,C,A
+    // 134: SELF bra.b SELF     136: A rts     138: B moveq #1,d1; rts     13c: C moveq #2,d1; rts
+    let code: [u8; 64] = [
+        0x02, 0x45, 0x00, 0xff, 0xe5, 0x4d, 0x4a, 0x2b, 0x00, 0x01, 0x6b, 0x04, 0x4e, 0xfb, 0x50, 0x06, 0x4e, 0xfb, 0x50, 0x12, 0x60, 0x00,
+        0x00, 0x20, 0x60, 0x00, 0x00, 0x1a, 0x60, 0x00, 0x00, 0x1a, 0x60, 0x00, 0x00, 0x1a, 0x60, 0x00, 0x00, 0x12, 0x60, 0x00, 0x00, 0x0a,
+        0x60, 0x00, 0x00, 0x0e, 0x60, 0x00, 0x00, 0x04, 0x60, 0xfe, 0x4e, 0x75, 0x72, 0x01, 0x4e, 0x75, 0x72, 0x02, 0x4e, 0x75,
+    ];
+    image[0x100..0x140].copy_from_slice(&code);
+    let mut p = load_raw_at(&image, "68000:BE:32:default", 0, &[0x100]).unwrap();
+    mosura_core::analysis::analyze(&mut p);
+    let mut f = decompile_function(&p, Address::new(p.default_space, 0x100)).expect("structured, not skipped");
+    let sizes: Vec<usize> = f.jump_tables().into_iter().map(|t| t.targets.len()).collect();
+    assert_eq!(sizes, [256, 256]);
+    // Under a time limit (Ghidra's analysis decompiles run under one), a decompile that reaches it
+    // stops and answers nothing: here the limit is already spent when the pipeline starts.
+    use mosura_core::analysis::decompiler::decompile_function_within;
+    let entry = Address::new(p.default_space, 0x100);
+    assert!(decompile_function_within(&p, entry, Some(std::time::Duration::ZERO)).is_none(), "a spent limit stops the decompile");
+    assert!(decompile_function_within(&p, entry, Some(std::time::Duration::from_secs(600))).is_some(), "an ample one does not");
+}

@@ -14,6 +14,15 @@ use crate::decompile::space::Address;
 /// decompiled [`Funcdata`] — or `None` if the language tables are unavailable. Callers
 /// then read [`Funcdata::jump_tables`] / [`Funcdata::func_proto`].
 pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata> {
+    decompile_function_within(program, entry, None)
+}
+
+/// [`decompile_function`] with a time limit — Ghidra's analysis decompiles run under one
+/// (`DecompilerSwitchAnalyzer`'s "Analysis Decompiler Timeout (sec)", 60 by default): a
+/// decompile still running at `timeout` stops, and the function gives no answer (`None`), as a
+/// timed-out decompile gives Ghidra's analyzer nothing to apply.
+pub fn decompile_function_within(program: &Program, entry: Address, timeout: Option<std::time::Duration>) -> Option<Funcdata> {
+    let deadline = timeout.map(|t| std::time::Instant::now() + t);
     // Cached (Ghidra `SleighLanguageProvider.getLanguage`): the tables and the default decode
     // context are resolved once per process. A plain `lang::load` here re-read the `.sla`/
     // `.pspec` for every function, and a single transient read failure silently changed *that
@@ -91,7 +100,7 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
     // and that is where a real failure landed — an Open Watcom `signl.c` whose overlapping
     // unaligned stack locations never reach SSA, so heritage stalls and `ActionRedundBranch` then
     // trims a MULTIEQUAL that has no inputs.
-    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| crate::decompile::funcdata::with_deadline(deadline, || {
         // Everything from the flow build to the end of the pipeline is a closure, because Ghidra's
         // `ActionRestartGroup` may need to run it twice: `clearAnalysis` throws the graph away and
         // `ActionStart`'s `followFlow` regenerates it. mosura generates p-code out here rather than
@@ -108,6 +117,7 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
             &program.compiler_spec_id,
         );
         f.readonly_ranges = readonly_ranges.clone();
+        f.deadline = deadline;
         // The knobs travel with the function: a pipeline action reads its switch here.
         f.knobs = program.knobs.clone();
         // the survey's tail-return-write MARK (see `Program::tail_return_writes`)
@@ -227,8 +237,12 @@ pub fn decompile_function(program: &Program, entry: Address) -> Option<Funcdata>
             crate::decompile::pipeline::decompile(&mut f);
         }
         f
-    }));
+    })));
     match outcome {
+        Ok(f) if f.timed_out => {
+            warn!("decompile_function: FUN_{:08x} ran past its time limit — skipping (no switch/proto)", entry.offset);
+            None
+        }
         Ok(f) => Some(f),
         Err(e) => {
             // The panic's own words, so the log names the cause (a guard's message, a failed

@@ -71,6 +71,12 @@ pub struct Funcdata {
     /// analysis discovered something that invalidates the whole decompile, so the root
     /// `ActionRestartGroup` should clear and re-run it. Set by [`super::heritage::bump_deadcode_delay`].
     pub restart_pending: bool,
+    /// When this decompile must stop (Ghidra's decompiler timeout, `DecompileOptions` /
+    /// `DecompilerCallback.setTimeout`): the action groups check it between actions, and a
+    /// decompile past it stops and sets [`Funcdata::timed_out`]. `None`: no limit.
+    pub deadline: Option<std::time::Instant>,
+    /// The decompile stopped at its [`Funcdata::deadline`]; its state is partial.
+    pub timed_out: bool,
     /// The global function database visible to `ActionDeindirect::queryFunction`.
     /// Empty for an isolated fixture with no function/prototype database.
     pub known_functions: std::collections::HashSet<Address>,
@@ -437,7 +443,44 @@ pub struct Funcdata {
     modify_before: Vec<String>,
 }
 
+thread_local! {
+    /// The deadline every [`Funcdata`] created on this thread starts with — set for the span of one
+    /// time-limited decompile by [`with_deadline`], so the partial decompiles its flow build runs to
+    /// recover jump tables are bounded by the same limit as the function itself.
+    static DEFAULT_DEADLINE: std::cell::Cell<Option<std::time::Instant>> = const { std::cell::Cell::new(None) };
+}
+
+/// Whether the deadline [`with_deadline`] set for this thread has passed — for the loops of a
+/// time-limited decompile that run outside any [`Funcdata`]'s actions (the flow build's multistage
+/// jump-table recovery).
+pub fn scoped_deadline_passed() -> bool {
+    DEFAULT_DEADLINE.with(|d| d.get()).is_some_and(|d| std::time::Instant::now() >= d)
+}
+
+/// Run `f` with `deadline` as the deadline of every [`Funcdata`] created meanwhile on this thread,
+/// then restore the previous one (Ghidra's decompiler timeout covers the whole decompile process,
+/// including the jump-table recovery inside it).
+pub fn with_deadline<R>(deadline: Option<std::time::Instant>, f: impl FnOnce() -> R) -> R {
+    let previous = DEFAULT_DEADLINE.with(|d| d.replace(deadline));
+    struct Restore(Option<std::time::Instant>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            DEFAULT_DEADLINE.with(|d| d.set(self.0));
+        }
+    }
+    let _restore = Restore(previous);
+    f()
+}
+
 impl Funcdata {
+    /// Whether the decompile has run past its deadline; latches [`Funcdata::timed_out`].
+    pub fn past_deadline(&mut self) -> bool {
+        if !self.timed_out && self.deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+            self.timed_out = true;
+        }
+        self.timed_out
+    }
+
     /// The model this function's CALLS start with (see [`Self::called_model`]).
     pub fn called_model(&self) -> &super::fspec::ProtoModel {
         self.called_model.as_ref().unwrap_or(&self.proto_model)
@@ -464,6 +507,8 @@ impl Funcdata {
             create_index: 0,
             clean_up_index: 0,
             restart_pending: false,
+            deadline: DEFAULT_DEADLINE.with(|d| d.get()),
+            timed_out: false,
             known_functions: std::collections::HashSet::new(),
             indirect_overrides: std::collections::HashMap::new(),
             call_input_overrides: std::collections::HashMap::new(),
