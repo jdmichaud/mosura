@@ -6,6 +6,7 @@
 //! state and lets tests assert the *computed result*, exactly as the `pcodetest`
 //! suite intends. Follows branches/loops until `RETURN`; calls are not entered.
 
+use super::emu_m68k::{self, M68k};
 use super::engine::Spec;
 use super::pcode::{opcode_name, PArg, PcodeOp};
 use std::cell::RefCell;
@@ -41,7 +42,8 @@ fn sext(v: u64, size: u32) -> i64 {
 }
 
 /// The `define pcodeop`s this interpreter models, resolved from a `CALLOTHER`'s user-op index.
-/// The names are x86's (`ia.sinc:764`, `:765`, `:779`, `:781`, `:782`).
+/// The first five are x86's (`ia.sinc:764`, `:765`, `:779`, `:781`, `:782`); `bcdAdjust` is the
+/// 68000's (68000.sinc:363), modelled by its state modifier ([`super::emu_m68k`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum UserOp {
     /// `LOCK()` / `UNLOCK()` — the bus-lock bracket around `XCHG`.
@@ -52,6 +54,8 @@ enum UserOp {
     Out,
     /// `swi(n)` — take software interrupt `n`.
     Swi,
+    /// `bcdAdjust(v)` — the 68000's decimal adjust.
+    BcdAdjust,
     /// Something else this interpreter does not model.
     Unknown,
 }
@@ -186,6 +190,12 @@ pub struct Machine {
     /// byte address in that space is taken through the mask before it is read or written, so the
     /// addresses a narrower bus cannot tell apart are one cell. `None`: every bit decodes.
     address_mask: Option<(String, u64)>,
+    /// The language's emulator state modifier, when this interpreter has one for it: the 68000's
+    /// ([`Spec::emulate_modifier`], [`super::emu_m68k`]). `None` in a bare [`Machine`].
+    m68k: Option<Arc<M68k>>,
+    /// The instruction the modifier is adjusting, and what it kept from before the instruction's
+    /// p-code ran; set from the start of that p-code to its end ([`Machine::begin_adjusted`]).
+    adjusting: Option<(emu_m68k::Insn, emu_m68k::Before)>,
 }
 
 /// One observable effect of running a function: what a caller could tell apart.
@@ -636,8 +646,30 @@ impl Machine {
         Flow::Fault
     }
 
+    /// Start an instruction the state modifier handles: execute it whole when the modifier
+    /// replaces it (`true`, and its p-code must not run), or keep what the modifier needs from
+    /// before the p-code runs (`false`). See [`super::emu_m68k`].
+    fn begin_adjusted(&mut self, insn: emu_m68k::Insn) -> bool {
+        let Some(m68k) = self.m68k.clone() else { return false };
+        if m68k.execute(self, insn) {
+            return true;
+        }
+        self.adjusting = Some((insn, m68k.before(self, insn)));
+        false
+    }
+
+    /// End the instruction [`Machine::begin_adjusted`] started, once its p-code has run: Ghidra's
+    /// `EmulateInstructionStateModifier.postExecuteCallback`.
+    fn end_adjusted(&mut self) {
+        let (Some((insn, before)), Some(m68k)) = (self.adjusting.take(), self.m68k.clone()) else { return };
+        m68k.after(self, insn, &before);
+    }
+
     /// Keep a division's full-width quotient so the `SUBPIECE` that narrows it can be checked.
     fn remember_quotient(&mut self, op: &PcodeOp, quotient: u64, signed: bool) {
+        if let Some((_, before)) = &mut self.adjusting {
+            before.quotient = Some(quotient);
+        }
         self.last_quotient = op.out.clone().map(|v| (v, quotient, signed));
     }
 
@@ -763,6 +795,24 @@ impl Machine {
                 }
                 SWI_VECTOR | (n & 0xff)
             }
+            // `bcdAdjust(tmp)` — modelled only where its input determines the decimal result,
+            // inside `nbcd` (see [`super::emu_m68k`]); the 68000 modifier executes `abcd` and
+            // `sbcd` whole, so their `bcdAdjust` never runs. Anywhere else it stays unmodelled.
+            UserOp::BcdAdjust => match (&self.m68k, &self.adjusting) {
+                (Some(m68k), Some((emu_m68k::Insn::Nbcd, _))) => {
+                    let tmp = op.ins.get(1).map_or(0, |a| self.read_arg(a));
+                    let (value, flags) = emu_m68k::nbcd_adjust(tmp, m68k.x_flag(self));
+                    if let Some((_, before)) = &mut self.adjusting {
+                        before.nbcd_flags = Some(flags);
+                    }
+                    value
+                }
+                _ => {
+                    self.unmodeled += 1;
+                    self.note_unmodeled("CALLOTHER", op);
+                    0
+                }
+            },
             UserOp::Unknown => {
                 self.unmodeled += 1;
                 self.note_unmodeled("CALLOTHER", op);
@@ -784,6 +834,7 @@ impl Machine {
             Some("in") => UserOp::In,
             Some("out") => UserOp::Out,
             Some("swi") => UserOp::Swi,
+            Some("bcdAdjust") => UserOp::BcdAdjust,
             _ => UserOp::Unknown,
         }
     }
@@ -1189,12 +1240,15 @@ pub fn run_traced(
     inputs: &[(&str, u64, u64, u32)],
     cfg: &RunConfig<'_>,
 ) -> (Machine, bool) {
-    let mut prog: HashMap<u64, (Vec<PcodeOp>, u64)> = spec
+    let m68k = M68k::for_spec(spec).map(Arc::new);
+    let adjust = |insn: &super::Instruction| m68k.as_ref().and_then(|m| m.classify(&insn.mnemonic, &insn.bytes));
+    let mut prog: HashMap<u64, (Vec<PcodeOp>, u64, Option<emu_m68k::Insn>)> = spec
         .disassemble_ctx(bytes, base, context)
         .into_iter()
         .map(|insn| {
             let next = insn.address + insn.bytes.len() as u64;
-            (insn.address, (insn.ops, next))
+            let fix = adjust(&insn);
+            (insn.address, (insn.ops, next, fix))
         })
         .collect();
 
@@ -1208,6 +1262,7 @@ pub fn run_traced(
         // exactly the situation `default_args` exists for. See [`Effect::Swi`].
         swi_args: cfg.default_args.to_vec(),
         big_endian: Machine::big_endian_spaces(spec),
+        m68k: m68k.clone(),
         ..Machine::default()
     };
     // The memory image, as DATA — see [`RunConfig::image`]. Only what the caller hands over is
@@ -1253,9 +1308,18 @@ pub fn run_traced(
                 break 'run;
             };
             let nxt = insn.address + insn.bytes.len() as u64;
-            prog.insert(pc, (insn.ops, nxt));
+            let fix = adjust(&insn);
+            prog.insert(pc, (insn.ops, nxt, fix));
         }
-        let (ops, next) = &prog[&pc];
+        let (ops, next, fix) = &prog[&pc];
+        if let Some(fix) = *fix {
+            m.at = (pc, steps + 1);
+            if m.begin_adjusted(fix) {
+                steps += 1;
+                pc = *next;
+                continue;
+            }
+        }
         let mut i = 0usize;
         let mut jump = None;
         while i < ops.len() {
@@ -1408,8 +1472,10 @@ pub fn run_traced(
                 },
             }
         }
+        m.end_adjusted();
         pc = jump.unwrap_or(*next);
     }
+    m.adjusting = None;
     (m, finished)
 }
 
@@ -1505,11 +1571,13 @@ const DECODE_WINDOW: usize = 64;
 /// already has. A whole text section with the routine somewhere inside it therefore costs what
 /// the routine executes, not what the section holds — the shape a reference executor needs when
 /// it captures thousands of vectors per routine and a followed call may land anywhere.
-/// One decoded instruction: its p-code, its fall-through address, and whether it calls.
+/// One decoded instruction: its p-code, its fall-through address, whether it calls, and what the
+/// language's state modifier does with it.
 struct Decoded {
     ops: Vec<PcodeOp>,
     next: u64,
     calls: bool,
+    adjust: Option<emu_m68k::Insn>,
 }
 
 pub struct Image<'a> {
@@ -1526,6 +1594,8 @@ pub struct Image<'a> {
     stack_pointer: Option<(u64, u32)>,
     /// The memory space's address lines ([`Image::with_address_mask`]).
     address_mask: Option<u64>,
+    /// The language's emulator state modifier ([`Machine::m68k`]).
+    m68k: Option<Arc<M68k>>,
 }
 
 impl<'a> Image<'a> {
@@ -1542,7 +1612,8 @@ impl<'a> Image<'a> {
         let mut blocks: Vec<(u64, &'a [u8])> = blocks.iter().copied().filter(|(_, b)| !b.is_empty()).collect();
         blocks.sort_by_key(|(start, _)| *start);
         let base = blocks.first().map_or(0, |(start, _)| *start);
-        Self { spec, blocks, base, context, decoded: HashMap::new(), memory: None, stack_pointer: None, address_mask: None }
+        let m68k = M68k::for_spec(spec).map(Arc::new);
+        Self { spec, blocks, base, context, decoded: HashMap::new(), memory: None, stack_pointer: None, address_mask: None, m68k }
     }
 
     /// Name the stack pointer register — the compiler spec's `<stackpointer>`
@@ -1611,7 +1682,8 @@ impl<'a> Image<'a> {
                     break;
                 }
                 let calls = insn.ops.iter().any(|o| matches!(opcode_name(o.opcode), "CALL" | "CALLIND"));
-                self.decoded.entry(insn.address).or_insert(Decoded { ops: insn.ops, next, calls });
+                let adjust = self.m68k.as_ref().and_then(|m| m.classify(&insn.mnemonic, &insn.bytes));
+                self.decoded.entry(insn.address).or_insert(Decoded { ops: insn.ops, next, calls, adjust });
             }
         }
         self.decoded.get(&pc)
@@ -1634,6 +1706,7 @@ impl<'a> Image<'a> {
             backing: self.memory.clone(),
             big_endian: Machine::big_endian_spaces(self.spec),
             address_mask: self.address_mask.map(|mask| (self.spec.spaces[self.spec.default_space].name.clone(), mask)),
+            m68k: self.m68k.clone(),
             ..Machine::default()
         }
     }
@@ -1682,7 +1755,19 @@ impl<'a> Image<'a> {
                 continue;
             }
             let Some(insn) = self.at(pc) else { break Stop::NoInstruction(pc) };
-            let (ops, next) = (&insn.ops, insn.next);
+            let (ops, next, adjust) = (&insn.ops, insn.next, insn.adjust);
+            if let Some(adjust) = adjust {
+                if steps >= opts.max_steps {
+                    break 'run Stop::StepCap;
+                }
+                m.at = (pc, steps + 1);
+                if m.begin_adjusted(adjust) {
+                    // Executed whole by the state modifier, in one step.
+                    steps += 1;
+                    pc = next;
+                    continue;
+                }
+            }
             let sp_at_call = match (insn.calls, stack) {
                 (true, Some((off, size))) => Some(m.read("register", off, size)),
                 _ => None,
@@ -1748,8 +1833,10 @@ impl<'a> Image<'a> {
                     Flow::Fault => break 'run Stop::Fault,
                 }
             }
+            m.end_adjusted();
             pc = jump.unwrap_or(next);
         };
+        m.adjusting = None;
         Run { machine: m, steps, stop }
     }
 }

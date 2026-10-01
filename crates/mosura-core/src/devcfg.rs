@@ -229,6 +229,13 @@ pub fn oracle_dist() -> PathBuf {
     get().path("oracle.ghidra_dist").unwrap_or_else(|| ghidra_src().join("build/dist/ghidra_*_DEV"))
 }
 
+/// `oracle.m68k_emulation`: the whole generated 68000 emulation oracle set (`generate.py all DIR`
+/// in `crates/mosura-core/tests/fixtures/m68k-emulation`), for `exhaustive_against_blastem`. No
+/// default: the set is generated, not shipped.
+pub fn m68k_emulation_oracle() -> Option<PathBuf> {
+    get().path("oracle.m68k_emulation")
+}
+
 /// `watcom.install`: a Watcom C/C++32 installation directory (the one holding `BINW`, `H`,
 /// `LIB386`). Default `$HOME/watcom`.
 pub fn watcom_install() -> PathBuf {
@@ -325,7 +332,7 @@ mod tests {
             .join("\n");
         let c = DevConfig::parse(&uncommented).unwrap();
         const KNOWN: &[&str] = &[
-            "ghidra_src", "oracle.ghidra_root", "oracle.ghidra_dist", "survey.manifest", "watcom.install", "watcom.wcc386", "gt.update_baseline",
+            "ghidra_src", "oracle.ghidra_root", "oracle.ghidra_dist", "oracle.m68k_emulation", "survey.manifest", "watcom.install", "watcom.wcc386", "gt.update_baseline",
             "recompile.cache", "binaries.cnv", "binaries.comcom32", "binaries.msc16",
             "binaries.x32", "binaries.vc6", "binaries.vc5", "binaries.vc4", "binaries.bc45",
             "toolchains.vc98", "toolchains.bc45",

@@ -415,6 +415,14 @@ pub struct Spec {
     /// the op as `<name>(args...)`, so the printer needs the index→name map to avoid leaking a raw
     /// `CALLOTHER(...)` into the emitted C. Populated by [`Spec::from_element`].
     pub userops: std::collections::HashMap<u64, String>,
+    /// The processor spec's `emulateInstructionStateModifierClass` property — the Java class
+    /// Ghidra's emulator instantiates to give the language's `define pcodeop`s their behaviour and
+    /// to adjust its instructions' state (`Emulate`/`EmulatorHelper` read it through
+    /// `Language.getProperty(GhidraLanguagePropertyKeys.EMULATE_INSTRUCTION_STATE_MODIFIER_CLASS)`).
+    /// [`super::emu`] selects its own state modifier by the same name. Filled by the loader from
+    /// the `.pspec`, not the `.sla`; `None` for a bare [`Spec::from_sla`] and for a processor that
+    /// names none.
+    pub emulate_modifier: Option<String>,
 }
 
 /// SLEIGH internal-label bookkeeping for one instruction — `PcodeCacher`'s `labels` /
@@ -574,6 +582,7 @@ impl Spec {
             context_words,
             laned: Vec::new(),
             tracked_context: Vec::new(),
+            emulate_modifier: None,
             userops,
         })
     }

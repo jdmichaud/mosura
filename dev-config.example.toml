@@ -15,6 +15,9 @@
 # ghidra_root = "../ghidra"
 # A built Ghidra DISTRIBUTION (analyzeHeadless) for the analysis-golden captures. Default: <ghidra_src>/build/dist/ghidra_*_DEV.
 # ghidra_dist = "../ghidra/build/dist/ghidra_12.0.3_DEV"
+# The whole generated 68000 emulation oracle set (`generate.py all DIR` in
+# crates/mosura-core/tests/fixtures/m68k-emulation), for the ignored `exhaustive_against_blastem`.
+# m68k_emulation = "/tmp/m68k-oracle"
 
 [watcom]
 # A Watcom C/C++32 installation directory (BINW, H, LIB386) — the recompile oracle.

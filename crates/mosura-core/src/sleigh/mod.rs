@@ -10,6 +10,7 @@
 //! reference oracle's 599/599.
 
 pub mod emu;
+mod emu_m68k;
 pub mod engine;
 pub mod pcode;
 pub mod sla;

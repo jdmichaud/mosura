@@ -265,10 +265,47 @@ modelled.
 mosura -S s emulate 0x134f --address-mask 0xffffff
 ```
 
+## Where the language's p-code is not the hardware
+
+The interpreter executes the language's own p-code, as Ghidra's emulator does. Where a SLEIGH spec
+leaves an instruction to a `define pcodeop` or computes something the hardware does not, Ghidra
+gives the language an emulator class of its own, named by the processor spec's
+`emulateInstructionStateModifierClass` property: it gives the user-ops a behaviour and adjusts the
+state after an instruction. The interpreter selects its own by the same property. The 68000
+family's (`m68kEmulateInstructionStateModifier`, every 680x0 and ColdFire language) carries what
+68000.sinc does not:
+
+- `abcd`, `sbcd` and `nbcd` add, subtract and negate in decimal, with X and C from the decimal
+  carry and Z cleared by a non-zero result and otherwise unchanged, so a chain of them over a
+  multi-byte number ends with Z telling whether the whole number is zero. The sinc computes them
+  in binary and leaves the adjust to `bcdAdjust`, a user-op with no definition, which a run
+  reported as `unmodeled-op CALLOTHER:bcdAdjust`.
+- `divu.w` and `divs.w` whose quotient does not fit 16 bits leave the destination register
+  unchanged and set V. The sinc stores `(remainder << 16) | quotient` whatever the quotient. N
+  and Z of a division that fits come from the 16-bit quotient.
+- The byte forms of `-(A7)` step the stack pointer by two, as the 68000 keeps it word-aligned.
+- Shifts and rotates of a data register (`asl`, `asr`, `lsl`, `lsr`, `rol`, `ror`, `roxl`,
+  `roxr`, every size) are the hardware's for every count: a register count is taken modulo 64, a
+  count past the width shifts everything out or rotates modulo the width (`rol.b` by 12 is `rol.b`
+  by 4; `roxd` modulo the width plus one), and V is cleared except by ASL, which sets it when the
+  MSB changes at any point of the shift. The sinc's macros set V to the MSB before XOR the MSB
+  after for every shift, and rotate by a count past the width to zero. Their memory forms (a shift
+  by one) keep the sinc's result and get the same V.
+
+The flags the manual calls undefined (N and V after a BCD operation, N and Z after a division
+overflow) are the hardware's as BlastEm measures them; BlastEm, run over every byte pair of each
+BCD form and four condition-code inputs, 4000 divisions and every shift and rotate form over 20
+values and counts 0-69, is the gate
+(`crates/mosura-core/tests/emu_m68k.rs`, `tests/fixtures/m68k-emulation/README.md`).
+
+Still as the sinc has it: `move SR,<ea>` stores T, S and the interrupt mask as zero (its
+`packflags` shifts the one-byte flags at their own width), and a division by zero ends the run
+as a `fault` rather than taking the trap.
+
 ## What it does not do
 
-The interpreter models integer and binary32/64 float p-code, the `LOCK`/`in`/`out`/`swi` user-ops
-and nothing else; x87's 80-bit arithmetic and the vector extensions are reported as `unmodeled`
+The interpreter models integer and binary32/64 float p-code, the `LOCK`/`in`/`out`/`swi` user-ops,
+the 68000's `bcdAdjust` inside `nbcd` (above) and nothing else; x87's 80-bit arithmetic and the vector extensions are reported as `unmodeled`
 rather than approximated (`semantic-equivalence.md`, calibration). Memory holds the bytes given
 and the seeds; everything else reads as zero — there is no fill here, unlike the differential run
 — and nothing outside the bytes executes: no BIOS, no DOS, no extender. A register wider than

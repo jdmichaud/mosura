@@ -227,6 +227,23 @@ pub fn pspec_tracked_sets(pspec: &Path) -> Option<Vec<(String, u64)>> {
     Some(sets)
 }
 
+/// A `<properties><property key=.. value=../>` value of a processor spec (Ghidra
+/// `Language.getProperty`): `Some(None)` when the spec sets no such key, `None` when the `.pspec`
+/// cannot be read.
+pub fn pspec_property(pspec: &Path, key: &str) -> Option<Option<String>> {
+    let text = crate::resources::get().read_string(pspec.to_str()?)?;
+    let doc = roxmltree::Document::parse(&text).ok()?;
+    Some(
+        doc.descendants()
+            .filter(|n| n.tag_name().name() == "property" && n.attribute("key") == Some(key))
+            .find_map(|n| n.attribute("value").map(str::to_string)),
+    )
+}
+
+/// The pspec key naming the language's emulator state modifier ([`Spec::emulate_modifier`]);
+/// Ghidra `GhidraLanguagePropertyKeys.EMULATE_INSTRUCTION_STATE_MODIFIER_CLASS`.
+pub const EMULATE_MODIFIER_KEY: &str = "emulateInstructionStateModifierClass";
+
 /// The register groups a language's `.pspec` declares (`<register_data><register name=..
 /// group=../>`, Ghidra's `Register.getGroup`), as `(register, group)` pairs; empty when the
 /// processor declares none (most name no group; x86 groups its FLAGS, FPU, DEBUG, CONTROL…), `None`
@@ -348,6 +365,7 @@ fn load(lang_id: &str) -> Option<(Spec, Vec<u32>)> {
     // loader — see the reactivation note in `speccache::get`.
     spec.laned = pspec_laned_size_masks(&pspec, &spec)?;
     spec.tracked_context = resolve_tracked(&spec, &pspec_tracked_sets(&pspec)?);
+    spec.emulate_modifier = pspec_property(&pspec, EMULATE_MODIFIER_KEY)?;
     let sets = pspec_context_sets(&pspec)?;
     let refs: Vec<(&str, u64)> = sets.iter().map(|(n, v)| (n.as_str(), *v)).collect();
     let ctx = spec.context_from_sets(&refs);
@@ -452,6 +470,18 @@ mod tests {
         assert!(!x86.contains_key("EAX"));
         assert_eq!(register_groups("RISCV:LE:32:default").map(|g| g.len()), Some(0));
         assert!(register_groups("nope:LE:32:default").is_none());
+    }
+
+    /// Both loaders carry the pspec's emulator state modifier class: every 680x0 language names
+    /// the 68000's (they share 68000.pspec); x86 names none.
+    #[test]
+    fn emulate_modifier_is_the_pspecs() {
+        let m68k = Some("ghidra.program.emulation.m68kEmulateInstructionStateModifier");
+        for id in ["68000:BE:32:default", "68000:BE:32:MC68020", "68000:BE:32:Coldfire"] {
+            assert_eq!(load_cached(id).expect("68000 tables").0.emulate_modifier.as_deref(), m68k, "{id}");
+            assert_eq!(load(id).expect("68000 tables").0.emulate_modifier.as_deref(), m68k, "{id}");
+        }
+        assert_eq!(load_cached("x86:LE:32:default").expect("x86 tables").0.emulate_modifier, None);
     }
 
     /// The x86 `.pspec` declares the direction flag as a tracked register at 0 (`<tracked_set>`),

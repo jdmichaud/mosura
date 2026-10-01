@@ -48,6 +48,7 @@ pub fn get(path: &Path) -> Option<&'static Spec> {
             if let Some(pspec) = crate::lang::default_pspec_for_sla(path) {
                 s.laned = crate::lang::pspec_laned_size_masks(&pspec, &s)?;
                 s.tracked_context = crate::lang::resolve_tracked(&s, &crate::lang::pspec_tracked_sets(&pspec)?);
+                s.emulate_modifier = crate::lang::pspec_property(&pspec, crate::lang::EMULATE_MODIFIER_KEY)?;
             }
             Some(&*Box::leak(Box::new(s)))
         });
